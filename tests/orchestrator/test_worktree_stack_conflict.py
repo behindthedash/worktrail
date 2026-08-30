@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import live, verify  # noqa: E402
+from worktrail.orchestrator import live, verify
 
 
 def _git(repo, *args):
@@ -151,7 +151,9 @@ class AddStackedWorktreeSiblingConflict(unittest.TestCase):
             )
 
             status = _git(wt, "status", "--porcelain").stdout
-            self.assertEqual(status.strip(), "", "salvaged merge must leave a clean tree")
+            self.assertEqual(
+                status.strip(), "", "salvaged merge must leave a clean tree"
+            )
             self.assertEqual((wt / "shared.py").read_text(), "merged\n")
             log = _git(wt, "log", "--format=%s").stdout
             self.assertIn("task-001", log)
@@ -179,9 +181,7 @@ class AddStackedWorktreeSiblingConflict(unittest.TestCase):
                 (Path(worktree) / "shared.py").write_text(
                     "merged: task-001 + task-002\n"
                 )
-                subprocess.run(
-                    ["git", "-C", str(worktree), "add", "-A"], check=True
-                )
+                subprocess.run(["git", "-C", str(worktree), "add", "-A"], check=True)
                 subprocess.run(
                     ["git", "-C", str(worktree), "commit", "-q", "--no-edit"],
                     check=True,
@@ -203,7 +203,9 @@ class AddStackedWorktreeSiblingConflict(unittest.TestCase):
 
             # No lingering merge state.
             status = _git(wt, "status", "--porcelain").stdout
-            self.assertEqual(status.strip(), "", "resolved merge must leave a clean tree")
+            self.assertEqual(
+                status.strip(), "", "resolved merge must leave a clean tree"
+            )
 
             # Worktree carries both siblings' commits.
             for branch in (f"{spec_id}/task-001", f"{spec_id}/task-002"):
@@ -287,12 +289,17 @@ class AddStackedWorktreeSiblingConflict(unittest.TestCase):
                     by_id = {
                         "TASK-001": {"id": "TASK-001", "deps": []},
                         "TASK-002": {"id": "TASK-002", "deps": []},
-                        "TASK-003": {"id": "TASK-003", "deps": ["TASK-001", "TASK-002"]},
+                        "TASK-003": {
+                            "id": "TASK-003",
+                            "deps": ["TASK-001", "TASK-002"],
+                        },
                     }
                     wt = Path(tmp) / "wt" / f"{spec_id}-task-003"
                     wt.parent.mkdir(parents=True)
 
-                    kwargs = {"assembly_resolve_spawn": None} if pass_none_explicitly else {}
+                    kwargs = (
+                        {"assembly_resolve_spawn": None} if pass_none_explicitly else {}
+                    )
 
                     with self.assertRaises(live.WorktreeStackConflictError) as ctx:
                         live.add_stacked_worktree(
@@ -306,9 +313,7 @@ class AddStackedWorktreeSiblingConflict(unittest.TestCase):
                     self.assertEqual(
                         status.strip(), "", "merge must have been aborted cleanly"
                     )
-                    self.assertEqual(
-                        (wt / "shared.py").read_text(), "from task-001\n"
-                    )
+                    self.assertEqual((wt / "shared.py").read_text(), "from task-001\n")
 
 
 class AddStackedWorktreeResolveSpawnUnverified(unittest.TestCase):
@@ -446,7 +451,9 @@ class AddStackedWorktreeMultiSiblingConflict(unittest.TestCase):
             )
 
             status = _git(wt, "status", "--porcelain").stdout
-            self.assertEqual(status.strip(), "", "resolved merge must leave a clean tree")
+            self.assertEqual(
+                status.strip(), "", "resolved merge must leave a clean tree"
+            )
 
             for branch in sibling_branches:
                 self.assertEqual(
@@ -496,7 +503,9 @@ class AddStackedWorktreeLiveValidation(unittest.TestCase):
             # Unattended: no raise above means both sequential conflicts were
             # resolved by the real worker without any manual intervention here.
             status = _git(wt, "status", "--porcelain").stdout
-            self.assertEqual(status.strip(), "", "resolved merge must leave a clean tree")
+            self.assertEqual(
+                status.strip(), "", "resolved merge must leave a clean tree"
+            )
             self.assertEqual(
                 subprocess.run(
                     ["git", "-C", str(wt), "rev-parse", "-q", "--verify", "MERGE_HEAD"],

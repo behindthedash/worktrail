@@ -38,21 +38,18 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from ..shared.brief_frontmatter import split_frontmatter
-
-
 
 # --------------------------------------------------------------------------- #
 # Core brief parsing
 # --------------------------------------------------------------------------- #
 
 
-def parse_brief(path: Path) -> Dict[str, Any]:
+def parse_brief(path: Path) -> dict[str, Any]:
     """Parse YAML frontmatter and ## sections from a brief file.
 
     Returns {"frontmatter": dict, "sections": dict, "error": str|None}.
@@ -65,14 +62,18 @@ def parse_brief(path: Path) -> Dict[str, Any]:
         return {"frontmatter": {}, "sections": {}, "error": str(exc)}
 
     frontmatter, body = split_frontmatter(content)
-    return {"frontmatter": frontmatter, "sections": _parse_sections(body), "error": None}
+    return {
+        "frontmatter": frontmatter,
+        "sections": _parse_sections(body),
+        "error": None,
+    }
 
 
-def _parse_sections(body: str) -> Dict[str, str]:
+def _parse_sections(body: str) -> dict[str, str]:
     """Split body on `## ` headings; return {heading: content} dict."""
-    sections: Dict[str, str] = {}
-    current: Optional[str] = None
-    buf: List[str] = []
+    sections: dict[str, str] = {}
+    current: str | None = None
+    buf: list[str] = []
 
     for line in body.splitlines():
         if line.startswith("## "):
@@ -94,7 +95,7 @@ def _parse_sections(body: str) -> Dict[str, str]:
 # --------------------------------------------------------------------------- #
 
 
-def build_seed(path: Path) -> Dict[str, Any]:
+def build_seed(path: Path) -> dict[str, Any]:
     """Parse a brief and build the go `new`-pipeline brainstorm seed.
 
     Mapping (see the module docstring for the full field table):
@@ -132,25 +133,35 @@ def build_seed(path: Path) -> Dict[str, Any]:
     key_artifacts: str = sec.get("Key artifacts", "")
     open_questions: str = sec.get("Open questions / blockers", "")
 
-    feature_idea = "\n\n".join(p for p in [focus_fm, focus_body, suggested_approach] if p)
-    constraints = "\n\n".join(p for p in [discovery_context, key_artifacts, open_questions] if p)
+    feature_idea = "\n\n".join(
+        p for p in [focus_fm, focus_body, suggested_approach] if p
+    )
+    constraints = "\n\n".join(
+        p for p in [discovery_context, key_artifacts, open_questions] if p
+    )
 
     # focus for display: prefer frontmatter, fall back to first line of ## Focus
     focus = focus_fm or (focus_body.splitlines()[0].strip() if focus_body else "")
 
     raw_skills = fm.get("suggested-skills") or []
-    suggested_skills: List[str] = [raw_skills] if isinstance(raw_skills, str) else list(raw_skills)
+    suggested_skills: list[str] = (
+        [raw_skills] if isinstance(raw_skills, str) else list(raw_skills)
+    )
 
     # Optional GO v2 routing hint: a single letter A-J; anything else -> null.
     raw_route = str(fm.get("recommended-route") or "").strip().upper()
     recommended_route = raw_route if raw_route in set("ABCDEFGHIJ") else None
 
     raw_change_kind = str(fm.get("change-kind") or "").strip().lower()
-    change_kind = raw_change_kind if raw_change_kind in {"new", "delta", "bugfix"} else None
+    change_kind = (
+        raw_change_kind if raw_change_kind in {"new", "delta", "bugfix"} else None
+    )
     target_spec = str(fm.get("target-spec") or "").strip() or None
     raw_intent = str(fm.get("implementation-intent") or "").strip().lower()
     implementation_intent = (
-        raw_intent if raw_intent in {"requested", "planning-only", "unknown"} else "unknown"
+        raw_intent
+        if raw_intent in {"requested", "planning-only", "unknown"}
+        else "unknown"
     )
 
     return {
@@ -180,13 +191,17 @@ def main(argv=None) -> int:
     emit_json = "--json" in raw
     argv = [a for a in raw if a != "--json"]
 
-    p = argparse.ArgumentParser(description="sdd-workflow conductor handoff brief seed-mapper")
+    p = argparse.ArgumentParser(
+        description="sdd-workflow conductor handoff brief seed-mapper"
+    )
 
     subs = p.add_subparsers(dest="mode")
     subs.required = True
 
     sp = subs.add_parser("seed", help="parse a brief and build the brainstorm seed")
-    sp.add_argument("path", help="path to the brief .md file (e.g. the claimed picked/ path)")
+    sp.add_argument(
+        "path", help="path to the brief .md file (e.g. the claimed picked/ path)"
+    )
 
     args = p.parse_args(argv)
 

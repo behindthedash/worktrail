@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Unit tests for the drift-sweep repo discovery filter (stdlib unittest)."""
+
 from __future__ import annotations
 
 import subprocess
@@ -12,7 +13,9 @@ from worktrail.router import spec_sync_sweep_discovery as ssd
 
 def _git_init(repo: Path) -> None:
     repo.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "init", "-q"], cwd=repo, capture_output=True, text=True, check=True)
+    subprocess.run(
+        ["git", "init", "-q"], cwd=repo, capture_output=True, text=True, check=True
+    )
 
 
 def _make_repo_with_specs(root: Path, name: str) -> Path:

@@ -15,6 +15,7 @@ Source of truth: behindthedash/devops, `scripts/test_dependabot_config.py`
 (PR #306). Update these constants by hand if that script changes
 upstream -- there is no automated sync back to devops.
 """
+
 from __future__ import annotations
 
 DEPENDABOT_MANIFEST_CHECK_PY = '''\
@@ -169,6 +170,6 @@ if __name__ == "__main__":
     sys.exit(main())
 '''
 
-DEPENDABOT_MANIFEST_CHECK_REQUIREMENTS_TXT = '''\
+DEPENDABOT_MANIFEST_CHECK_REQUIREMENTS_TXT = """\
 pyyaml>=6.0
-'''
+"""

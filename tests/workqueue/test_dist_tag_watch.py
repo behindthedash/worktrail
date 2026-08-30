@@ -12,16 +12,16 @@ import os
 import re
 import tempfile
 import unittest
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
 from unittest.mock import patch
 
 from worktrail.workqueue import dist_tag_watch as w
 
 
 def _brief(
-    watch: Optional[List[str]] = None,
-    next_check_after: Optional[str] = None,
+    watch: list[str] | None = None,
+    next_check_after: str | None = None,
     extra: str = "",
 ) -> str:
     fm = ["status: queued"]
@@ -36,7 +36,9 @@ def _brief(
     return "---\n" + "\n".join(fm) + "\n---\n\n## Focus\n\nsome work\n"
 
 
-_GITHUB_API_RE = re.compile(r"https://api\.github\.com/repos/([^/]+)/([^/]+)/issues/(\d+)")
+_GITHUB_API_RE = re.compile(
+    r"https://api\.github\.com/repos/([^/]+)/([^/]+)/issues/(\d+)"
+)
 
 
 class _FakeFetch:
@@ -47,16 +49,16 @@ class _FakeFetch:
 
     def __init__(
         self,
-        versions: Optional[Dict[str, str]] = None,
-        errors: Optional[Iterable[str]] = None,
-        github_states: Optional[Dict[str, str]] = None,
-        github_errors: Optional[Iterable[str]] = None,
+        versions: dict[str, str] | None = None,
+        errors: Iterable[str] | None = None,
+        github_states: dict[str, str] | None = None,
+        github_errors: Iterable[str] | None = None,
     ):
         self.versions = dict(versions or {})
         self.errors = set(errors or ())
         self.github_states = dict(github_states or {})
         self.github_errors = set(github_errors or ())
-        self.calls: List[str] = []
+        self.calls: list[str] = []
 
     def __call__(self, url: str) -> str:
         self.calls.append(url)
@@ -202,7 +204,9 @@ class TestMalformedEntries(WatcherTestBase):
         gem_entry, pypi_entry = result["entries"]
         self.assertIsNotNone(gem_entry["error"])
         self.assertTrue(pypi_entry["changed"])
-        self.assertEqual(fetch.calls, [w._REGISTRY_URLS["pypi"].format(package="requests")])
+        self.assertEqual(
+            fetch.calls, [w._REGISTRY_URLS["pypi"].format(package="requests")]
+        )
 
 
 class TestGithubIssueEntries(WatcherTestBase):
@@ -218,7 +222,9 @@ class TestGithubIssueEntries(WatcherTestBase):
         content_before = p.read_text(encoding="utf-8")
         mtime_before = p.stat().st_mtime
 
-        fetch = _FakeFetch(github_states={"jsx-eslint/eslint-plugin-react#3977": "open"})
+        fetch = _FakeFetch(
+            github_states={"jsx-eslint/eslint-plugin-react#3977": "open"}
+        )
         result = w.check_brief(p, fetch=fetch)
 
         self.assertFalse(result["next_check_after_cleared"])
@@ -234,7 +240,9 @@ class TestGithubIssueEntries(WatcherTestBase):
 
     def test_issue_closed_clears_next_check_after_and_rewrites_marker(self):
         p = self.write("a.md", watch=[self.URL], next_check_after="2099-01-01")
-        fetch = _FakeFetch(github_states={"jsx-eslint/eslint-plugin-react#3977": "closed"})
+        fetch = _FakeFetch(
+            github_states={"jsx-eslint/eslint-plugin-react#3977": "closed"}
+        )
         result = w.check_brief(p, fetch=fetch)
 
         self.assertTrue(result["next_check_after_cleared"])
@@ -250,7 +258,9 @@ class TestGithubIssueEntries(WatcherTestBase):
 
     def test_reopened_issue_is_detected_as_change(self):
         p = self.write("a.md", watch=[f"{self.URL}#closed"])
-        fetch = _FakeFetch(github_states={"jsx-eslint/eslint-plugin-react#3977": "open"})
+        fetch = _FakeFetch(
+            github_states={"jsx-eslint/eslint-plugin-react#3977": "open"}
+        )
         result = w.check_brief(p, fetch=fetch)
 
         entry = result["entries"][0]
@@ -264,7 +274,9 @@ class TestGithubIssueEntries(WatcherTestBase):
 
     def test_second_run_after_closing_reports_no_further_change(self):
         p = self.write("a.md", watch=[self.URL])
-        fetch = _FakeFetch(github_states={"jsx-eslint/eslint-plugin-react#3977": "closed"})
+        fetch = _FakeFetch(
+            github_states={"jsx-eslint/eslint-plugin-react#3977": "closed"}
+        )
 
         first = w.check_brief(p, fetch=fetch)
         self.assertTrue(first["entries"][0]["changed"])
@@ -310,7 +322,9 @@ class TestDryRun(WatcherTestBase):
     """AC-005: --dry-run reports the same verdict as a live run with zero writes."""
 
     def test_dry_run_reports_change_without_writing(self):
-        p = self.write("a.md", watch=["npm:left-pad@1.0.0"], next_check_after="2099-01-01")
+        p = self.write(
+            "a.md", watch=["npm:left-pad@1.0.0"], next_check_after="2099-01-01"
+        )
         content_before = p.read_text(encoding="utf-8")
         mtime_before = p.stat().st_mtime
 
@@ -412,7 +426,15 @@ class TestJsonReportShape(WatcherTestBase):
         self.assertFalse(data["dry_run"])
 
         entry = data["briefs"][0]["entries"][0]
-        for key in ("raw", "registry", "package", "recorded_version", "latest_version", "changed", "error"):
+        for key in (
+            "raw",
+            "registry",
+            "package",
+            "recorded_version",
+            "latest_version",
+            "changed",
+            "error",
+        ):
             self.assertIn(key, entry)
         self.assertIsNotNone(entry["error"])
 

@@ -2,32 +2,31 @@
 """Unit tests for dispatch.py prompt building."""
 
 import datetime as dt
-import json
+import os
 import re
 import sys
-import os
 import tempfile
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from worktrail.workqueue import decisions as decisions_mod
 from worktrail.orchestrator.dispatch import (
+    _ROLE_ACTION,
+    ROLE_ASSEMBLY_RESOLVE,
+    ROLE_CI_FIX,
+    ROLE_CLEANUP,
+    ROLE_FIX,
+    ROLE_IMPLEMENT,
+    ROLE_RESOLVE,
+    ROLE_REVIEW,
+    DecisionDispatchError,
     agent_for,
     build_worker_prompt,
     transition,
     validate_resolved_decision_input,
-    DecisionDispatchError,
-    ROLE_CLEANUP,
-    ROLE_REVIEW,
-    ROLE_FIX,
-    ROLE_IMPLEMENT,
-    ROLE_RESOLVE,
-    ROLE_CI_FIX,
-    ROLE_ASSEMBLY_RESOLVE,
-    _ROLE_ACTION,
 )
+from worktrail.workqueue import decisions as decisions_mod
 
 
 def _make_ctx(spec_folder="docs/specs/004-test/"):
@@ -50,14 +49,15 @@ def _make_task(task_id="TASK-001"):
 
 
 class TestReviewPathRendering(unittest.TestCase):
-
     def test_review_write_path_is_spec_folder_relative(self):
         """AC-010: rendered ROLE_REVIEW prompt uses spec-folder-relative path."""
         ctx = _make_ctx("docs/specs/004-orchestrator-review-writer-path/")
         task = _make_task("TASK-002")
         prompt = build_worker_prompt(ROLE_REVIEW, task, ctx)
 
-        expected_path = "docs/specs/004-orchestrator-review-writer-path/reviews/TASK-002-review.md"
+        expected_path = (
+            "docs/specs/004-orchestrator-review-writer-path/reviews/TASK-002-review.md"
+        )
         bare_path = "reviews/TASK-002-review.md"
 
         self.assertIn(
@@ -67,10 +67,14 @@ class TestReviewPathRendering(unittest.TestCase):
         )
         # The bare path must NOT appear as a standalone reference (not prefixed by spec_folder)
         # Find all occurrences of bare_path and check none are bare (i.e., not preceded by spec_folder)
-        bare_occurrences = [m.start() for m in re.finditer(re.escape(bare_path), prompt)]
+        bare_occurrences = [
+            m.start() for m in re.finditer(re.escape(bare_path), prompt)
+        ]
         for pos in bare_occurrences:
             prefix = prompt[
-                max(0, pos - len("docs/specs/004-orchestrator-review-writer-path/")) : pos
+                max(
+                    0, pos - len("docs/specs/004-orchestrator-review-writer-path/")
+                ) : pos
             ]
             self.assertTrue(
                 prefix.endswith("docs/specs/004-orchestrator-review-writer-path/"),
@@ -89,10 +93,14 @@ class TestReviewPathRendering(unittest.TestCase):
         expected_path = f"{spec_folder}reviews/TASK-003-review.md"
 
         self.assertIn(
-            expected_path, review_prompt, f"ROLE_REVIEW prompt must reference '{expected_path}'"
+            expected_path,
+            review_prompt,
+            f"ROLE_REVIEW prompt must reference '{expected_path}'",
         )
         self.assertIn(
-            expected_path, fix_prompt, f"ROLE_FIX prompt must reference '{expected_path}'"
+            expected_path,
+            fix_prompt,
+            f"ROLE_FIX prompt must reference '{expected_path}'",
         )
 
     def test_review_path_prefix_comes_from_ctx_spec_folder(self):
@@ -243,7 +251,6 @@ class TestReviewChecksAcDodCheckboxes(unittest.TestCase):
 
 
 class TestCleanupStatusWriteBack(unittest.TestCase):
-
     def test_cleanup_prompt_does_not_instruct_status_writeback(self):
         """Supersedes AC-008 (spec 006-orchestrator-task-status-writeback).
 
@@ -348,7 +355,9 @@ class TestTransitionReviewRouting(unittest.TestCase):
             "status": "failed",
             "review_status": "FAILED",
         }
-        new_status, retry = transition(ROLE_REVIEW, report, retry_count=2, max_retries=3)
+        new_status, retry = transition(
+            ROLE_REVIEW, report, retry_count=2, max_retries=3
+        )
         self.assertEqual(new_status, "escalated")
 
     def test_non_review_status_failed_still_returns_failed(self):
@@ -357,7 +366,9 @@ class TestTransitionReviewRouting(unittest.TestCase):
             report = {"task": "TASK-001", "step": role, "status": "failed"}
             new_status, retry = transition(role, report, retry_count=0)
             self.assertEqual(
-                new_status, "failed", f"role={role} with status:failed should return 'failed'"
+                new_status,
+                "failed",
+                f"role={role} with status:failed should return 'failed'",
             )
 
 
@@ -534,7 +545,9 @@ class TestExternalDependencyFilesInReads(unittest.TestCase):
         task = {**_make_task("TASK-002"), "external_deps": [ref]}
         external_deps_by_ref = {ref: {"id": "TASK-036", "files": ["src/x.py"]}}
         for role in (ROLE_REVIEW, ROLE_FIX, ROLE_CLEANUP):
-            prompt = build_worker_prompt(role, task, ctx, external_deps_by_ref=external_deps_by_ref)
+            prompt = build_worker_prompt(
+                role, task, ctx, external_deps_by_ref=external_deps_by_ref
+            )
             self.assertNotIn("delivered by", prompt)
 
     def test_no_external_deps_no_regression(self):
@@ -573,7 +586,9 @@ class TestWorkerBriefForbidsWaitLoop(unittest.TestCase):
                 f"role={role} brief must forbid hand-rolled wait loops",
             )
             self.assertIn(
-                "report back", prompt, f"role={role} brief must tell the worker to report back"
+                "report back",
+                prompt,
+                f"role={role} brief must tell the worker to report back",
             )
 
 
@@ -634,7 +649,9 @@ class TestExtraReadsContextWidening(unittest.TestCase):
         ctx = _make_ctx()
         task = _make_task()
         base = build_worker_prompt(ROLE_FIX, task, ctx)
-        self.assertEqual(build_worker_prompt(ROLE_FIX, task, ctx, extra_reads=None), base)
+        self.assertEqual(
+            build_worker_prompt(ROLE_FIX, task, ctx, extra_reads=None), base
+        )
 
     def test_extra_reads_empty_list_unchanged(self):
         """extra_reads=[] must produce the same prompt as calling without extra_reads."""
@@ -651,7 +668,9 @@ class TestExtraReadsContextWidening(unittest.TestCase):
         for role in (ROLE_IMPLEMENT, ROLE_REVIEW, ROLE_FIX):
             prompt = build_worker_prompt(role, task, ctx, extra_reads=extra)
             self.assertIn(
-                "src/shared.py", prompt, f"extra read must appear in {role} prompt when supplied"
+                "src/shared.py",
+                prompt,
+                f"extra read must appear in {role} prompt when supplied",
             )
 
     def test_extra_reads_multiple_items_all_present(self):
@@ -668,7 +687,11 @@ class TestAgentForPrecedence(unittest.TestCase):
     """worktrail.orchestrator.dispatch.agent_for(): 4-tier precedence + judgment-role guard (TASK-006)."""
 
     TIER_MAP = {
-        ("complex", "backend"): {"agent_cli": "codex", "agent_model": "gpt-tier", "effort": "high"}
+        ("complex", "backend"): {
+            "agent_cli": "codex",
+            "agent_model": "gpt-tier",
+            "effort": "high",
+        }
     }
     ROLE_MAP = {"implement": {"agent_cli": "opencode", "agent_model": "oc-model"}}
 
@@ -694,14 +717,20 @@ class TestAgentForPrecedence(unittest.TestCase):
     def test_tier_match_no_match_falls_through_to_run_default(self):
         """A tier_map with no entry for this task's (complexity, domain) falls through."""
         task = self._task(complexity="simple", domain="frontend")
-        result = agent_for(ROLE_IMPLEMENT, task, default_agent="claude", tier_map=self.TIER_MAP)
-        self.assertEqual(result, {"agent_cli": "claude", "agent_model": None, "effort": None})
+        result = agent_for(
+            ROLE_IMPLEMENT, task, default_agent="claude", tier_map=self.TIER_MAP
+        )
+        self.assertEqual(
+            result, {"agent_cli": "claude", "agent_model": None, "effort": None}
+        )
 
     def test_per_task_override_beats_tier_match(self):
         """AC-012: task['agent'] outranks a tier match, for implement/fix/cleanup."""
         for role in (ROLE_IMPLEMENT, ROLE_FIX, ROLE_CLEANUP):
             task = self._task(agent="claude")
-            result = agent_for(role, task, tier_map=self.TIER_MAP, role_agent_map=self.ROLE_MAP)
+            result = agent_for(
+                role, task, tier_map=self.TIER_MAP, role_agent_map=self.ROLE_MAP
+            )
             self.assertEqual(
                 result,
                 {"agent_cli": "claude", "agent_model": None, "effort": None},
@@ -729,7 +758,9 @@ class TestAgentForPrecedence(unittest.TestCase):
             tier_map=self.TIER_MAP,
             role_agent_map={},
         )
-        self.assertEqual(result, {"agent_cli": "code-reviewer", "agent_model": None, "effort": None})
+        self.assertEqual(
+            result, {"agent_cli": "code-reviewer", "agent_model": None, "effort": None}
+        )
 
     def test_review_role_override_still_applies(self):
         """A role_agent_map entry for review IS consulted (it's tier 2, judgment
@@ -741,14 +772,20 @@ class TestAgentForPrecedence(unittest.TestCase):
             tier_map=self.TIER_MAP,
             role_agent_map={"review": "gemini"},
         )
-        self.assertEqual(result, {"agent_cli": "gemini", "agent_model": None, "effort": None})
+        self.assertEqual(
+            result, {"agent_cli": "gemini", "agent_model": None, "effort": None}
+        )
 
     def test_role_override_carries_effort(self):
         """model-tier-routing 3.2: an effort on a role_agent_map entry reaches
         the resolved result, for both an implement/fix/cleanup role and a
         judgment role (tier 2 for both)."""
         role_map = {
-            "implement": {"agent_cli": "opencode", "agent_model": "oc-model", "effort": "low"},
+            "implement": {
+                "agent_cli": "opencode",
+                "agent_model": "oc-model",
+                "effort": "low",
+            },
             "review": {"agent_cli": "gemini", "agent_model": None, "effort": "medium"},
         }
         task = self._task()
@@ -774,7 +811,11 @@ class TestAgentForPrecedence(unittest.TestCase):
             )
             self.assertEqual(
                 result,
-                {"agent_cli": "claude-run-default", "agent_model": None, "effort": None},
+                {
+                    "agent_cli": "claude-run-default",
+                    "agent_model": None,
+                    "effort": None,
+                },
                 f"judgment-role guard must hold for role={role!r}",
             )
             override_result = agent_for(
@@ -883,8 +924,16 @@ class TestAgentForPurposeTierPrecedence(unittest.TestCase):
     PURPOSE_TIER_MAP = {"architecture-design": "t1-deep"}
 
     TIER_MAP = {
-        ("t1-deep", "backend"): {"agent_cli": "codex", "agent_model": None, "effort": None},
-        ("complex", "backend"): {"agent_cli": "opencode", "agent_model": None, "effort": None},
+        ("t1-deep", "backend"): {
+            "agent_cli": "codex",
+            "agent_model": None,
+            "effort": None,
+        },
+        ("complex", "backend"): {
+            "agent_cli": "opencode",
+            "agent_model": None,
+            "effort": None,
+        },
     }
 
     AGENT_AWARE_TIER_MAP = {
@@ -921,7 +970,9 @@ class TestAgentForPurposeTierPrecedence(unittest.TestCase):
             tier_map=self.TIER_MAP,
             purpose_tier_map=self.PURPOSE_TIER_MAP,
         )
-        self.assertEqual(result, {"agent_cli": "codex", "agent_model": None, "effort": None})
+        self.assertEqual(
+            result, {"agent_cli": "codex", "agent_model": None, "effort": None}
+        )
 
     def test_falls_back_to_complexity_when_purpose_does_not_resolve(self):
         """4.4: an unmapped purpose (or none) falls back to task['complexity']."""
@@ -932,7 +983,9 @@ class TestAgentForPurposeTierPrecedence(unittest.TestCase):
             tier_map=self.TIER_MAP,
             purpose_tier_map=self.PURPOSE_TIER_MAP,
         )
-        self.assertEqual(result, {"agent_cli": "opencode", "agent_model": None, "effort": None})
+        self.assertEqual(
+            result, {"agent_cli": "opencode", "agent_model": None, "effort": None}
+        )
 
         task_no_purpose = self._task(purpose=None)
         result_no_purpose = agent_for(
@@ -942,7 +995,8 @@ class TestAgentForPurposeTierPrecedence(unittest.TestCase):
             purpose_tier_map=self.PURPOSE_TIER_MAP,
         )
         self.assertEqual(
-            result_no_purpose, {"agent_cli": "opencode", "agent_model": None, "effort": None}
+            result_no_purpose,
+            {"agent_cli": "opencode", "agent_model": None, "effort": None},
         )
 
     def test_judgment_roles_never_consult_purpose_or_purpose_tier_map(self):
@@ -959,7 +1013,9 @@ class TestAgentForPurposeTierPrecedence(unittest.TestCase):
                 purpose_tier_map=self.PURPOSE_TIER_MAP,
                 role_agent_map={},
             )
-            expected_cli = "code-reviewer" if role == ROLE_REVIEW else "claude-run-default"
+            expected_cli = (
+                "code-reviewer" if role == ROLE_REVIEW else "claude-run-default"
+            )
             self.assertEqual(
                 result,
                 {"agent_cli": expected_cli, "agent_model": None, "effort": None},
@@ -993,7 +1049,9 @@ class TestAgentForPurposeTierPrecedence(unittest.TestCase):
             tier_map=self.TIER_MAP,
             purpose_tier_map=self.PURPOSE_TIER_MAP,
         )
-        self.assertEqual(result, {"agent_cli": "codex", "agent_model": None, "effort": None})
+        self.assertEqual(
+            result, {"agent_cli": "codex", "agent_model": None, "effort": None}
+        )
 
     def test_byte_identical_to_pre_change_agent_for_without_purpose(self):
         """4.4: with no purpose/purpose_tier_map/agent-aware keys involved,
@@ -1011,7 +1069,9 @@ class TestAgentForPurposeTierPrecedence(unittest.TestCase):
                 "effort": "high",
             }
         }
-        result_without_purpose_kw = agent_for(ROLE_IMPLEMENT, task, tier_map=legacy_tier_map)
+        result_without_purpose_kw = agent_for(
+            ROLE_IMPLEMENT, task, tier_map=legacy_tier_map
+        )
         result_with_none_purpose_map = agent_for(
             ROLE_IMPLEMENT, task, tier_map=legacy_tier_map, purpose_tier_map=None
         )
@@ -1059,7 +1119,8 @@ class ResolvedDecisionDispatchGateTests(unittest.TestCase):
 
     def _answer(self, decision_id=DECISION_ID):
         answered = decisions_mod.answer(
-            decision_id, "extend: continue the existing spec",
+            decision_id,
+            "extend: continue the existing spec",
             queue_base=self.queue_base,
         )
         self.assertEqual(answered["status"], "answered")
@@ -1093,7 +1154,8 @@ class ResolvedDecisionDispatchGateTests(unittest.TestCase):
         replacement = "dec-dispatch-replacement-0002"
         self._ask(decision_id=replacement, subject="spec-a-moved")
         superseded = decisions_mod.supersede(
-            self.DECISION_ID, replacement, queue_base=self.queue_base)
+            self.DECISION_ID, replacement, queue_base=self.queue_base
+        )
         self.assertEqual(superseded["status"], "superseded")
         with self.assertRaises(DecisionDispatchError) as cm:
             validate_resolved_decision_input(self._load())
@@ -1103,7 +1165,8 @@ class ResolvedDecisionDispatchGateTests(unittest.TestCase):
         self._ask()
         self._answer()
         consumed = decisions_mod.consume_answer(
-            self.DECISION_ID, consumed_by="run-go-1", queue_base=self.queue_base)
+            self.DECISION_ID, consumed_by="run-go-1", queue_base=self.queue_base
+        )
         self.assertEqual(consumed["status"], "consumed")
         with self.assertRaises(DecisionDispatchError) as cm:
             validate_resolved_decision_input(self._load())
@@ -1148,8 +1211,7 @@ class ResolvedDecisionDispatchGateTests(unittest.TestCase):
         answered_at = dt.datetime.fromisoformat(envelope["answered_at"])
         late_now = answered_at + dt.timedelta(seconds=120)
         with self.assertRaises(DecisionDispatchError) as cm:
-            validate_resolved_decision_input(
-                envelope, max_age_seconds=60, now=late_now)
+            validate_resolved_decision_input(envelope, max_age_seconds=60, now=late_now)
         self.assertIn("stale", str(cm.exception))
 
     def test_all_failed_expectations_are_reported_together(self):

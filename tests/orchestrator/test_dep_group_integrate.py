@@ -29,6 +29,7 @@ Five defects fixed:
 
 Run: python3 test_dep_group_integrate.py
 """
+
 from __future__ import annotations
 
 import json
@@ -38,8 +39,7 @@ from collections import namedtuple
 from pathlib import Path
 from unittest.mock import patch
 
-from worktrail.orchestrator import integrate
-from worktrail.orchestrator import live
+from worktrail.orchestrator import integrate, live
 
 Proc = namedtuple("Proc", "returncode stdout stderr")
 
@@ -47,6 +47,7 @@ Proc = namedtuple("Proc", "returncode stdout stderr")
 # ---------------------------------------------------------------------------
 # Helpers shared across tests
 # ---------------------------------------------------------------------------
+
 
 def _mock_group(name, tasks, depends_on=None):
     return {"name": name, "tasks": tasks, "reqs": [], "depends_on": depends_on or []}
@@ -80,7 +81,7 @@ class _GitDispatch:
         self.calls.append(cmd)
         for prefix, proc in self._resp.items():
             p = list(prefix)
-            if cmd[:len(p)] == p:
+            if cmd[: len(p)] == p:
                 return proc
         return self._default
 
@@ -88,6 +89,7 @@ class _GitDispatch:
 # ---------------------------------------------------------------------------
 # Fix 1 / Fix 5: deleted or never-real dep branch — fall back to the live base ref
 # ---------------------------------------------------------------------------
+
 
 class DepBranchGoneFallback(unittest.TestCase):
     """integrate_one must not quarantine a dependent group when its dependency's
@@ -106,21 +108,25 @@ class DepBranchGoneFallback(unittest.TestCase):
 
     def _run_integrate_one_dep(self, rev_parse_ok: bool):
         """Drive integrate_one for a dep group; return (result, git_calls, quarantined)."""
-        git_dispatch = _GitDispatch({
-            # rev-parse --verify <gone-ref> → fails (branch deleted, or never real)
-            ("rev-parse", "--verify"): Proc(0 if rev_parse_ok else 1, "", ""),
-            # worktree ops / ls-remote / push
-            ("worktree",): Proc(0, "", ""),
-            ("ls-remote",): Proc(1, "", ""),   # branch not yet on remote
-            ("merge",): Proc(0, "", ""),
-            ("push",): Proc(0, "", ""),
-        })
-        subprocess_dispatch = _GitDispatch({
-            ("gh", "pr", "view"): Proc(1, "", "no pr"),
-            ("gh", "pr", "list"): Proc(0, "[]", ""),
-            ("gh", "pr", "create"): Proc(0, "https://github.com/o/r/pull/99\n", ""),
-            ("git", "remote"): Proc(0, "https://github.com/o/r.git", ""),
-        })
+        git_dispatch = _GitDispatch(
+            {
+                # rev-parse --verify <gone-ref> → fails (branch deleted, or never real)
+                ("rev-parse", "--verify"): Proc(0 if rev_parse_ok else 1, "", ""),
+                # worktree ops / ls-remote / push
+                ("worktree",): Proc(0, "", ""),
+                ("ls-remote",): Proc(1, "", ""),  # branch not yet on remote
+                ("merge",): Proc(0, "", ""),
+                ("push",): Proc(0, "", ""),
+            }
+        )
+        subprocess_dispatch = _GitDispatch(
+            {
+                ("gh", "pr", "view"): Proc(1, "", "no pr"),
+                ("gh", "pr", "list"): Proc(0, "[]", ""),
+                ("gh", "pr", "create"): Proc(0, "https://github.com/o/r/pull/99\n", ""),
+                ("git", "remote"): Proc(0, "https://github.com/o/r.git", ""),
+            }
+        )
 
         # Same shape ("full-run/base") whether it came from a real branch that
         # was later deleted, or from integrate_one's own gb_implicit marker
@@ -130,7 +136,10 @@ class DepBranchGoneFallback(unittest.TestCase):
         quarantined: dict = {}
 
         with patch("worktrail.orchestrator.integrate._git", side_effect=git_dispatch):
-            with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=subprocess_dispatch):
+            with patch(
+                "worktrail.orchestrator.integrate.subprocess.run",
+                side_effect=subprocess_dispatch,
+            ):
                 result = integrate.integrate_one(
                     _mock_group("feature-1", ["T002"], depends_on=["base"]),
                     Path("/repo"),
@@ -152,14 +161,22 @@ class DepBranchGoneFallback(unittest.TestCase):
         merge-base reconstruction and no -X ours reconcile merge."""
         result, calls, quarantined = self._run_integrate_one_dep(rev_parse_ok=False)
 
-        self.assertNotIn("feature-1", quarantined,
-                         "dep group must not be quarantined when dep branch is gone")
+        self.assertNotIn(
+            "feature-1",
+            quarantined,
+            "dep group must not be quarantined when dep branch is gone",
+        )
         self.assertIsNotNone(result, "dep group must produce a PR tuple, not None")
 
-        wt_add_idx = next(i for i, c in enumerate(calls) if c[:2] == ["worktree", "add"])
+        wt_add_idx = next(
+            i for i, c in enumerate(calls) if c[:2] == ["worktree", "add"]
+        )
         wt_add = calls[wt_add_idx]
-        self.assertIn("origin/main", wt_add,
-                      "worktree add must start directly from the live base ref")
+        self.assertIn(
+            "origin/main",
+            wt_add,
+            "worktree add must start directly from the live base ref",
+        )
 
         # No merge-base reconstruction during target resolution (before worktree add) --
         # the drift gate that runs later, after task branches are merged, legitimately
@@ -168,12 +185,16 @@ class DepBranchGoneFallback(unittest.TestCase):
         mb_calls_before_worktree = [
             c for c in calls[:wt_add_idx] if c[:1] == ["merge-base"]
         ]
-        self.assertEqual(mb_calls_before_worktree, [],
-                         "must not reconstruct a historical merge-base point")
+        self.assertEqual(
+            mb_calls_before_worktree,
+            [],
+            "must not reconstruct a historical merge-base point",
+        )
 
         reconcile = [c for c in calls if c[:2] == ["merge", "--no-edit"] and "-X" in c]
-        self.assertEqual(reconcile, [],
-                         "must not run an unconditioned -X ours reconcile merge")
+        self.assertEqual(
+            reconcile, [], "must not run an unconditioned -X ours reconcile merge"
+        )
 
     def test_gone_branch_fallback_fetches_base_before_use(self):
         """Squash-boundary bug: the fallback must fetch the remote base BEFORE using it
@@ -185,7 +206,8 @@ class DepBranchGoneFallback(unittest.TestCase):
         self.assertNotIn("feature-1", quarantined)
 
         fetch_base_calls = [
-            i for i, c in enumerate(calls)
+            i
+            for i, c in enumerate(calls)
             if c[:1] == ["fetch"] and "origin" in c and "main" in c
         ]
         self.assertTrue(
@@ -193,9 +215,12 @@ class DepBranchGoneFallback(unittest.TestCase):
             "dep-branch-gone fallback must fetch the remote base before using it",
         )
 
-        wt_add_idx = next(i for i, c in enumerate(calls) if c[:2] == ["worktree", "add"])
+        wt_add_idx = next(
+            i for i, c in enumerate(calls) if c[:2] == ["worktree", "add"]
+        )
         self.assertLess(
-            fetch_base_calls[0], wt_add_idx,
+            fetch_base_calls[0],
+            wt_add_idx,
             "fetch must happen before the live base ref is used as the start ref",
         )
 
@@ -205,42 +230,65 @@ class DepBranchGoneFallback(unittest.TestCase):
         self.assertNotIn("feature-1", quarantined)
         wt_add = [c for c in calls if c[:2] == ["worktree", "add"]]
         self.assertTrue(wt_add)
-        self.assertNotIn("origin/main", wt_add[0],
-                         "existing branch must be used as start ref, not the live base")
+        self.assertNotIn(
+            "origin/main",
+            wt_add[0],
+            "existing branch must be used as start ref, not the live base",
+        )
 
     def test_independent_group_skips_fallback(self):
         """A group with no depends_on never hits the ref-validation path."""
-        git_dispatch = _GitDispatch({
-            ("ls-remote",): Proc(1, "", ""),
-            ("worktree",): Proc(0, "", ""),
-            ("merge",): Proc(0, "", ""),
-            ("push",): Proc(0, "", ""),
-        })
-        subprocess_dispatch = _GitDispatch({
-            ("gh", "pr", "view"): Proc(1, "", "no pr"),
-            ("gh", "pr", "list"): Proc(0, "[]", ""),
-            ("gh", "pr", "create"): Proc(0, "https://github.com/o/r/pull/1\n", ""),
-            ("git", "remote"): Proc(0, "https://github.com/o/r.git", ""),
-        })
+        git_dispatch = _GitDispatch(
+            {
+                ("ls-remote",): Proc(1, "", ""),
+                ("worktree",): Proc(0, "", ""),
+                ("merge",): Proc(0, "", ""),
+                ("push",): Proc(0, "", ""),
+            }
+        )
+        subprocess_dispatch = _GitDispatch(
+            {
+                ("gh", "pr", "view"): Proc(1, "", "no pr"),
+                ("gh", "pr", "list"): Proc(0, "[]", ""),
+                ("gh", "pr", "create"): Proc(0, "https://github.com/o/r/pull/1\n", ""),
+                ("git", "remote"): Proc(0, "https://github.com/o/r.git", ""),
+            }
+        )
         quarantined: dict = {}
         with patch("worktrail.orchestrator.integrate._git", side_effect=git_dispatch):
-            with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=subprocess_dispatch):
+            with patch(
+                "worktrail.orchestrator.integrate.subprocess.run",
+                side_effect=subprocess_dispatch,
+            ):
                 result = integrate.integrate_one(
-                    _mock_group("base", ["T001"]),   # no depends_on
-                    Path("/repo"), "spec-049",
-                    [_mock_task("T001")], "origin", "full-run", "main",
-                    None, {"T001": "done"}, {}, quarantined,
+                    _mock_group("base", ["T001"]),  # no depends_on
+                    Path("/repo"),
+                    "spec-049",
+                    [_mock_task("T001")],
+                    "origin",
+                    "full-run",
+                    "main",
+                    None,
+                    {"T001": "done"},
+                    {},
+                    quarantined,
                 )
         self.assertIsNotNone(result)
         self.assertNotIn("base", quarantined)
-        rev_parse_calls = [c for c in git_dispatch.calls if c[:2] == ["rev-parse", "--verify"]]
-        self.assertEqual(len(rev_parse_calls), 0,
-                         "rev-parse --verify must not be called for independent groups")
+        rev_parse_calls = [
+            c for c in git_dispatch.calls if c[:2] == ["rev-parse", "--verify"]
+        ]
+        self.assertEqual(
+            len(rev_parse_calls),
+            0,
+            "rev-parse --verify must not be called for independent groups",
+        )
 
 
 # ---------------------------------------------------------------------------
 # Fix 3: _clear_integration_state preserves MERGED records
 # ---------------------------------------------------------------------------
+
 
 class AlreadyIntegratedGroupRegistersBranch(unittest.TestCase):
     """A group whose every task is already status:"completed" (ALREADY_INTEGRATED --
@@ -253,24 +301,35 @@ class AlreadyIntegratedGroupRegistersBranch(unittest.TestCase):
         quarantined: dict = {}
         group_branch: dict = {}
         git_dispatch = _GitDispatch()
-        subprocess_dispatch = _GitDispatch({
-            ("gh", "pr", "view"): Proc(1, "", "no pr"),
-        })
+        subprocess_dispatch = _GitDispatch(
+            {
+                ("gh", "pr", "view"): Proc(1, "", "no pr"),
+            }
+        )
         with patch("worktrail.orchestrator.integrate._git", side_effect=git_dispatch):
-            with patch("worktrail.orchestrator.integrate.subprocess.run",
-                       side_effect=subprocess_dispatch):
+            with patch(
+                "worktrail.orchestrator.integrate.subprocess.run",
+                side_effect=subprocess_dispatch,
+            ):
                 result = integrate.integrate_one(
                     _mock_group("feature-1", ["T001"]),
-                    Path("/repo"), "spec-049",
+                    Path("/repo"),
+                    "spec-049",
                     [_mock_task("T001", status="completed")],
-                    "origin", "full-run", "main",
-                    None, {"T001": "completed"}, group_branch, quarantined,
+                    "origin",
+                    "full-run",
+                    "main",
+                    None,
+                    {"T001": "completed"},
+                    group_branch,
+                    quarantined,
                 )
 
         self.assertIsNone(result, "already-merged group opens no new PR")
         self.assertNotIn("feature-1", quarantined, "must not be quarantined")
         self.assertIn(
-            "feature-1", group_branch,
+            "feature-1",
+            group_branch,
             "group_branch must register the group so callers see it as integrated, "
             "not conclude 'nothing to assemble' and skip tail dispatch",
         )
@@ -281,25 +340,38 @@ class AlreadyIntegratedGroupRegistersBranch(unittest.TestCase):
         quarantined: dict = {}
         group_branch: dict = {}
         git_dispatch = _GitDispatch({("ls-remote",): Proc(1, "", "")})
-        subprocess_dispatch = _GitDispatch({
-            ("gh", "pr", "view"): Proc(
-                0, json.dumps({"state": "MERGED", "url": "https://g/p/9"}), "",
-            ),
-        })
+        subprocess_dispatch = _GitDispatch(
+            {
+                ("gh", "pr", "view"): Proc(
+                    0,
+                    json.dumps({"state": "MERGED", "url": "https://g/p/9"}),
+                    "",
+                ),
+            }
+        )
         with patch("worktrail.orchestrator.integrate._git", side_effect=git_dispatch):
-            with patch("worktrail.orchestrator.integrate.subprocess.run",
-                       side_effect=subprocess_dispatch):
+            with patch(
+                "worktrail.orchestrator.integrate.subprocess.run",
+                side_effect=subprocess_dispatch,
+            ):
                 result = integrate.integrate_one(
                     _mock_group("feature-1", ["T001"]),
-                    Path("/repo"), "spec-049",
+                    Path("/repo"),
+                    "spec-049",
                     [_mock_task("T001", status="done")],
-                    "origin", "full-run", "main",
-                    None, {"T001": "done"}, group_branch, quarantined,
+                    "origin",
+                    "full-run",
+                    "main",
+                    None,
+                    {"T001": "done"},
+                    group_branch,
+                    quarantined,
                 )
 
         self.assertIsNone(result)
         self.assertIn(
-            "feature-1", group_branch,
+            "feature-1",
+            group_branch,
             "group_branch must register the group on the gh-pr-view MERGED reconcile "
             "path too",
         )
@@ -313,15 +385,29 @@ class ClearIntegrationStatePreservesMerged(unittest.TestCase):
         journal = {
             "integrate_complete": True,
             "groups": {
-                "base": {"pr_url": "https://g/p/1", "head_branch": "r/base", "state": "MERGED"},
-                "feature-1": {"pr_url": "https://g/p/2", "head_branch": "r/f1", "state": "OPEN"},
-                "feature-2": {"pr_url": "", "head_branch": "r/f2", "state": "QUARANTINED"},
+                "base": {
+                    "pr_url": "https://g/p/1",
+                    "head_branch": "r/base",
+                    "state": "MERGED",
+                },
+                "feature-1": {
+                    "pr_url": "https://g/p/2",
+                    "head_branch": "r/f1",
+                    "state": "OPEN",
+                },
+                "feature-2": {
+                    "pr_url": "",
+                    "head_branch": "r/f2",
+                    "state": "QUARANTINED",
+                },
             },
         }
         had = live._clear_integration_state(journal)
 
         self.assertTrue(had, "should return True when state was cleared")
-        self.assertNotIn("integrate_complete", journal, "integrate_complete must be removed")
+        self.assertNotIn(
+            "integrate_complete", journal, "integrate_complete must be removed"
+        )
         self.assertIn("groups", journal, "groups key must remain (has MERGED record)")
         groups = journal["groups"]
         self.assertIn("base", groups, "MERGED group must be preserved")
@@ -337,7 +423,9 @@ class ClearIntegrationStatePreservesMerged(unittest.TestCase):
             },
         }
         live._clear_integration_state(journal)
-        self.assertNotIn("groups", journal, "groups must be removed when no MERGED records exist")
+        self.assertNotIn(
+            "groups", journal, "groups must be removed when no MERGED records exist"
+        )
 
     def test_empty_journal_returns_false(self):
         journal: dict = {}
@@ -353,13 +441,16 @@ class ClearIntegrationStatePreservesMerged(unittest.TestCase):
             },
         }
         live._clear_integration_state(journal)
-        self.assertEqual(len(journal.get("groups", {})), 2, "both MERGED records preserved")
+        self.assertEqual(
+            len(journal.get("groups", {})), 2, "both MERGED records preserved"
+        )
         self.assertNotIn("integrate_complete", journal)
 
 
 # ---------------------------------------------------------------------------
 # Fix 2: journal stamped MERGED after verify_one succeeds
 # ---------------------------------------------------------------------------
+
 
 class JournalMergedAfterVerify(unittest.TestCase):
     """After _integrate_verify_group's verify_one succeeds and the group is added to
@@ -374,7 +465,11 @@ class JournalMergedAfterVerify(unittest.TestCase):
         # - make_verifier_fn that returns a verifier whose verify_one marks the group merged
         record_calls = []
         groups_journal = {
-            "base": {"pr_url": "https://g/p/1", "head_branch": "r/base", "state": "OPEN"}
+            "base": {
+                "pr_url": "https://g/p/1",
+                "head_branch": "r/base",
+                "state": "OPEN",
+            }
         }
         merged = []
         quarantined: dict = {}
@@ -385,7 +480,11 @@ class JournalMergedAfterVerify(unittest.TestCase):
 
         def _record_group_fn(name, pr_url, head_branch, state):
             with state_lock:
-                groups_journal[name] = {"pr_url": pr_url, "head_branch": head_branch, "state": state}
+                groups_journal[name] = {
+                    "pr_url": pr_url,
+                    "head_branch": head_branch,
+                    "state": state,
+                }
             record_calls.append((name, state))
 
         def _emit_group_phases():
@@ -395,7 +494,9 @@ class JournalMergedAfterVerify(unittest.TestCase):
         group_done_events = {"base": threading.Event()}
 
         class FakeVerifier:
-            def verify_one(self, group, _gb, _delivered, merged_list, _quarantined_dict, lock):
+            def verify_one(
+                self, group, _gb, _delivered, merged_list, _quarantined_dict, lock
+            ):
                 with lock:
                     merged_list.append(group["name"])
 
@@ -424,20 +525,27 @@ class JournalMergedAfterVerify(unittest.TestCase):
                 _emit_group_phases()
                 verifier = make_verifier_fn()
                 try:
-                    verifier.verify_one(g, group_branch[name], {name: []},
-                                        merged, quarantined, iv_lock)
+                    verifier.verify_one(
+                        g, group_branch[name], {name: []}, merged, quarantined, iv_lock
+                    )
                 except Exception as exc:
                     with iv_lock:
                         quarantined[name] = f"verify exception: {exc!r}"
-                    _record_group_fn(name, "", group_branch.get(name, f"{run_id}/{name}"),
-                                     "QUARANTINED")
+                    _record_group_fn(
+                        name,
+                        "",
+                        group_branch.get(name, f"{run_id}/{name}"),
+                        "QUARANTINED",
+                    )
                 else:
                     if name in merged:
                         with state_lock:
                             pr_url = groups_journal.get(name, {}).get("pr_url", "")
                         _record_group_fn(
-                            name, pr_url,
-                            group_branch.get(name, f"{run_id}/{name}"), "MERGED"
+                            name,
+                            pr_url,
+                            group_branch.get(name, f"{run_id}/{name}"),
+                            "MERGED",
                         )
             finally:
                 with iv_lock:
@@ -451,20 +559,21 @@ class JournalMergedAfterVerify(unittest.TestCase):
         fn, calls, gj, merged = self._build_pipeline_partial()
         fn(_mock_group("base", ["T001"]))
 
-        self.assertIn("base", merged, "base must be in merged list after successful verify")
+        self.assertIn(
+            "base", merged, "base must be in merged list after successful verify"
+        )
         merged_calls = [(n, s) for n, s in calls if s == "MERGED"]
         self.assertTrue(merged_calls, "MERGED must be recorded via _record_group_fn")
         self.assertEqual(merged_calls[0][0], "base")
-        self.assertEqual(gj["base"]["state"], "MERGED",
-                         "groups_journal must reflect MERGED state")
+        self.assertEqual(
+            gj["base"]["state"], "MERGED", "groups_journal must reflect MERGED state"
+        )
 
     def test_quarantined_not_stamped_merged(self):
         quarantined_local: dict = {}
         iv_lock = threading.Lock()
         state_lock = threading.Lock()
-        groups_journal = {
-            "base": {"pr_url": "x", "head_branch": "y", "state": "OPEN"}
-        }
+        groups_journal = {"base": {"pr_url": "x", "head_branch": "y", "state": "OPEN"}}
         merged_local: list = []
         record_calls_local = []
         group_branch = {"base": "full-run/base"}
@@ -474,14 +583,20 @@ class JournalMergedAfterVerify(unittest.TestCase):
 
         def _record_group_fn(name, pr_url, head_branch, state):
             with state_lock:
-                groups_journal[name] = {"pr_url": pr_url, "head_branch": head_branch, "state": state}
+                groups_journal[name] = {
+                    "pr_url": pr_url,
+                    "head_branch": head_branch,
+                    "state": state,
+                }
             record_calls_local.append((name, state))
 
         def _emit_group_phases():
             pass
 
         class QuarantineVerifier:
-            def verify_one(self, group, gb, delivered, merged_list, quarantined_dict, lock):
+            def verify_one(
+                self, group, gb, delivered, merged_list, quarantined_dict, lock
+            ):
                 with lock:
                     quarantined_dict[group["name"]] = "ci failed"
 
@@ -493,8 +608,14 @@ class JournalMergedAfterVerify(unittest.TestCase):
             try:
                 verifier = make_verifier_fn()
                 try:
-                    verifier.verify_one(g, group_branch[name], {name: []},
-                                        merged_local, quarantined_local, iv_lock)
+                    verifier.verify_one(
+                        g,
+                        group_branch[name],
+                        {name: []},
+                        merged_local,
+                        quarantined_local,
+                        iv_lock,
+                    )
                 except Exception as exc:
                     with iv_lock:
                         quarantined_local[name] = f"exception: {exc!r}"
@@ -503,8 +624,12 @@ class JournalMergedAfterVerify(unittest.TestCase):
                     if name in merged_local:
                         with state_lock:
                             pr_url = groups_journal.get(name, {}).get("pr_url", "")
-                        _record_group_fn(name, pr_url, group_branch.get(name, f"{run_id}/{name}"),
-                                         "MERGED")
+                        _record_group_fn(
+                            name,
+                            pr_url,
+                            group_branch.get(name, f"{run_id}/{name}"),
+                            "MERGED",
+                        )
             finally:
                 group_done_events[name].set()
 
@@ -512,8 +637,11 @@ class JournalMergedAfterVerify(unittest.TestCase):
 
         self.assertNotIn("base", merged_local)
         merged_records = [(n, s) for n, s in record_calls_local if s == "MERGED"]
-        self.assertEqual(len(merged_records), 0,
-                         "MERGED must NOT be recorded for a quarantined group")
+        self.assertEqual(
+            len(merged_records),
+            0,
+            "MERGED must NOT be recorded for a quarantined group",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -523,6 +651,7 @@ class JournalMergedAfterVerify(unittest.TestCase):
 # "head_branch", fallback) was passed straight into VERIFY with no validation
 # that it is this run's own orchestrator-owned integration branch.
 # ---------------------------------------------------------------------------
+
 
 class ResolveJournaledHeadBranch(unittest.TestCase):
     """live._resolve_journaled_head_branch must reject any head_branch that
@@ -551,8 +680,12 @@ class ResolveJournaledHeadBranch(unittest.TestCase):
                 branch, reason = live._resolve_journaled_head_branch(
                     "feature-1", {"head_branch": bad_branch}, "full-1786136018"
                 )
-                self.assertEqual(branch, bad_branch, "candidate is reported, not silently swapped")
-                self.assertIsNotNone(reason, f"{bad_branch!r} must be rejected outright")
+                self.assertEqual(
+                    branch, bad_branch, "candidate is reported, not silently swapped"
+                )
+                self.assertIsNotNone(
+                    reason, f"{bad_branch!r} must be rejected outright"
+                )
                 self.assertIn(bad_branch, reason)
 
     def test_unrelated_run_branch_is_rejected(self):
@@ -571,15 +704,26 @@ class GroupBranchFromJournal(unittest.TestCase):
 
     def test_mixed_journal_quarantines_only_the_corrupted_group(self):
         journal_groups = {
-            "base": {"pr_url": "https://g/p/1", "head_branch": "full-1786136018/base", "state": "OPEN"},
-            "feature-1": {"pr_url": "https://g/p/2", "head_branch": "stg", "state": "OPEN"},
+            "base": {
+                "pr_url": "https://g/p/1",
+                "head_branch": "full-1786136018/base",
+                "state": "OPEN",
+            },
+            "feature-1": {
+                "pr_url": "https://g/p/2",
+                "head_branch": "stg",
+                "state": "OPEN",
+            },
         }
         group_branch, quarantined = live._group_branch_from_journal(
             journal_groups, "full-1786136018"
         )
         self.assertEqual(group_branch, {"base": "full-1786136018/base"})
-        self.assertNotIn("feature-1", group_branch,
-                         "corrupted head_branch must never reach the trusted group_branch map")
+        self.assertNotIn(
+            "feature-1",
+            group_branch,
+            "corrupted head_branch must never reach the trusted group_branch map",
+        )
         self.assertIn("feature-1", quarantined)
         self.assertIn("stg", quarantined["feature-1"])
 
@@ -593,16 +737,31 @@ class GroupBranchFromJournal(unittest.TestCase):
                 "head_branch": "full-1787247442/feature-1",
                 "state": "OPEN",
             },
-            "tail-2.2": {"pr_url": "https://github.com/o/r/pull/2409", "head_branch": "full-1787247442/tail-2.2", "state": "MERGED"},
-            "tail-4.1": {"pr_url": "https://github.com/o/r/pull/2410", "head_branch": "full-1787247442/tail-4.1", "state": "MERGED"},
-            "tail-4.2": {"pr_url": "https://github.com/o/r/pull/2411", "head_branch": "full-1787247442/tail-4.2", "state": "OPEN"},
+            "tail-2.2": {
+                "pr_url": "https://github.com/o/r/pull/2409",
+                "head_branch": "full-1787247442/tail-2.2",
+                "state": "MERGED",
+            },
+            "tail-4.1": {
+                "pr_url": "https://github.com/o/r/pull/2410",
+                "head_branch": "full-1787247442/tail-4.1",
+                "state": "MERGED",
+            },
+            "tail-4.2": {
+                "pr_url": "https://github.com/o/r/pull/2411",
+                "head_branch": "full-1787247442/tail-4.2",
+                "state": "OPEN",
+            },
         }
         groups = [_mock_group("feature-1", ["2.2", "4.1", "4.2"])]
         group_branch, quarantined = live._group_branch_from_journal(
             journal_groups, "full-1787247442", groups=groups
         )
-        self.assertNotIn("feature-1", group_branch,
-                         "a group superseded by its own tasks' tail-* PRs must never be VERIFY-eligible")
+        self.assertNotIn(
+            "feature-1",
+            group_branch,
+            "a group superseded by its own tasks' tail-* PRs must never be VERIFY-eligible",
+        )
         self.assertIn("feature-1", quarantined)
         self.assertIn("tail-2.2", quarantined["feature-1"])
         self.assertIn("tail-4.1", quarantined["feature-1"])
@@ -622,7 +781,11 @@ class GroupBranchFromJournal(unittest.TestCase):
                 "head_branch": "full-1787247442/feature-1",
                 "state": "OPEN",
             },
-            "tail-2.2": {"pr_url": "https://github.com/o/r/pull/2409", "head_branch": "tail-2.2", "state": "MERGED"},
+            "tail-2.2": {
+                "pr_url": "https://github.com/o/r/pull/2409",
+                "head_branch": "tail-2.2",
+                "state": "MERGED",
+            },
             # no tail-4.1 / tail-4.2 records at all
         }
         groups = [_mock_group("feature-1", ["2.2", "4.1", "4.2"])]
@@ -641,7 +804,11 @@ class GroupBranchFromJournal(unittest.TestCase):
                 "head_branch": "full-1787247442/feature-1",
                 "state": "OPEN",
             },
-            "tail-2.2": {"pr_url": "", "head_branch": "tail-2.2", "state": "QUARANTINED"},
+            "tail-2.2": {
+                "pr_url": "",
+                "head_branch": "tail-2.2",
+                "state": "QUARANTINED",
+            },
         }
         groups = [_mock_group("feature-1", ["2.2"])]
         group_branch, quarantined = live._group_branch_from_journal(
@@ -660,7 +827,11 @@ class GroupBranchFromJournal(unittest.TestCase):
                 "head_branch": "full-1787247442/feature-1",
                 "state": "OPEN",
             },
-            "tail-2.2": {"pr_url": "https://github.com/o/r/pull/2409", "head_branch": "tail-2.2", "state": "MERGED"},
+            "tail-2.2": {
+                "pr_url": "https://github.com/o/r/pull/2409",
+                "head_branch": "tail-2.2",
+                "state": "MERGED",
+            },
         }
         group_branch, quarantined = live._group_branch_from_journal(
             journal_groups, "full-1787247442"
@@ -689,7 +860,11 @@ class ResumeNeverVerifiesCorruptedBranch(unittest.TestCase):
         run_id = "full-1786136018"
         # journal corrupted exactly as in the confirmed incident: an unrelated
         # stg->prd promotion PR's real headRefName landed in this group's record.
-        journal_rec = {"pr_url": "https://github.com/o/r/pull/1990", "head_branch": "stg", "state": "OPEN"}
+        journal_rec = {
+            "pr_url": "https://github.com/o/r/pull/1990",
+            "head_branch": "stg",
+            "state": "OPEN",
+        }
         group_branch: dict = {}
         quarantined: dict = {}
         prs: list = []
@@ -703,23 +878,31 @@ class ResumeNeverVerifiesCorruptedBranch(unittest.TestCase):
         _skip_integrate = bool(journal_rec.get("pr_url"))
         self.assertTrue(_skip_integrate)
         if name not in group_branch:
-            candidate, reason = live._resolve_journaled_head_branch(name, journal_rec, run_id)
+            candidate, reason = live._resolve_journaled_head_branch(
+                name, journal_rec, run_id
+            )
             if reason:
                 quarantined[name] = reason
             else:
                 group_branch[name] = candidate
         prs.append((name, "main", journal_rec.get("pr_url")))
         if name in quarantined:
-            _record_group_fn(name, "", journal_rec.get("head_branch", ""), "QUARANTINED")
+            _record_group_fn(
+                name, "", journal_rec.get("head_branch", ""), "QUARANTINED"
+            )
 
         # The shared post-branch guard in the real closure: quarantined/missing
         # group_branch entries must never reach verify_one.
         should_verify = name not in quarantined and name in group_branch
-        self.assertFalse(should_verify, "a corrupted resumed head_branch must never reach VERIFY")
+        self.assertFalse(
+            should_verify, "a corrupted resumed head_branch must never reach VERIFY"
+        )
         if should_verify:
             make_verifier_fn().verify_one({"name": name}, group_branch[name])
 
-        self.assertEqual(verify_one_calls, [], "verify_one must never be called with 'stg'")
+        self.assertEqual(
+            verify_one_calls, [], "verify_one must never be called with 'stg'"
+        )
         self.assertIn("feature-1", quarantined)
         self.assertEqual(record_calls, [("feature-1", "", "stg", "QUARANTINED")])
 

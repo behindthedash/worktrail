@@ -28,6 +28,7 @@ AST-registry convention:
    `test_exempt_and_known_gap_entries_have_reasons` -- a silent skip is exactly what this test
    exists to prevent.
 """
+
 import ast
 import json
 import tempfile
@@ -36,8 +37,8 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-import worktrail.router.pre_pr_gate as pre_pr_gate_mod
 import worktrail.orchestrator.integrate as integrate_mod
+import worktrail.router.pre_pr_gate as pre_pr_gate_mod
 from worktrail.router.run_record import main as run_record_main
 
 GATE_SRC = Path(pre_pr_gate_mod.__file__).resolve()
@@ -45,19 +46,25 @@ INTEGRATE_SRC = Path(integrate_mod.__file__).resolve()
 
 
 def _main_function_node(tree: ast.Module) -> ast.FunctionDef:
-    return next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+    return next(
+        n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main"
+    )
 
 
 def extract_main_direct_calls() -> set:
     """Every function, defined elsewhere in pre_pr_gate.py, that main() calls directly."""
     tree = ast.parse(GATE_SRC.read_text())
-    module_funcnames = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    module_funcnames = {
+        n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
+    }
     main_node = _main_function_node(tree)
     found = set()
     for node in ast.walk(main_node):
-        if (isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id in module_funcnames):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in module_funcnames
+        ):
             found.add(node.func.id)
     return found
 
@@ -65,11 +72,17 @@ def extract_main_direct_calls() -> set:
 def _branch_calls(main_node: ast.FunctionDef, flag_attr: str, target_call: str) -> bool:
     """True if an `if args.<flag_attr>:` branch in main() calls `target_call(...)`."""
     for node in ast.walk(main_node):
-        if isinstance(node, ast.If) and isinstance(node.test, ast.Attribute) \
-                and node.test.attr == flag_attr:
+        if (
+            isinstance(node, ast.If)
+            and isinstance(node.test, ast.Attribute)
+            and node.test.attr == flag_attr
+        ):
             for sub in ast.walk(node):
-                if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name) \
-                        and sub.func.id == target_call:
+                if (
+                    isinstance(sub, ast.Call)
+                    and isinstance(sub.func, ast.Name)
+                    and sub.func.id == target_call
+                ):
                     return True
     return False
 
@@ -84,12 +97,14 @@ def _proves_run_drift_checks_shared():
     if not _branch_calls(main_node, "checks_only", "run_drift_checks"):
         raise AssertionError(
             "pre_pr_gate.py's --checks-only branch no longer returns run_drift_checks() -- "
-            "orchestrator drift-check parity broken (was fixed by brief 20260815-134144)")
+            "orchestrator drift-check parity broken (was fixed by brief 20260815-134144)"
+        )
     integrate_src = INTEGRATE_SRC.read_text()
     if "--checks-only" not in integrate_src:
         raise AssertionError(
             "integrate.py no longer passes --checks-only to pre_pr_gate.py -- orchestrator "
-            "drift-check parity broken (was fixed by brief 20260815-134144)")
+            "drift-check parity broken (was fixed by brief 20260815-134144)"
+        )
 
 
 def _proves_resolve_pr_labels_shared():
@@ -103,13 +118,15 @@ def _proves_resolve_pr_labels_shared():
     if not _branch_calls(main_node, "labels_only", "resolve_pr_labels"):
         raise AssertionError(
             "pre_pr_gate.py's --labels-only branch no longer returns resolve_pr_labels() -- "
-            "orchestrator label parity broken")
+            "orchestrator label parity broken"
+        )
     integrate_src = INTEGRATE_SRC.read_text()
     for required in ("--labels-only", "--gates", "--route"):
         if required not in integrate_src:
             raise AssertionError(
                 f"integrate.py no longer threads {required} to pre_pr_gate.py -- orchestrator "
-                "automerge-eligibility parity broken (was fixed by brief 20260731-145729)")
+                "automerge-eligibility parity broken (was fixed by brief 20260731-145729)"
+            )
 
 
 def _proves_scope_review_reaches_orchestrator_via_finish():
@@ -126,10 +143,21 @@ def _proves_scope_review_reaches_orchestrator_via_finish():
     with tempfile.TemporaryDirectory() as tmp:
         out = StringIO()
         with patch("sys.stdout", out):
-            rc = run_record_main([
-                "start", "--repo", "/tmp/fake-repo", "--request", "t",
-                "--route", "F", "--risk", "low", "--dir", tmp,
-            ])
+            rc = run_record_main(
+                [
+                    "start",
+                    "--repo",
+                    "/tmp/fake-repo",
+                    "--request",
+                    "t",
+                    "--route",
+                    "F",
+                    "--risk",
+                    "low",
+                    "--dir",
+                    tmp,
+                ]
+            )
         if rc != 0:
             raise AssertionError("run_record.py start failed")
         run_path = json.loads(out.getvalue())["path"]
@@ -141,7 +169,8 @@ def _proves_scope_review_reaches_orchestrator_via_finish():
             raise AssertionError(
                 "run_record.py finish allowed an implementation-completion status with no "
                 "scope-review entry -- scope_review_failures() is no longer reached by the "
-                "orchestrator path (finish() is the shared mechanism this proof relies on)")
+                "orchestrator path (finish() is the shared mechanism this proof relies on)"
+            )
 
 
 # call name (as found directly inside main()) -> (verdict, detail)
@@ -154,7 +183,10 @@ def _proves_scope_review_reaches_orchestrator_via_finish():
 GATE_PARITY = {
     "run_drift_checks": ("shared", _proves_run_drift_checks_shared),
     "resolve_pr_labels": ("shared", _proves_resolve_pr_labels_shared),
-    "scope_review_failures": ("shared", _proves_scope_review_reaches_orchestrator_via_finish),
+    "scope_review_failures": (
+        "shared",
+        _proves_scope_review_reaches_orchestrator_via_finish,
+    ),
     "is_docs_only": (
         "exempt",
         "skip-only mechanism (never fails the gate): the orchestrator's "
@@ -187,11 +219,13 @@ GATE_PARITY = {
 
 
 class TestPrePrGateParity(unittest.TestCase):
-
     def test_every_main_gate_call_has_a_parity_verdict(self):
         found = extract_main_direct_calls()
-        self.assertTrue(found, "extraction found no direct calls in main() -- "
-                                "pre_pr_gate.py's structure may have moved/renamed")
+        self.assertTrue(
+            found,
+            "extraction found no direct calls in main() -- "
+            "pre_pr_gate.py's structure may have moved/renamed",
+        )
         registered = set(GATE_PARITY)
         missing = found - registered
         self.assertFalse(
@@ -200,12 +234,14 @@ class TestPrePrGateParity(unittest.TestCase):
             "entry -- classify it 'shared' (with a proof the orchestrator path also reaches "
             "it), 'exempt' (with a reason no orchestrator equivalent is needed), or "
             "'known-gap' (with a tracking brief) before shipping. See "
-            "docs/specs/research/go-orchestrator-gate-parity-audit.md")
+            "docs/specs/research/go-orchestrator-gate-parity-audit.md",
+        )
         stale = registered - found
         self.assertFalse(
             stale,
             f"GATE_PARITY registers {sorted(stale)}, which main() no longer calls directly "
-            "-- remove the stale entry")
+            "-- remove the stale entry",
+        )
 
     def test_shared_verdicts_actually_reach_the_orchestrator_path(self):
         for name, (verdict, detail) in GATE_PARITY.items():
@@ -219,7 +255,8 @@ class TestPrePrGateParity(unittest.TestCase):
                 with self.subTest(call=name):
                     self.assertTrue(
                         isinstance(detail, str) and detail.strip(),
-                        f"{name} is marked {verdict!r} but has no reason recorded")
+                        f"{name} is marked {verdict!r} but has no reason recorded",
+                    )
 
 
 if __name__ == "__main__":

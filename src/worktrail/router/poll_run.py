@@ -27,6 +27,7 @@ Exit codes:
       pending user decision awaiting a human answer
   1 = ceiling reached; prints "ceiling reached — subprocess still running"
 """
+
 import argparse
 import re
 import sys
@@ -135,12 +136,21 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         description="Poll a run record for completion",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="Exit codes: 0 = finished, 1 = ceiling reached")
+        epilog="Exit codes: 0 = finished, 1 = ceiling reached",
+    )
     parser.add_argument("--run", required=True, help="Path to run record YAML file")
-    parser.add_argument("--interval", type=int, default=30,
-                       help="Sleep interval in seconds (default: 30)")
-    parser.add_argument("--max-iterations", type=int, default=20,
-                       help="Maximum poll iterations (default: 20)")
+    parser.add_argument(
+        "--interval",
+        type=int,
+        default=30,
+        help="Sleep interval in seconds (default: 30)",
+    )
+    parser.add_argument(
+        "--max-iterations",
+        type=int,
+        default=20,
+        help="Maximum poll iterations (default: 20)",
+    )
 
     args = parser.parse_args(argv)
     run_path = Path(args.run)
@@ -155,7 +165,8 @@ def main(argv=None) -> int:
 
                 if pr_url:
                     applied = ensure_pr_risk_label(
-                        record.get("repository"), pr_url, record.get("risk_level"))
+                        record.get("repository"), pr_url, record.get("risk_level")
+                    )
                     if applied:
                         print(f"poll_run: added missing {applied} label to {pr_url}")
                     print(f"Run completed: {final_status} — PR: {pr_url}")

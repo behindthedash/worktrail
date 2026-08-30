@@ -58,9 +58,8 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
-from . import cluster_telemetry
 from ..shared.brief_frontmatter import (
     is_canonical_style,
     serialize_frontmatter,
@@ -68,6 +67,7 @@ from ..shared.brief_frontmatter import (
     validate_brief_text,
 )
 from ..workqueue.invocation import WORK_QUEUE_PY, build_work_queue_argv
+from . import cluster_telemetry
 
 _FM_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 _SUGGESTED_APPROACH_RE = re.compile(r"^##\s+Suggested approach\s*$", re.MULTILINE)
@@ -90,7 +90,7 @@ _CONSOLIDATED_FROM_RE = re.compile(
 # --------------------------------------------------------------------------- #
 
 
-def _parse_frontmatter(text: str) -> Dict[str, str]:
+def _parse_frontmatter(text: str) -> dict[str, str]:
     """Parse scalar frontmatter fields from `text`.
 
     Delegates to the shared YAML reader (`brief_frontmatter.split_frontmatter`)
@@ -112,7 +112,7 @@ def _parse_frontmatter(text: str) -> Dict[str, str]:
     }
 
 
-def _member_created_at(text: str) -> Optional[datetime.datetime]:
+def _member_created_at(text: str) -> datetime.datetime | None:
     """Read a member's earliest known creation timestamp from its frontmatter.
 
     Prefers `original-created:` (stamped on a member that was itself already
@@ -160,7 +160,7 @@ def _member_created_at(text: str) -> Optional[datetime.datetime]:
         return None
 
 
-def _extract_suggested_approach(text: str) -> List[str]:
+def _extract_suggested_approach(text: str) -> list[str]:
     """Return the list-item bullets under a `## Suggested approach` heading.
 
     A soft-wrapped bullet's continuation lines (no bullet marker of their
@@ -174,7 +174,7 @@ def _extract_suggested_approach(text: str) -> List[str]:
     rest = text[m.end() :]
     nxt = _HEADING_RE.search(rest)
     section = rest[: nxt.start()] if nxt else rest
-    bullets: List[str] = []
+    bullets: list[str] = []
     for line in section.splitlines():
         stripped = line.strip()
         bm = _BULLET_RE.match(stripped)
@@ -219,7 +219,7 @@ def _slugify(text: str) -> str:
     return slug or "consolidated"
 
 
-def _member_hash_suffix(member_ids: List[str]) -> str:
+def _member_hash_suffix(member_ids: list[str]) -> str:
     """Short, deterministic hash of a cluster's (sorted) member ids.
 
     Auto-generated titles (``"Consolidated: " + first-member-title``) often
@@ -238,7 +238,7 @@ def _member_hash_suffix(member_ids: List[str]) -> str:
 # --------------------------------------------------------------------------- #
 
 
-def _local_resolve(identifier: str, folder: Path) -> Optional[Path]:
+def _local_resolve(identifier: str, folder: Path) -> Path | None:
     """Resolve `identifier` to exactly one `.md` file in `folder`, or None.
 
     Mirrors work_queue.py's `resolve()` matching forms: full filename, stem,
@@ -249,7 +249,11 @@ def _local_resolve(identifier: str, folder: Path) -> Optional[Path]:
     if not folder.is_dir():
         return None
     files = [f for f in folder.iterdir() if f.is_file() and f.suffix == ".md"]
-    hits = {f for f in files if f.name == identifier or f.stem == identifier or f.name.startswith(identifier)}
+    hits = {
+        f
+        for f in files
+        if f.name == identifier or f.stem == identifier or f.name.startswith(identifier)
+    }
     if not hits:
         hits = {f for f in files if f.stem.endswith(identifier)}
     if not hits:
@@ -268,7 +272,7 @@ def _local_resolve(identifier: str, folder: Path) -> Optional[Path]:
 # --------------------------------------------------------------------------- #
 
 
-def resolvable_members(member_ids: List[str], queue_dir: Path) -> List[str]:
+def resolvable_members(member_ids: list[str], queue_dir: Path) -> list[str]:
     """Return the subset of `member_ids` still resolvable in `queue_dir`.
 
     Re-validates against the LIVE queue directory (never a stale dashboard
@@ -278,7 +282,7 @@ def resolvable_members(member_ids: List[str], queue_dir: Path) -> List[str]:
     raising (degrade, never crash the preview).
     """
     queue_dir = Path(queue_dir)
-    resolvable: List[str] = []
+    resolvable: list[str] = []
     for member_id in member_ids:
         try:
             if _local_resolve(member_id, queue_dir) is not None:
@@ -288,7 +292,7 @@ def resolvable_members(member_ids: List[str], queue_dir: Path) -> List[str]:
     return resolvable
 
 
-def draft_consolidated_brief(member_ids: List[str], queue_dir: Path) -> Dict[str, Any]:
+def draft_consolidated_brief(member_ids: list[str], queue_dir: Path) -> dict[str, Any]:
     """Draft a consolidated brief merged from the given (resolvable) members.
 
     Returns `{"title", "focus", "suggested_approach", "member_ids", "members"}`,
@@ -310,11 +314,11 @@ def draft_consolidated_brief(member_ids: List[str], queue_dir: Path) -> Dict[str
     timestamp parsed.
     """
     queue_dir = Path(queue_dir)
-    focuses: List[str] = []
-    bullets: List[str] = []
-    merged_ids: List[str] = []
-    members: List[Dict[str, str]] = []
-    earliest_created: Optional[datetime.datetime] = None
+    focuses: list[str] = []
+    bullets: list[str] = []
+    merged_ids: list[str] = []
+    members: list[dict[str, str]] = []
+    earliest_created: datetime.datetime | None = None
     for member_id in member_ids:
         try:
             path = _local_resolve(member_id, queue_dir)
@@ -353,7 +357,7 @@ def draft_consolidated_brief(member_ids: List[str], queue_dir: Path) -> Dict[str
     else:
         title = f"Consolidated: {len(merged_ids)} related handoffs"
 
-    draft: Dict[str, Any] = {
+    draft: dict[str, Any] = {
         "title": title,
         "focus": " / ".join(focuses),
         "suggested_approach": bullets,
@@ -365,7 +369,7 @@ def draft_consolidated_brief(member_ids: List[str], queue_dir: Path) -> Dict[str
     return draft
 
 
-def build_preview(member_ids: List[str], queue_dir: Path) -> Dict[str, Any]:
+def build_preview(member_ids: list[str], queue_dir: Path) -> dict[str, Any]:
     """Preview a cluster consolidation: re-validate + draft.
 
     Returns `{"resolvable_members", "excluded_members", "withdrawn", "draft"}`.
@@ -398,7 +402,7 @@ def build_preview(member_ids: List[str], queue_dir: Path) -> Dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
-def _build_consolidated_brief_content(draft: Dict[str, Any]) -> Tuple[str, str]:
+def _build_consolidated_brief_content(draft: dict[str, Any]) -> tuple[str, str]:
     """Render the consolidated brief's frontmatter+body text.
 
     Returns `(new_brief_id, content)`. `status:` is `queued` (the brief must
@@ -433,7 +437,7 @@ def _build_consolidated_brief_content(draft: Dict[str, Any]) -> Tuple[str, str]:
     # quoting, no folding -- identically to every other writer into queue/,
     # rather than each writer choosing its own scalar style
     # (`docs/specs/research/queue-frontmatter-cross-writer-drift.md`).
-    frontmatter: Dict[str, Any] = {
+    frontmatter: dict[str, Any] = {
         "id": new_brief_id,
         "created": now.isoformat(timespec="seconds"),
         "focus": focus,
@@ -487,8 +491,8 @@ def _build_consolidated_brief_content(draft: Dict[str, Any]) -> Tuple[str, str]:
 
 
 def _run_work_queue_cli(
-    args: List[str], work_queue_script: Path, work_queue_base_dir: Path
-) -> Optional[Dict[str, Any]]:
+    args: list[str], work_queue_script: Path, work_queue_base_dir: Path
+) -> dict[str, Any] | None:
     """Invoke `work_queue.py` as a subprocess and parse its JSON stdout.
 
     `work_queue.py` resolves `queue/`/`picked/` from the `WORK_QUEUE_DIR` env
@@ -518,8 +522,8 @@ def _run_work_queue_cli(
 
 
 def _claim_member(
-    member_id: str, work_queue_script: Path, work_queue_base_dir: Path, by: Optional[str]
-) -> Optional[Path]:
+    member_id: str, work_queue_script: Path, work_queue_base_dir: Path, by: str | None
+) -> Path | None:
     """Claim one member via `work_queue.py claim`. None if not claimed."""
     args = ["claim", member_id, "--json"]
     if by:
@@ -530,17 +534,19 @@ def _claim_member(
     return Path(data["path"])
 
 
-def _consolidated_member_ids(body: str) -> List[str]:
+def _consolidated_member_ids(body: str) -> list[str]:
     """Member ids listed under a `## Consolidated from` section in `body`, or
     `[]` when `body` carries no such section -- i.e. it is not itself a
     consolidation-batch brief."""
     m = _CONSOLIDATED_FROM_RE.search(body)
     if not m:
         return []
-    return [line[2:].strip() for line in m.group(1).splitlines() if line.startswith("- ")]
+    return [
+        line[2:].strip() for line in m.group(1).splitlines() if line.startswith("- ")
+    ]
 
 
-def _build_nested_consolidation_note(member_text: str) -> Optional[str]:
+def _build_nested_consolidation_note(member_text: str) -> str | None:
     """Closure note for `_mark_member_done` when the member being closed is
     itself a consolidation-batch brief (carries its own `## Consolidated
     from` section, e.g. cluster A was consolidated into member X, and X is
@@ -565,7 +571,9 @@ def _build_nested_consolidation_note(member_text: str) -> Optional[str]:
         "authored by consolidate_cluster.py:",
         "```",
     ]
-    lines.extend(f"- {sub_id}: status done, superseded at authoring time" for sub_id in sub_ids)
+    lines.extend(
+        f"- {sub_id}: status done, superseded at authoring time" for sub_id in sub_ids
+    )
     lines.append("```")
     return "\n".join(lines)
 
@@ -574,7 +582,7 @@ def _mark_member_done(
     member_id: str,
     work_queue_script: Path,
     work_queue_base_dir: Path,
-    note: Optional[str] = None,
+    note: str | None = None,
 ) -> bool:
     """Mark one already-claimed member done via `work_queue.py done`.
 
@@ -609,14 +617,14 @@ def _stamp_superseded(path: Path, new_brief_id: str) -> str:
 
 def execute_consolidation(
     confirmed: bool,
-    resolvable_ids: List[str],
-    draft: Dict[str, Any],
+    resolvable_ids: list[str],
+    draft: dict[str, Any],
     queue_dir: Path,
     picked_dir: Path,
     *,
-    work_queue_script: Optional[Path] = None,
-    claimed_by: Optional[str] = None,
-) -> Dict[str, Any]:
+    work_queue_script: Path | None = None,
+    claimed_by: str | None = None,
+) -> dict[str, Any]:
     """Execute (or decline) the consolidation write step.
 
     `confirmed=False`: performs zero filesystem writes and invokes
@@ -669,9 +677,14 @@ def execute_consolidation(
 
     new_brief_id, new_brief_content = _build_consolidated_brief_content(draft)
 
-    ok, verr = validate_brief_text(new_brief_content, required=("id", "status", "focus"))
+    ok, verr = validate_brief_text(
+        new_brief_content, required=("id", "status", "focus")
+    )
     if ok and not is_canonical_style(new_brief_content):
-        ok, verr = False, "consolidated brief frontmatter did not serialize to canonical style"
+        ok, verr = (
+            False,
+            "consolidated brief frontmatter did not serialize to canonical style",
+        )
     if not ok:
         return {
             "status": "write-verification-failed",
@@ -681,8 +694,8 @@ def execute_consolidation(
             "error": verr,
         }
 
-    members_completed: List[str] = []
-    members_skipped: List[str] = []
+    members_completed: list[str] = []
+    members_skipped: list[str] = []
     for member_id in resolvable_ids:
         picked_path = _claim_member(member_id, wq_script, wq_base_dir, claimed_by)
         if picked_path is None:
@@ -720,7 +733,7 @@ def _default_base_dir() -> Path:
     return Path(os.environ.get("WORK_QUEUE_DIR", "~/work-queue")).expanduser()
 
 
-def _resolve_draft_payload(raw: str) -> Dict[str, Any]:
+def _resolve_draft_payload(raw: str) -> dict[str, Any]:
     """Parse `--draft` accepting either `preview --json`'s full payload or a
     bare draft dict.
 
@@ -751,25 +764,41 @@ def _resolve_draft_payload(raw: str) -> Dict[str, Any]:
     if not isinstance(draft, dict) or not draft.get("member_ids"):
         raise ValueError(
             "--draft does not contain a usable draft (missing/empty 'member_ids'); "
-            "did you pipe in a withdrawn preview (\"draft\": null)?"
+            'did you pipe in a withdrawn preview ("draft": null)?'
         )
     return draft
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="two-phase consolidate-cluster action")
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--json", action="store_true", help="emit JSON")
-    common.add_argument("--queue-dir", default=None, help="override queue/ (default: WORK_QUEUE_DIR/queue)")
-    common.add_argument("--picked-dir", default=None, help="override picked/ (default: WORK_QUEUE_DIR/picked)")
+    common.add_argument(
+        "--queue-dir",
+        default=None,
+        help="override queue/ (default: WORK_QUEUE_DIR/queue)",
+    )
+    common.add_argument(
+        "--picked-dir",
+        default=None,
+        help="override picked/ (default: WORK_QUEUE_DIR/picked)",
+    )
     subs = p.add_subparsers(dest="cmd")
     subs.required = True
 
-    preview_p = subs.add_parser("preview", parents=[common], help="re-validate + draft a cluster consolidation")
-    preview_p.add_argument("member_ids", nargs="+", help="cluster member ids to re-validate")
+    preview_p = subs.add_parser(
+        "preview", parents=[common], help="re-validate + draft a cluster consolidation"
+    )
+    preview_p.add_argument(
+        "member_ids", nargs="+", help="cluster member ids to re-validate"
+    )
 
-    execute_p = subs.add_parser("execute", parents=[common], help="confirm/decline the consolidation write step")
-    execute_p.add_argument("member_ids", nargs="+", help="resolvable member ids from the preview step")
+    execute_p = subs.add_parser(
+        "execute", parents=[common], help="confirm/decline the consolidation write step"
+    )
+    execute_p.add_argument(
+        "member_ids", nargs="+", help="resolvable member ids from the preview step"
+    )
     draft_grp = execute_p.add_mutually_exclusive_group(required=True)
     draft_grp.add_argument(
         "--draft",
@@ -786,8 +815,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         ),
     )
     confirm_grp = execute_p.add_mutually_exclusive_group(required=True)
-    confirm_grp.add_argument("--confirm", action="store_true", help="write the consolidation")
-    confirm_grp.add_argument("--decline", action="store_true", help="perform zero writes")
+    confirm_grp.add_argument(
+        "--confirm", action="store_true", help="write the consolidation"
+    )
+    confirm_grp.add_argument(
+        "--decline", action="store_true", help="perform zero writes"
+    )
 
     args = p.parse_args(argv)
     base = _default_base_dir()
@@ -829,7 +862,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             else:
                 print(json.dumps(result, indent=2))
             return 1
-        result = execute_consolidation(args.confirm, args.member_ids, draft, queue_dir, picked_dir)
+        result = execute_consolidation(
+            args.confirm, args.member_ids, draft, queue_dir, picked_dir
+        )
 
         # Telemetry (spec 018 change: cluster-precision-telemetry) -- only
         # the two real decisions ("written"/"declined") are logged;
@@ -840,7 +875,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         if cluster_telemetry:
             try:
                 if result.get("status") == "written":
-                    cluster_telemetry.log_outcome("consolidated", result.get("members_completed", []))
+                    cluster_telemetry.log_outcome(
+                        "consolidated", result.get("members_completed", [])
+                    )
                 elif result.get("status") == "declined":
                     cluster_telemetry.log_outcome("declined", args.member_ids)
             except Exception:  # noqa: BLE001 - degrade, never break the CLI

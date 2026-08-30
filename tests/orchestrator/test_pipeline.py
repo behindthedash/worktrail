@@ -20,15 +20,16 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import spawnlib  # noqa: E402
-
-from worktrail.orchestrator import integrate  # noqa: E402
-from worktrail.orchestrator import live  # noqa: E402
-
+from worktrail.orchestrator import (
+    integrate,
+    live,
+    spawnlib,
+)
 
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
+
 
 def _init_repo(root: Path) -> Path:
     """Create a real git repo with a 3-task spec that produces 3 groups.
@@ -67,15 +68,20 @@ def _init_repo(root: Path) -> Path:
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t"], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.name", "T"], check=True)
-    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True
+    )
     subprocess.run(
         ["git", "-C", str(repo), "commit", "-q", "-m", "init"],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     return repo
 
 
-def _fake_report(task_id: str, role: str, sha: str = "deadbeef") -> spawnlib.SpawnResult:
+def _fake_report(
+    task_id: str, role: str, sha: str = "deadbeef"
+) -> spawnlib.SpawnResult:
     rs = '"PASSED"' if role == "review" else "null"
     text = (
         f'```json\n{{"task":"{task_id}","step":"{role}",'
@@ -122,12 +128,17 @@ class FakeSpawn:
             )
             subprocess.run(
                 ["git", "-C", str(wt), "commit", "-q", "-m", f"feat({tid})"],
-                check=True, capture_output=True,
+                check=True,
+                capture_output=True,
             )
-        sha = subprocess.run(
-            ["git", "-C", str(wt), "rev-parse", "HEAD"],
-            capture_output=True, text=True,
-        ).stdout.strip()[:8] or "00000000"
+        sha = (
+            subprocess.run(
+                ["git", "-C", str(wt), "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+            ).stdout.strip()[:8]
+            or "00000000"
+        )
         return _fake_report(tid, role, sha)
 
 
@@ -142,8 +153,20 @@ def _make_integrate_one(events=None, force_quarantine=None, raise_for=None):
     force_quarantine = force_quarantine or set()
     raise_for = raise_for or set()
 
-    def integrate_one(g, repo, spec_id, tasks, remote, run_id, base,
-                      journal_path, status, group_branch, quarantined, **kwargs):
+    def integrate_one(
+        g,
+        repo,
+        spec_id,
+        tasks,
+        remote,
+        run_id,
+        base,
+        journal_path,
+        status,
+        group_branch,
+        quarantined,
+        **kwargs,
+    ):
         name = g["name"]
         events.append(name)
         if name in raise_for:
@@ -174,8 +197,18 @@ class FakeVerifier:
         self.calls = []
         self._lock = threading.Lock()
 
-    def verify_one(self, group, group_branch, delivered, merged, quarantined, lock,
-                   self_merged=None, armed=None, post_merge_regressed=None):
+    def verify_one(
+        self,
+        group,
+        group_branch,
+        delivered,
+        merged,
+        quarantined,
+        lock,
+        self_merged=None,
+        armed=None,
+        post_merge_regressed=None,
+    ):
         name = group["name"]
         with self._lock:
             self.calls.append(name)
@@ -189,8 +222,17 @@ class FakeVerifier:
             merged.append(name)
 
 
-def _run(repo, tmp, spawn, integrate_one, verifier, run_budget=None, resume=False,
-         re_integrate=False, journal_path=None):
+def _run(
+    repo,
+    tmp,
+    spawn,
+    integrate_one,
+    verifier,
+    run_budget=None,
+    resume=False,
+    re_integrate=False,
+    journal_path=None,
+):
     journal_path = journal_path or str(Path(tmp) / "pipeline-journal.json")
     return live._pipeline_scheduler(
         repo=repo,
@@ -217,6 +259,7 @@ def _run(repo, tmp, spawn, integrate_one, verifier, run_budget=None, resume=Fals
 # AC-002: overlap
 # ---------------------------------------------------------------------------
 
+
 class OverlapTest(unittest.TestCase):
     """AC-002: a completed group is integrated+verified while a later group's
     fan-out task is still in flight."""
@@ -237,15 +280,37 @@ class OverlapTest(unittest.TestCase):
 
             base_fn, _ = _make_integrate_one()
 
-            def hooked_integrate_one(g, repo_, spec_id, tasks, remote, run_id_,
-                                     base_, journal_path, status, group_branch,
-                                     quarantined, **kwargs):
+            def hooked_integrate_one(
+                g,
+                repo_,
+                spec_id,
+                tasks,
+                remote,
+                run_id_,
+                base_,
+                journal_path,
+                status,
+                group_branch,
+                quarantined,
+                **kwargs,
+            ):
                 if g["name"] == "base":
                     if feature_fanout_started.wait(timeout=10):
                         overlap_confirmed.set()
-                return base_fn(g, repo_, spec_id, tasks, remote, run_id_,
-                               base_, journal_path, status, group_branch, quarantined,
-                               **kwargs)
+                return base_fn(
+                    g,
+                    repo_,
+                    spec_id,
+                    tasks,
+                    remote,
+                    run_id_,
+                    base_,
+                    journal_path,
+                    status,
+                    group_branch,
+                    quarantined,
+                    **kwargs,
+                )
 
             spawn = FakeSpawn()
             spawn.add_hook("TASK-002", "implement", feature_fanout_started.set)
@@ -265,6 +330,7 @@ class OverlapTest(unittest.TestCase):
 # AC-003: ordering
 # ---------------------------------------------------------------------------
 
+
 class OrderingTest(unittest.TestCase):
     """AC-003: base group integrate+verify starts before any dependent group."""
 
@@ -278,7 +344,8 @@ class OrderingTest(unittest.TestCase):
 
             self.assertGreater(len(events), 0, "integrate_one never called")
             self.assertEqual(
-                events[0], "base",
+                events[0],
+                "base",
                 f"base must be integrated first; actual order: {events}",
             )
 
@@ -289,13 +356,26 @@ class OrderingTest(unittest.TestCase):
             order = []
             order_lock = threading.Lock()
 
-            def tracking_integrate_one(g, repo_, spec_id, tasks, remote, run_id_,
-                                       base_, journal_path, status, group_branch,
-                                       quarantined, **kwargs):
+            def tracking_integrate_one(
+                g,
+                repo_,
+                spec_id,
+                tasks,
+                remote,
+                run_id_,
+                base_,
+                journal_path,
+                status,
+                group_branch,
+                quarantined,
+                **kwargs,
+            ):
                 name = g["name"]
                 with order_lock:
                     order.append(name)
-                deliverable = [t for t in g["tasks"] if status.get(t) in ("done", "completed")]
+                deliverable = [
+                    t for t in g["tasks"] if status.get(t) in ("done", "completed")
+                ]
                 if deliverable:
                     group_branch[name] = f"full-test/{name}"
                     return (name, base_, f"http://fake-pr/{name}")
@@ -309,7 +389,8 @@ class OrderingTest(unittest.TestCase):
                 for name in order:
                     if name.startswith("feature"):
                         self.assertGreater(
-                            order.index(name), base_idx,
+                            order.index(name),
+                            base_idx,
                             f"'{name}' integrated before 'base'",
                         )
 
@@ -317,6 +398,7 @@ class OrderingTest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # AC-004: quarantine — empty deliverable subset
 # ---------------------------------------------------------------------------
+
 
 class QuarantineEmptySubsetTest(unittest.TestCase):
     """AC-004: a group whose tasks all fail is quarantined; the run continues."""
@@ -327,8 +409,13 @@ class QuarantineEmptySubsetTest(unittest.TestCase):
             repo = _init_repo(Path(tmp))
             integrate_one, _ = _make_integrate_one()
 
-            result = _run(repo, tmp, FakeSpawn(fail_task="TASK-001"),
-                          integrate_one, FakeVerifier())
+            result = _run(
+                repo,
+                tmp,
+                FakeSpawn(fail_task="TASK-001"),
+                integrate_one,
+                FakeVerifier(),
+            )
 
             self.assertIn("base", result["quarantined"])
 
@@ -338,8 +425,13 @@ class QuarantineEmptySubsetTest(unittest.TestCase):
             repo = _init_repo(Path(tmp))
             integrate_one, _ = _make_integrate_one()
 
-            result = _run(repo, tmp, FakeSpawn(fail_task="TASK-001"),
-                          integrate_one, FakeVerifier())
+            result = _run(
+                repo,
+                tmp,
+                FakeSpawn(fail_task="TASK-001"),
+                integrate_one,
+                FakeVerifier(),
+            )
 
             for key in ("group_prs", "final", "quarantined", "merged"):
                 self.assertIn(key, result, f"summary missing key '{key}'")
@@ -348,6 +440,7 @@ class QuarantineEmptySubsetTest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # AC-005: quarantine cascade — quarantined base cascades to dependents
 # ---------------------------------------------------------------------------
+
 
 class QuarantineCascadeTest(unittest.TestCase):
     """AC-005: when a base group is quarantined, its dependents are also quarantined."""
@@ -363,8 +456,11 @@ class QuarantineCascadeTest(unittest.TestCase):
             self.assertIn("base", result["quarantined"])
             # Both feature groups must be quarantined (cascaded from base)
             for name in ("feature-1", "feature-2"):
-                self.assertIn(name, result["quarantined"],
-                              f"'{name}' should be quarantined (cascade from base)")
+                self.assertIn(
+                    name,
+                    result["quarantined"],
+                    f"'{name}' should be quarantined (cascade from base)",
+                )
 
     def test_quarantined_base_prevents_feature_integrate_one_call(self):
         """integrate_one must NOT be called for feature groups when base is quarantined."""
@@ -376,7 +472,8 @@ class QuarantineCascadeTest(unittest.TestCase):
 
             feature_calls = [e for e in events if e.startswith("feature")]
             self.assertEqual(
-                feature_calls, [],
+                feature_calls,
+                [],
                 f"integrate_one should not be called for feature groups when base is "
                 f"quarantined; called for: {feature_calls}",
             )
@@ -392,7 +489,8 @@ class QuarantineCascadeTest(unittest.TestCase):
             for name in ("feature-1", "feature-2"):
                 reason = result["quarantined"].get(name, "")
                 self.assertIn(
-                    "base", reason.lower(),
+                    "base",
+                    reason.lower(),
                     f"'{name}' quarantine reason should mention 'base'; got: {reason!r}",
                 )
 
@@ -400,6 +498,7 @@ class QuarantineCascadeTest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # AC-014: isolation — single group exception quarantines only that group
 # ---------------------------------------------------------------------------
+
 
 class IsolationTest(unittest.TestCase):
     """AC-014: a single group's integrate/verify exception quarantines that group
@@ -414,10 +513,16 @@ class IsolationTest(unittest.TestCase):
             result = _run(repo, tmp, FakeSpawn(), integrate_one, FakeVerifier())
 
             self.assertIn("feature-1", result["quarantined"])
-            self.assertIn("base", result["merged"],
-                          "base should still merge despite feature-1 exception")
-            self.assertIn("feature-2", result["merged"],
-                          "feature-2 should still merge despite feature-1 exception")
+            self.assertIn(
+                "base",
+                result["merged"],
+                "base should still merge despite feature-1 exception",
+            )
+            self.assertIn(
+                "feature-2",
+                result["merged"],
+                "feature-2 should still merge despite feature-1 exception",
+            )
 
     def test_verify_exception_quarantines_group_run_continues(self):
         """verify_one raising for 'feature-1' quarantines it; base and feature-2 merge."""
@@ -443,11 +548,20 @@ class IsolationTest(unittest.TestCase):
             journal_path = str(Path(tmp) / "pipeline-journal.json")
             integrate_one, _ = _make_integrate_one(raise_for={"feature-1"})
 
-            _run(repo, tmp, FakeSpawn(), integrate_one, FakeVerifier(), journal_path=journal_path)
+            _run(
+                repo,
+                tmp,
+                FakeSpawn(),
+                integrate_one,
+                FakeVerifier(),
+                journal_path=journal_path,
+            )
 
             journal = json.loads(Path(journal_path).read_text())
             record = journal["groups"]["feature-1"]
-            self.assertEqual(record["quarantine_reason"], integrate.QUARANTINE_INTEGRATION_ERROR)
+            self.assertEqual(
+                record["quarantine_reason"], integrate.QUARANTINE_INTEGRATION_ERROR
+            )
             self.assertIn("quarantine_detail", record)
             self.assertIn("feature-1", record["quarantine_detail"])
 
@@ -459,7 +573,9 @@ class IsolationTest(unittest.TestCase):
             try:
                 _run(repo, tmp, FakeSpawn(), integrate_one, FakeVerifier())
             except Exception as exc:
-                self.fail(f"Run was aborted by a group exception (should be isolated): {exc!r}")
+                self.fail(
+                    f"Run was aborted by a group exception (should be isolated): {exc!r}"
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -473,6 +589,7 @@ class IsolationTest(unittest.TestCase):
 # of seeing QUARANTINED (same class of bug as brief 20260807-175851's serial-
 # path gap, fixed in PR #221).
 # ---------------------------------------------------------------------------
+
 
 class OrdinaryVerifyQuarantinePersistenceTest(unittest.TestCase):
     """FakeVerifier.fail_for sets quarantined[name] without raising -- the
@@ -488,17 +605,25 @@ class OrdinaryVerifyQuarantinePersistenceTest(unittest.TestCase):
             verifier = FakeVerifier(fail_for={"feature-1"})
 
             result = _run(
-                repo, tmp, FakeSpawn(), integrate_one, verifier,
+                repo,
+                tmp,
+                FakeSpawn(),
+                integrate_one,
+                verifier,
                 journal_path=journal_path,
             )
 
             self.assertIn("feature-1", result["quarantined"])
 
             journal = json.loads(Path(journal_path).read_text())
-            self.assertIn("feature-1", journal["groups"],
-                          "quarantined group missing from journal['groups'] entirely")
+            self.assertIn(
+                "feature-1",
+                journal["groups"],
+                "quarantined group missing from journal['groups'] entirely",
+            )
             self.assertEqual(
-                journal["groups"]["feature-1"]["state"], "QUARANTINED",
+                journal["groups"]["feature-1"]["state"],
+                "QUARANTINED",
                 "ordinary (non-exception) verify-stage quarantine was not persisted "
                 "to the journal -- a resume would re-read the stale pre-verify state",
             )
@@ -510,6 +635,7 @@ class OrdinaryVerifyQuarantinePersistenceTest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # AC-006: parity — summary shape matches sequential path
 # ---------------------------------------------------------------------------
+
 
 class SummaryParityTest(unittest.TestCase):
     """AC-006: the pipelined run returns the same merged/quarantined summary shape
@@ -537,8 +663,11 @@ class SummaryParityTest(unittest.TestCase):
 
             self.assertEqual(result["quarantined"], {})
             for name in ("base", "feature-1", "feature-2"):
-                self.assertIn(name, result["merged"],
-                              f"'{name}' should be in merged when all succeed")
+                self.assertIn(
+                    name,
+                    result["merged"],
+                    f"'{name}' should be in merged when all succeed",
+                )
 
     def test_group_prs_populated_for_all_groups(self):
         """group_prs contains one entry per successfully integrated group."""
@@ -550,13 +679,15 @@ class SummaryParityTest(unittest.TestCase):
 
             pr_names = {pr[0] for pr in result["group_prs"]}
             for name in ("base", "feature-1", "feature-2"):
-                self.assertIn(name, pr_names,
-                              f"'{name}' should have a PR entry when all succeed")
+                self.assertIn(
+                    name, pr_names, f"'{name}' should have a PR entry when all succeed"
+                )
 
 
 # ---------------------------------------------------------------------------
 # Edge case: run budget exceeded
 # ---------------------------------------------------------------------------
+
 
 class RunBudgetTest(unittest.TestCase):
     """Alt path: run_budget exceeded stops new fan-out; already-complete groups
@@ -569,16 +700,19 @@ class RunBudgetTest(unittest.TestCase):
             repo = _init_repo(Path(tmp))
             integrate_one, _ = _make_integrate_one()
 
-            result = _run(repo, tmp, FakeSpawn(), integrate_one, FakeVerifier(),
-                          run_budget=0.001)
+            result = _run(
+                repo, tmp, FakeSpawn(), integrate_one, FakeVerifier(), run_budget=0.001
+            )
 
             # Feature groups never ran → quarantined as "fan-out incomplete"
             fanout_incomplete = {
-                k for k, v in result["quarantined"].items()
+                k
+                for k, v in result["quarantined"].items()
                 if "incomplete" in v.lower() or "budget" in v.lower()
             }
             self.assertGreater(
-                len(fanout_incomplete), 0,
+                len(fanout_incomplete),
+                0,
                 f"Expected feature groups quarantined for budget; quarantined={result['quarantined']}",
             )
 
@@ -587,6 +721,7 @@ class RunBudgetTest(unittest.TestCase):
 # AC-015 / TASK-006: atomic interleaved journal writes
 # ---------------------------------------------------------------------------
 
+
 class AtomicInterleavedWriteTest(unittest.TestCase):
     """AC-015: every journal write during a pipelined run is atomic; no record dropped."""
 
@@ -594,10 +729,24 @@ class AtomicInterleavedWriteTest(unittest.TestCase):
         """Run the pipeline with an integrate_one that calls _record_group."""
         journal_path = str(Path(tmp) / "pipeline-journal.json")
 
-        def integrate_one(g, repo_, spec_id, tasks, remote, run_id_, base_,
-                          journal_path_, status, group_branch, quarantined, **kwargs):
+        def integrate_one(
+            g,
+            repo_,
+            spec_id,
+            tasks,
+            remote,
+            run_id_,
+            base_,
+            journal_path_,
+            status,
+            group_branch,
+            quarantined,
+            **kwargs,
+        ):
             name = g["name"]
-            deliverable = [t for t in g["tasks"] if status.get(t) in ("done", "completed")]
+            deliverable = [
+                t for t in g["tasks"] if status.get(t) in ("done", "completed")
+            ]
             if not deliverable:
                 quarantined[name] = "no deliverable"
                 return None
@@ -639,7 +788,9 @@ class AtomicInterleavedWriteTest(unittest.TestCase):
             journal = json.loads(Path(journal_path).read_text())
 
             self.assertIn("entries", journal, "journal missing 'entries'")
-            self.assertGreater(len(journal["entries"]), 0, "no fan-out entries recorded")
+            self.assertGreater(
+                len(journal["entries"]), 0, "no fan-out entries recorded"
+            )
 
             self.assertIn("groups", journal, "journal missing 'groups'")
             self.assertGreater(len(journal["groups"]), 0, "no group records written")
@@ -655,8 +806,11 @@ class AtomicInterleavedWriteTest(unittest.TestCase):
             self.assertIn("groups", journal, "groups dropped by a later _record() call")
             # All three groups should be present
             for name in ("base", "feature-1", "feature-2"):
-                self.assertIn(name, journal["groups"],
-                              f"group '{name}' missing from journal['groups']")
+                self.assertIn(
+                    name,
+                    journal["groups"],
+                    f"group '{name}' missing from journal['groups']",
+                )
 
     def test_journal_file_never_torn(self):
         """Every write produces a valid JSON file (atomic temp-replace, never partial)."""
@@ -678,7 +832,9 @@ class AtomicInterleavedWriteTest(unittest.TestCase):
                 except json.JSONDecodeError:
                     reads_ok.append(False)
 
-            with unittest.mock.patch.object(progress, "atomic_write_text", checking_atomic):
+            with unittest.mock.patch.object(
+                progress, "atomic_write_text", checking_atomic
+            ):
                 live._pipeline_scheduler(
                     repo=repo,
                     spec_rel="docs/specs/001-x",
@@ -698,13 +854,16 @@ class AtomicInterleavedWriteTest(unittest.TestCase):
                     _make_verifier=lambda: FakeVerifier(),
                 )
 
-            self.assertTrue(all(reads_ok), f"torn journal detected; read results: {reads_ok}")
+            self.assertTrue(
+                all(reads_ok), f"torn journal detected; read results: {reads_ok}"
+            )
             self.assertGreater(len(reads_ok), 0, "no journal writes occurred")
 
 
 # ---------------------------------------------------------------------------
 # AC-011 / TASK-006: RunLock — second invocation aborts; flock unavailable degrades
 # ---------------------------------------------------------------------------
+
 
 class RunLockTest(unittest.TestCase):
     """AC-011: second full-real --pipeline aborts; RunLock degrades on no-flock platforms."""
@@ -733,9 +892,11 @@ class RunLockTest(unittest.TestCase):
                 # We test RunLock.acquire() directly to avoid needing a real repo.
                 with self.assertRaises(live.RunLockHeld) as ctx:
                     live.RunLock(journal_path).acquire()
-                self.assertIn(str(Path(journal_path).with_suffix(".lock")),
-                              str(ctx.exception),
-                              "lock-held message should name the lock file")
+                self.assertIn(
+                    str(Path(journal_path).with_suffix(".lock")),
+                    str(ctx.exception),
+                    "lock-held message should name the lock file",
+                )
             finally:
                 lock.release()
 
@@ -755,6 +916,7 @@ class RunLockTest(unittest.TestCase):
     def test_run_lock_degrades_when_fcntl_unavailable(self):
         """RunLock.acquire() is a no-op when fcntl cannot be imported (non-POSIX)."""
         import builtins
+
         real_import = builtins.__import__
 
         def mock_import(name, *args, **kwargs):
@@ -774,6 +936,7 @@ class RunLockTest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # AC-013 / TASK-007: pipelined resume — interleaved journal replay
 # ---------------------------------------------------------------------------
+
 
 def _journal_entry(tid: str, role: str, review_status=None) -> dict:
     return {
@@ -795,22 +958,28 @@ def _all_done_entries() -> list:
     """Entries that drive TASK-001/002/003 each to 'done' via journal replay."""
     entries = []
     for tid in ("TASK-001", "TASK-002", "TASK-003"):
-        entries.extend([
-            _journal_entry(tid, "implement"),
-            _journal_entry(tid, "review", review_status="PASSED"),
-            _journal_entry(tid, "cleanup"),
-        ])
+        entries.extend(
+            [
+                _journal_entry(tid, "implement"),
+                _journal_entry(tid, "review", review_status="PASSED"),
+                _journal_entry(tid, "cleanup"),
+            ]
+        )
     return entries
 
 
 def _write_journal(path: str, entries: list, groups: dict) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).write_text(json.dumps({
-        "run_id": "full-test",
-        "spec_id": "001-x",
-        "entries": entries,
-        "groups": groups,
-    }))
+    Path(path).write_text(
+        json.dumps(
+            {
+                "run_id": "full-test",
+                "spec_id": "001-x",
+                "entries": entries,
+                "groups": groups,
+            }
+        )
+    )
 
 
 class PipelineResumeTest(unittest.TestCase):
@@ -828,13 +997,26 @@ class PipelineResumeTest(unittest.TestCase):
             repo = _init_repo(Path(tmp))
             integrate_one, events = _make_integrate_one()
 
-            self._resume_run(tmp, repo, integrate_one, FakeVerifier(), {
-                "base": {"pr_url": "http://pr/base", "head_branch": "full-test/base", "state": "MERGED"},
-            })
+            self._resume_run(
+                tmp,
+                repo,
+                integrate_one,
+                FakeVerifier(),
+                {
+                    "base": {
+                        "pr_url": "http://pr/base",
+                        "head_branch": "full-test/base",
+                        "state": "MERGED",
+                    },
+                },
+            )
 
             base_calls = [e for e in events if e == "base"]
-            self.assertEqual(base_calls, [],
-                             f"integrate_one must NOT be called for MERGED 'base'; events={events}")
+            self.assertEqual(
+                base_calls,
+                [],
+                f"integrate_one must NOT be called for MERGED 'base'; events={events}",
+            )
 
     def test_merged_group_not_in_quarantined(self):
         """A MERGED group is terminal success — not quarantined — on resume."""
@@ -842,12 +1024,25 @@ class PipelineResumeTest(unittest.TestCase):
             repo = _init_repo(Path(tmp))
             integrate_one, _ = _make_integrate_one()
 
-            result = self._resume_run(tmp, repo, integrate_one, FakeVerifier(), {
-                "base": {"pr_url": "http://pr/base", "head_branch": "full-test/base", "state": "MERGED"},
-            })
+            result = self._resume_run(
+                tmp,
+                repo,
+                integrate_one,
+                FakeVerifier(),
+                {
+                    "base": {
+                        "pr_url": "http://pr/base",
+                        "head_branch": "full-test/base",
+                        "state": "MERGED",
+                    },
+                },
+            )
 
-            self.assertNotIn("base", result["quarantined"],
-                             "MERGED group must not appear in quarantined")
+            self.assertNotIn(
+                "base",
+                result["quarantined"],
+                "MERGED group must not appear in quarantined",
+            )
 
     def test_open_integrated_group_skips_integrate_resumes_at_verify(self):
         """AC-013: A group with pr_url but state==OPEN is not re-integrated; resumes at verify."""
@@ -856,15 +1051,31 @@ class PipelineResumeTest(unittest.TestCase):
             integrate_one, events = _make_integrate_one()
             verifier = FakeVerifier()
 
-            self._resume_run(tmp, repo, integrate_one, verifier, {
-                "base": {"pr_url": "http://pr/base", "head_branch": "full-test/base", "state": "OPEN"},
-            })
+            self._resume_run(
+                tmp,
+                repo,
+                integrate_one,
+                verifier,
+                {
+                    "base": {
+                        "pr_url": "http://pr/base",
+                        "head_branch": "full-test/base",
+                        "state": "OPEN",
+                    },
+                },
+            )
 
             base_integrate_calls = [e for e in events if e == "base"]
-            self.assertEqual(base_integrate_calls, [],
-                             "integrate_one must NOT be called for already-integrated 'base'")
-            self.assertIn("base", verifier.calls,
-                          "verifier must be called for 'base' (resume at verify)")
+            self.assertEqual(
+                base_integrate_calls,
+                [],
+                "integrate_one must NOT be called for already-integrated 'base'",
+            )
+            self.assertIn(
+                "base",
+                verifier.calls,
+                "verifier must be called for 'base' (resume at verify)",
+            )
 
     def test_completed_fanout_tasks_skipped_on_resume(self):
         """AC-013: Completed fan-out tasks are reconstructed as done and not re-driven."""
@@ -877,30 +1088,50 @@ class PipelineResumeTest(unittest.TestCase):
             # guard correctly flags TASK-002's worktree as missing it.
             (repo / "src").mkdir(parents=True, exist_ok=True)
             (repo / "src" / "task-001.txt").write_text("TASK-001\n")
-            subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
             subprocess.run(
-                ["git", "-C", str(repo), "commit", "-q", "-m", "TASK-001 (pre-merged for resume test)"],
-                check=True, capture_output=True,
+                ["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(repo),
+                    "commit",
+                    "-q",
+                    "-m",
+                    "TASK-001 (pre-merged for resume test)",
+                ],
+                check=True,
+                capture_output=True,
             )
             spawn = FakeSpawn()
             integrate_one, _ = _make_integrate_one()
 
             journal_path = str(Path(tmp) / "pipeline-journal.json")
             # Only TASK-001 done; TASK-002/003 have no entries → remain pending
-            _write_journal(journal_path, [
-                _journal_entry("TASK-001", "implement"),
-                _journal_entry("TASK-001", "review", review_status="PASSED"),
-                _journal_entry("TASK-001", "cleanup"),
-            ], {})
+            _write_journal(
+                journal_path,
+                [
+                    _journal_entry("TASK-001", "implement"),
+                    _journal_entry("TASK-001", "review", review_status="PASSED"),
+                    _journal_entry("TASK-001", "cleanup"),
+                ],
+                {},
+            )
             _run(repo, tmp, spawn, integrate_one, FakeVerifier(), resume=True)
 
             # TASK-001 was done from journal; FakeSpawn must NOT see it again
             t001_calls = [(tid, role) for tid, role in spawn.calls if tid == "TASK-001"]
-            self.assertEqual(t001_calls, [],
-                             f"TASK-001 already done in journal — must not be re-driven; calls={spawn.calls}")
+            self.assertEqual(
+                t001_calls,
+                [],
+                f"TASK-001 already done in journal — must not be re-driven; calls={spawn.calls}",
+            )
             # TASK-002/003 were pending and must have been driven
             t002_calls = [tid for tid, _ in spawn.calls if tid == "TASK-002"]
-            self.assertGreater(len(t002_calls), 0, "TASK-002 should be driven from resume")
+            self.assertGreater(
+                len(t002_calls), 0, "TASK-002 should be driven from resume"
+            )
 
     def test_base_before_dependent_order_preserved_on_resume(self):
         """AC-013: Base-before-dependent order is preserved across the resumed run."""
@@ -909,14 +1140,27 @@ class PipelineResumeTest(unittest.TestCase):
             integrate_one, events = _make_integrate_one()
 
             # All tasks done; base MERGED so feature groups proceed normally
-            self._resume_run(tmp, repo, integrate_one, FakeVerifier(), {
-                "base": {"pr_url": "http://pr/base", "head_branch": "full-test/base", "state": "MERGED"},
-            })
+            self._resume_run(
+                tmp,
+                repo,
+                integrate_one,
+                FakeVerifier(),
+                {
+                    "base": {
+                        "pr_url": "http://pr/base",
+                        "head_branch": "full-test/base",
+                        "state": "MERGED",
+                    },
+                },
+            )
 
             # Both feature groups integrated (base's done event fired before them)
             feature_calls = [e for e in events if e.startswith("feature")]
-            self.assertEqual(len(feature_calls), 2,
-                             f"Both feature groups should integrate after base; got={events}")
+            self.assertEqual(
+                len(feature_calls),
+                2,
+                f"Both feature groups should integrate after base; got={events}",
+            )
 
     def test_corrupt_journal_starts_fresh_no_crash(self):
         """Error scenario: an unreadable journal on resume starts fresh rather than crashing."""
@@ -926,11 +1170,17 @@ class PipelineResumeTest(unittest.TestCase):
             Path(journal_path).write_text("{not valid json!!!")
             integrate_one, _ = _make_integrate_one()
             try:
-                result = _run(repo, tmp, FakeSpawn(), integrate_one, FakeVerifier(), resume=True)
+                result = _run(
+                    repo, tmp, FakeSpawn(), integrate_one, FakeVerifier(), resume=True
+                )
             except Exception as exc:
                 self.fail(f"Corrupt journal must not cause a crash; got {exc!r}")
             for key in ("group_prs", "final", "quarantined", "merged"):
-                self.assertIn(key, result, f"summary key '{key}' missing after corrupt-journal resume")
+                self.assertIn(
+                    key,
+                    result,
+                    f"summary key '{key}' missing after corrupt-journal resume",
+                )
 
 
 class PipelineReIntegrateTest(unittest.TestCase):
@@ -946,16 +1196,33 @@ class PipelineReIntegrateTest(unittest.TestCase):
             repo = _init_repo(Path(tmp))
             integrate_one, events = _make_integrate_one()
             journal_path = str(Path(tmp) / "pipeline-journal.json")
-            _write_journal(journal_path, _all_done_entries(), {
-                "base": {"pr_url": "http://pr/base", "head_branch": "full-test/base", "state": "OPEN"},
-            })
+            _write_journal(
+                journal_path,
+                _all_done_entries(),
+                {
+                    "base": {
+                        "pr_url": "http://pr/base",
+                        "head_branch": "full-test/base",
+                        "state": "OPEN",
+                    },
+                },
+            )
 
-            _run(repo, tmp, FakeSpawn(), integrate_one, FakeVerifier(),
-                 resume=True, re_integrate=True, journal_path=journal_path)
+            _run(
+                repo,
+                tmp,
+                FakeSpawn(),
+                integrate_one,
+                FakeVerifier(),
+                resume=True,
+                re_integrate=True,
+                journal_path=journal_path,
+            )
 
             base_calls = [e for e in events if e == "base"]
             self.assertEqual(
-                len(base_calls), 1,
+                len(base_calls),
+                1,
                 f"--re-integrate must force integrate_one to run again for 'base'; events={events}",
             )
 
@@ -965,16 +1232,33 @@ class PipelineReIntegrateTest(unittest.TestCase):
             repo = _init_repo(Path(tmp))
             integrate_one, events = _make_integrate_one()
             journal_path = str(Path(tmp) / "pipeline-journal.json")
-            _write_journal(journal_path, _all_done_entries(), {
-                "base": {"pr_url": "http://pr/base", "head_branch": "full-test/base", "state": "MERGED"},
-            })
+            _write_journal(
+                journal_path,
+                _all_done_entries(),
+                {
+                    "base": {
+                        "pr_url": "http://pr/base",
+                        "head_branch": "full-test/base",
+                        "state": "MERGED",
+                    },
+                },
+            )
 
-            _run(repo, tmp, FakeSpawn(), integrate_one, FakeVerifier(),
-                 resume=True, re_integrate=True, journal_path=journal_path)
+            _run(
+                repo,
+                tmp,
+                FakeSpawn(),
+                integrate_one,
+                FakeVerifier(),
+                resume=True,
+                re_integrate=True,
+                journal_path=journal_path,
+            )
 
             base_calls = [e for e in events if e == "base"]
             self.assertEqual(
-                base_calls, [],
+                base_calls,
+                [],
                 f"a MERGED group must never be re-integrated, even with --re-integrate; events={events}",
             )
 
@@ -984,20 +1268,39 @@ class PipelineReIntegrateTest(unittest.TestCase):
             repo = _init_repo(Path(tmp))
             integrate_one, events = _make_integrate_one()
             journal_path = str(Path(tmp) / "pipeline-journal.json")
-            _write_journal(journal_path, _all_done_entries(), {
-                "base": {"pr_url": "http://pr/base", "head_branch": "full-test/base", "state": "OPEN"},
-            })
+            _write_journal(
+                journal_path,
+                _all_done_entries(),
+                {
+                    "base": {
+                        "pr_url": "http://pr/base",
+                        "head_branch": "full-test/base",
+                        "state": "OPEN",
+                    },
+                },
+            )
 
-            _run(repo, tmp, FakeSpawn(), integrate_one, FakeVerifier(),
-                 resume=True, re_integrate=False, journal_path=journal_path)
+            _run(
+                repo,
+                tmp,
+                FakeSpawn(),
+                integrate_one,
+                FakeVerifier(),
+                resume=True,
+                re_integrate=False,
+                journal_path=journal_path,
+            )
 
             base_calls = [e for e in events if e == "base"]
-            self.assertEqual(base_calls, [], f"no --re-integrate; must still skip; events={events}")
+            self.assertEqual(
+                base_calls, [], f"no --re-integrate; must still skip; events={events}"
+            )
 
 
 # ---------------------------------------------------------------------------
 # AD-004 / TASK-007: --from-verify backward compat
 # ---------------------------------------------------------------------------
+
 
 class FromVerifyBackwardCompatTest(unittest.TestCase):
     """AD-004: --from-verify still reconstructs group_branch from journal['groups']."""
@@ -1010,25 +1313,44 @@ class FromVerifyBackwardCompatTest(unittest.TestCase):
 
             journal_path = live.journal_path_for(repo, "docs/specs/001-x")
             journal_path.parent.mkdir(parents=True, exist_ok=True)
-            journal_path.write_text(json.dumps({
-                "run_id": "full-test",
-                "spec_id": "001-x",
-                "entries": [],
-                "groups": {
-                    "base": {"pr_url": "http://pr/base", "head_branch": "full-test/base", "state": "OPEN"},
-                    "feature-1": {"pr_url": "http://pr/f1", "head_branch": "full-test/feature-1", "state": "OPEN"},
-                    "feature-2": {"pr_url": "http://pr/f2", "head_branch": "full-test/feature-2", "state": "OPEN"},
-                },
-                "integrate_complete": True,
-            }))
+            journal_path.write_text(
+                json.dumps(
+                    {
+                        "run_id": "full-test",
+                        "spec_id": "001-x",
+                        "entries": [],
+                        "groups": {
+                            "base": {
+                                "pr_url": "http://pr/base",
+                                "head_branch": "full-test/base",
+                                "state": "OPEN",
+                            },
+                            "feature-1": {
+                                "pr_url": "http://pr/f1",
+                                "head_branch": "full-test/feature-1",
+                                "state": "OPEN",
+                            },
+                            "feature-2": {
+                                "pr_url": "http://pr/f2",
+                                "head_branch": "full-test/feature-2",
+                                "state": "OPEN",
+                            },
+                        },
+                        "integrate_complete": True,
+                    }
+                )
+            )
 
             captured = {}
 
-            def mock_vac(repo_, remote, base_, spec_id, groups, group_branch, delivered, **kw):
+            def mock_vac(
+                repo_, remote, base_, spec_id, groups, group_branch, delivered, **kw
+            ):
                 captured["group_branch"] = dict(group_branch)
                 return {"merged": [], "quarantined": {}}
 
             from worktrail.orchestrator import verify
+
             with unittest.mock.patch.object(verify, "verify_and_cleanup", mock_vac):
                 live._full_real_inner(
                     str(repo),
@@ -1044,8 +1366,11 @@ class FromVerifyBackwardCompatTest(unittest.TestCase):
                 "feature-1": "full-test/feature-1",
                 "feature-2": "full-test/feature-2",
             }
-            self.assertEqual(captured["group_branch"], expected,
-                             f"group_branch mismatch; got {captured.get('group_branch')}")
+            self.assertEqual(
+                captured["group_branch"],
+                expected,
+                f"group_branch mismatch; got {captured.get('group_branch')}",
+            )
 
     def test_from_verify_returns_automerge_evidence(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
@@ -1054,21 +1379,27 @@ class FromVerifyBackwardCompatTest(unittest.TestCase):
 
             journal_path = live.journal_path_for(repo, "docs/specs/001-x")
             journal_path.parent.mkdir(parents=True, exist_ok=True)
-            journal_path.write_text(json.dumps({
-                "run_id": "full-test",
-                "spec_id": "001-x",
-                "entries": [],
-                "groups": {
-                    "feature-1": {
-                        "pr_url": "http://pr/f1",
-                        "head_branch": "full-test/feature-1",
-                        "state": "OPEN",
-                    },
-                },
-                "integrate_complete": True,
-            }))
+            journal_path.write_text(
+                json.dumps(
+                    {
+                        "run_id": "full-test",
+                        "spec_id": "001-x",
+                        "entries": [],
+                        "groups": {
+                            "feature-1": {
+                                "pr_url": "http://pr/f1",
+                                "head_branch": "full-test/feature-1",
+                                "state": "OPEN",
+                            },
+                        },
+                        "integrate_complete": True,
+                    }
+                )
+            )
 
-            def mock_vac(repo_, remote, base_, spec_id, groups, group_branch, delivered, **kw):
+            def mock_vac(
+                repo_, remote, base_, spec_id, groups, group_branch, delivered, **kw
+            ):
                 return {
                     "merged": ["feature-1"],
                     "quarantined": {},
@@ -1082,6 +1413,7 @@ class FromVerifyBackwardCompatTest(unittest.TestCase):
                 }
 
             from worktrail.orchestrator import verify
+
             with unittest.mock.patch.object(verify, "verify_and_cleanup", mock_vac):
                 result = live._full_real_inner(
                     str(repo),
@@ -1106,14 +1438,16 @@ class FromVerifyBackwardCompatTest(unittest.TestCase):
 # --role-agent-map coverage for the default assembly-resolve spawn
 # ---------------------------------------------------------------------------
 
+
 class AssemblyResolveRoleAgentMapTest(unittest.TestCase):
     """The scheduler's default assembly_resolve_spawn must honor
     --role-agent-map / --model-map for dispatch.ROLE_ASSEMBLY_RESOLVE instead
     of silently inheriting the primary --agent (the review spawn path already
     honors the map; this role previously did not)."""
 
-    def _captured_make_live_spawn(self, role_agents=None, role_models=None,
-                                  agent="opencode", model="oc-model"):
+    def _captured_make_live_spawn(
+        self, role_agents=None, role_models=None, agent="opencode", model="oc-model"
+    ):
         """Run the scheduler with fakes; return the kwargs verify._make_live_spawn
         received for the assembly-resolve default (the only call site left live —
         the Verifier's own _make_live_spawn calls are bypassed via _make_verifier)."""
@@ -1129,7 +1463,8 @@ class AssemblyResolveRoleAgentMapTest(unittest.TestCase):
             integrate_one, _ = _make_integrate_one()
             verifier = FakeVerifier()
             with unittest.mock.patch(
-                "worktrail.orchestrator.verify._make_live_spawn", side_effect=fake_make_live_spawn
+                "worktrail.orchestrator.verify._make_live_spawn",
+                side_effect=fake_make_live_spawn,
             ):
                 live._pipeline_scheduler(
                     repo=repo,

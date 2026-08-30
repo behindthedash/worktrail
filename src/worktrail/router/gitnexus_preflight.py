@@ -12,8 +12,9 @@ import json
 import os
 import shlex
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 McpRunner = Callable[..., subprocess.CompletedProcess[str]]
@@ -40,7 +41,7 @@ def _run_mcp(
     )
 
 
-def canonical_repo_root(repo: Path, runner: Runner = _run_git) -> Optional[Path]:
+def canonical_repo_root(repo: Path, runner: Runner = _run_git) -> Path | None:
     """Resolve a linked worktree to the checkout owning its shared git dir."""
     try:
         result = runner(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
@@ -54,7 +55,7 @@ def canonical_repo_root(repo: Path, runner: Runner = _run_git) -> Optional[Path]
     return None
 
 
-def _registry_path(registry_path: Optional[Path]) -> Path:
+def _registry_path(registry_path: Path | None) -> Path:
     raw = registry_path or Path(
         os.environ.get("GITNEXUS_REGISTRY", "~/.gitnexus/registry.json")
     )
@@ -109,16 +110,16 @@ def _mcp_responded(stdout: str) -> bool:
 
 def check(
     repo: Path,
-    registry_path: Optional[Path] = None,
+    registry_path: Path | None = None,
     *,
     runner: Runner = _run_git,
     mcp_runner: McpRunner = _run_mcp,
     timeout: float = 5.0,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Return an explicit ``available`` or ``unavailable`` capability result."""
     repo = Path(repo).resolve()
     canonical = canonical_repo_root(repo, runner=runner)
-    result: Dict[str, Any] = {
+    result: dict[str, Any] = {
         "capability": "gitnexus",
         "status": "unavailable",
         "canonical_repo": str(canonical) if canonical else None,
@@ -199,7 +200,7 @@ def check(
     return result
 
 
-def prompt_note(capability: Dict[str, Any]) -> str:
+def prompt_note(capability: dict[str, Any]) -> str:
     """Render the worker instruction for the capability result."""
     if capability.get("status") == "available":
         return (

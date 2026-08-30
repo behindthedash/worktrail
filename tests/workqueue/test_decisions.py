@@ -21,7 +21,7 @@ def qbase(tmp_path, monkeypatch):
 def _ask(qbase, **kw):
     defaults = dict(
         background="Exports were added before archiving existed; both behaviors "
-                   "now have users depending on them.",
+        "now have users depending on them.",
         why="Two mutually exclusive user-facing behaviors are both defensible.",
         context="Read the spec, the epic, and the last three PRs; no precedent.",
         options=["Option A: strict — tradeoff X", "Option B: lenient — tradeoff Y"],
@@ -36,7 +36,8 @@ def _mk_picked_brief(qbase, brief_id="20260813-120000-export-scope"):
     path.write_text(
         f"---\nid: {brief_id}\nstatus: picked\nfocus: export scope\n---\n\n"
         "## Focus\n\nexport scope\n",
-        encoding="utf-8")
+        encoding="utf-8",
+    )
     return brief_id
 
 
@@ -52,9 +53,14 @@ def test_ask_creates_structured_open_record(qbase):
     fm, body = split_frontmatter(open_files[0].read_text(encoding="utf-8"))
     assert fm["status"] == "open"
     assert fm["repo"] == "repo-a"
-    for heading in ("## Question", "## Background",
-                    "## Why a human decision is needed",
-                    "## Context (what was attempted)", "## Options", "## Answer"):
+    for heading in (
+        "## Question",
+        "## Background",
+        "## Why a human decision is needed",
+        "## Context (what was attempted)",
+        "## Options",
+        "## Answer",
+    ):
         assert heading in body
     assert "1. Option A" in body and "2. Option B" in body
     assert "In priority order" in body
@@ -65,10 +71,13 @@ def test_ask_option_costs_render_per_option(qbase):
     result = _ask(
         qbase,
         options=["Ship the config toggle", "Refactor the export pipeline"],
-        option_costs=["low -- config only, ships today",
-                      "high -- better long-term architecture, ~3 days"],
+        option_costs=[
+            "low -- config only, ships today",
+            "high -- better long-term architecture, ~3 days",
+        ],
         recommendation="Quick to production: option 1; "
-                       "long-term architecture: option 2.")
+        "long-term architecture: option 2.",
+    )
     assert result["status"] == "created"
     open_files = list((qbase / "decisions" / "open").glob("*.md"))
     _fm, body = split_frontmatter(open_files[0].read_text(encoding="utf-8"))
@@ -184,8 +193,7 @@ def test_claim_of_awaiting_brief_warns(qbase):
     result = _ask(qbase, brief=brief_id, release_brief=True)
     claimed = work_queue.claim(brief_id)
     assert claimed["status"] == "claimed"
-    assert any(result["id"] in w and "still open" in w
-               for w in claimed["warnings"])
+    assert any(result["id"] in w and "still open" in w for w in claimed["warnings"])
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +262,8 @@ def test_list_and_open_ids(qbase):
         why="Also a real product call.",
         context="Evidence gathered.",
         options=["A — x", "B — y"],
-        queue_base=qbase)
+        queue_base=qbase,
+    )
     decisions.answer(b["id"], "B.", queue_base=qbase)
 
     assert decisions.open_decision_ids(qbase) == [a["id"]]
@@ -272,16 +281,30 @@ def test_list_and_open_ids(qbase):
 
 
 def test_cli_ask_answer_resolve_roundtrip(qbase, capsys):
-    rc = decisions.main([
-        "--queue-dir", str(qbase), "ask",
-        "--question", "Should exports include archived rows?",
-        "--background", "Exports predate archiving; both behaviors have users.",
-        "--why", "Two defensible user-facing behaviors.",
-        "--context", "Read spec + PRs; no precedent.",
-        "--option", "A — strict", "--option-cost", "low -- ships today",
-        "--option", "B — lenient", "--option-cost", "high -- pipeline refactor",
-        "--json",
-    ])
+    rc = decisions.main(
+        [
+            "--queue-dir",
+            str(qbase),
+            "ask",
+            "--question",
+            "Should exports include archived rows?",
+            "--background",
+            "Exports predate archiving; both behaviors have users.",
+            "--why",
+            "Two defensible user-facing behaviors.",
+            "--context",
+            "Read spec + PRs; no precedent.",
+            "--option",
+            "A — strict",
+            "--option-cost",
+            "low -- ships today",
+            "--option",
+            "B — lenient",
+            "--option-cost",
+            "high -- pipeline refactor",
+            "--json",
+        ]
+    )
     assert rc == 0
     dec_id = json.loads(capsys.readouterr().out)["id"]
 
@@ -289,8 +312,9 @@ def test_cli_ask_answer_resolve_roundtrip(qbase, capsys):
     assert rc == 0
     assert len(json.loads(capsys.readouterr().out)["decisions"]) == 1
 
-    rc = decisions.main([
-        "--queue-dir", str(qbase), "answer", dec_id, "--answer", "B.", "--json"])
+    rc = decisions.main(
+        ["--queue-dir", str(qbase), "answer", dec_id, "--answer", "B.", "--json"]
+    )
     assert rc == 0
     assert json.loads(capsys.readouterr().out)["status"] == "answered"
 
@@ -300,11 +324,23 @@ def test_cli_ask_answer_resolve_roundtrip(qbase, capsys):
 
 
 def test_cli_ask_missing_options_fails(qbase, capsys):
-    rc = decisions.main([
-        "--queue-dir", str(qbase), "ask",
-        "--question", "Q?", "--background", "b", "--why", "w", "--context", "c",
-        "--option", "only one",
-    ])
+    rc = decisions.main(
+        [
+            "--queue-dir",
+            str(qbase),
+            "ask",
+            "--question",
+            "Q?",
+            "--background",
+            "b",
+            "--why",
+            "w",
+            "--context",
+            "c",
+            "--option",
+            "only one",
+        ]
+    )
     assert rc == 1
     assert "at least two --option" in capsys.readouterr().err
 
@@ -340,9 +376,11 @@ def test_decision_identity_is_deterministic_and_distinct():
     a = _identity()
     b = _identity()
     other_subject = decisions.decision_identity(
-        "check_spec_collision", "repo-a", "change-y")
+        "check_spec_collision", "repo-a", "change-y"
+    )
     other_source = decisions.decision_identity(
-        "check_brief_staleness", "repo-a", "change-x")
+        "check_brief_staleness", "repo-a", "change-x"
+    )
     assert a == b
     assert a.startswith("dec-")
     assert len({a, other_subject, other_source}) == 3
@@ -356,34 +394,50 @@ def test_decision_identity_refuses_blank_provenance():
 
 
 def test_decision_slugify_matches_handoff_normalization():
-    assert decisions._slugify("ci-watch-loop.md's review-thread gate is unreachable") == (
-        "ci-watch-loop-md-review"
-    )
+    assert decisions._slugify(
+        "ci-watch-loop.md's review-thread gate is unreachable"
+    ) == ("ci-watch-loop-md-review")
 
 
 def test_pending_decision_envelope_requires_core_fields():
     with pytest.raises(ValueError, match="decision_id is required"):
         decisions.pending_decision_envelope(
-            decision_id=" ", question="Q?", options=["a", "b"], source="g")
+            decision_id=" ", question="Q?", options=["a", "b"], source="g"
+        )
     with pytest.raises(ValueError, match="options must be a non-empty list"):
         decisions.pending_decision_envelope(
-            decision_id="d1", question="Q?", options=[" ", ""], source="g")
+            decision_id="d1", question="Q?", options=[" ", ""], source="g"
+        )
     env = decisions.pending_decision_envelope(
-        decision_id="d1", question=" Q? ", options=["a", " b "], source=" g ",
-        subject="s1", run_id="go-1", dispatch_mode="adapter")
+        decision_id="d1",
+        question=" Q? ",
+        options=["a", " b "],
+        source=" g ",
+        subject="s1",
+        run_id="go-1",
+        dispatch_mode="adapter",
+    )
     assert env["schema"] == decisions.DECISION_ENVELOPE_SCHEMA
     assert env["version"] == decisions.DECISION_ENVELOPE_VERSION
     assert env["status"] == "pending"
     assert env["options"] == ["a", "b"]
     # provenance keeps only what was actually recorded — never fabricated fields
-    assert env["provenance"] == {"source": "g", "subject": "s1",
-                                 "run_id": "go-1", "dispatch_mode": "adapter"}
+    assert env["provenance"] == {
+        "source": "g",
+        "subject": "s1",
+        "run_id": "go-1",
+        "dispatch_mode": "adapter",
+    }
 
 
 def test_parse_envelope_accepts_dict_and_json_string_roundtrip():
     env = decisions.pending_decision_envelope(
-        decision_id="d1", question="Q?", options=["a", "b"], source="guard",
-        created_at="2026-08-25T10:00:00+00:00")
+        decision_id="d1",
+        question="Q?",
+        options=["a", "b"],
+        source="guard",
+        created_at="2026-08-25T10:00:00+00:00",
+    )
     parsed = decisions.parse_pending_decision_envelope(json.dumps(env))
     assert parsed["decision_id"] == "d1"
     assert decisions.parse_pending_decision_envelope(env)["question"] == "Q?"
@@ -393,25 +447,31 @@ def test_parse_envelope_accepts_dict_and_json_string_roundtrip():
 
 def test_parse_envelope_rejects_bad_json_wrong_schema_version_missing_fields():
     good = decisions.pending_decision_envelope(
-        decision_id="d1", question="Q?", options=["a", "b"], source="guard")
+        decision_id="d1", question="Q?", options=["a", "b"], source="guard"
+    )
     with pytest.raises(decisions.DecisionEnvelopeError, match="not valid JSON"):
         decisions.parse_pending_decision_envelope("{nope")
-    with pytest.raises(decisions.DecisionEnvelopeError,
-                       match="must be a JSON object"):
+    with pytest.raises(decisions.DecisionEnvelopeError, match="must be a JSON object"):
         decisions.parse_pending_decision_envelope("[1, 2]")
     with pytest.raises(decisions.DecisionEnvelopeError, match="expected schema"):
         decisions.parse_pending_decision_envelope({**good, "schema": "other"})
-    with pytest.raises(decisions.DecisionEnvelopeError,
-                       match="unsupported envelope version"):
+    with pytest.raises(
+        decisions.DecisionEnvelopeError, match="unsupported envelope version"
+    ):
         decisions.parse_pending_decision_envelope({**good, "version": 99})
     missing_prov = {k: v for k, v in good.items() if k != "provenance"}
-    with pytest.raises(decisions.DecisionEnvelopeError,
-                       match="missing required field\\(s\\): provenance"):
+    with pytest.raises(
+        decisions.DecisionEnvelopeError,
+        match="missing required field\\(s\\): provenance",
+    ):
         decisions.parse_pending_decision_envelope(missing_prov)
-    with pytest.raises(decisions.DecisionEnvelopeError,
-                       match="provenance must be an object with a non-empty 'source'"):
+    with pytest.raises(
+        decisions.DecisionEnvelopeError,
+        match="provenance must be an object with a non-empty 'source'",
+    ):
         decisions.parse_pending_decision_envelope(
-            {**good, "provenance": {"source": "  "}})
+            {**good, "provenance": {"source": "  "}}
+        )
 
 
 def test_ask_with_explicit_decision_id_records_provenance_and_envelope(qbase):
@@ -427,11 +487,14 @@ def test_ask_with_explicit_decision_id_records_provenance_and_envelope(qbase):
     )
     assert result["status"] == "created"
     fm, _body = split_frontmatter(
-        (qbase / "decisions" / "open" / f"{did}.md").read_text(encoding="utf-8"))
-    for key, value in (("source", "check_spec_collision"),
-                       ("subject", "change-x vs spec-y"),
-                       ("run-id", "go-20260825-101010"),
-                       ("dispatch-mode", "in-session-resume")):
+        (qbase / "decisions" / "open" / f"{did}.md").read_text(encoding="utf-8")
+    )
+    for key, value in (
+        ("source", "check_spec_collision"),
+        ("subject", "change-x vs spec-y"),
+        ("run-id", "go-20260825-101010"),
+        ("dispatch-mode", "in-session-resume"),
+    ):
         assert fm[key] == value
     env = decisions.parse_pending_decision_envelope(result["envelope"])
     assert env["schema"] == decisions.DECISION_ENVELOPE_SCHEMA
@@ -499,9 +562,15 @@ def test_ask_idempotent_after_resolve_reports_already_resolved_no_duplicate(qbas
 
 def test_load_decision_envelope_roundtrips_record_content(qbase):
     opts = ["A — strict: tradeoff X", "B — lenient: tradeoff Y"]
-    result = _ask(qbase, options=opts, repo="repo-a",
-                  source="check_brief_staleness", subject="brief-123",
-                  run_id="go-1", dispatch_mode="adapter")
+    result = _ask(
+        qbase,
+        options=opts,
+        repo="repo-a",
+        source="check_brief_staleness",
+        subject="brief-123",
+        run_id="go-1",
+        dispatch_mode="adapter",
+    )
     env = decisions.load_decision_envelope(result["id"], qbase)
     assert env["status"] == "open"
     assert env["answer"] == ""
@@ -510,8 +579,12 @@ def test_load_decision_envelope_roundtrips_record_content(qbase):
     assert env["created_at"]
     assert env["superseded_by"] is None
     assert env["provenance"] == {
-        "source": "check_brief_staleness", "repo": "repo-a",
-        "subject": "brief-123", "run_id": "go-1", "dispatch_mode": "adapter"}
+        "source": "check_brief_staleness",
+        "repo": "repo-a",
+        "subject": "brief-123",
+        "run_id": "go-1",
+        "dispatch_mode": "adapter",
+    }
     # the loaded shape satisfies the same contract as the built one
     decisions.parse_pending_decision_envelope(env)
     decisions.answer(result["id"], "Take option 2.", queue_base=qbase)
@@ -529,11 +602,13 @@ def _answered_env(qbase, **kw):
 
 
 def test_validate_accepts_answer_with_matching_provenance(qbase):
-    env = _answered_env(qbase, source="guard-a", repo="/repos/a",
-                        subject="subj-1")
+    env = _answered_env(qbase, source="guard-a", repo="/repos/a", subject="subj-1")
     out = decisions.validate_decision_answer(
-        env, expected_source="guard-a", expected_repo="/repos/a",
-        expected_subject="subj-1")
+        env,
+        expected_source="guard-a",
+        expected_repo="/repos/a",
+        expected_subject="subj-1",
+    )
     assert out["valid"] is True
     assert out["reasons"] == []
 
@@ -541,7 +616,8 @@ def test_validate_accepts_answer_with_matching_provenance(qbase):
 def test_validate_reports_every_provenance_mismatch_at_once(qbase):
     env = _answered_env(qbase, source="guard-a", subject="subj-1")
     out = decisions.validate_decision_answer(
-        env, expected_source="guard-b", expected_subject="subj-2")
+        env, expected_source="guard-b", expected_subject="subj-2"
+    )
     assert out["valid"] is False
     joined = "\n".join(out["reasons"])
     assert "source mismatch" in joined and "subject mismatch" in joined
@@ -554,8 +630,12 @@ def test_validate_refuses_open_decision_and_superseded_answer(qbase):
     assert out["valid"] is False
     assert any("not 'answered'" in r for r in out["reasons"])
 
-    answered = dict(open_env, status="answered", answer="x",
-                    answered_at=dt.datetime.now().astimezone().isoformat())
+    answered = dict(
+        open_env,
+        status="answered",
+        answer="x",
+        answered_at=dt.datetime.now().astimezone().isoformat(),
+    )
     superseded = dict(answered, superseded_by="dec-replacement")
     out = decisions.validate_decision_answer(superseded)
     assert out["valid"] is False
@@ -565,12 +645,10 @@ def test_validate_refuses_open_decision_and_superseded_answer(qbase):
 def test_validate_freshness_window_rejects_stale_answer(qbase):
     env = _answered_env(qbase)
     fresh_now = dt.datetime.now().astimezone() + dt.timedelta(minutes=1)
-    out = decisions.validate_decision_answer(env, max_age_seconds=3600,
-                                             now=fresh_now)
+    out = decisions.validate_decision_answer(env, max_age_seconds=3600, now=fresh_now)
     assert out["valid"] is True
     stale_now = dt.datetime.now().astimezone() + dt.timedelta(hours=5)
-    out = decisions.validate_decision_answer(env, max_age_seconds=3600,
-                                             now=stale_now)
+    out = decisions.validate_decision_answer(env, max_age_seconds=3600, now=stale_now)
     assert out["valid"] is False
     assert any("stale" in r for r in out["reasons"])
 
@@ -585,10 +663,13 @@ def test_validate_flags_unparsable_and_time_traveling_answers(qbase, monkeypatch
     assert out["valid"] is False
     assert any("unparsable" in r for r in out["reasons"])
 
-    work_queue._set_fm_fields(rec, {
-        "created": "2099-01-01T00:00:00+00:00",
-        "answered-at": dt.datetime.now().astimezone()
-                       .isoformat(timespec="seconds")})
+    work_queue._set_fm_fields(
+        rec,
+        {
+            "created": "2099-01-01T00:00:00+00:00",
+            "answered-at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+        },
+    )
     env = decisions.load_decision_envelope(result["id"], qbase)
     out = decisions.validate_decision_answer(env)
     assert out["valid"] is False
@@ -602,8 +683,9 @@ def test_validate_flags_unparsable_and_time_traveling_answers(qbase, monkeypatch
 def test_consume_archives_once_stamps_consumer_and_returns_text(qbase):
     result = _ask(qbase)
     decisions.answer(result["id"], "Ship Option B.", queue_base=qbase)
-    out = decisions.consume_answer(result["id"], consumed_by="dispatch-42",
-                                   queue_base=qbase)
+    out = decisions.consume_answer(
+        result["id"], consumed_by="dispatch-42", queue_base=qbase
+    )
     assert out["status"] == "consumed"
     assert out["answer"] == "Ship Option B."
     assert out["consumed_by"] == "dispatch-42"
@@ -620,11 +702,12 @@ def test_consume_archives_once_stamps_consumer_and_returns_text(qbase):
 
 
 def test_consume_refuses_unknown_open_and_textless_records(qbase):
-    assert decisions.consume_answer("nope", queue_base=qbase)["status"] \
-        == "not-found"
+    assert decisions.consume_answer("nope", queue_base=qbase)["status"] == "not-found"
     result = _ask(qbase)
-    assert decisions.consume_answer(result["id"], queue_base=qbase)["status"] \
+    assert (
+        decisions.consume_answer(result["id"], queue_base=qbase)["status"]
         == "still-open"
+    )
     # hand-moved into answered/ without ever writing an answer: fail closed
     src = qbase / "decisions" / "open" / f"{result['id']}.md"
     dst_dir = qbase / "decisions" / "answered"
@@ -641,13 +724,15 @@ def test_consume_clears_only_its_own_brief_stamp(qbase):
     out = decisions.consume_answer(result["id"], queue_base=qbase)
     assert out["brief_cleared"] is True
     fm, _ = split_frontmatter(
-        (qbase / "picked" / f"{brief_id}.md").read_text(encoding="utf-8"))
+        (qbase / "picked" / f"{brief_id}.md").read_text(encoding="utf-8")
+    )
     assert "awaiting-decision" not in fm
 
     # a stamp pointing at a different decision must survive consumption
     other = _ask(qbase)
-    work_queue._set_fm_fields(qbase / "picked" / f"{brief_id}.md",
-                              {"awaiting-decision": other["id"]})
+    work_queue._set_fm_fields(
+        qbase / "picked" / f"{brief_id}.md", {"awaiting-decision": other["id"]}
+    )
     decisions.answer(other["id"], "A.", queue_base=qbase)
     out = decisions.consume_answer(other["id"], queue_base=qbase)
     assert out["brief_cleared"] is False
@@ -659,13 +744,14 @@ def test_consume_clears_only_its_own_brief_stamp(qbase):
 
 def test_supersede_retires_open_decision_links_replacement_clears_brief(qbase):
     brief_id = _mk_picked_brief(qbase)
-    old = _ask(qbase, brief=brief_id, source="check_spec_collision",
-               subject="change-x")
+    old = _ask(qbase, brief=brief_id, source="check_spec_collision", subject="change-x")
     replacement = decisions.decision_identity(
-        "check_spec_collision", "repo-a", "change-x moved to spec-z")
+        "check_spec_collision", "repo-a", "change-x moved to spec-z"
+    )
 
-    out = decisions.supersede(old["id"], replacement, reason="target moved",
-                              queue_base=qbase)
+    out = decisions.supersede(
+        old["id"], replacement, reason="target moved", queue_base=qbase
+    )
     assert out["status"] == "superseded"
     assert out["superseded_by"] == replacement
     assert out["brief_cleared"] is True
@@ -677,7 +763,8 @@ def test_supersede_retires_open_decision_links_replacement_clears_brief(qbase):
     assert fm["superseded-reason"] == "target moved"
     assert fm["superseded-at"]
     brief_fm, _ = split_frontmatter(
-        (qbase / "picked" / f"{brief_id}.md").read_text(encoding="utf-8"))
+        (qbase / "picked" / f"{brief_id}.md").read_text(encoding="utf-8")
+    )
     assert "awaiting-decision" not in brief_fm
 
     env = decisions.load_decision_envelope(old["id"], qbase)
@@ -687,20 +774,20 @@ def test_supersede_retires_open_decision_links_replacement_clears_brief(qbase):
     assert verdict["valid"] is False
     assert any(replacement in r for r in verdict["reasons"])
     # the brief is free to get a fresh decision under the replacement id
-    new = _ask(qbase, brief=brief_id, decision_id=replacement,
-               supersedes=old["id"])
+    new = _ask(qbase, brief=brief_id, decision_id=replacement, supersedes=old["id"])
     assert new["status"] == "created"
     new_fm, _ = split_frontmatter(
-        (qbase / "decisions" / "open" / f"{replacement}.md")
-        .read_text(encoding="utf-8"))
+        (qbase / "decisions" / "open" / f"{replacement}.md").read_text(encoding="utf-8")
+    )
     assert new_fm["supersedes"] == old["id"]
 
 
 def test_supersede_requires_new_id_and_reports_terminal_states(qbase):
     with pytest.raises(ValueError, match="--new-decision-id is required"):
         decisions.supersede("whatever", "  ", queue_base=qbase)
-    assert decisions.supersede("nope", "dec-x", queue_base=qbase)["status"] \
-        == "not-found"
+    assert (
+        decisions.supersede("nope", "dec-x", queue_base=qbase)["status"] == "not-found"
+    )
     result = _ask(qbase)
     decisions.answer(result["id"], "A.", queue_base=qbase)
     decisions.resolve_decision(result["id"], queue_base=qbase)
@@ -716,21 +803,39 @@ def test_cli_consume_and_supersede_roundtrip(qbase, capsys):
     result = _ask(qbase)
     capsys.readouterr()
 
-    rc = decisions.main(["--queue-dir", str(qbase), "consume", result["id"],
-                         "--json"])
+    rc = decisions.main(["--queue-dir", str(qbase), "consume", result["id"], "--json"])
     assert rc == 1  # still-open refuses
     capsys.readouterr()
 
     decisions.answer(result["id"], "B.", queue_base=qbase)
-    rc = decisions.main(["--queue-dir", str(qbase), "consume", result["id"],
-                         "--consumed-by", "cli-test", "--json"])
+    rc = decisions.main(
+        [
+            "--queue-dir",
+            str(qbase),
+            "consume",
+            result["id"],
+            "--consumed-by",
+            "cli-test",
+            "--json",
+        ]
+    )
     assert rc == 0
     assert json.loads(capsys.readouterr().out)["status"] == "consumed"
 
     other = _ask(qbase)
-    rc = decisions.main(["--queue-dir", str(qbase), "supersede", other["id"],
-                         "--new-decision-id", "dec-replacement",
-                         "--reason", "facts changed", "--json"])
+    rc = decisions.main(
+        [
+            "--queue-dir",
+            str(qbase),
+            "supersede",
+            other["id"],
+            "--new-decision-id",
+            "dec-replacement",
+            "--reason",
+            "facts changed",
+            "--json",
+        ]
+    )
     assert rc == 0
     out = json.loads(capsys.readouterr().out)
     assert out["status"] == "superseded"

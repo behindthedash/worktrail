@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Tests for run_record.py. Run: python3 test_run_record.py"""
+
 import json
 import shutil
 import subprocess
@@ -20,7 +21,6 @@ from worktrail.router.run_record import (
     DECISION_EVENTS,
     IMPLEMENTATION_COMPLETION_STATES,
     RemoteClaimError,
-    _active_conflicts as _active_conflicts_impl,
     _claim_ref,
     _extract_path_candidate,
     _is_stale,
@@ -32,14 +32,25 @@ from worktrail.router.run_record import (
     main,
     record_decision_event,
 )
+from worktrail.router.run_record import (
+    _active_conflicts as _active_conflicts_impl,
+)
 
 
 def _start(tmp, **over):
-    argv = ["start", "--repo", over.get("repo", "/tmp/fake-repo"),
-            "--request", over.get("request", "fix the receipt date"),
-            "--route", over.get("route", "F"),
-            "--risk", over.get("risk", "low"),
-            "--dir", tmp]
+    argv = [
+        "start",
+        "--repo",
+        over.get("repo", "/tmp/fake-repo"),
+        "--request",
+        over.get("request", "fix the receipt date"),
+        "--route",
+        over.get("route", "F"),
+        "--risk",
+        over.get("risk", "low"),
+        "--dir",
+        tmp,
+    ]
     if "routing_decision" in over and over["routing_decision"] is not None:
         argv += ["--routing-decision", json.dumps(over["routing_decision"])]
     if "gates" in over and over["gates"] is not None:
@@ -58,8 +69,18 @@ def _complete_scope_review(path, item="implementation", evidence="tests pass"):
     completion state clears the scope-completeness gate (`_enforce_scope_
     completeness_gate`). Call before any `finish` in these tests whose focus
     is unrelated to scope-completeness itself."""
-    main(["scope-review", path, "--item", item, "--status", "complete",
-          "--evidence", evidence])
+    main(
+        [
+            "scope-review",
+            path,
+            "--item",
+            item,
+            "--status",
+            "complete",
+            "--evidence",
+            evidence,
+        ]
+    )
 
 
 def _legacy_record_text():
@@ -108,9 +129,18 @@ class TestLifecycle(unittest.TestCase):
     def test_start_creates_record_with_required_fields(self):
         res = _start(self.tmp)
         rec = _load(Path(res["path"]))
-        for field in ("run_id", "started_at", "repository", "request_summary",
-                      "selected_route", "risk_level", "status", "decisions",
-                      "deferred_work", "final_status"):
+        for field in (
+            "run_id",
+            "started_at",
+            "repository",
+            "request_summary",
+            "selected_route",
+            "risk_level",
+            "status",
+            "decisions",
+            "deferred_work",
+            "final_status",
+        ):
             self.assertIn(field, rec)
         self.assertEqual(rec["selected_route"], "F")
         self.assertEqual(rec["status"], "route_selected")
@@ -118,9 +148,21 @@ class TestLifecycle(unittest.TestCase):
 
     def test_agent_flag_accepted_values(self):
         for agent in ALLOWED_AGENTS:
-            argv = ["start", "--repo", "/tmp/fake-repo",
-                    "--request", "test agent", "--route", "J",
-                    "--risk", "low", "--agent", agent, "--dir", self.tmp]
+            argv = [
+                "start",
+                "--repo",
+                "/tmp/fake-repo",
+                "--request",
+                "test agent",
+                "--route",
+                "J",
+                "--risk",
+                "low",
+                "--agent",
+                agent,
+                "--dir",
+                self.tmp,
+            ]
             out = StringIO()
             with patch("sys.stdout", out):
                 rc = main(argv)
@@ -131,9 +173,23 @@ class TestLifecycle(unittest.TestCase):
 
     def test_agent_flag_invalid_value_rejected(self):
         with self.assertRaises(SystemExit):
-            main(["start", "--repo", "/tmp/fake-repo",
-                  "--request", "test", "--route", "J",
-                  "--risk", "low", "--agent", "gemini", "--dir", self.tmp])
+            main(
+                [
+                    "start",
+                    "--repo",
+                    "/tmp/fake-repo",
+                    "--request",
+                    "test",
+                    "--route",
+                    "J",
+                    "--risk",
+                    "low",
+                    "--agent",
+                    "gemini",
+                    "--dir",
+                    self.tmp,
+                ]
+            )
 
     def test_agent_flag_omitted_defaults_to_null(self):
         res = _start(self.tmp)
@@ -141,22 +197,36 @@ class TestLifecycle(unittest.TestCase):
         self.assertIsNone(rec["agent"])
 
     def _start_with(self, *extra):
-        argv = ["start", "--repo", "/tmp/fake-repo", "--request", "capability",
-                "--route", "F", "--risk", "medium", "--dir", self.tmp, *extra]
+        argv = [
+            "start",
+            "--repo",
+            "/tmp/fake-repo",
+            "--request",
+            "capability",
+            "--route",
+            "F",
+            "--risk",
+            "medium",
+            "--dir",
+            self.tmp,
+            *extra,
+        ]
         out = StringIO()
         with patch("sys.stdout", out):
             self.assertEqual(main(argv), 0)
         return _load(Path(json.loads(out.getvalue())["path"]))
 
     def test_resolved_capability_and_dispatch_mode_are_persisted(self):
-        rec = self._start_with("--native-skill-available", "false",
-                               "--dispatch-mode", "adapter")
+        rec = self._start_with(
+            "--native-skill-available", "false", "--dispatch-mode", "adapter"
+        )
         self.assertIs(rec["native_skill_available"], False)
         self.assertEqual(rec["dispatch_mode"], "adapter")
 
     def test_native_skill_true_roundtrips_as_a_boolean_not_a_string(self):
-        rec = self._start_with("--native-skill-available", "true",
-                               "--dispatch-mode", "native-skill")
+        rec = self._start_with(
+            "--native-skill-available", "true", "--dispatch-mode", "native-skill"
+        )
         self.assertIs(rec["native_skill_available"], True)
 
     def test_capability_fields_are_absent_when_not_supplied(self):
@@ -171,8 +241,19 @@ class TestLifecycle(unittest.TestCase):
     def test_a_string_spelling_a_bool_literal_survives_as_a_string(self):
         # Bare `true`/`false` is now reserved for real booleans, so a request
         # summary that happens to spell one must not round-trip as a bool.
-        argv = ["start", "--repo", "/tmp/fake-repo", "--request", "true",
-                "--route", "F", "--risk", "medium", "--dir", self.tmp]
+        argv = [
+            "start",
+            "--repo",
+            "/tmp/fake-repo",
+            "--request",
+            "true",
+            "--route",
+            "F",
+            "--risk",
+            "medium",
+            "--dir",
+            self.tmp,
+        ]
         out = StringIO()
         with patch("sys.stdout", out):
             self.assertEqual(main(argv), 0)
@@ -204,8 +285,12 @@ class TestLifecycle(unittest.TestCase):
         rec = _load(Path(res["path"]))
         self.assertEqual(rec["routing_decision"], routing_decision)
         self.assertEqual(rec["routing_decision"]["agent_cli"], "codex")
-        self.assertEqual(rec["routing_decision"]["roles"]["reviewer"]["agent_model"], "sonnet")
-        self.assertEqual(rec["routing_decision"]["fallback"][1]["agent_model"], "safe/model")
+        self.assertEqual(
+            rec["routing_decision"]["roles"]["reviewer"]["agent_model"], "sonnet"
+        )
+        self.assertEqual(
+            rec["routing_decision"]["fallback"][1]["agent_model"], "safe/model"
+        )
 
     def test_start_with_gates_persists_comma_split_list(self):
         res = _start(self.tmp, gates="never_automerge,require_human_approval")
@@ -230,15 +315,42 @@ class TestLifecycle(unittest.TestCase):
         self.assertEqual(
             set(rec),
             {
-                "run_id", "started_at", "completed_at", "repository", "base_branch",
-                "base_commit", "worktree", "request_summary", "selected_route",
-                "route_reason", "risk_level", "agent", "status", "epic", "feature",
-                "specification", "handoffs_consumed", "handoffs_created", "skills_loaded",
-                "subagents_called", "files_changed", "tests_run", "decisions",
+                "run_id",
+                "started_at",
+                "completed_at",
+                "repository",
+                "base_branch",
+                "base_commit",
+                "worktree",
+                "request_summary",
+                "selected_route",
+                "route_reason",
+                "risk_level",
+                "agent",
+                "status",
+                "epic",
+                "feature",
+                "specification",
+                "handoffs_consumed",
+                "handoffs_created",
+                "skills_loaded",
+                "subagents_called",
+                "files_changed",
+                "tests_run",
+                "decisions",
                 "pending_decisions",
-                "assumptions", "deferred_work", "scope_review", "validation_evidence",
-                "failure_recovery", "interventions", "capacity_gate", "pull_request",
-                "merge_decision", "merge_result", "final_status", "updated_at",
+                "assumptions",
+                "deferred_work",
+                "scope_review",
+                "validation_evidence",
+                "failure_recovery",
+                "interventions",
+                "capacity_gate",
+                "pull_request",
+                "merge_decision",
+                "merge_result",
+                "final_status",
+                "updated_at",
             },
         )
 
@@ -247,7 +359,9 @@ class TestLifecycle(unittest.TestCase):
         second = _start(self.tmp, request="second request")
         self.assertNotEqual(first["path"], second["path"])
         self.assertEqual(_load(Path(first["path"]))["request_summary"], "first request")
-        self.assertEqual(_load(Path(second["path"]))["request_summary"], "second request")
+        self.assertEqual(
+            _load(Path(second["path"]))["request_summary"], "second request"
+        )
 
     def test_legacy_record_without_routing_fields_loads_and_renders(self):
         path = Path(self.tmp) / "legacy.yaml"
@@ -263,7 +377,14 @@ class TestLifecycle(unittest.TestCase):
     def test_set_and_append_roundtrip(self):
         res = _start(self.tmp)
         main(["set", res["path"], "status", "executing"])
-        main(["append", res["path"], "decisions", "classified F over G: spec contradicted"])
+        main(
+            [
+                "append",
+                res["path"],
+                "decisions",
+                "classified F over G: spec contradicted",
+            ]
+        )
         main(["append", res["path"], "decisions", "single-worker orchestrate"])
         rec = _load(Path(res["path"]))
         self.assertEqual(rec["status"], "executing")
@@ -281,8 +402,16 @@ class TestLifecycle(unittest.TestCase):
         _complete_scope_review(res["path"])
         out = StringIO()
         with patch("sys.stdout", out):
-            main(["finish", res["path"], "--status", "completed_pr_open",
-                  "--pr", "https://github.com/x/y/pull/1"])
+            main(
+                [
+                    "finish",
+                    res["path"],
+                    "--status",
+                    "completed_pr_open",
+                    "--pr",
+                    "https://github.com/x/y/pull/1",
+                ]
+            )
         rec = _load(Path(res["path"]))
         self.assertEqual(rec["final_status"], "completed_pr_open")
         self.assertEqual(rec["status"], "done")
@@ -293,14 +422,26 @@ class TestLifecycle(unittest.TestCase):
         res = _start(self.tmp, route="F", risk="high")
         _complete_scope_review(res["path"])
         seen = []
-        with patch("worktrail.router.pr_labels.ensure_pr_risk_label",
-                   lambda repo, pr, risk: seen.append((repo, pr, risk))):
+        with patch(
+            "worktrail.router.pr_labels.ensure_pr_risk_label",
+            lambda repo, pr, risk: seen.append((repo, pr, risk)),
+        ):
             out = StringIO()
             with patch("sys.stdout", out):
-                main(["finish", res["path"], "--status", "completed_pr_open",
-                      "--pr", "https://github.com/x/y/pull/3"])
-        self.assertEqual(seen, [(
-            str(Path("/tmp/fake-repo")), "https://github.com/x/y/pull/3", "high")])
+                main(
+                    [
+                        "finish",
+                        res["path"],
+                        "--status",
+                        "completed_pr_open",
+                        "--pr",
+                        "https://github.com/x/y/pull/3",
+                    ]
+                )
+        self.assertEqual(
+            seen,
+            [(str(Path("/tmp/fake-repo")), "https://github.com/x/y/pull/3", "high")],
+        )
 
     def test_finish_skips_label_correction_when_no_pr(self):
         res = _start(self.tmp)
@@ -321,13 +462,17 @@ class TestLifecycle(unittest.TestCase):
         main(["set", res["path"], "pull_request", "https://github.com/x/y/pull/4"])
         _complete_scope_review(res["path"])
         seen = []
-        with patch("worktrail.router.pr_labels.ensure_pr_risk_label",
-                   lambda repo, pr, risk: seen.append((repo, pr, risk))):
+        with patch(
+            "worktrail.router.pr_labels.ensure_pr_risk_label",
+            lambda repo, pr, risk: seen.append((repo, pr, risk)),
+        ):
             out = StringIO()
             with patch("sys.stdout", out):
                 main(["finish", res["path"], "--status", "completed_and_merged"])
-        self.assertEqual(seen, [(
-            str(Path("/tmp/fake-repo")), "https://github.com/x/y/pull/4", "medium")])
+        self.assertEqual(
+            seen,
+            [(str(Path("/tmp/fake-repo")), "https://github.com/x/y/pull/4", "medium")],
+        )
 
     def test_finish_survives_label_correction_failure(self):
         """A `gh`/network failure in the post-hoc label correction must never
@@ -343,8 +488,16 @@ class TestLifecycle(unittest.TestCase):
         with patch("worktrail.router.pr_labels.ensure_pr_risk_label", boom):
             out = StringIO()
             with patch("sys.stdout", out):
-                rc = main(["finish", res["path"], "--status", "completed_pr_open",
-                           "--pr", "https://github.com/x/y/pull/5"])
+                rc = main(
+                    [
+                        "finish",
+                        res["path"],
+                        "--status",
+                        "completed_pr_open",
+                        "--pr",
+                        "https://github.com/x/y/pull/5",
+                    ]
+                )
         self.assertEqual(rc, 0)
         rec = _load(Path(res["path"]))
         self.assertEqual(rec["final_status"], "completed_pr_open")
@@ -364,7 +517,9 @@ class TestLifecycle(unittest.TestCase):
         self.assertEqual(rec["pull_request"], ["https://github.com/x/y/pull/9"])
 
         def unexpected(*_a, **_k):
-            raise AssertionError("must not attempt a PR-label correction for malformed data")
+            raise AssertionError(
+                "must not attempt a PR-label correction for malformed data"
+            )
 
         with patch("worktrail.router.pr_labels.ensure_pr_risk_label", unexpected):
             out = StringIO()
@@ -392,8 +547,16 @@ class TestLifecycle(unittest.TestCase):
 
         with patch("worktrail.router.run_record._query_merge_state", blocked):
             with self.assertRaises(SystemExit):
-                main(["finish", res["path"], "--status", "completed_pr_open",
-                      "--pr", "https://github.com/x/y/pull/10"])
+                main(
+                    [
+                        "finish",
+                        res["path"],
+                        "--status",
+                        "completed_pr_open",
+                        "--pr",
+                        "https://github.com/x/y/pull/10",
+                    ]
+                )
         rec = _load(Path(res["path"]))
         self.assertIsNone(rec["final_status"])
         self.assertEqual(rec["status"], "route_selected")
@@ -406,15 +569,29 @@ class TestLifecycle(unittest.TestCase):
             return {"state": "OPEN", "mergeStateStatus": "CLEAN"}
 
         def review_clean(*_a, **_k):
-            return {"checked": True, "blocking": False, "unresolved_count": 0,
-                    "unaddressed": []}
+            return {
+                "checked": True,
+                "blocking": False,
+                "unresolved_count": 0,
+                "unaddressed": [],
+            }
 
-        with patch("worktrail.router.run_record._query_merge_state", clean), \
-             patch("worktrail.router.check_review_threads.check", review_clean):
+        with (
+            patch("worktrail.router.run_record._query_merge_state", clean),
+            patch("worktrail.router.check_review_threads.check", review_clean),
+        ):
             out = StringIO()
             with patch("sys.stdout", out):
-                rc = main(["finish", res["path"], "--status", "completed_pr_open",
-                           "--pr", "https://github.com/x/y/pull/11"])
+                rc = main(
+                    [
+                        "finish",
+                        res["path"],
+                        "--status",
+                        "completed_pr_open",
+                        "--pr",
+                        "https://github.com/x/y/pull/11",
+                    ]
+                )
         self.assertEqual(rc, 0)
         self.assertEqual(_load(Path(res["path"]))["final_status"], "completed_pr_open")
 
@@ -426,15 +603,31 @@ class TestLifecycle(unittest.TestCase):
         _complete_scope_review(res["path"])
 
         def review_clean(*_a, **_k):
-            return {"checked": True, "blocking": False, "unresolved_count": 0,
-                    "unaddressed": []}
+            return {
+                "checked": True,
+                "blocking": False,
+                "unresolved_count": 0,
+                "unaddressed": [],
+            }
 
-        with patch("worktrail.router.run_record._query_merge_state", lambda *a, **k: None), \
-             patch("worktrail.router.check_review_threads.check", review_clean):
+        with (
+            patch(
+                "worktrail.router.run_record._query_merge_state", lambda *a, **k: None
+            ),
+            patch("worktrail.router.check_review_threads.check", review_clean),
+        ):
             out = StringIO()
             with patch("sys.stdout", out):
-                rc = main(["finish", res["path"], "--status", "completed_pr_open",
-                           "--pr", "https://github.com/x/y/pull/12"])
+                rc = main(
+                    [
+                        "finish",
+                        res["path"],
+                        "--status",
+                        "completed_pr_open",
+                        "--pr",
+                        "https://github.com/x/y/pull/12",
+                    ]
+                )
         self.assertEqual(rc, 0)
         self.assertEqual(_load(Path(res["path"]))["final_status"], "completed_pr_open")
 
@@ -450,17 +643,36 @@ class TestLifecycle(unittest.TestCase):
             return {"state": "MERGED", "mergeStateStatus": "BLOCKED"}
 
         def review_clean(*_a, **_k):
-            return {"checked": True, "blocking": False, "unresolved_count": 0,
-                    "unaddressed": []}
+            return {
+                "checked": True,
+                "blocking": False,
+                "unresolved_count": 0,
+                "unaddressed": [],
+            }
 
-        with patch("worktrail.router.run_record._query_merge_state", merged_but_stale_blocked), \
-             patch("worktrail.router.check_review_threads.check", review_clean):
+        with (
+            patch(
+                "worktrail.router.run_record._query_merge_state",
+                merged_but_stale_blocked,
+            ),
+            patch("worktrail.router.check_review_threads.check", review_clean),
+        ):
             out = StringIO()
             with patch("sys.stdout", out):
-                rc = main(["finish", res["path"], "--status", "completed_and_merged",
-                           "--pr", "https://github.com/x/y/pull/13"])
+                rc = main(
+                    [
+                        "finish",
+                        res["path"],
+                        "--status",
+                        "completed_and_merged",
+                        "--pr",
+                        "https://github.com/x/y/pull/13",
+                    ]
+                )
         self.assertEqual(rc, 0)
-        self.assertEqual(_load(Path(res["path"]))["final_status"], "completed_and_merged")
+        self.assertEqual(
+            _load(Path(res["path"]))["final_status"], "completed_and_merged"
+        )
 
     def test_finish_skips_merge_state_check_when_no_pr(self):
         res = _start(self.tmp, route="F")
@@ -485,15 +697,29 @@ class TestLifecycle(unittest.TestCase):
             raise FileNotFoundError(2, "No such file or directory", "gh")
 
         def review_clean(*_a, **_k):
-            return {"checked": True, "blocking": False, "unresolved_count": 0,
-                    "unaddressed": []}
+            return {
+                "checked": True,
+                "blocking": False,
+                "unresolved_count": 0,
+                "unaddressed": [],
+            }
 
-        with patch("worktrail.router.run_record._query_merge_state", boom), \
-             patch("worktrail.router.check_review_threads.check", review_clean):
+        with (
+            patch("worktrail.router.run_record._query_merge_state", boom),
+            patch("worktrail.router.check_review_threads.check", review_clean),
+        ):
             out = StringIO()
             with patch("sys.stdout", out):
-                rc = main(["finish", res["path"], "--status", "completed_pr_open",
-                           "--pr", "https://github.com/x/y/pull/14"])
+                rc = main(
+                    [
+                        "finish",
+                        res["path"],
+                        "--status",
+                        "completed_pr_open",
+                        "--pr",
+                        "https://github.com/x/y/pull/14",
+                    ]
+                )
         self.assertEqual(rc, 0)
         self.assertEqual(_load(Path(res["path"]))["final_status"], "completed_pr_open")
 
@@ -507,13 +733,25 @@ class TestLifecycle(unittest.TestCase):
         _complete_scope_review(res["path"])
 
         def blocking(*_a, **_k):
-            return {"checked": True, "blocking": True, "unresolved_count": 1,
-                    "unaddressed": [{"path": "x.py", "line": 1}]}
+            return {
+                "checked": True,
+                "blocking": True,
+                "unresolved_count": 1,
+                "unaddressed": [{"path": "x.py", "line": 1}],
+            }
 
         with patch("worktrail.router.check_review_threads.check", blocking):
             with self.assertRaises(SystemExit):
-                main(["finish", res["path"], "--status", "completed_pr_open",
-                      "--pr", "https://github.com/x/y/pull/6"])
+                main(
+                    [
+                        "finish",
+                        res["path"],
+                        "--status",
+                        "completed_pr_open",
+                        "--pr",
+                        "https://github.com/x/y/pull/6",
+                    ]
+                )
         rec = _load(Path(res["path"]))
         self.assertIsNone(rec["final_status"])
         self.assertEqual(rec["status"], "route_selected")
@@ -523,14 +761,26 @@ class TestLifecycle(unittest.TestCase):
         _complete_scope_review(res["path"])
 
         def clean(*_a, **_k):
-            return {"checked": True, "blocking": False, "unresolved_count": 0,
-                    "unaddressed": []}
+            return {
+                "checked": True,
+                "blocking": False,
+                "unresolved_count": 0,
+                "unaddressed": [],
+            }
 
         with patch("worktrail.router.check_review_threads.check", clean):
             out = StringIO()
             with patch("sys.stdout", out):
-                rc = main(["finish", res["path"], "--status", "completed_pr_open",
-                           "--pr", "https://github.com/x/y/pull/7"])
+                rc = main(
+                    [
+                        "finish",
+                        res["path"],
+                        "--status",
+                        "completed_pr_open",
+                        "--pr",
+                        "https://github.com/x/y/pull/7",
+                    ]
+                )
         self.assertEqual(rc, 0)
         self.assertEqual(_load(Path(res["path"]))["final_status"], "completed_pr_open")
 
@@ -547,8 +797,16 @@ class TestLifecycle(unittest.TestCase):
         with patch("worktrail.router.check_review_threads.check", unavailable):
             out = StringIO()
             with patch("sys.stdout", out):
-                rc = main(["finish", res["path"], "--status", "completed_pr_open",
-                           "--pr", "https://github.com/x/y/pull/8"])
+                rc = main(
+                    [
+                        "finish",
+                        res["path"],
+                        "--status",
+                        "completed_pr_open",
+                        "--pr",
+                        "https://github.com/x/y/pull/8",
+                    ]
+                )
         self.assertEqual(rc, 0)
         self.assertEqual(_load(Path(res["path"]))["final_status"], "completed_pr_open")
 
@@ -577,8 +835,16 @@ class TestLifecycle(unittest.TestCase):
         with patch("worktrail.router.check_review_threads.check", boom):
             out = StringIO()
             with patch("sys.stdout", out):
-                rc = main(["finish", res["path"], "--status", "completed_pr_open",
-                           "--pr", "https://github.com/x/y/pull/9"])
+                rc = main(
+                    [
+                        "finish",
+                        res["path"],
+                        "--status",
+                        "completed_pr_open",
+                        "--pr",
+                        "https://github.com/x/y/pull/9",
+                    ]
+                )
         self.assertEqual(rc, 0)
         self.assertEqual(_load(Path(res["path"]))["final_status"], "completed_pr_open")
 
@@ -593,23 +859,51 @@ class TestLifecycle(unittest.TestCase):
         the gap uniformly."""
         res = _start(self.tmp, route="F")
         with self.assertRaises(SystemExit):
-            main(["finish", res["path"], "--status", "completed_pr_open",
-                  "--pr", "https://github.com/x/y/pull/10"])
+            main(
+                [
+                    "finish",
+                    res["path"],
+                    "--status",
+                    "completed_pr_open",
+                    "--pr",
+                    "https://github.com/x/y/pull/10",
+                ]
+            )
         rec = _load(Path(res["path"]))
         self.assertIsNone(rec["final_status"])
 
     def test_finish_blocks_on_blocked_scope_item(self):
         res = _start(self.tmp, route="F")
-        main(["scope-review", res["path"], "--item", "edge case handling",
-              "--status", "blocked", "--reason", "waiting on API access"])
+        main(
+            [
+                "scope-review",
+                res["path"],
+                "--item",
+                "edge case handling",
+                "--status",
+                "blocked",
+                "--reason",
+                "waiting on API access",
+            ]
+        )
         with self.assertRaises(SystemExit):
             main(["finish", res["path"], "--status", "completed_pr_open"])
         self.assertIsNone(_load(Path(res["path"]))["final_status"])
 
     def test_finish_blocks_on_out_of_scope_item_without_reason(self):
         res = _start(self.tmp, route="F")
-        main(["scope-review", res["path"], "--item", "unrelated cleanup",
-              "--status", "out-of-scope", "--reason", "not needed"])
+        main(
+            [
+                "scope-review",
+                res["path"],
+                "--item",
+                "unrelated cleanup",
+                "--status",
+                "out-of-scope",
+                "--reason",
+                "not needed",
+            ]
+        )
         with self.assertRaises(SystemExit):
             main(["finish", res["path"], "--status", "completed_pr_open"])
         self.assertIsNone(_load(Path(res["path"]))["final_status"])
@@ -625,9 +919,18 @@ class TestLifecycle(unittest.TestCase):
 
     def test_finish_proceeds_with_properly_reasoned_out_of_scope_item(self):
         res = _start(self.tmp, route="F")
-        main(["scope-review", res["path"], "--item", "unrelated cleanup",
-              "--status", "out-of-scope",
-              "--reason", "different purpose: belongs in its own PR"])
+        main(
+            [
+                "scope-review",
+                res["path"],
+                "--item",
+                "unrelated cleanup",
+                "--status",
+                "out-of-scope",
+                "--reason",
+                "different purpose: belongs in its own PR",
+            ]
+        )
         out = StringIO()
         with patch("sys.stdout", out):
             rc = main(["finish", res["path"], "--status", "completed_pr_open"])
@@ -640,7 +943,8 @@ class TestLifecycle(unittest.TestCase):
             rc = main(["finish", res["path"], "--status", "investigation_complete"])
         self.assertEqual(rc, 0)
         self.assertEqual(
-            _load(Path(res["path"]))["final_status"], "investigation_complete")
+            _load(Path(res["path"]))["final_status"], "investigation_complete"
+        )
 
     def test_scope_completeness_gate_unconditional_on_route(self):
         """Mirrors the label-correction/review-thread gates: this must not be
@@ -654,21 +958,38 @@ class TestLifecycle(unittest.TestCase):
 
     def test_route_a_blocks_implementation_completion_without_decision(self):
         res = _start(self.tmp, route="A")
-        for state in ("completed_and_merged", "completed_pr_open",
-                      "completed_awaiting_human_approval"):
+        for state in (
+            "completed_and_merged",
+            "completed_pr_open",
+            "completed_awaiting_human_approval",
+        ):
             with self.assertRaises(SystemExit):
                 main(["finish", res["path"], "--status", state])
             self.assertIsNone(_load(Path(res["path"]))["final_status"])
 
     def test_route_a_allows_implementation_completion_with_recorded_decision(self):
         res = _start(self.tmp, route="A")
-        main(["append", res["path"], "decisions",
-              "proceeding to Route D per user approval"])
+        main(
+            [
+                "append",
+                res["path"],
+                "decisions",
+                "proceeding to Route D per user approval",
+            ]
+        )
         _complete_scope_review(res["path"])
         out = StringIO()
         with patch("sys.stdout", out):
-            main(["finish", res["path"], "--status", "completed_pr_open",
-                  "--pr", "https://github.com/x/y/pull/2"])
+            main(
+                [
+                    "finish",
+                    res["path"],
+                    "--status",
+                    "completed_pr_open",
+                    "--pr",
+                    "https://github.com/x/y/pull/2",
+                ]
+            )
         rec = _load(Path(res["path"]))
         self.assertEqual(rec["final_status"], "completed_pr_open")
 
@@ -686,7 +1007,9 @@ class TestLifecycle(unittest.TestCase):
         out = StringIO()
         with patch("sys.stdout", out):
             main(["finish", res["path"], "--status", "completed_and_merged"])
-        self.assertEqual(_load(Path(res["path"]))["final_status"], "completed_and_merged")
+        self.assertEqual(
+            _load(Path(res["path"]))["final_status"], "completed_and_merged"
+        )
 
     def test_all_ten_completion_states_accepted(self):
         self.assertEqual(len(COMPLETION_STATES), 10)
@@ -702,8 +1025,14 @@ class TestLifecycle(unittest.TestCase):
     def test_refuses_to_record_credentials(self):
         res = _start(self.tmp)
         with self.assertRaises(SystemExit):
-            main(["append", res["path"], "decisions",
-                  "set api_key=sk-live-123456 in env"])
+            main(
+                [
+                    "append",
+                    res["path"],
+                    "decisions",
+                    "set api_key=sk-live-123456 in env",
+                ]
+            )
 
     def test_values_with_special_chars_roundtrip(self):
         res = _start(self.tmp)
@@ -714,10 +1043,30 @@ class TestLifecycle(unittest.TestCase):
 
     def test_intervention_logs_structured_entries(self):
         res = _start(self.tmp)
-        main(["intervention", res["path"], "--category", "grounding",
-              "--minutes", "12", "--tokens", "4000", "--note", "found existing module"])
-        main(["intervention", res["path"], "--category", "quota_wait",
-              "--note", "session limit; slept until reset"])
+        main(
+            [
+                "intervention",
+                res["path"],
+                "--category",
+                "grounding",
+                "--minutes",
+                "12",
+                "--tokens",
+                "4000",
+                "--note",
+                "found existing module",
+            ]
+        )
+        main(
+            [
+                "intervention",
+                res["path"],
+                "--category",
+                "quota_wait",
+                "--note",
+                "session limit; slept until reset",
+            ]
+        )
         rec = _load(Path(res["path"]))
         self.assertEqual(len(rec["interventions"]), 2)
         self.assertIn("[grounding]", rec["interventions"][0])
@@ -731,17 +1080,27 @@ class TestLifecycle(unittest.TestCase):
 
     def test_capacity_gate_is_structured(self):
         res = _start(self.tmp)
-        main([
-            "capacity-gate", res["path"],
-            "--provider", "claude:sonnet",
-            "--provider", "opencode:safe/model",
-            "--failure-class", "transport",
-            "--retry-after", "2026-07-20T21:00:00+00:00",
-            "--note", "all configured providers gated",
-        ])
+        main(
+            [
+                "capacity-gate",
+                res["path"],
+                "--provider",
+                "claude:sonnet",
+                "--provider",
+                "opencode:safe/model",
+                "--failure-class",
+                "transport",
+                "--retry-after",
+                "2026-07-20T21:00:00+00:00",
+                "--note",
+                "all configured providers gated",
+            ]
+        )
         rec = _load(Path(res["path"]))
         self.assertEqual(rec["capacity_gate"]["status"], "blocked")
-        self.assertEqual(rec["capacity_gate"]["providers"], ["claude:sonnet", "opencode:safe/model"])
+        self.assertEqual(
+            rec["capacity_gate"]["providers"], ["claude:sonnet", "opencode:safe/model"]
+        )
         self.assertEqual(rec["capacity_gate"]["failure_class"], "transport")
 
     def test_capacity_gate_handles_chain_exhaustion_same_as_single_provider(self):
@@ -756,14 +1115,22 @@ class TestLifecycle(unittest.TestCase):
             ],
         }
         res = _start(self.tmp, routing_decision=routing_decision)
-        main([
-            "capacity-gate", res["path"],
-            "--provider", "claude:sonnet",
-            "--provider", "codex:opus",
-            "--provider", "opencode:safe/model",
-            "--failure-class", "capacity",
-            "--note", "all fallback providers exhausted",
-        ])
+        main(
+            [
+                "capacity-gate",
+                res["path"],
+                "--provider",
+                "claude:sonnet",
+                "--provider",
+                "codex:opus",
+                "--provider",
+                "opencode:safe/model",
+                "--failure-class",
+                "capacity",
+                "--note",
+                "all fallback providers exhausted",
+            ]
+        )
         rec = _load(Path(res["path"]))
         self.assertEqual(rec["status"], "executing")
         self.assertEqual(
@@ -774,15 +1141,29 @@ class TestLifecycle(unittest.TestCase):
 
     def test_scope_review_records_completion_evidence(self):
         res = _start(self.tmp)
-        main(["scope-review", res["path"], "--item", "seed handoff",
-              "--status", "complete", "--evidence", "go_seed self-test"])
+        main(
+            [
+                "scope-review",
+                res["path"],
+                "--item",
+                "seed handoff",
+                "--status",
+                "complete",
+                "--evidence",
+                "go_seed self-test",
+            ]
+        )
         rec = _load(Path(res["path"]))
-        self.assertEqual(rec["scope_review"], ["complete | seed handoff | go_seed self-test"])
+        self.assertEqual(
+            rec["scope_review"], ["complete | seed handoff | go_seed self-test"]
+        )
 
     def test_scope_review_requires_detail(self):
         res = _start(self.tmp)
         with self.assertRaises(SystemExit):
-            main(["scope-review", res["path"], "--item", "smoke", "--status", "complete"])
+            main(
+                ["scope-review", res["path"], "--item", "smoke", "--status", "complete"]
+            )
 
 
 class TestScopeReviewEmptyDiffCrossCheck(unittest.TestCase):
@@ -808,40 +1189,57 @@ class TestScopeReviewEmptyDiffCrossCheck(unittest.TestCase):
         self._git("commit", "-m", "initial")
         self.base_commit = subprocess.run(
             ["git", "-C", str(self.repo_dir), "rev-parse", "HEAD"],
-            check=True, capture_output=True, text=True,
+            check=True,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
 
     def _git(self, *args):
-        subprocess.run(["git", "-C", str(self.repo_dir), *args], check=True,
-                        capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo_dir), *args], check=True, capture_output=True
+        )
 
     def test_no_complete_entry_is_fail_open(self):
-        record = {"scope_review": [], "worktree": str(self.repo_dir),
-                   "base_commit": self.base_commit}
+        record = {
+            "scope_review": [],
+            "worktree": str(self.repo_dir),
+            "base_commit": self.base_commit,
+        }
         self.assertIsNone(run_record._scope_review_worktree_empty_diff(record))
 
     def test_missing_worktree_field_is_fail_open(self):
-        record = {"scope_review": ["complete | x | evidence"],
-                   "worktree": None, "base_commit": self.base_commit}
+        record = {
+            "scope_review": ["complete | x | evidence"],
+            "worktree": None,
+            "base_commit": self.base_commit,
+        }
         self.assertIsNone(run_record._scope_review_worktree_empty_diff(record))
 
     def test_missing_base_commit_is_fail_open(self):
-        record = {"scope_review": ["complete | x | evidence"],
-                   "worktree": str(self.repo_dir), "base_commit": None}
+        record = {
+            "scope_review": ["complete | x | evidence"],
+            "worktree": str(self.repo_dir),
+            "base_commit": None,
+        }
         self.assertIsNone(run_record._scope_review_worktree_empty_diff(record))
 
     def test_worktree_gone_is_fail_open(self):
-        record = {"scope_review": ["complete | x | evidence"],
-                   "worktree": str(Path(self.tmp) / "gone"),
-                   "base_commit": self.base_commit}
+        record = {
+            "scope_review": ["complete | x | evidence"],
+            "worktree": str(Path(self.tmp) / "gone"),
+            "base_commit": self.base_commit,
+        }
         self.assertIsNone(run_record._scope_review_worktree_empty_diff(record))
 
     def test_real_diff_vs_base_passes(self):
         (self.repo_dir / "tracked.md").write_text("changed", encoding="utf-8")
         self._git("add", "tracked.md")
         self._git("commit", "-m", "real change")
-        record = {"scope_review": ["complete | x | evidence"],
-                   "worktree": str(self.repo_dir), "base_commit": self.base_commit}
+        record = {
+            "scope_review": ["complete | x | evidence"],
+            "worktree": str(self.repo_dir),
+            "base_commit": self.base_commit,
+        }
         self.assertIsNone(run_record._scope_review_worktree_empty_diff(record))
 
     def test_untracked_new_file_counts_as_real_diff(self):
@@ -849,13 +1247,19 @@ class TestScopeReviewEmptyDiffCrossCheck(unittest.TestCase):
         shows a brand-new untracked file, so the check must also honor `git
         status --porcelain`."""
         (self.repo_dir / "new.md").write_text("new", encoding="utf-8")
-        record = {"scope_review": ["complete | x | evidence"],
-                   "worktree": str(self.repo_dir), "base_commit": self.base_commit}
+        record = {
+            "scope_review": ["complete | x | evidence"],
+            "worktree": str(self.repo_dir),
+            "base_commit": self.base_commit,
+        }
         self.assertIsNone(run_record._scope_review_worktree_empty_diff(record))
 
     def test_empty_diff_and_no_untracked_files_flags_mismatch(self):
-        record = {"scope_review": ["complete | x | evidence"],
-                   "worktree": str(self.repo_dir), "base_commit": self.base_commit}
+        record = {
+            "scope_review": ["complete | x | evidence"],
+            "worktree": str(self.repo_dir),
+            "base_commit": self.base_commit,
+        }
         result = run_record._scope_review_worktree_empty_diff(record)
         self.assertIsNotNone(result)
         self.assertIn("empty diff", result)
@@ -882,8 +1286,7 @@ class TestScopeReviewEmptyDiffCrossCheck(unittest.TestCase):
         with patch("sys.stdout", out):
             rc = main(["finish", res["path"], "--status", "completed_pr_open"])
         self.assertEqual(rc, 0)
-        self.assertEqual(
-            _load(Path(res["path"]))["final_status"], "completed_pr_open")
+        self.assertEqual(_load(Path(res["path"]))["final_status"], "completed_pr_open")
 
 
 class TestExtractPathCandidate(unittest.TestCase):
@@ -919,8 +1322,9 @@ class TestIsStale(unittest.TestCase):
         self.worktree = Path(self.tmp) / "worktree-does-not-exist"
 
     def _git(self, *args):
-        subprocess.run(["git", "-C", str(self.repo_dir), *args], check=True,
-                        capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo_dir), *args], check=True, capture_output=True
+        )
 
     def test_worktree_exists_is_live(self):
         existing_worktree = Path(self.tmp) / "still-here"
@@ -955,10 +1359,15 @@ class TestIsStale(unittest.TestCase):
 
 
 def _active_conflicts(tmp, **over):
-    argv = ["active-conflicts",
-            "--dir", tmp,
-            "--repo", over.get("repo", "/tmp/fake-repo"),
-            "--specification", over.get("specification", "spec-a")]
+    argv = [
+        "active-conflicts",
+        "--dir",
+        tmp,
+        "--repo",
+        over.get("repo", "/tmp/fake-repo"),
+        "--specification",
+        over.get("specification", "spec-a"),
+    ]
     if "exclude" in over:
         argv += ["--exclude", over["exclude"]]
     out = StringIO()
@@ -1001,15 +1410,18 @@ class TestActiveConflicts(unittest.TestCase):
         mine = _start(self.tmp, request="my run")
         main(["set", mine["path"], "specification", "spec-a"])
 
-        results = _active_conflicts(self.tmp, specification="spec-a", exclude=mine["path"])
+        results = _active_conflicts(
+            self.tmp, specification="spec-a", exclude=mine["path"]
+        )
 
         self.assertEqual(results, {"live": [], "stale": [], "warnings": []})
 
     def test_missing_run_record_directory_returns_empty_list(self):
         empty_dir = tempfile.mkdtemp()
 
-        results = _active_conflicts(empty_dir, repo="/tmp/never-seen-repo",
-                                     specification="spec-a")
+        results = _active_conflicts(
+            empty_dir, repo="/tmp/never-seen-repo", specification="spec-a"
+        )
 
         self.assertEqual(results, {"live": [], "stale": [], "warnings": []})
 
@@ -1062,10 +1474,12 @@ class TestActiveConflicts(unittest.TestCase):
         # Both sessions scan before either has tagged its own record with the
         # spec_id it's about to implement -- this is the exact interleaving
         # that makes the read-only scan insufficient.
-        scan_a = _active_conflicts(self.tmp, specification="spec-race",
-                                    exclude=session_a["path"])
-        scan_b = _active_conflicts(self.tmp, specification="spec-race",
-                                    exclude=session_b["path"])
+        scan_a = _active_conflicts(
+            self.tmp, specification="spec-race", exclude=session_a["path"]
+        )
+        scan_b = _active_conflicts(
+            self.tmp, specification="spec-race", exclude=session_b["path"]
+        )
         empty = {"live": [], "stale": [], "warnings": []}
         self.assertEqual(scan_a, empty, "session A's scan should see no conflict yet")
         self.assertEqual(scan_b, empty, "session B's scan should see no conflict yet")
@@ -1107,8 +1521,9 @@ class TestActiveConflictsPartitioning(unittest.TestCase):
         self.repo_dir = self.runs_dir / "fake-repo"
 
     def _git(self, *args):
-        subprocess.run(["git", "-C", str(self.repo_root), *args], check=True,
-                        capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo_root), *args], check=True, capture_output=True
+        )
 
     def test_partitions_live_stale_and_excludes_non_matching_and_terminal(self):
         live = _start(str(self.runs_dir), request="live run")
@@ -1128,7 +1543,14 @@ class TestActiveConflictsPartitioning(unittest.TestCase):
         non_matching = _start(str(self.runs_dir), request="different specification")
         main(["set", non_matching["path"], "specification", "spec-b"])
         main(["set", non_matching["path"], "base_branch", "main"])
-        main(["set", non_matching["path"], "worktree", str(Path(self.tmp) / "worktree-gone-b")])
+        main(
+            [
+                "set",
+                non_matching["path"],
+                "worktree",
+                str(Path(self.tmp) / "worktree-gone-b"),
+            ]
+        )
         main(["append", non_matching["path"], "files_changed", "tracked.md"])
 
         terminal = _start(str(self.runs_dir), request="terminal run")
@@ -1226,8 +1648,9 @@ class TestReconcile(unittest.TestCase):
         self.runs_dir = Path(self.tmp) / "runs"
 
     def _git(self, *args):
-        subprocess.run(["git", "-C", str(self.repo_root), *args], check=True,
-                        capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo_root), *args], check=True, capture_output=True
+        )
 
     def _stale_run(self, request):
         res = _start(str(self.runs_dir), request=request, repo=str(self.repo_root))
@@ -1273,11 +1696,14 @@ class TestReconcile(unittest.TestCase):
         rc, out = _reconcile(run["path"])
 
         self.assertEqual(rc, 0)
-        self.assertEqual(out, {
-            "status": "not_stale",
-            "run_id": run["run_id"],
-            "path": run["path"],
-        })
+        self.assertEqual(
+            out,
+            {
+                "status": "not_stale",
+                "run_id": run["run_id"],
+                "path": run["path"],
+            },
+        )
         after = Path(run["path"]).read_text(encoding="utf-8")
         self.assertEqual(before, after)
         rec = _load(Path(run["path"]))
@@ -1359,7 +1785,9 @@ class TestClaim(unittest.TestCase):
         self.assertEqual(out_b["status"], "claimed")
         self.assertNotEqual(session_a["run_id"], session_b["run_id"])
 
-    def test_claim_without_remote_makes_no_git_network_calls_and_behaves_as_before(self):
+    def test_claim_without_remote_makes_no_git_network_calls_and_behaves_as_before(
+        self,
+    ):
         """Regression guard: adding `--remote` must not change default `claim`
         behavior or introduce any git subprocess call on the plain path --
         `_run_remote_git` is the sole `subprocess.run` call site for the
@@ -1442,15 +1870,24 @@ def remote_origin(tmp_path: Path):
     subprocess.run(["git", "init", "--quiet", "--bare", str(bare_dir)], check=True)
 
     clone_dir = tmp_path / "clone"
-    subprocess.run(["git", "clone", "--quiet", str(bare_dir), str(clone_dir)], check=True)
-    subprocess.run(["git", "-C", str(clone_dir), "config", "user.email", "test@example.com"], check=True)
-    subprocess.run(["git", "-C", str(clone_dir), "config", "user.name", "Test"], check=True)
+    subprocess.run(
+        ["git", "clone", "--quiet", str(bare_dir), str(clone_dir)], check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(clone_dir), "config", "user.email", "test@example.com"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(clone_dir), "config", "user.name", "Test"], check=True
+    )
 
     return bare_dir, clone_dir
 
 
 class TestRemoteClaim:
-    def test_first_claim_pushes_ref_and_records_remote_true(self, remote_origin, tmp_path):
+    def test_first_claim_pushes_ref_and_records_remote_true(
+        self, remote_origin, tmp_path
+    ):
         bare_dir, clone_dir = remote_origin
         run_dir = tmp_path / "runs"
         run_dir.mkdir()
@@ -1458,7 +1895,9 @@ class TestRemoteClaim:
 
         out = StringIO()
         with patch("sys.stdout", out):
-            rc = main(["claim", res["path"], "--specification", "spec-remote", "--remote"])
+            rc = main(
+                ["claim", res["path"], "--specification", "spec-remote", "--remote"]
+            )
         result = json.loads(out.getvalue())
 
         assert rc == 0
@@ -1467,7 +1906,8 @@ class TestRemoteClaim:
         ref = _claim_ref("spec-remote")
         pushed = subprocess.run(
             ["git", "-C", str(bare_dir), "rev-parse", "--verify", ref],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         assert pushed.returncode == 0
         assert pushed.stdout.strip() != ""
@@ -1490,19 +1930,39 @@ class TestRemoteClaim:
         run_dir_a.mkdir()
         run_dir_b = tmp_path / "runs-b"
         run_dir_b.mkdir()
-        res_a = _start(str(run_dir_a), repo=str(clone_dir), request="session A remote claim")
-        res_b = _start(str(run_dir_b), repo=str(clone_dir), request="session B remote claim")
+        res_a = _start(
+            str(run_dir_a), repo=str(clone_dir), request="session A remote claim"
+        )
+        res_b = _start(
+            str(run_dir_b), repo=str(clone_dir), request="session B remote claim"
+        )
 
         out_a = StringIO()
         with patch("sys.stdout", out_a):
-            rc_a = main(["claim", res_a["path"], "--specification", "spec-remote-second", "--remote"])
+            rc_a = main(
+                [
+                    "claim",
+                    res_a["path"],
+                    "--specification",
+                    "spec-remote-second",
+                    "--remote",
+                ]
+            )
         result_a = json.loads(out_a.getvalue())
         assert rc_a == 0
         assert result_a["status"] == "claimed"
 
         out_b = StringIO()
         with patch("sys.stdout", out_b):
-            rc_b = main(["claim", res_b["path"], "--specification", "spec-remote-second", "--remote"])
+            rc_b = main(
+                [
+                    "claim",
+                    res_b["path"],
+                    "--specification",
+                    "spec-remote-second",
+                    "--remote",
+                ]
+            )
         result_b = json.loads(out_b.getvalue())
 
         assert rc_b == 1
@@ -1513,7 +1973,9 @@ class TestRemoteClaim:
         assert not lock_path_b.exists()
         assert _load(Path(res_b["path"]))["specification"] is None
 
-    def test_second_claim_after_ttl_expiry_succeeds_via_stale_reclaim(self, remote_origin, tmp_path):
+    def test_second_claim_after_ttl_expiry_succeeds_via_stale_reclaim(
+        self, remote_origin, tmp_path
+    ):
         """First claim publishes with `--remote-ttl-seconds 0`, so it's stale
         the instant a second reader checks it. A short sleep crosses the
         claim payload's second-precision `claimed_at` boundary, guaranteeing
@@ -1525,15 +1987,26 @@ class TestRemoteClaim:
         run_dir_a.mkdir()
         run_dir_b = tmp_path / "runs-b"
         run_dir_b.mkdir()
-        res_a = _start(str(run_dir_a), repo=str(clone_dir), request="session A remote claim")
-        res_b = _start(str(run_dir_b), repo=str(clone_dir), request="session B remote claim")
+        res_a = _start(
+            str(run_dir_a), repo=str(clone_dir), request="session A remote claim"
+        )
+        res_b = _start(
+            str(run_dir_b), repo=str(clone_dir), request="session B remote claim"
+        )
 
         out_a = StringIO()
         with patch("sys.stdout", out_a):
-            rc_a = main([
-                "claim", res_a["path"], "--specification", "spec-remote-stale", "--remote",
-                "--remote-ttl-seconds", "0",
-            ])
+            rc_a = main(
+                [
+                    "claim",
+                    res_a["path"],
+                    "--specification",
+                    "spec-remote-stale",
+                    "--remote",
+                    "--remote-ttl-seconds",
+                    "0",
+                ]
+            )
         result_a = json.loads(out_a.getvalue())
         assert rc_a == 0
         assert result_a["status"] == "claimed"
@@ -1542,7 +2015,15 @@ class TestRemoteClaim:
 
         out_b = StringIO()
         with patch("sys.stdout", out_b):
-            rc_b = main(["claim", res_b["path"], "--specification", "spec-remote-stale", "--remote"])
+            rc_b = main(
+                [
+                    "claim",
+                    res_b["path"],
+                    "--specification",
+                    "spec-remote-stale",
+                    "--remote",
+                ]
+            )
         result_b = json.loads(out_b.getvalue())
 
         assert rc_b == 0
@@ -1551,7 +2032,8 @@ class TestRemoteClaim:
         ref = _claim_ref("spec-remote-stale")
         pushed = subprocess.run(
             ["git", "-C", str(bare_dir), "rev-parse", "--verify", ref],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         assert pushed.returncode == 0
 
@@ -1560,7 +2042,9 @@ class TestRemoteClaim:
         assert lock_b["run_id"] == res_b["run_id"]
         assert _load(Path(res_b["path"]))["specification"] == "spec-remote-stale"
 
-    def test_concurrent_reclaim_of_same_stale_sha_exactly_one_succeeds(self, remote_origin, tmp_path):
+    def test_concurrent_reclaim_of_same_stale_sha_exactly_one_succeeds(
+        self, remote_origin, tmp_path
+    ):
         """Two machines racing a reclaim both read the same stale claim SHA
         before either pushes, so both compute their `--force-with-lease`
         check against that identical pre-read SHA. Git's compare-and-swap on
@@ -1585,12 +2069,15 @@ class TestRemoteClaim:
 
         pushed = subprocess.run(
             ["git", "-C", str(bare_dir), "rev-parse", "--verify", ref],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         assert pushed.returncode == 0
         assert pushed.stdout.strip() == winner_sha
 
-    def test_finish_on_remote_claim_deletes_the_remote_ref(self, remote_origin, tmp_path):
+    def test_finish_on_remote_claim_deletes_the_remote_ref(
+        self, remote_origin, tmp_path
+    ):
         bare_dir, clone_dir = remote_origin
         run_dir = tmp_path / "runs"
         run_dir.mkdir()
@@ -1598,7 +2085,15 @@ class TestRemoteClaim:
 
         out = StringIO()
         with patch("sys.stdout", out):
-            rc = main(["claim", res["path"], "--specification", "spec-remote-finish", "--remote"])
+            rc = main(
+                [
+                    "claim",
+                    res["path"],
+                    "--specification",
+                    "spec-remote-finish",
+                    "--remote",
+                ]
+            )
         result = json.loads(out.getvalue())
         assert rc == 0
         assert result["status"] == "claimed"
@@ -1606,7 +2101,8 @@ class TestRemoteClaim:
         ref = _claim_ref("spec-remote-finish")
         pushed = subprocess.run(
             ["git", "-C", str(bare_dir), "ls-remote", str(bare_dir), ref],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         assert pushed.stdout.strip() != ""
 
@@ -1617,12 +2113,15 @@ class TestRemoteClaim:
 
         deleted = subprocess.run(
             ["git", "-C", str(bare_dir), "ls-remote", str(bare_dir), ref],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         assert deleted.returncode == 0
         assert deleted.stdout.strip() == ""
 
-    def test_finish_still_completes_normally_when_remote_delete_fails(self, remote_origin, tmp_path):
+    def test_finish_still_completes_normally_when_remote_delete_fails(
+        self, remote_origin, tmp_path
+    ):
         """The bare repo backing `origin` is removed after the claim succeeds,
         so `_delete_remote_claim`'s `git push --delete` has nowhere to reach --
         this must stay confined to a logged warning and never surface in
@@ -1635,7 +2134,15 @@ class TestRemoteClaim:
 
         out = StringIO()
         with patch("sys.stdout", out):
-            rc = main(["claim", res["path"], "--specification", "spec-remote-delete-fails", "--remote"])
+            rc = main(
+                [
+                    "claim",
+                    res["path"],
+                    "--specification",
+                    "spec-remote-delete-fails",
+                    "--remote",
+                ]
+            )
         result = json.loads(out.getvalue())
         assert rc == 0
         assert result["status"] == "claimed"
@@ -1678,7 +2185,8 @@ class TestPrune(unittest.TestCase):
     def _age(self, path, days_ago):
         ts = (
             f"2020-01-{max(1, 28 - days_ago):02d}T00:00:00+0000"
-            if days_ago < 27 else "2020-01-01T00:00:00+0000"
+            if days_ago < 27
+            else "2020-01-01T00:00:00+0000"
         )
         main(["set", path, "started_at", ts])
         main(["finish", path, "--status", "investigation_complete"])
@@ -1701,7 +2209,9 @@ class TestPrune(unittest.TestCase):
     def test_keep_days_overrides_keep_count_for_recent_records(self):
         paths = [_start(self.tmp, request=f"run {i}")["path"] for i in range(3)]
         for p in paths:
-            main(["finish", p, "--status", "investigation_complete"])  # started_at stays "now"
+            main(
+                ["finish", p, "--status", "investigation_complete"]
+            )  # started_at stays "now"
 
         result = _prune(self.tmp, keep_count=0, keep_days=30)
 
@@ -1780,7 +2290,13 @@ class TestPrune(unittest.TestCase):
 
 
 def _sweep_orphans(tmp, **over):
-    argv = ["sweep-orphans", "--dir", tmp, "--status", over.get("status", "failed_terminal")]
+    argv = [
+        "sweep-orphans",
+        "--dir",
+        tmp,
+        "--status",
+        over.get("status", "failed_terminal"),
+    ]
     if "repo" in over:
         argv += ["--repo", over["repo"]]
     if "ttl_seconds" in over:
@@ -1883,11 +2399,15 @@ class TestSweepOrphans(unittest.TestCase):
         res = _start(self.tmp, request="orphaned dispatch")
         self._backdate_updated_at(res["path"], seconds_ago=99999)
 
-        rc, out = _sweep_orphans(self.tmp, note="auto-reconciled: backlog cleanup 2026-08-21")
+        rc, out = _sweep_orphans(
+            self.tmp, note="auto-reconciled: backlog cleanup 2026-08-21"
+        )
 
         self.assertEqual(rc, 0)
         rec = _load(Path(res["path"]))
-        self.assertEqual(rec["merge_result"], "auto-reconciled: backlog cleanup 2026-08-21")
+        self.assertEqual(
+            rec["merge_result"], "auto-reconciled: backlog cleanup 2026-08-21"
+        )
 
     def test_repo_filter_only_sweeps_matching_repo_dir(self):
         mine = _start(self.tmp, repo="/tmp/repo-a", request="mine")
@@ -1951,7 +2471,9 @@ class TestSweepOrphans(unittest.TestCase):
         lines = [line for line in out.getvalue().splitlines() if line.strip()]
         self.assertEqual(len(lines), 1)
         payload = json.loads(lines[0])
-        self.assertEqual(sorted(payload["repos"][0]["closed"]), sorted([a["path"], b["path"]]))
+        self.assertEqual(
+            sorted(payload["repos"][0]["closed"]), sorted([a["path"], b["path"]])
+        )
 
 
 class TestLiveness(unittest.TestCase):
@@ -2019,20 +2541,23 @@ class TestLiveness(unittest.TestCase):
 
     def test_same_dispatch_id_matches(self):
         res = _start(self.tmp, dispatch_id="go-abc123")
-        result = _run_liveness(_load(Path(res["path"])), ttl_seconds=1200,
-                                caller_dispatch_id="go-abc123")
+        result = _run_liveness(
+            _load(Path(res["path"])), ttl_seconds=1200, caller_dispatch_id="go-abc123"
+        )
         self.assertTrue(result["same_dispatch"])
 
     def test_different_dispatch_id_does_not_match(self):
         res = _start(self.tmp, dispatch_id="go-abc123")
-        result = _run_liveness(_load(Path(res["path"])), ttl_seconds=1200,
-                                caller_dispatch_id="go-xyz789")
+        result = _run_liveness(
+            _load(Path(res["path"])), ttl_seconds=1200, caller_dispatch_id="go-xyz789"
+        )
         self.assertFalse(result["same_dispatch"])
 
     def test_no_dispatch_id_recorded_never_matches(self):
         res = _start(self.tmp)  # no --dispatch-id
-        result = _run_liveness(_load(Path(res["path"])), ttl_seconds=1200,
-                                caller_dispatch_id="go-xyz789")
+        result = _run_liveness(
+            _load(Path(res["path"])), ttl_seconds=1200, caller_dispatch_id="go-xyz789"
+        )
         self.assertFalse(result["same_dispatch"])
 
     def test_cli_liveness_subcommand(self):
@@ -2050,10 +2575,15 @@ class TestLiveness(unittest.TestCase):
 
 
 def _find_by_worktree(tmp, **over):
-    argv = ["find-by-worktree",
-            "--dir", tmp,
-            "--repo", over.get("repo", "/tmp/fake-repo"),
-            "--worktree", over["worktree"]]
+    argv = [
+        "find-by-worktree",
+        "--dir",
+        tmp,
+        "--repo",
+        over.get("repo", "/tmp/fake-repo"),
+        "--worktree",
+        over["worktree"],
+    ]
     out = StringIO()
     with patch("sys.stdout", out):
         rc = main(argv)
@@ -2086,13 +2616,16 @@ class TestFindByWorktree(unittest.TestCase):
         result = _find_by_worktree(self.tmp, worktree=wt)
 
         self.assertEqual(
-            result, {"found": True, "path": res["path"], "run_id": res["run_id"]})
+            result, {"found": True, "path": res["path"], "run_id": res["run_id"]}
+        )
 
     def test_no_match_returns_found_false(self):
         res = _start(self.tmp, request="unrelated worktree")
         main(["set", res["path"], "worktree", "/home/user/worktrees/other"])
 
-        result = _find_by_worktree(self.tmp, worktree="/home/user/worktrees/not-tracked")
+        result = _find_by_worktree(
+            self.tmp, worktree="/home/user/worktrees/not-tracked"
+        )
 
         self.assertEqual(result, {"found": False, "path": None, "run_id": None})
 
@@ -2126,13 +2659,23 @@ class TestFindByWorktree(unittest.TestCase):
         out = StringIO()
         err = StringIO()
         with patch("sys.stdout", out), patch("sys.stderr", err):
-            rc = main(["find-by-worktree", "--dir", self.tmp, "--repo", "/tmp/fake-repo",
-                       "--worktree", wt])
+            rc = main(
+                [
+                    "find-by-worktree",
+                    "--dir",
+                    self.tmp,
+                    "--repo",
+                    "/tmp/fake-repo",
+                    "--worktree",
+                    wt,
+                ]
+            )
 
         self.assertEqual(rc, 0)
         result = json.loads(out.getvalue())
         self.assertEqual(
-            result, {"found": True, "path": res["path"], "run_id": res["run_id"]})
+            result, {"found": True, "path": res["path"], "run_id": res["run_id"]}
+        )
         self.assertIn(str(corrupted), err.getvalue())
 
     def test_multiple_non_terminal_candidates_resolve_to_most_recently_started(self):
@@ -2142,19 +2685,27 @@ class TestFindByWorktree(unittest.TestCase):
         _set_started_at(older["path"], datetime.now(timezone.utc) - timedelta(hours=2))
         newer = _start(self.tmp, request="newer run")
         main(["set", newer["path"], "worktree", wt])
-        _set_started_at(newer["path"], datetime.now(timezone.utc) - timedelta(minutes=1))
+        _set_started_at(
+            newer["path"], datetime.now(timezone.utc) - timedelta(minutes=1)
+        )
 
         result = _find_by_worktree(self.tmp, worktree=wt)
 
         self.assertEqual(
-            result, {"found": True, "path": newer["path"], "run_id": newer["run_id"]})
+            result, {"found": True, "path": newer["path"], "run_id": newer["run_id"]}
+        )
 
 
 def _worktree_conflict(tmp, **over):
-    argv = ["worktree-conflict",
-            "--dir", tmp,
-            "--repo", over.get("repo", "/tmp/fake-repo"),
-            "--worktree", over["worktree"]]
+    argv = [
+        "worktree-conflict",
+        "--dir",
+        tmp,
+        "--repo",
+        over.get("repo", "/tmp/fake-repo"),
+        "--worktree",
+        over["worktree"],
+    ]
     if over.get("dispatch_id") is not None:
         argv += ["--dispatch-id", over["dispatch_id"]]
     if over.get("ttl_seconds") is not None:
@@ -2184,12 +2735,22 @@ class TestWorktreeConflict(unittest.TestCase):
         Path(path).write_text(run_record._render(record), encoding="utf-8")
 
     def test_untracked_worktree_is_never_a_conflict(self):
-        result = _worktree_conflict(self.tmp, worktree="/home/user/worktrees/nobody-home")
-        self.assertEqual(result, {
-            "conflict": False, "found": False, "run_id": None, "path": None,
-            "fresh": None, "same_dispatch": None, "age_seconds": None,
-            "reason": "not_tracked",
-        })
+        result = _worktree_conflict(
+            self.tmp, worktree="/home/user/worktrees/nobody-home"
+        )
+        self.assertEqual(
+            result,
+            {
+                "conflict": False,
+                "found": False,
+                "run_id": None,
+                "path": None,
+                "fresh": None,
+                "same_dispatch": None,
+                "age_seconds": None,
+                "reason": "not_tracked",
+            },
+        )
 
     def test_fresh_other_dispatch_is_a_conflict(self):
         wt = "/home/user/worktrees/contested"
@@ -2266,7 +2827,8 @@ class TestPendingDecisionEvents(unittest.TestCase):
     def test_event_vocabulary_is_the_five_lifecycle_hops(self):
         self.assertEqual(
             DECISION_EVENTS,
-            ("asked", "presented", "answered", "consumed", "superseded"))
+            ("asked", "presented", "answered", "consumed", "superseded"),
+        )
 
     def test_recorded_entry_carries_timestamp_event_and_id(self):
         result = self._record("asked", "dec-spec-collision-ab12cd34ef56")
@@ -2333,9 +2895,18 @@ class TestPendingDecisionEvents(unittest.TestCase):
     def test_cli_decision_subcommand_roundtrip(self):
         out = StringIO()
         with patch("sys.stdout", out):
-            rc = main(["decision", self.path, "--event", "presented",
-                       "--decision-id", "dec-cli-1",
-                       "--note", "shown at attended host"])
+            rc = main(
+                [
+                    "decision",
+                    self.path,
+                    "--event",
+                    "presented",
+                    "--decision-id",
+                    "dec-cli-1",
+                    "--note",
+                    "shown at attended host",
+                ]
+            )
         self.assertEqual(rc, 0)
         payload = json.loads(out.getvalue())
         self.assertEqual(payload["status"], "recorded")
@@ -2343,11 +2914,18 @@ class TestPendingDecisionEvents(unittest.TestCase):
 
         out = StringIO()
         with patch("sys.stdout", out):
-            rc = main(["decision", self.path, "--event", "presented",
-                       "--decision-id", "dec-cli-1"])
+            rc = main(
+                [
+                    "decision",
+                    self.path,
+                    "--event",
+                    "presented",
+                    "--decision-id",
+                    "dec-cli-1",
+                ]
+            )
         self.assertEqual(rc, 0)
-        self.assertEqual(json.loads(out.getvalue())["status"],
-                         "already-recorded")
+        self.assertEqual(json.loads(out.getvalue())["status"], "already-recorded")
         rec = _load(Path(self.path))
         self.assertEqual(len(rec["pending_decisions"]), 1)
 

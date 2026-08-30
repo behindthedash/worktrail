@@ -24,7 +24,6 @@ import subprocess
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import List, Optional
 
 from worktrail.conductor import runplan
 from worktrail.orchestrator import worktree
@@ -51,7 +50,7 @@ def _ref_exists(repo: Path, ref: str) -> bool:
     return _git(repo, "rev-parse", "--verify", "--quiet", ref).returncode == 0
 
 
-def _touched_files(repo: Path, base_ref: str, branch_ref: str) -> Optional[List[str]]:
+def _touched_files(repo: Path, base_ref: str, branch_ref: str) -> list[str] | None:
     """Files `branch_ref` changed relative to its merge-base with `base_ref`.
 
     None means the diff could not be computed (unreachable ref, no common
@@ -68,8 +67,8 @@ def _touched_files(repo: Path, base_ref: str, branch_ref: str) -> Optional[List[
 
 
 def audit_plan(
-    repo: "str | Path", spec_id: str, plan: runplan.RunPlan, base_ref: str
-) -> List[FileMismatch]:
+    repo: str | Path, spec_id: str, plan: runplan.RunPlan, base_ref: str
+) -> list[FileMismatch]:
     """Compare each task's declared `plan` file scope against what its branch
     actually changed.
 
@@ -79,7 +78,7 @@ def audit_plan(
     it is just nothing left to check.
     """
     repo = Path(repo)
-    mismatches: List[FileMismatch] = []
+    mismatches: list[FileMismatch] = []
     for tp in plan.tasks:
         if not tp.files:
             continue  # nothing declared to compare against
@@ -106,7 +105,7 @@ def audit_plan(
     return mismatches
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description=(
             "Post-hoc: diff each task's delivered files against its compiled RunPlan "
@@ -114,9 +113,17 @@ def main(argv: Optional[List[str]] = None) -> int:
             "a run, and a task whose branch is already gone is skipped, not flagged."
         )
     )
-    ap.add_argument("spec", help="path to the spec or OpenSpec change directory (same argument worktrail-compile takes)")
-    ap.add_argument("base_ref", help="ref the task branches were forked from and will merge into (e.g. the spec's base branch)")
-    ap.add_argument("--cache-dir", default=None, help="override the plan cache location")
+    ap.add_argument(
+        "spec",
+        help="path to the spec or OpenSpec change directory (same argument worktrail-compile takes)",
+    )
+    ap.add_argument(
+        "base_ref",
+        help="ref the task branches were forked from and will merge into (e.g. the spec's base branch)",
+    )
+    ap.add_argument(
+        "--cache-dir", default=None, help="override the plan cache location"
+    )
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
 
@@ -151,7 +158,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     if not mismatches:
-        print("no mismatches: every checked task's branch matched its declared file scope")
+        print(
+            "no mismatches: every checked task's branch matched its declared file scope"
+        )
         return 0
     for m in mismatches:
         print(f"{m.task_id}:")

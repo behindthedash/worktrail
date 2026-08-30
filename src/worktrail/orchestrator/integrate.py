@@ -27,16 +27,13 @@ import sys
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import TYPE_CHECKING
 
-from . import coordinator
-from . import dispatch
-from . import live
-from . import progress
-from . import worktree
 from ..addons import runner as addons_runner
 from ..taskformats import resolve as taskformats
+from . import coordinator, dispatch, live, progress, worktree
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, keeps `verify` a lazy import
     from . import verify
@@ -87,7 +84,7 @@ def _spec_path_for(iw: Path, spec_id: str) -> Path:
     return next((p for p in [*candidates, *nested] if p.exists()), candidates[1])
 
 
-def _resolve_pre_pr_gate(here: Path = _HERE) -> Optional[Path]:
+def _resolve_pre_pr_gate(here: Path = _HERE) -> Path | None:
     """Locate Worktrail's own pre-PR gate, with an explicit override for tests."""
     candidate = os.environ.get("PRE_PR_GATE_SCRIPT")
     if candidate and Path(candidate).is_file():
@@ -101,7 +98,7 @@ def _resolve_pre_pr_gate(here: Path = _HERE) -> Optional[Path]:
     return None
 
 
-def _extract_risk_from_labels(pr_labels: list[str]) -> Optional[str]:
+def _extract_risk_from_labels(pr_labels: list[str]) -> str | None:
     for label in pr_labels:
         if label.startswith("go:risk-"):
             return label.removeprefix("go:risk-")
@@ -110,11 +107,11 @@ def _extract_risk_from_labels(pr_labels: list[str]) -> Optional[str]:
 
 def _refresh_pr_labels(
     repo: Path,
-    pr_labels: Optional[list[str]],
+    pr_labels: list[str] | None,
     target_branch: str,
     gates: str = "",
-    route: Optional[str] = None,
-) -> Optional[list[str]]:
+    route: str | None = None,
+) -> list[str] | None:
     """Refresh PR labels by re-running the pre-PR gate's label resolution.
 
     Returns fresh labels from the current policy and required-check state,
@@ -136,18 +133,25 @@ def _refresh_pr_labels(
         return None
     try:
         cmd = [
-            sys.executable, str(gate_script),
-            "--repo", str(repo),
+            sys.executable,
+            str(gate_script),
+            "--repo",
+            str(repo),
             "--labels-only",
-            "--risk", risk,
-            "--gates", gates,
-            "--target-branch", target_branch,
+            "--risk",
+            risk,
+            "--gates",
+            gates,
+            "--target-branch",
+            target_branch,
         ]
         if route:
             cmd += ["--route", route]
         r = subprocess.run(
             cmd,
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         if r.returncode != 0:
             return None
@@ -157,7 +161,7 @@ def _refresh_pr_labels(
         return None
 
 
-def _pr_label_args(pr_labels: Optional[list[str]]) -> list[str]:
+def _pr_label_args(pr_labels: list[str] | None) -> list[str]:
     """Build the exact label flags resolved by the GO pre-PR gate.
 
     Labels are resolved by _refresh_pr_labels immediately before creating
@@ -166,6 +170,7 @@ def _pr_label_args(pr_labels: Optional[list[str]]) -> list[str]:
     labels (deterministic).
     """
     return [arg for label in (pr_labels or []) for arg in ("--label", label)]
+
 
 # Max attempts to dispatch a resolve worker when task branches conflict at assembly time.
 # Assembly conflicts are deterministic (same two branches will conflict every time), so a
@@ -190,12 +195,22 @@ GH_TRANSIENT_BACKOFF_S = 5
 # the rest cover plain HTTP 5xx, timeouts, and network-level errors.
 _GH_TRANSIENT_PATTERNS = (
     "something went wrong",
-    "http 500", "http 502", "http 503", "http 504",
-    "500 internal server error", "502 bad gateway",
-    "503 service unavailable", "504 gateway",
-    "timeout", "timed out",
-    "connection refused", "connection reset", "could not resolve host",
-    "no such host", "unexpected eof", "tls handshake",
+    "http 500",
+    "http 502",
+    "http 503",
+    "http 504",
+    "500 internal server error",
+    "502 bad gateway",
+    "503 service unavailable",
+    "504 gateway",
+    "timeout",
+    "timed out",
+    "connection refused",
+    "connection reset",
+    "could not resolve host",
+    "no such host",
+    "unexpected eof",
+    "tls handshake",
     "temporarily unavailable",
 )
 
@@ -225,8 +240,10 @@ def _run_gh_with_retry(cmd: list, cwd) -> subprocess.CompletedProcess:
             return r
         wait = GH_TRANSIENT_BACKOFF_S * attempt
         detail = (err or "(no output)").splitlines()[-1][:160]
-        print(f"  RETRY gh {' '.join(cmd[1:3])} transient failure "
-              f"(attempt {attempt}/{GH_TRANSIENT_ATTEMPTS - 1}, waiting {wait}s): {detail}")
+        print(
+            f"  RETRY gh {' '.join(cmd[1:3])} transient failure "
+            f"(attempt {attempt}/{GH_TRANSIENT_ATTEMPTS - 1}, waiting {wait}s): {detail}"
+        )
         _retry_sleep(wait)
         r = subprocess.run(cmd, capture_output=True, text=True, cwd=str(cwd))
     return r
@@ -260,17 +277,35 @@ def _integration_worktree(repo: Path, branch: str, start_ref: str, git_lock=None
     lock = git_lock if git_lock is not None else contextlib.nullcontext()
     # `git worktree add` creates intermediate parent dirs, so we don't pre-mkdir
     # (which would also touch the real filesystem under mocked unit tests).
-    wt = repo.parent / f"{repo.name}-integrate" / f"{branch.replace('/', '-')}-{uuid.uuid4().hex[:8]}"
+    wt = (
+        repo.parent
+        / f"{repo.name}-integrate"
+        / f"{branch.replace('/', '-')}-{uuid.uuid4().hex[:8]}"
+    )
     with lock:
-        _git(repo, "worktree", "prune", check=False)  # clear stale registrations from crashes
-        r = _git(repo, "worktree", "add", "-f", "-B", branch, str(wt), start_ref, check=False)
+        _git(
+            repo, "worktree", "prune", check=False
+        )  # clear stale registrations from crashes
+        r = _git(
+            repo, "worktree", "add", "-f", "-B", branch, str(wt), start_ref, check=False
+        )
         if r.returncode != 0:
             # Mirror add_stacked_worktree()'s task-level resilience (live.py): a
             # registration can still go stale between the prune above and this add
             # (a concurrent/crashed run touching the shared .git/worktrees registry).
             # Prune once more and retry before giving up.
             _git(repo, "worktree", "prune", check=False)
-            r = _git(repo, "worktree", "add", "-f", "-B", branch, str(wt), start_ref, check=False)
+            r = _git(
+                repo,
+                "worktree",
+                "add",
+                "-f",
+                "-B",
+                branch,
+                str(wt),
+                start_ref,
+                check=False,
+            )
         if r.returncode != 0:
             raise live.WorktreeAddError(
                 f"git worktree add failed for group branch {branch}: "
@@ -295,18 +330,22 @@ def _strip_spec_folder_to_base(iw: Path, spec_id: str, base_ref: str) -> None:
     diff and cannot conflict on those files.
     """
     spec_path = _spec_path_for(iw, spec_id)
-    p = _git(iw, "checkout", base_ref, "--", str(spec_path.relative_to(iw)), check=False)
+    p = _git(
+        iw, "checkout", base_ref, "--", str(spec_path.relative_to(iw)), check=False
+    )
     if p.returncode != 0:
         return
     diff = _git(iw, "diff", "--cached", "--quiet", check=False)
     if diff.returncode != 0:  # staged changes present after reset
-        _git(iw, "commit", "-m",
-             f"chore: reset spec folder to {base_ref} (non-spec-carrier group)")
+        _git(
+            iw,
+            "commit",
+            "-m",
+            f"chore: reset spec folder to {base_ref} (non-spec-carrier group)",
+        )
 
 
-def _write_group_task_status(
-    iw: Path, spec_id: str, group: dict, status: dict
-) -> None:
+def _write_group_task_status(iw: Path, spec_id: str, group: dict, status: dict) -> None:
     """Write ``completed`` into this group's own task files, once, on the group
     branch -- the single point where run bookkeeping reaches the spec artifact.
 
@@ -352,8 +391,13 @@ def _write_group_task_status(
     spec_rel = source.spec_root(spec_ref).relative_to(iw)
     _git(iw, "add", "--", str(spec_rel), check=False)
     if _git(iw, "diff", "--cached", "--quiet", check=False).returncode != 0:
-        _git(iw, "commit", "-q", "-m",
-             f"chore({group['name']}): mark {len(changed)} task(s) completed")
+        _git(
+            iw,
+            "commit",
+            "-q",
+            "-m",
+            f"chore({group['name']}): mark {len(changed)} task(s) completed",
+        )
 
 
 def synthetic_fanout(repo: Path, spec_id: str, tasks: list, base: str) -> None:
@@ -404,7 +448,9 @@ def finish(
             print(f"  SKIP [{name:9}] -- {quarantined[name]}")
             continue
         if dropped:  # split failed task(s) out; ship the rest
-            quarantined[f"{name}/dropped"] = f"split out of {name}: {', '.join(dropped)}"
+            quarantined[f"{name}/dropped"] = (
+                f"split out of {name}: {', '.join(dropped)}"
+            )
             print(
                 f"  SPLIT [{name:9}] -- shipping {', '.join(deliverable)}; "
                 f"quarantined {', '.join(dropped)}"
@@ -415,7 +461,9 @@ def finish(
         _git(repo, "checkout", "-q", "-B", gb, start)
         conflict = None
         for tid in deliverable:  # catch worker scope-drift collisions
-            m = _git(repo, "merge", "--no-edit", f"{spec_id}/{tid.lower()}", check=False)
+            m = _git(
+                repo, "merge", "--no-edit", f"{spec_id}/{tid.lower()}", check=False
+            )
             if m.returncode != 0:
                 _git(repo, "merge", "--abort", check=False)
                 conflict = tid
@@ -433,7 +481,11 @@ def finish(
         if name not in group_branch:  # quarantined -> no PR
             continue
         gb = group_branch[name]
-        target = "main" if not g["depends_on"] else group_branch.get(g["depends_on"][0], "main")
+        target = (
+            "main"
+            if not g["depends_on"]
+            else group_branch.get(g["depends_on"][0], "main")
+        )
         r = subprocess.run(
             [
                 "gh",
@@ -481,7 +533,7 @@ def finish(
 
 
 def _write_group_journal(
-    journal_path: Optional[str],
+    journal_path: str | None,
     name: str,
     pr_url: str,
     head_branch: str,
@@ -535,7 +587,7 @@ PENDING_TAIL_REASON = (
 )
 
 
-def _pending_tail_task_ids(tasks: Optional[list]) -> list:
+def _pending_tail_task_ids(tasks: list | None) -> list:
     """Task ids held out by the fan-out and not yet terminal.
 
     This includes tail-kind tasks (e2e/cleanup) plus pending non-tail tasks whose
@@ -546,7 +598,7 @@ def _pending_tail_task_ids(tasks: Optional[list]) -> list:
 
 
 def _mark_integrate_complete_if_terminal(
-    journal_path: Optional[str], groups: list, tasks: Optional[list] = None
+    journal_path: str | None, groups: list, tasks: list | None = None
 ) -> bool:
     """Set integrate_complete only when every planned group has terminal state.
 
@@ -567,7 +619,8 @@ def _mark_integrate_complete_if_terminal(
         records = journal.get("groups", {})
         expected = [g["name"] for g in groups]
         complete = bool(expected) and all(
-            records.get(name, {}).get("state") in TERMINAL_GROUP_STATES for name in expected
+            records.get(name, {}).get("state") in TERMINAL_GROUP_STATES
+            for name in expected
         )
         if complete:
             journal["integrate_complete"] = True
@@ -588,8 +641,12 @@ def _mark_integrate_complete_if_terminal(
 
 
 def detect_unreconciled_evidence(
-    repo: Path, remote: Optional[str], base: Optional[str], spec_id: str,
-    wt_base: Path, tasks: list,
+    repo: Path,
+    remote: str | None,
+    base: str | None,
+    spec_id: str,
+    wt_base: Path,
+    tasks: list,
 ) -> list:
     """Flag any DONE task whose own worktree branch carries commits that never
     made it onto the base branch -- the delivery-ledger invariant: *every task
@@ -639,7 +696,9 @@ def detect_unreconciled_evidence(
         if not head:
             continue
         if not live._is_ancestor(wt, head, remote_base_ref):
-            findings.append({"task": task["id"], "worktree": str(wt), "head_sha": head[:8]})
+            findings.append(
+                {"task": task["id"], "worktree": str(wt), "head_sha": head[:8]}
+            )
     return findings
 
 
@@ -648,7 +707,9 @@ def detect_unreconciled_evidence(
 detect_unreconciled_tail_evidence = detect_unreconciled_evidence
 
 
-def _record_unreconciled_tail_evidence(journal_path: Optional[str], findings: list) -> None:
+def _record_unreconciled_tail_evidence(
+    journal_path: str | None, findings: list
+) -> None:
     """Persist `detect_unreconciled_tail_evidence`'s findings into the run
     journal as `unreconciled_tail_evidence`, mirroring how `pending_tail_tasks`
     is recorded -- `journal_selfcheck.check_repo()` reads this field into a
@@ -815,7 +876,10 @@ def _assembly_resolve_salvage(iw: Path, conflicted_files: list) -> bool:
     path. Unlike review/cleanup (whose verdicts cannot be inferred from git
     state), a concluded conflict-free merge IS the outcome being reported.
     """
-    if _git(iw, "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False).returncode == 0:
+    if (
+        _git(iw, "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False).returncode
+        == 0
+    ):
         return False  # merge still in progress
     if _git(iw, "status", "--porcelain", check=False).stdout.strip():
         return False  # dirty tree
@@ -845,8 +909,9 @@ def _attempt_assembly_resolve(
     task_branch = f"{spec_id}/{tid.lower()}"
     conflicted_files = [
         ln.strip()
-        for ln in _git(iw, "diff", "--name-only", "--diff-filter=U",
-                       check=False).stdout.splitlines()
+        for ln in _git(
+            iw, "diff", "--name-only", "--diff-filter=U", check=False
+        ).stdout.splitlines()
         if ln.strip()
     ]
     prompt = dispatch.build_group_prompt(
@@ -862,8 +927,10 @@ def _attempt_assembly_resolve(
         },
     )
     for strike in range(ASSEMBLY_RESOLVE_STRIKES):
-        print(f"  RESOLVE [{name:9}] merge conflict on {task_branch} "
-              f"-- spawning resolve worker (strike {strike + 1}/{ASSEMBLY_RESOLVE_STRIKES})")
+        print(
+            f"  RESOLVE [{name:9}] merge conflict on {task_branch} "
+            f"-- spawning resolve worker (strike {strike + 1}/{ASSEMBLY_RESOLVE_STRIKES})"
+        )
         parsed_failure = False
         try:
             raw = spawn_fn(prompt, iw)
@@ -874,8 +941,10 @@ def _attempt_assembly_resolve(
         except Exception as exc:
             print(f"  RESOLVE [{name:9}] worker error: {exc!r}")
         if not parsed_failure and _assembly_resolve_salvage(iw, conflicted_files):
-            print(f"  RESOLVE [{name:9}] salvaged from git state (merge concluded, "
-                  f"clean tree, no conflict markers; report-back unparseable)")
+            print(
+                f"  RESOLVE [{name:9}] salvaged from git state (merge concluded, "
+                f"clean tree, no conflict markers; report-back unparseable)"
+            )
             return True
         # Worker failed; abort the conflicted merge so subsequent re-attempts or the
         # outer quarantine path start from a clean tree.
@@ -896,20 +965,20 @@ def integrate_one(
     remote: str,
     run_id: str,
     base: str,
-    journal_path: Optional[str],
+    journal_path: str | None,
     status: dict,
     group_branch: dict,
     quarantined: dict,
     _record_group=None,
     git_lock=None,
     strip_spec_folder: bool = False,
-    smoke_cmd: Optional[str] = None,
+    smoke_cmd: str | None = None,
     assembly_resolve_spawn=None,
-    pr_labels: Optional[list[str]] = None,
-    route: Optional[str] = None,
+    pr_labels: list[str] | None = None,
+    route: str | None = None,
     gates: str = "",
-    policy: Optional[dict] = None,
-) -> Optional[tuple]:
+    policy: dict | None = None,
+) -> tuple | None:
     """Integrate exactly one group and record its result in the journal.
 
     Computes the deliverable subset for the named group, creates or reuses its
@@ -977,7 +1046,9 @@ def integrate_one(
         print(f"  READY [{name:9}] draft PR {pr_ref} converted to ready-for-review")
         return True
 
-    def _do_journal(nm: str, pu: str, hb: str, st: str, quarantine_reason: str = "") -> None:
+    def _do_journal(
+        nm: str, pu: str, hb: str, st: str, quarantine_reason: str = ""
+    ) -> None:
         if _record_group is not None:
             _record_group(nm, pu, hb, st, quarantine_reason)
         else:
@@ -988,7 +1059,13 @@ def integrate_one(
     if dep_q:
         quarantined[name] = f"depends on quarantined group '{dep_q}'"
         print(f"  SKIP [{name:9}] -- {quarantined[name]}")
-        _do_journal(name, "", f"{run_id}/{name}", "QUARANTINED", QUARANTINE_DEPENDENCY_QUARANTINED)
+        _do_journal(
+            name,
+            "",
+            f"{run_id}/{name}",
+            "QUARANTINED",
+            QUARANTINE_DEPENDENCY_QUARANTINED,
+        )
         return None
 
     # Deliverable subset
@@ -1005,7 +1082,9 @@ def integrate_one(
             return None
         quarantined[name] = f"incomplete task(s): {', '.join(dropped)}"
         print(f"  SKIP [{name:9}] -- {quarantined[name]}")
-        _do_journal(name, "", f"{run_id}/{name}", "QUARANTINED", QUARANTINE_TASK_FAILURE)
+        _do_journal(
+            name, "", f"{run_id}/{name}", "QUARANTINED", QUARANTINE_TASK_FAILURE
+        )
         return None
     if dropped:
         quarantined[f"{name}/dropped"] = f"split out of {name}: {', '.join(dropped)}"
@@ -1014,7 +1093,10 @@ def integrate_one(
             f"quarantined {', '.join(dropped)}"
         )
         _do_journal(
-            f"{name}/dropped", "", f"{run_id}/{name}/dropped", "QUARANTINED",
+            f"{name}/dropped",
+            "",
+            f"{run_id}/{name}/dropped",
+            "QUARANTINED",
             QUARANTINE_TASK_FAILURE,
         )
 
@@ -1052,8 +1134,10 @@ def integrate_one(
             # dependent group's PR must target the real base branch, not the (now-gone)
             # dep branch — GitHub requires a branch ref.
             pr_base = base
-            print(f"  FALLBACK [{name:9}] dep branch '{g['depends_on'][0]}' gone — "
-                  f"start {remote_base_ref}")
+            print(
+                f"  FALLBACK [{name:9}] dep branch '{g['depends_on'][0]}' gone — "
+                f"start {remote_base_ref}"
+            )
 
     # Reconcile: MERGED? Skip branch/PR creation and write MERGED record.
     # Transient-retried: a flaky 5xx here would otherwise read as "no PR",
@@ -1086,15 +1170,19 @@ def integrate_one(
         with _integration_worktree(repo, gb, target, git_lock=git_lock) as iw:
             conflict = None
             for tid in deliverable:
-                m = _git(iw, "merge", "--no-edit", f"{spec_id}/{tid.lower()}", check=False)
+                m = _git(
+                    iw, "merge", "--no-edit", f"{spec_id}/{tid.lower()}", check=False
+                )
                 if m.returncode != 0:
                     if _auto_resolve_addadd_inits(iw):
-                        print(f"  AUTORESOLVE [{name:9}] add/add package-init conflict "
-                              f"on {spec_id}/{tid.lower()} -- union-merged")
+                        print(
+                            f"  AUTORESOLVE [{name:9}] add/add package-init conflict "
+                            f"on {spec_id}/{tid.lower()} -- union-merged"
+                        )
                         continue  # deterministic resolve; loop to next task
-                    if assembly_resolve_spawn is not None and \
-                       _attempt_assembly_resolve(iw, name, tid, spec_id, g,
-                                                 assembly_resolve_spawn):
+                    if assembly_resolve_spawn is not None and _attempt_assembly_resolve(
+                        iw, name, tid, spec_id, g, assembly_resolve_spawn
+                    ):
                         continue  # worker resolved the conflict; loop to next task
                     _git(iw, "merge", "--abort", check=False)
                     conflict = tid
@@ -1156,25 +1244,35 @@ def integrate_one(
                 if not ok:
                     quarantined[name] = f"integrated smoke test failed: {detail}"
                     print(f"  SKIP [{name:9}] -- {quarantined[name]}")
-                    _do_journal(name, "", gb, "QUARANTINED", QUARANTINE_INTEGRATION_ERROR)
+                    _do_journal(
+                        name, "", gb, "QUARANTINED", QUARANTINE_INTEGRATION_ERROR
+                    )
                     return None
             push = _git(iw, "push", "-q", remote, f"{gb}:{gb}", check=False)
             if push.returncode != 0:
                 # Base may have advanced since we branched — retry once after rebasing.
-                print(f"  RETRY [{name:9}] push failed, rebasing onto {remote}/{base} ...")
+                print(
+                    f"  RETRY [{name:9}] push failed, rebasing onto {remote}/{base} ..."
+                )
                 _git(iw, "fetch", "-q", remote, base, check=False)
                 rebase = _git(iw, "rebase", f"{remote}/{base}", check=False)
                 if rebase.returncode != 0:
                     _git(iw, "rebase", "--abort", check=False)
-                    quarantined[name] = f"rebase failed after push rejection: {push.stderr.strip()[:200]}"
+                    quarantined[name] = (
+                        f"rebase failed after push rejection: {push.stderr.strip()[:200]}"
+                    )
                     print(f"  SKIP [{name:9}] -- {quarantined[name]}")
                     _do_journal(name, "", gb, "QUARANTINED", QUARANTINE_MERGE_CONFLICT)
                     return None
                 retry = _git(iw, "push", "-q", remote, f"{gb}:{gb}", check=False)
                 if retry.returncode != 0:
-                    quarantined[name] = f"push still failing after rebase: {retry.stderr.strip()[:200]}"
+                    quarantined[name] = (
+                        f"push still failing after rebase: {retry.stderr.strip()[:200]}"
+                    )
                     print(f"  SKIP [{name:9}] -- {quarantined[name]}")
-                    _do_journal(name, "", gb, "QUARANTINED", QUARANTINE_INTEGRATION_ERROR)
+                    _do_journal(
+                        name, "", gb, "QUARANTINED", QUARANTINE_INTEGRATION_ERROR
+                    )
                     return None
 
     group_branch[name] = gb
@@ -1196,7 +1294,9 @@ def integrate_one(
             if pr_state == "OPEN":
                 if not _ensure_pr_ready(pr_data):
                     quarantined[name] = "existing draft PR could not be marked ready"
-                    _do_journal(name, "", gb, "QUARANTINED", QUARANTINE_INTEGRATION_ERROR)
+                    _do_journal(
+                        name, "", gb, "QUARANTINED", QUARANTINE_INTEGRATION_ERROR
+                    )
                     return None
                 pr_url = pr_data.get(
                     "url", f"https://github.com/o/r/pull/{pr_data.get('number', '?')}"
@@ -1214,8 +1314,15 @@ def integrate_one(
     # No open PR on conventional branch; try operator PR discovery
     search_result = _run_gh_with_retry(
         [
-            "gh", "pr", "list", "--search", f"{name} {spec_id}",
-            "--json", "number,state,url,headRefName,baseRefName,isDraft", "--state", "open",
+            "gh",
+            "pr",
+            "list",
+            "--search",
+            f"{name} {spec_id}",
+            "--json",
+            "number,state,url,headRefName,baseRefName,isDraft",
+            "--state",
+            "open",
         ],
         repo,
     )
@@ -1223,25 +1330,32 @@ def integrate_one(
         try:
             matches = json.loads(search_result.stdout)
             matches = [
-                m for m in matches
+                m
+                for m in matches
                 if m.get("headRefName") == gb or m.get("baseRefName") == pr_base
             ]
             if matches:
                 match = matches[0]
                 if not _ensure_pr_ready(match):
                     quarantined[name] = "discovered draft PR could not be marked ready"
-                    _do_journal(name, "", gb, "QUARANTINED", QUARANTINE_INTEGRATION_ERROR)
+                    _do_journal(
+                        name, "", gb, "QUARANTINED", QUARANTINE_INTEGRATION_ERROR
+                    )
                     return None
                 pr_url = match.get("url")
                 head_branch = match.get("headRefName", gb)
-                print(f"  PR [{name:9}] base={pr_base:18} -> {pr_url} (discovered operator PR)")
+                print(
+                    f"  PR [{name:9}] base={pr_base:18} -> {pr_url} (discovered operator PR)"
+                )
                 _do_journal(name, pr_url, head_branch, "OPEN")
                 return (name, pr_base, pr_url)
         except Exception:
             pass
 
     # No PR found (conventional or operator); refresh labels and create new one
-    fresh_labels = _refresh_pr_labels(repo, pr_labels, pr_base, gates=gates, route=route)
+    fresh_labels = _refresh_pr_labels(
+        repo, pr_labels, pr_base, gates=gates, route=route
+    )
     effective_labels = fresh_labels if fresh_labels is not None else pr_labels
 
     remote_url = _git(repo, "remote", "get-url", remote).stdout.strip()
@@ -1257,14 +1371,20 @@ def integrate_one(
     ]
     escalation_note = (
         "\n\n### Automatic scope escalation\n\n" + "\n".join(escalations)
-        if escalations else ""
+        if escalations
+        else ""
     )
     cmd = [
-        "gh", "pr", "create",
-        "--base", pr_base,
-        "--head", gb,
+        "gh",
+        "pr",
+        "create",
+        "--base",
+        pr_base,
+        "--head",
+        gb,
         *_pr_label_args(effective_labels),
-        "--title", f"[{run_id}] {name}: {', '.join(deliverable)}",
+        "--title",
+        f"[{run_id}] {name}: {', '.join(deliverable)}",
         "--body",
         f"Group **{name}** | reqs: {', '.join(g['reqs']) or '-'} "
         f"| base: `{pr_base}`\n\nparallel-orchestrator {run_id}.{escalation_note}",
@@ -1295,7 +1415,7 @@ def integrate_one(
     return (name, pr_base, out)
 
 
-def _read_group_journal_record(journal_path: Optional[str], name: str) -> dict:
+def _read_group_journal_record(journal_path: str | None, name: str) -> dict:
     """Return group `name`'s current journal record, or `{}` if absent."""
     if not journal_path:
         return {}
@@ -1338,7 +1458,9 @@ def _tail_superseded_by_map(findings: list, by_id: dict) -> dict:
     choice deterministic across runs.
     """
     finding_ids = {f["task"] for f in findings}
-    closures = {tid: _tail_dependency_closure(tid, by_id) & finding_ids for tid in finding_ids}
+    closures = {
+        tid: _tail_dependency_closure(tid, by_id) & finding_ids for tid in finding_ids
+    }
     superseded_ids = set().union(*closures.values()) if closures else set()
     leaf_ids = sorted(finding_ids - superseded_ids)
 
@@ -1350,7 +1472,7 @@ def _tail_superseded_by_map(findings: list, by_id: dict) -> dict:
 
 
 def _close_superseded_tail_pr(
-    repo: Path, remote: str, name: str, journal_path: Optional[str]
+    repo: Path, remote: str, name: str, journal_path: str | None
 ) -> None:
     """Close `name`'s tail PR and cancel its non-terminal GitHub Actions runs,
     if the journal shows one already open from an earlier reconciliation pass.
@@ -1376,7 +1498,9 @@ def _close_superseded_tail_pr(
     repo_args = ["--repo", gh_repo] if gh_repo else []
     close = subprocess.run(
         ["gh", "pr", "close", branch, *repo_args],
-        capture_output=True, text=True, cwd=str(repo),
+        capture_output=True,
+        text=True,
+        cwd=str(repo),
     )
     if close.returncode != 0:
         print(
@@ -1385,8 +1509,19 @@ def _close_superseded_tail_pr(
         )
         return
     list_runs = subprocess.run(
-        ["gh", "run", "list", "--branch", branch, "--json", "databaseId,status", *repo_args],
-        capture_output=True, text=True, cwd=str(repo),
+        [
+            "gh",
+            "run",
+            "list",
+            "--branch",
+            branch,
+            "--json",
+            "databaseId,status",
+            *repo_args,
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(repo),
     )
     try:
         runs = json.loads(list_runs.stdout or "[]")
@@ -1397,11 +1532,15 @@ def _close_superseded_tail_pr(
             continue
         subprocess.run(
             ["gh", "run", "cancel", str(run["databaseId"]), *repo_args],
-            capture_output=True, text=True, cwd=str(repo),
+            capture_output=True,
+            text=True,
+            cwd=str(repo),
         )
 
 
-def _default_tail_verifier(repo: Path, remote: str, base: str, spec_id: str) -> "verify.Verifier":
+def _default_tail_verifier(
+    repo: Path, remote: str, base: str, spec_id: str
+) -> verify.Verifier:
     """Default `make_verifier` factory for `reconcile_unreconciled_tail_evidence`
     when the caller (the pipeline scheduler) doesn't inject one -- standalone
     callers and tests get a `Verifier` with its own private `git_lock`/
@@ -1409,11 +1548,14 @@ def _default_tail_verifier(repo: Path, remote: str, base: str, spec_id: str) -> 
     same resolve/ci-fix spawn roles live.py's `_pipeline_scheduler` wires up,
     at that module's run-wide agent/model/timeout defaults since this
     function has none of its own to honor."""
-    from . import live
-    from . import verify
+    from . import live, verify
 
     resolve_spawn, ci_fix_spawn = live._verifier_role_spawns(
-        live.DEFAULT_AGENT, verify.DEFAULT_MODEL, live.WORKER_TIMEOUT_DEFAULT, None, None
+        live.DEFAULT_AGENT,
+        verify.DEFAULT_MODEL,
+        live.WORKER_TIMEOUT_DEFAULT,
+        None,
+        None,
     )
     return verify.Verifier(
         repo,
@@ -1433,11 +1575,11 @@ def reconcile_unreconciled_tail_evidence(
     remote: str,
     run_id: str,
     base: str,
-    journal_path: Optional[str],
-    pr_labels: Optional[list[str]] = None,
-    route: Optional[str] = None,
+    journal_path: str | None,
+    pr_labels: list[str] | None = None,
+    route: str | None = None,
     gates: str = "",
-    make_verifier: Optional[Callable[[], "verify.Verifier"]] = None,
+    make_verifier: Callable[[], verify.Verifier] | None = None,
 ) -> list:
     """Open (or reuse) a group PR for each `detect_unreconciled_tail_evidence`
     finding, so a tail task's stranded evidence commit reaches `base` the same
@@ -1506,8 +1648,10 @@ def reconcile_unreconciled_tail_evidence(
     status = {t["id"]: t.get("status", "done") for t in tasks}
     by_id = {t["id"]: t for t in tasks}
     superseded_by = _tail_superseded_by_map(findings, by_id)
-    verifier_factory = make_verifier if make_verifier is not None else (
-        lambda: _default_tail_verifier(repo, remote, base, spec_id)
+    verifier_factory = (
+        make_verifier
+        if make_verifier is not None
+        else (lambda: _default_tail_verifier(repo, remote, base, spec_id))
     )
     enriched: list = []
     for finding in findings:
@@ -1518,13 +1662,17 @@ def reconcile_unreconciled_tail_evidence(
             try:
                 _close_superseded_tail_pr(repo, remote, name, journal_path)
             except Exception as e:
-                print(f"  WARNING: failed to close superseded tail PR for {task_id}: {e}")
-            enriched.append({
-                **finding,
-                "reconcile_state": "superseded",
-                "reconcile_pr_url": "",
-                "reconcile_superseded_by": descendant,
-            })
+                print(
+                    f"  WARNING: failed to close superseded tail PR for {task_id}: {e}"
+                )
+            enriched.append(
+                {
+                    **finding,
+                    "reconcile_state": "superseded",
+                    "reconcile_pr_url": "",
+                    "reconcile_superseded_by": descendant,
+                }
+            )
             continue
         try:
             pre_state = _read_group_journal_record(journal_path, name).get("state")
@@ -1535,9 +1683,20 @@ def reconcile_unreconciled_tail_evidence(
                 "reqs": by_id.get(task_id, {}).get("reqs", []),
             }
             integrate_one(
-                g, repo, spec_id, tasks, remote, run_id, base, journal_path, status,
-                group_branch={}, quarantined={},
-                pr_labels=pr_labels, route=route, gates=gates,
+                g,
+                repo,
+                spec_id,
+                tasks,
+                remote,
+                run_id,
+                base,
+                journal_path,
+                status,
+                group_branch={},
+                quarantined={},
+                pr_labels=pr_labels,
+                route=route,
+                gates=gates,
             )
             post_record = _read_group_journal_record(journal_path, name)
             post_state = post_record.get("state")
@@ -1596,11 +1755,13 @@ def reconcile_unreconciled_tail_evidence(
             print(f"  WARNING: reconciliation failed for tail task {task_id}: {e}")
             reconcile_state = "quarantined"
             pr_url = ""
-        enriched.append({
-            **finding,
-            "reconcile_state": reconcile_state,
-            "reconcile_pr_url": pr_url,
-        })
+        enriched.append(
+            {
+                **finding,
+                "reconcile_state": reconcile_state,
+                "reconcile_pr_url": pr_url,
+            }
+        )
     return enriched
 
 
@@ -1663,15 +1824,13 @@ def _wait_for_pr_checks(
     return "timeout"
 
 
-
-
 def validate(sandbox: str, keep: bool = False) -> list:
     repo = live.instantiate(live.SAMPLE_TEMPLATE)
     spec_id, tasks = taskformats.load_spec(str(repo / live.SAMPLE_SPEC_REL))
     base = current_branch(repo)
     run_id = f"val-{int(time.time())}"
     print(
-        f"=== synthetic fan-out: {len([t for t in tasks if t.get('kind','impl') not in TAIL])} impl branches ==="
+        f"=== synthetic fan-out: {len([t for t in tasks if t.get('kind', 'impl') not in TAIL])} impl branches ==="
     )
     synthetic_fanout(repo, spec_id, tasks, base)
     print(f"=== integrate + grouped PRs (run {run_id}) on {sandbox} ===")
@@ -1691,7 +1850,9 @@ def finish_existing(dest, sandbox: str, keep: bool = False) -> list:
     run_id = f"live-{int(time.time())}"
     print(f"=== integrate existing fan-out ({spec_id}) run {run_id} on {sandbox} ===")
     prs, _, _ = finish(repo, spec_id, tasks, sandbox, run_id, base, cleanup=not keep)
-    print(f"=== {len(prs)} group PRs{' (kept)' if keep else ' created + cleaned up'} ===")
+    print(
+        f"=== {len(prs)} group PRs{' (kept)' if keep else ' created + cleaned up'} ==="
+    )
     return prs
 
 
@@ -1700,8 +1861,12 @@ def main(argv=None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     v = sub.add_parser("validate", help="Synthetic (no-spawn) integrate+PR validation")
     v.add_argument("--sandbox", default="behindthedash/orch-sandbox")
-    v.add_argument("--keep", action="store_true", help="leave the branches/PRs for inspection")
-    fe = sub.add_parser("finish-existing", help="Integrate+PR an already-fanned-out repo")
+    v.add_argument(
+        "--keep", action="store_true", help="leave the branches/PRs for inspection"
+    )
+    fe = sub.add_parser(
+        "finish-existing", help="Integrate+PR an already-fanned-out repo"
+    )
     fe.add_argument("--dest", default=str(live.DEFAULT_DEST))
     fe.add_argument("--sandbox", default="behindthedash/orch-sandbox")
     fe.add_argument("--keep", action="store_true")

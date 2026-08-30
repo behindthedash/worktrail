@@ -42,7 +42,7 @@ PLUGIN_PATH_PATTERNS = (
     "${CLAUDE_PLUGIN_ROOT",
     "scripts/work_queue.py",
     "scripts/classify.py",
-    "find \"$HOME/.claude/plugins\"",
+    'find "$HOME/.claude/plugins"',
 )
 
 
@@ -71,7 +71,9 @@ def test_every_referenced_command_is_a_real_console_script():
         for name in COMMAND_RE.findall(doc.read_text()):
             if name not in known:
                 unresolved.setdefault(name, []).append(str(doc.relative_to(REPO_ROOT)))
-    assert not unresolved, f"skill docs reference non-existent console scripts: {unresolved}"
+    assert not unresolved, (
+        f"skill docs reference non-existent console scripts: {unresolved}"
+    )
 
 
 def test_no_plugin_path_resolution_leaked_in():
@@ -105,7 +107,7 @@ def test_every_skill_has_a_frontmatter_name_and_description():
         m = re.match(r"^---\s*\n(.*?)\n---\s*\n", text, re.DOTALL)
         assert m, f"{skill_dir.name}/SKILL.md has no YAML frontmatter"
         fm = m.group(1)
-        name = re.search(r"^name:\s*(\S+)", fm, re.M)
+        name = re.search(r"^name:\s*(\S+)", fm, re.MULTILINE)
         assert name, f"{skill_dir.name}/SKILL.md frontmatter has no name:"
         assert re.fullmatch(r"[a-z0-9-]+", name.group(1)), (
             f"{skill_dir.name}: skill name {name.group(1)!r} must be kebab-case — a dot "
@@ -114,7 +116,7 @@ def test_every_skill_has_a_frontmatter_name_and_description():
         assert name.group(1) == skill_dir.name, (
             f"{skill_dir.name}: frontmatter name {name.group(1)!r} must match its directory"
         )
-        assert re.search(r"^description:\s*\S", fm, re.M), (
+        assert re.search(r"^description:\s*\S", fm, re.MULTILINE), (
             f"{skill_dir.name}/SKILL.md frontmatter has no description:"
         )
 
@@ -138,7 +140,9 @@ def test_referenced_reference_files_exist():
     agent to open them mid-procedure."""
     missing = []
     for doc in _skill_docs():
-        skill_root = doc.parent if doc.parent.name != "references" else doc.parent.parent
+        skill_root = (
+            doc.parent if doc.parent.name != "references" else doc.parent.parent
+        )
         for ref in re.findall(r"`references/([a-z0-9-]+\.md)`", doc.read_text()):
             if not (skill_root / "references" / ref).is_file():
                 missing.append(f"{doc.relative_to(REPO_ROOT)} -> references/{ref}")
@@ -160,12 +164,16 @@ def test_cross_skill_anchor_citations_resolve():
 
     broken = []
     for doc in _skill_docs():
-        for rel, anchor in re.findall(r"`((?:\.\./)[A-Za-z0-9_./-]+\.md)#([a-z0-9-]+)`", doc.read_text()):
+        for rel, anchor in re.findall(
+            r"`((?:\.\./)[A-Za-z0-9_./-]+\.md)#([a-z0-9-]+)`", doc.read_text()
+        ):
             target = (doc.parent / rel).resolve()
             if not target.is_file():
                 broken.append(f"{doc.relative_to(REPO_ROOT)} -> {rel} (file missing)")
             elif anchor not in defined.get(target, set()):
-                broken.append(f"{doc.relative_to(REPO_ROOT)} -> {rel}#{anchor} (anchor undefined)")
+                broken.append(
+                    f"{doc.relative_to(REPO_ROOT)} -> {rel}#{anchor} (anchor undefined)"
+                )
     assert not broken, f"broken cross-skill anchor citations: {broken}"
 
 
@@ -196,32 +204,46 @@ def test_no_devkit_specs_dispatches_remain():
     runtime dead-end nothing else in this suite can see, because the target lives
     (lived) in another repo entirely.
     """
-    retired = ("specs.change-spec", "specs.spec-to-tasks", "specs.spec-check", "specs.sync")
+    retired = (
+        "specs.change-spec",
+        "specs.spec-to-tasks",
+        "specs.spec-check",
+        "specs.sync",
+    )
     offenders = []
     for doc in _skill_docs():
         text = doc.read_text()
         for name in retired:
             if name in text:
                 offenders.append(f"{doc.relative_to(REPO_ROOT)}: {name}")
-    assert not offenders, f"dispatches to retired developer-kit-specs skills: {offenders}"
+    assert not offenders, (
+        f"dispatches to retired developer-kit-specs skills: {offenders}"
+    )
 
 
 def test_go_dispatches_worktrail_executor_only():
     """The front door must resolve to the executor shipped by this plugin."""
-    go_docs = [doc for doc in _skill_docs() if doc.is_relative_to(SKILLS_DIR / "worktrail-go")]
+    go_docs = [
+        doc for doc in _skill_docs() if doc.is_relative_to(SKILLS_DIR / "worktrail-go")
+    ]
     offenders = []
     for doc in go_docs:
         for needle in ("specs-sdd-workflow", "developer-kit-specs:"):
             if needle in doc.read_text():
                 offenders.append(f"{doc.relative_to(REPO_ROOT)}: {needle}")
-    assert not offenders, f"worktrail-go retains retired cross-plugin dispatches: {offenders}"
+    assert not offenders, (
+        f"worktrail-go retains retired cross-plugin dispatches: {offenders}"
+    )
 
 
 def test_handoff_dispatch_includes_explicit_executor_route():
     """The SDD executor's direct-invocation guard requires route:X even for handoffs."""
     go_skill = SKILLS_DIR / "worktrail-go" / "SKILL.md"
     text = go_skill.read_text()
-    assert 'Skill("worktrail-sdd-workflow", args="handoff:<id> route:<X> by:<dispatch-id> run:<run-path>")' in text
+    assert (
+        'Skill("worktrail-sdd-workflow", args="handoff:<id> route:<X> by:<dispatch-id> run:<run-path>")'
+        in text
+    )
     assert 'Skill("worktrail-sdd-workflow", args="handoff:<id>")' not in text
 
 
@@ -235,7 +257,10 @@ def test_native_skill_dispatch_threads_run_record():
     corresponding parse/reuse instructions on the executor side.
     """
     go_text = (SKILLS_DIR / "worktrail-go" / "SKILL.md").read_text()
-    assert 'Skill("worktrail-sdd-workflow", args="<repo-path> route:<X> [spec-folder] run:<run-path>")' in go_text
+    assert (
+        'Skill("worktrail-sdd-workflow", args="<repo-path> route:<X> [spec-folder] run:<run-path>")'
+        in go_text
+    )
     assert "run:$RUN" in go_text
 
     sdd_text = (SKILLS_DIR / "worktrail-sdd-workflow" / "SKILL.md").read_text()
@@ -266,7 +291,10 @@ def test_executor_guard_distinguishes_adapter_entry_from_direct_invocation():
     assert "[WORKTRAIL INTERNAL DISPATCH]" in text
     assert "Do not redirect to `/go`" in text
     assert "IF no `route:X` positional arg is present" in text
-    assert "sdd-workflow is an internal executor. Use /go for all engineering work." in text
+    assert (
+        "sdd-workflow is an internal executor. Use /go for all engineering work."
+        in text
+    )
 
 
 def test_go_dispatch_mode_table_pins_invocation_context_constants():
@@ -282,7 +310,7 @@ def test_go_dispatch_mode_table_pins_invocation_context_constants():
     header = "| `dispatch_mode` | action |"
     assert header in text, "worktrail-go/SKILL.md lost its dispatch_mode table"
 
-    lines = text[text.index(header):].splitlines()
+    lines = text[text.index(header) :].splitlines()
     assert re.fullmatch(r"\|[-\s|]+\|", lines[1].strip()), (
         f"expected a markdown separator row after the table header, got: {lines[1]!r}"
     )
@@ -310,26 +338,36 @@ def test_active_run_resume_stays_in_session_never_spawns_nested_worker():
     resume and keep spawning. This pins the prose guard both in the go front door's Phase 7
     dispatch and in the subagent-prompts in-session contract."""
     go_skill = (SKILLS_DIR / "worktrail-go" / "SKILL.md").read_text()
-    subagent = (SKILLS_DIR / "worktrail-go" / "references" / "subagent-prompts.md").read_text()
+    subagent = (
+        SKILLS_DIR / "worktrail-go" / "references" / "subagent-prompts.md"
+    ).read_text()
 
     # Both docs must state the active-run resume stays in-session / hands back to the parent,
     # and both must name the run go-20260811-132806 that first surfaced the self-poll loop.
-    for doc_name, text in (("worktrail-go/SKILL.md", go_skill),
-                           ("worktrail-go/references/subagent-prompts.md", subagent)):
+    for doc_name, text in (
+        ("worktrail-go/SKILL.md", go_skill),
+        ("worktrail-go/references/subagent-prompts.md", subagent),
+    ):
         assert "already active" in text, f"{doc_name} lacks the active-run-resume guard"
         assert "go-20260811-132806" in text, (
-            f"{doc_name} no longer cites the run that first surfaced the self-poll loop")
+            f"{doc_name} no longer cites the run that first surfaced the self-poll loop"
+        )
         assert "final_status" in text and "worktree" in text, (
             f"{doc_name} must define what makes a run 'already active' "
-            "(no final_status + existing worktree)")
+            "(no final_status + existing worktree)"
+        )
 
     # The go front door must not send an active-run resume through the Native Skill adapter.
     assert "do not use the adapter for an active-run resume" in go_skill.lower()
 
     # Headless drain is explicitly preserved: it is never an active-run resume.
-    for doc_name, text in (("worktrail-go/SKILL.md", go_skill),
-                           ("worktrail-go/references/subagent-prompts.md", subagent)):
-        assert "drain" in text, f"{doc_name} must keep stating headless drain still spawns"
+    for doc_name, text in (
+        ("worktrail-go/SKILL.md", go_skill),
+        ("worktrail-go/references/subagent-prompts.md", subagent),
+    ):
+        assert "drain" in text, (
+            f"{doc_name} must keep stating headless drain still spawns"
+        )
 
 
 def test_opsx_apply_is_never_dispatched():
@@ -343,7 +381,9 @@ def test_opsx_apply_is_never_dispatched():
                 continue
             # A mention is fine only when the same line says not to use it.
             if "not" not in line.lower():
-                offenders.append(f"{doc.relative_to(REPO_ROOT)}:{i}: {line.strip()[:60]}")
+                offenders.append(
+                    f"{doc.relative_to(REPO_ROOT)}:{i}: {line.strip()[:60]}"
+                )
     assert not offenders, f"skills dispatch /opsx:apply: {offenders}"
 
 
@@ -352,7 +392,12 @@ def test_opencode_bridge_exposes_worktrail_commands_without_devkit_paths():
     text = bridge.read_text()
     for command in ("worktrail.go", "worktrail.handoff", "worktrail.spec-create"):
         assert command in text
-    assert "drain" in text.split('input.command["worktrail.go"]', 1)[1].split('input.command["worktrail.handoff"]', 1)[0]
+    assert (
+        "drain"
+        in text.split('input.command["worktrail.go"]', 1)[1].split(
+            'input.command["worktrail.handoff"]', 1
+        )[0]
+    )
     assert "developer-kit" not in text
     assert "developer_kit" not in text
 
@@ -378,7 +423,9 @@ def test_opencode_bridge_registers_openspec_propose_deterministically():
     bridge = REPO_ROOT / ".opencode" / "plugins" / "worktrail.js"
     text = bridge.read_text()
     assert '"openspec-propose"' in text
-    assert "readFileSync" in text, "must read the skill body rather than pointing at a path"
+    assert "readFileSync" in text, (
+        "must read the skill body rather than pointing at a path"
+    )
 
     script = f"""
     import({json.dumps(bridge.as_uri())}).then(async (m) => {{
@@ -392,7 +439,9 @@ def test_opencode_bridge_registers_openspec_propose_deterministically():
     """
     result = subprocess.run(
         ["node", "--input-type=module", "-e", script],
-        capture_output=True, text=True, timeout=15,
+        capture_output=True,
+        text=True,
+        timeout=15,
     )
     assert result.returncode == 0, result.stderr
     template = result.stdout
@@ -420,7 +469,7 @@ def test_spec_worktree_setup_does_not_number_openspec_change_ids():
         "spec-worktree-setup must branch the id convention on $FORMAT; "
         "an unconditional NNN-prefixed SPEC_ID breaks every openspec-format dispatch"
     )
-    devkit_branch, _, non_devkit_branch = block.partition('else')
+    devkit_branch, _, non_devkit_branch = block.partition("else")
     assert 'SPEC_ID="$NNN-$slug"' in devkit_branch
     assert "NNN=" not in non_devkit_branch and "$NNN-$slug" not in non_devkit_branch, (
         "the non-devkit (openspec) branch must not carry the numeric NNN prefix "
@@ -479,11 +528,15 @@ def test_modify_pipeline_runs_scope_check_before_uncommitted_output_guard():
     doc = SKILLS_DIR / "worktrail-sdd-workflow" / "references" / "pipeline-details.md"
     text = doc.read_text()
     heading = "## `modify` pipeline {#modify-pipeline}"
-    section = text[text.index(heading):]
+    section = text[text.index(heading) :]
 
     compile_call_pos = section.index('worktrail-compile "$CHANGE_DIR"')
-    guard_heading_pos = section.index("**Pre-launch uncommitted-output guard (mandatory)**")
-    guard_block_pos = section.index('CHG_DIFF=$(git -C "$WT" status --porcelain -- openspec/')
+    guard_heading_pos = section.index(
+        "**Pre-launch uncommitted-output guard (mandatory)**"
+    )
+    guard_block_pos = section.index(
+        'CHG_DIFF=$(git -C "$WT" status --porcelain -- openspec/'
+    )
 
     assert compile_call_pos < guard_heading_pos < guard_block_pos, (
         "worktrail-compile must run before the pre-launch uncommitted-output "
@@ -502,7 +555,7 @@ def _h2_sections(text: str) -> dict[str, str]:
     """
     if text.startswith("---"):
         end = text.index("\n---", 3)
-        text = text[end + len("\n---"):]
+        text = text[end + len("\n---") :]
     sections: dict[str, str] = {}
     current = "(preamble)"
     lines: list[str] = []
@@ -533,26 +586,35 @@ def test_route_execution_ask_sites_carry_auto_mode_fallbacks():
     4. the prose ask sites (routes.md §A/§C, the implement-pipeline spec pick,
        Route C closeout) carry their documented defaults.
     """
-    subagent = (SKILLS_DIR / "worktrail-go" / "references" / "subagent-prompts.md").read_text()
+    subagent = (
+        SKILLS_DIR / "worktrail-go" / "references" / "subagent-prompts.md"
+    ).read_text()
     routes = (SKILLS_DIR / "worktrail-go" / "references" / "routes.md").read_text()
     automode = (SKILLS_DIR / "worktrail-go" / "references" / "auto-mode.md").read_text()
-    pipeline_doc = SKILLS_DIR / "worktrail-sdd-workflow" / "references" / "pipeline-details.md"
+    pipeline_doc = (
+        SKILLS_DIR / "worktrail-sdd-workflow" / "references" / "pipeline-details.md"
+    )
     sdd_skill_doc = SKILLS_DIR / "worktrail-sdd-workflow" / "SKILL.md"
 
     # 1. Doctrine: the unconditional interactive-parent premise is gone.
     assert "Routes that need `AskUserQuestion` mid-flow (C, I)" not in subagent, (
         "the 'Interactive routes stay in-session' doctrine reverted to asserting "
-        "an interactive parent is always present")
+        "an interactive parent is always present"
+    )
     assert "In-session does not mean interactive" in subagent
 
     # 2. Shared contract, consistent with PR #290's Phase 5.5 pattern.
     assert "{#auto-mode-ask-fallbacks}" in subagent
     fallbacks = _h2_sections(subagent)[
-        "## Auto-mode ask fallbacks (route execution) {#auto-mode-ask-fallbacks}"]
+        "## Auto-mode ask fallbacks (route execution) {#auto-mode-ask-fallbacks}"
+    ]
     assert "blocked_product_decision" in fallbacks
-    assert "picked/" in fallbacks, "the contract must leave the brief claimed, like PR #290"
+    assert "picked/" in fallbacks, (
+        "the contract must leave the brief claimed, like PR #290"
+    )
     assert "work_queue.py done" in fallbacks, (
-        "the contract must forbid closing the brief on an unattended block")
+        "the contract must forbid closing the brief on an unattended block"
+    )
 
     # 3. Structural invariant over the route-execution surface.
     surface = {
@@ -567,15 +629,17 @@ def test_route_execution_ask_sites_carry_auto_mode_fallbacks():
                 offenders.append(f"{name} :: {heading}")
     assert not offenders, (
         "route-execution sections mention AskUserQuestion with no AUTO_MODE "
-        f"fallback documented in the same section: {offenders}")
+        f"fallback documented in the same section: {offenders}"
+    )
 
     # 4. Prose ask sites (no AskUserQuestion literal) carry their defaults.
-    route_a = routes[routes.index("## Route A"):routes.index("## Route B")]
+    route_a = routes[routes.index("## Route A") : routes.index("## Route B")]
     assert "$AUTO_MODE=true" in route_a and "investigation_complete" in route_a
-    route_c = routes[routes.index("## Route C"):routes.index("## Route D")]
+    route_c = routes[routes.index("## Route C") : routes.index("## Route D")]
     assert "$AUTO_MODE=true" in route_c and "planning-only default" in route_c
-    implement = _h2_sections(surface["worktrail-sdd-workflow/references/pipeline-details.md"])[
-        "## `implement` pipeline {#implement-pipeline}"]
+    implement = _h2_sections(
+        surface["worktrail-sdd-workflow/references/pipeline-details.md"]
+    )["## `implement` pipeline {#implement-pipeline}"]
     assert "$AUTO_MODE=true" in implement and "blocked_product_decision" in implement
     assert "planning-only default" in surface["worktrail-sdd-workflow/SKILL.md"]
 
@@ -610,16 +674,23 @@ def test_phase55_auto_mode_blocks_actually_file_a_decision():
         auto_blocks = [
             b for b in block_re.findall(text) if "blocked_product_decision" in b
         ]
-        assert auto_blocks, f"{path.name}: no auto-mode blocked_product_decision code block found"
+        assert auto_blocks, (
+            f"{path.name}: no auto-mode blocked_product_decision code block found"
+        )
         for block in auto_blocks:
             assert "worktrail-decision ask" in block, (
                 f"{path.name}: auto-mode block finishes blocked_product_decision without "
                 "calling `worktrail-decision ask` first -- the brief will be stranded in "
-                "picked/ instead of released awaiting-decision")
+                "picked/ instead of released awaiting-decision"
+            )
             assert "--release" in block, (
-                f"{path.name}: `worktrail-decision ask` call is missing --release")
-            assert block.index("worktrail-decision ask") < block.index("run-record finish"), (
-                f"{path.name}: `worktrail-decision ask` must run before `run-record finish`")
+                f"{path.name}: `worktrail-decision ask` call is missing --release"
+            )
+            assert block.index("worktrail-decision ask") < block.index(
+                "run-record finish"
+            ), (
+                f"{path.name}: `worktrail-decision ask` must run before `run-record finish`"
+            )
 
 
 # --- pending-user-decision cross-surface contract ----------------------------
@@ -652,11 +723,14 @@ def test_guard_docs_carry_their_guard_s_envelope_provenance():
         text = _go_reference(doc_name).read_text()
         assert module.GUARD_SOURCE in text, (
             f"{doc_name} never names its guard's provenance source "
-            f"{module.GUARD_SOURCE!r}")
+            f"{module.GUARD_SOURCE!r}"
+        )
         assert "worktrail.pending-decision" in text, (
-            f"{doc_name} does not name the worktrail.pending-decision envelope")
+            f"{doc_name} does not name the worktrail.pending-decision envelope"
+        )
         assert "pending_decision" in text, (
-            f"{doc_name} does not name the pending_decision result key")
+            f"{doc_name} does not name the pending_decision result key"
+        )
 
 
 def test_auto_mode_filing_blocks_stamp_the_asked_audit_hop():
@@ -671,18 +745,19 @@ def test_auto_mode_filing_blocks_stamp_the_asked_audit_hop():
     targets = [doc for _m, doc in _GUARD_DOC_PAIRS] + ["decision-queue.md"]
     for doc_name in targets:
         text = _go_reference(doc_name).read_text()
-        blocks = [
-            b for b in block_re.findall(text) if "blocked_product_decision" in b
-        ]
+        blocks = [b for b in block_re.findall(text) if "blocked_product_decision" in b]
         assert blocks, f"{doc_name}: no auto-mode blocked_product_decision block found"
         for block in blocks:
             assert "--event asked" in block, (
                 f"{doc_name}: blocked_product_decision block never stamps the "
-                "[asked] hop onto the run record's pending_decisions audit list")
-            assert block.index("worktrail-decision ask") < block.index("--event asked"), (
-                f"{doc_name}: the [asked] stamp must follow `worktrail-decision ask`")
+                "[asked] hop onto the run record's pending_decisions audit list"
+            )
+            assert block.index("worktrail-decision ask") < block.index(
+                "--event asked"
+            ), f"{doc_name}: the [asked] stamp must follow `worktrail-decision ask`"
             assert block.index("--event asked") < block.index("run-record finish"), (
-                f"{doc_name}: the [asked] stamp must precede `run-record finish`")
+                f"{doc_name}: the [asked] stamp must precede `run-record finish`"
+            )
 
 
 def test_decision_queue_doc_matches_the_envelope_and_event_contract():
@@ -699,11 +774,13 @@ def test_decision_queue_doc_matches_the_envelope_and_event_contract():
 
     text = _go_reference("decision-queue.md").read_text()
     assert f"`{DECISION_ENVELOPE_SCHEMA}`" in text, (
-        "decision-queue.md does not name the versioned envelope schema constant")
+        "decision-queue.md does not name the versioned envelope schema constant"
+    )
     assert f"`{DECISION_ENVELOPE_VERSION}`" in text, (
-        "decision-queue.md does not name the envelope version")
+        "decision-queue.md does not name the envelope version"
+    )
 
-    audit = text[text.index("{#decision-audit}"):]
+    audit = text[text.index("{#decision-audit}") :]
     listed = re.findall(r"\| `([a-z]+)` \|", audit)
     assert tuple(listed) == tuple(DECISION_EVENTS), (
         "decision-queue.md's audit-event table drifted from "
@@ -729,11 +806,14 @@ def test_attended_presentation_and_exact_id_resume_pinned_across_surfaces():
     for path in surfaces:
         text = path.read_text()
         assert "--present-decision" in text, (
-            f"{path.name} lacks the attended --present-decision flag")
+            f"{path.name} lacks the attended --present-decision flag"
+        )
         assert "--resume-decision" in text, (
-            f"{path.name} lacks the exact-id --resume-decision flag")
+            f"{path.name} lacks the exact-id --resume-decision flag"
+        )
         assert "decision:<decision-id>" in text, (
-            f"{path.name} does not spell the verbatim decision:<decision-id> token")
+            f"{path.name} does not spell the verbatim decision:<decision-id> token"
+        )
 
 
 def test_unattended_handoff_names_the_drain_stop_kind_and_recovery_pair():
@@ -744,12 +824,17 @@ def test_unattended_handoff_names_the_drain_stop_kind_and_recovery_pair():
     recovery pair: answer the record, then resume through the exact id."""
     from worktrail.drain.summary_contract import PENDING_USER_DECISION
 
-    for path in (_go_reference("subagent-prompts.md"),
-                 _go_reference("decision-queue.md")):
+    for path in (
+        _go_reference("subagent-prompts.md"),
+        _go_reference("decision-queue.md"),
+    ):
         text = path.read_text()
         assert PENDING_USER_DECISION in text, (
-            f"{path.name} never names the {PENDING_USER_DECISION} stop kind")
+            f"{path.name} never names the {PENDING_USER_DECISION} stop kind"
+        )
         assert "worktrail-decision answer" in text, (
-            f"{path.name} lacks the answer half of the recovery pair")
+            f"{path.name} lacks the answer half of the recovery pair"
+        )
         assert "worktrail-skill-dispatch --resume-decision" in text, (
-            f"{path.name} lacks the exact-id-resume half of the recovery pair")
+            f"{path.name} lacks the exact-id-resume half of the recovery pair"
+        )

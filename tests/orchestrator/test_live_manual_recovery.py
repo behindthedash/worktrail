@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import live  # noqa: E402
+from worktrail.orchestrator import live
 
 
 class GroupBranchReconstruction(unittest.TestCase):
@@ -31,7 +31,8 @@ class GroupBranchReconstruction(unittest.TestCase):
 
         # Reconstruct as the code does
         group_branch = {
-            name: rec.get("head_branch", f"{run_id}/{name}") for name, rec in journal_groups.items()
+            name: rec.get("head_branch", f"{run_id}/{name}")
+            for name, rec in journal_groups.items()
         }
 
         self.assertEqual(group_branch["base"], "run-123/base")
@@ -49,7 +50,12 @@ class FromVerifyLogicTests(unittest.TestCase):
             # Simulate the from_verify logic
             if not journal_path.exists():
                 # This is what the code does
-                result = {"group_prs": [], "final": None, "quarantined": {}, "merged": []}
+                result = {
+                    "group_prs": [],
+                    "final": None,
+                    "quarantined": {},
+                    "merged": [],
+                }
                 self.assertEqual(result["group_prs"], [])
 
     def test_from_verify_reads_journal_groups(self):
@@ -106,7 +112,12 @@ class JournalWritingTests(unittest.TestCase):
 
     def test_journal_integrate_complete_marker(self):
         """Verify integrate_complete is written to journal."""
-        journal = {"run_id": "full-123", "entries": [], "integrate_complete": True, "groups": {}}
+        journal = {
+            "run_id": "full-123",
+            "entries": [],
+            "integrate_complete": True,
+            "groups": {},
+        }
 
         self.assertTrue(journal.get("integrate_complete"))
 
@@ -154,13 +165,19 @@ class SkipTasksCommand(unittest.TestCase):
             repo, jp = self._journal_path(tmp)
             jp.write_text(json.dumps({"spec_id": "001-x", "entries": []}))
 
-            rc = live.skip_tasks(repo, "docs/specs/001-x", ["TASK-002", "TASK-003"], "wedged")
+            rc = live.skip_tasks(
+                repo, "docs/specs/001-x", ["TASK-002", "TASK-003"], "wedged"
+            )
             self.assertEqual(rc, 0)
 
             journal = json.loads(jp.read_text())
-            skips = {e["task"]: e for e in journal["entries"] if e["role"] == "manual-skip"}
+            skips = {
+                e["task"]: e for e in journal["entries"] if e["role"] == "manual-skip"
+            }
             self.assertEqual(set(skips), {"TASK-002", "TASK-003"})
-            self.assertEqual(skips["TASK-002"]["report"]["terminal_status"], "escalated")
+            self.assertEqual(
+                skips["TASK-002"]["report"]["terminal_status"], "escalated"
+            )
             self.assertEqual(skips["TASK-002"]["report"]["notes"], "wedged")
 
             # The skip carries the task to a terminal status on the next reconcile, so a
@@ -179,7 +196,12 @@ class SkipTasksCommand(unittest.TestCase):
 
 
 def _success_entry(task_id, role, **report_extra):
-    report = {"status": "success", "head_sha": "abc12345", "notes": "ok", **report_extra}
+    report = {
+        "status": "success",
+        "head_sha": "abc12345",
+        "notes": "ok",
+        **report_extra,
+    }
     return {"task": task_id, "role": role, "report": report}
 
 
@@ -209,7 +231,9 @@ class ClearTasksCommand(unittest.TestCase):
                 _success_entry("TASK-A", "implement"),
                 _success_entry("TASK-A", "cleanup"),
                 _success_entry("TASK-B", "cleanup"),
-                live._journal_failure_entry({"id": "TASK-C"}, "drive", "drive crashed", 1.0, 2.0),
+                live._journal_failure_entry(
+                    {"id": "TASK-C"}, "drive", "drive crashed", 1.0, 2.0
+                ),
                 live._journal_failure_entry(
                     {"id": "TASK-D"},
                     "dependency-gate",
@@ -219,7 +243,9 @@ class ClearTasksCommand(unittest.TestCase):
                     blocked_by=["TASK-C"],
                 ),
             ]
-            repo, jp = self._write_journal(tmp, entries, groups={"base": {"state": "MERGED"}})
+            repo, jp = self._write_journal(
+                tmp, entries, groups={"base": {"state": "MERGED"}}
+            )
 
             self.assertEqual(live.clear_tasks(repo, "docs/specs/001-x", ["TASK-C"]), 0)
 
@@ -239,7 +265,9 @@ class ClearTasksCommand(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             entries = [
                 _success_entry("TASK-A", "cleanup"),
-                live._journal_failure_entry({"id": "TASK-C"}, "drive", "drive crashed", 1.0, 2.0),
+                live._journal_failure_entry(
+                    {"id": "TASK-C"}, "drive", "drive crashed", 1.0, 2.0
+                ),
                 live._journal_failure_entry(
                     {"id": "TASK-D"},
                     "dependency-gate",
@@ -321,7 +349,9 @@ class ClearTasksCommand(unittest.TestCase):
                 ),
             ]
             repo, jp = self._write_journal(tmp, entries)
-            self.assertEqual(live.clear_tasks(repo, "docs/specs/001-x", ["1.1", "2.1"]), 0)
+            self.assertEqual(
+                live.clear_tasks(repo, "docs/specs/001-x", ["1.1", "2.1"]), 0
+            )
             self.assertEqual(json.loads(jp.read_text())["entries"], [])
 
     def test_gate_blockers_prefers_structured_field(self):
@@ -341,7 +371,9 @@ class ClearTasksCommand(unittest.TestCase):
     def test_clear_without_journal_returns_1(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "repo"  # no worktrees dir / journal created
-            self.assertEqual(live.clear_tasks(repo, "docs/specs/001-x", ["TASK-001"]), 1)
+            self.assertEqual(
+                live.clear_tasks(repo, "docs/specs/001-x", ["TASK-001"]), 1
+            )
 
 
 if __name__ == "__main__":

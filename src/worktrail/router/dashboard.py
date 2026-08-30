@@ -68,16 +68,17 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any
 
 _HERE = Path(__file__).resolve().parent
 
 # Reuse the orchestrator's task loader (same package) so we don't duplicate
 # the changes/<name>/ resolution + review-file skipping.
-from ..taskformats.devkit.source import parse_frontmatter as _parse_fm
 from ..taskformats import resolve as _taskformats
+from ..taskformats.devkit.source import parse_frontmatter as _parse_fm
 
 try:
     from ..conductor import compile as _compile
@@ -90,32 +91,10 @@ _HAVE_LOADER = True
 
 # resolve_repo is a sibling module; reused so the multi-repo overview
 # (`--repos`) detects candidate repos exactly as Step 0 does.
-from .resolve_repo import list_candidate_repos as _list_candidate_repos, is_git_repo as _is_git_repo
-
-# cluster_detect is a sibling module (spec 018).
-from . import cluster_detect
-
-# cluster_telemetry is a sibling module (spec 018 change: cluster-precision-telemetry).
-from . import cluster_telemetry
-
-# policy_selfcheck is a sibling module (route:J go-policy-integrity-guards audit).
-from .policy_selfcheck import check_repo as _policy_check_repo, discover_repo_names as _discover_repo_names
-
-# automerge_selfcheck is a sibling module (route:J automerge-label-gate audit).
-from .automerge_selfcheck import check_repo as _automerge_check_repo
-
-# policy_drift_selfcheck is a sibling module (route:A go-policy-drift-guard).
-from .policy_drift_selfcheck import check_repo as _policy_drift_check_repo
-
-# quarantine_selfcheck is a sibling module (spec quarantined-group-visibility).
-from .quarantine_selfcheck import check_repo as _quarantine_check_repo
-
-# journal_selfcheck is a sibling module (brief 20260808-210929): stranded-run
-# invariants (integrate_complete with undispatched tail; malformed journals).
-from .journal_selfcheck import check_repo as _journal_check_repo
-
 from ..orchestrator.agent_capacity import (
     gate_snapshot as _capacity_gate_snapshot,
+)
+from ..orchestrator.agent_capacity import (
     provider_key as _capacity_provider_key,
 )
 
@@ -130,29 +109,28 @@ from ..runtime.routing_source import routing_candidates as _routing_candidates
 # retired by the target/tier/role redesign), so this reports the operator's
 # configured default tier's winning target, not a route/risk-keyed lookup.
 from ..runtime.selection import select_cell as _select_cell
+from ..shared.homedir import env_setting, worktrail_home
+
+# cluster_detect is a sibling module (spec 018).
+# cluster_telemetry is a sibling module (spec 018 change: cluster-precision-telemetry).
+from . import cluster_detect, cluster_telemetry
 
 # audit_postmerge is a sibling module (spec post-merge-reconciliation-audit):
 # its dashboard_snapshot() is a pure state-file read (no `gh` calls), reused
 # here rather than re-reading the persisted state a second way.
 from .audit_postmerge import (
     dashboard_snapshot as _postmerge_dashboard_snapshot,
+)
+from .audit_postmerge import (
     resolve_state_dir as _postmerge_resolve_state_dir,
 )
 
-# Policy routing is used to annotate picker items and, via _routing_configured_providers,
-# to derive the provider set fed to the capacity gate snapshot below.
-from .policy import DEFAULTS as _POLICY_DEFAULTS, load_policy as _load_policy, resolve_routing as _resolve_routing
-
-from ..shared.homedir import env_setting, worktrail_home
+# automerge_selfcheck is a sibling module (route:J automerge-label-gate audit).
+from .automerge_selfcheck import check_repo as _automerge_check_repo
 
 # check_cache_freshness's ancestor-walk is reused by _dashboard_repo_root() to
 # find the true repo root across install topologies.
 from .check_cache_freshness import _find_git_root
-
-# run_record is a sibling module (route:J go-dashboard-run-record-history):
-# its YAML loader is reused so recent /go run outcomes can be surfaced
-# without duplicating the parser.
-from .run_record import _load as _load_run_record
 
 # check_repo_freshness is a sibling module (route:J go-dashboard-local-only-
 # git-staleness). NOT called from scan()/detect_stage()/scan_repos() -- those
@@ -162,6 +140,32 @@ from .run_record import _load as _load_run_record
 # `/go` render should not pay by default).
 from .check_repo_freshness import check as _check_repo_freshness
 
+# journal_selfcheck is a sibling module (brief 20260808-210929): stranded-run
+# invariants (integrate_complete with undispatched tail; malformed journals).
+from .journal_selfcheck import check_repo as _journal_check_repo
+
+# Policy routing is used to annotate picker items and, via _routing_configured_providers,
+# to derive the provider set fed to the capacity gate snapshot below.
+from .policy import DEFAULTS as _POLICY_DEFAULTS
+from .policy import load_policy as _load_policy
+from .policy import resolve_routing as _resolve_routing
+
+# policy_drift_selfcheck is a sibling module (route:A go-policy-drift-guard).
+from .policy_drift_selfcheck import check_repo as _policy_drift_check_repo
+
+# policy_selfcheck is a sibling module (route:J go-policy-integrity-guards audit).
+from .policy_selfcheck import check_repo as _policy_check_repo
+from .policy_selfcheck import discover_repo_names as _discover_repo_names
+
+# quarantine_selfcheck is a sibling module (spec quarantined-group-visibility).
+from .quarantine_selfcheck import check_repo as _quarantine_check_repo
+from .resolve_repo import is_git_repo as _is_git_repo
+from .resolve_repo import list_candidate_repos as _list_candidate_repos
+
+# run_record is a sibling module (route:J go-dashboard-run-record-history):
+# its YAML loader is reused so recent /go run outcomes can be surfaced
+# without duplicating the parser.
+from .run_record import _load as _load_run_record
 
 # --- spec file discovery -----------------------------------------------------
 
@@ -215,7 +219,7 @@ def _is_spec_doc(name: str) -> bool:
     return not any(stem.endswith(s) for s in _AUX_SUFFIX)
 
 
-def find_spec_file(spec_dir: Path) -> Optional[Path]:
+def find_spec_file(spec_dir: Path) -> Path | None:
     """The brainstorm spec doc, recognized by EXCLUSION so every naming era is
     covered: canonical `YYYY-MM-DD--<name>.md`, plus legacy/manual `spec.md`,
     `SPEC.md`, `brainstorm.md`, and `<name>-specs.md`. Known auxiliary files
@@ -268,13 +272,13 @@ _TAIL_KINDS = ("e2e", "cleanup")
 _TERMINAL_STATUSES = {"completed", "superseded", "optional"}
 
 
-def _task_files(d: Path) -> List[Path]:
+def _task_files(d: Path) -> list[Path]:
     """TASK-*.md files directly in `d`, skipping generated/aux files whose stem
     contains "--" (e.g. TASK-001--review.md)."""
     return [f for f in d.glob("TASK-*.md") if "--" not in f.stem] if d.is_dir() else []
 
 
-def _task_dirs(spec_dir: Path) -> List[Path]:
+def _task_dirs(spec_dir: Path) -> list[Path]:
     """Every directory holding this spec's TASK-*.md files: the original
     top-level tasks/ (if present) UNIONED with every changes/<slug>/tasks/ dir
     that has task files -- never a single pick. Picking only one (the historic
@@ -283,7 +287,7 @@ def _task_dirs(spec_dir: Path) -> List[Path]:
     spec's original tasks/ is fully completed, which is the common case for any
     mature spec (brief 20260713-201900). Change dirs are sorted by slug name
     (date-prefixed, so chronological) for deterministic ordering."""
-    dirs: List[Path] = []
+    dirs: list[Path] = []
     main = spec_dir / "tasks"
     if _task_files(main):
         dirs.append(main)
@@ -296,7 +300,7 @@ def _task_dirs(spec_dir: Path) -> List[Path]:
     return dirs
 
 
-def _load_tasks(spec_dir: Path) -> Optional[List[Dict[str, Any]]]:
+def _load_tasks(spec_dir: Path) -> list[dict[str, Any]] | None:
     """Union of task rows across every task-bearing dir under spec_dir (see
     _task_dirs), or None when the spec has no task DAG at all. Parsed directly
     via _parse_fm rather than the orchestrator's loader.load_spec: that loader
@@ -305,7 +309,7 @@ def _load_tasks(spec_dir: Path) -> Optional[List[Dict[str, Any]]]:
     at once. Loaded once per spec and threaded through detect_stage so
     _count_tasks / _pending_impl_stale / _pending_tail_stale don't each
     re-read and re-parse every TASK-*.md."""
-    rows: List[Dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
     for d in _task_dirs(spec_dir):
         for f in _task_files(d):
             try:
@@ -325,8 +329,8 @@ def _load_tasks(spec_dir: Path) -> Optional[List[Dict[str, Any]]]:
 
 
 def _count_tasks(
-    spec_dir: Path, tasks: Optional[List[Dict[str, Any]]] = None
-) -> Optional[Dict[str, int]]:
+    spec_dir: Path, tasks: list[dict[str, Any]] | None = None
+) -> dict[str, int] | None:
     """Return task counts or None if the spec has no task DAG. A backfill spec
     legitimately has no tasks (the code is the truth).
 
@@ -340,7 +344,10 @@ def _count_tasks(
         return None
     completed = sum(1 for t in tasks if t.get("status") in _TERMINAL_STATUSES)
     pending_tail = sum(
-        1 for t in tasks if t.get("status") not in _TERMINAL_STATUSES and t.get("kind", "impl") in _TAIL_KINDS
+        1
+        for t in tasks
+        if t.get("status") not in _TERMINAL_STATUSES
+        and t.get("kind", "impl") in _TAIL_KINDS
     )
     pending = len(tasks) - completed
     return {
@@ -361,7 +368,7 @@ def _dashboard_repo_root() -> Path:
 
 
 @functools.lru_cache(maxsize=32)
-def _load_dashboard_policy(repo_root: str) -> Optional[Dict[str, Any]]:
+def _load_dashboard_policy(repo_root: str) -> dict[str, Any] | None:
     if _load_policy is None:
         return None
     try:
@@ -370,7 +377,7 @@ def _load_dashboard_policy(repo_root: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def _item_repo_root(item: Dict[str, Any], fallback: Path) -> Path:
+def _item_repo_root(item: dict[str, Any], fallback: Path) -> Path:
     repo_path = item.get("path") or item.get("repo_path") or item.get("repo")
     if isinstance(repo_path, str) and repo_path.strip():
         try:
@@ -380,7 +387,7 @@ def _item_repo_root(item: Dict[str, Any], fallback: Path) -> Path:
     return fallback
 
 
-def _planned_agent_for_item(repo_root: Optional[Path] = None) -> Optional[str]:
+def _planned_agent_for_item(repo_root: Path | None = None) -> str | None:
     """The routing target that would serve `repo_root`'s configured
     `default_tier` -- the dashboard's best-effort "planned agent" annotation.
     Route/risk no longer select routing (`routing.defaults` was retired by
@@ -404,7 +411,7 @@ def _planned_agent_for_item(repo_root: Optional[Path] = None) -> Optional[str]:
     return cell.target
 
 
-def _routing_configured_providers(policy: Optional[Dict[str, Any]]) -> List[str]:
+def _routing_configured_providers(policy: dict[str, Any] | None) -> list[str]:
     """The routing-derived `target:model` provider-key set fed to
     `agent_capacity.gate_snapshot()` -- every `(target, model)` cell
     `routing_candidates()` (task 2.2) yields from `routing.targets`/
@@ -422,7 +429,7 @@ def _routing_configured_providers(policy: Optional[Dict[str, Any]]) -> List[str]
 # --- stale status bookkeeping (files merged, status never flipped) -----------
 
 
-def _git_tracked(repo: Path, files: List[str]) -> set:
+def _git_tracked(repo: Path, files: list[str]) -> set:
     """The subset of `files` git tracks at the base checkout's HEAD. One
     `git ls-files` call (the dashboard scans the base branch, so the index ==
     the committed base tree). Returns an empty set on any git failure -- callers
@@ -443,14 +450,20 @@ def _git_tracked(repo: Path, files: List[str]) -> set:
 
 
 @functools.lru_cache(maxsize=32)
-def _rename_destinations(repo_value: str) -> Dict[str, str]:
+def _rename_destinations(repo_value: str) -> dict[str, str]:
     """Build one explicit-rename map per repo instead of scanning per task path."""
     repo = Path(repo_value)
     try:
         result = subprocess.run(
             [
-                "git", "-C", str(repo), "log", "--all", "--diff-filter=R",
-                "--name-status", "--format=",
+                "git",
+                "-C",
+                str(repo),
+                "log",
+                "--all",
+                "--diff-filter=R",
+                "--name-status",
+                "--format=",
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -461,7 +474,7 @@ def _rename_destinations(repo_value: str) -> Dict[str, str]:
         return {}
     if result.returncode != 0:
         return {}
-    renames: Dict[str, str] = {}
+    renames: dict[str, str] = {}
     for line in result.stdout.splitlines():
         parts = line.split("\t")
         if len(parts) == 3 and parts[0].startswith("R"):
@@ -469,7 +482,7 @@ def _rename_destinations(repo_value: str) -> Dict[str, str]:
     return renames
 
 
-def _moved_tracked_path(repo: Path, old_path: str) -> Optional[str]:
+def _moved_tracked_path(repo: Path, old_path: str) -> str | None:
     """Return a current destination reached only through explicit git renames."""
     renames = _rename_destinations(str(repo.resolve()))
     destination = old_path
@@ -479,12 +492,14 @@ def _moved_tracked_path(repo: Path, old_path: str) -> Optional[str]:
         destination = renames[destination]
     if destination == old_path:
         return None
-    if (repo / destination).is_file() and destination in _git_tracked(repo, [destination]):
+    if (repo / destination).is_file() and destination in _git_tracked(
+        repo, [destination]
+    ):
         return destination
     return None
 
 
-def _declared_file_targets(repo: Path, declared: str) -> List[tuple[Path, str]]:
+def _declared_file_targets(repo: Path, declared: str) -> list[tuple[Path, str]]:
     """Resolve a task's file declaration to candidate repository-relative paths.
 
     Task artifacts are commonly copied between repositories and may retain a
@@ -495,7 +510,7 @@ def _declared_file_targets(repo: Path, declared: str) -> List[tuple[Path, str]]:
     """
     path = Path(str(declared))
     parts = path.parts
-    targets: List[tuple[Path, str]] = []
+    targets: list[tuple[Path, str]] = []
 
     def add(root: Path, relative: Path) -> None:
         candidate = (root, relative.as_posix())
@@ -513,7 +528,7 @@ def _declared_file_targets(repo: Path, declared: str) -> List[tuple[Path, str]]:
     return targets
 
 
-def _task_files_are_shipped(repo: Path, files: List[str], tracked: set) -> bool:
+def _task_files_are_shipped(repo: Path, files: list[str], tracked: set) -> bool:
     for declared in files:
         shipped = False
         for target_repo, relative in _declared_file_targets(repo, declared):
@@ -534,8 +549,8 @@ def _task_files_are_shipped(repo: Path, files: List[str], tracked: set) -> bool:
 
 
 def _pending_impl_stale(
-    spec_dir: Path, tasks: Optional[List[Dict[str, Any]]] = None
-) -> List[str]:
+    spec_dir: Path, tasks: list[dict[str, Any]] | None = None
+) -> list[str]:
     """Ids of pending `kind: impl` tasks whose `files:` are ALL already present on
     disk AND git-tracked on the base checkout -- i.e. the code shipped (e.g. via a
     merged PR) but the task's `status:` was never flipped to completed (stale
@@ -567,7 +582,7 @@ def _pending_impl_stale(
         return []
     all_files = sorted({f for t in candidates for f in t["files"]})
     tracked = _git_tracked(repo, all_files)
-    stale: List[str] = []
+    stale: list[str] = []
     for t in candidates:
         files = t["files"]
         if _task_files_are_shipped(repo, files, tracked):
@@ -576,8 +591,8 @@ def _pending_impl_stale(
 
 
 def _pending_openspec_stale(
-    change_dir: Path, spec_id: str, tasks: List[Dict[str, Any]]
-) -> List[str]:
+    change_dir: Path, spec_id: str, tasks: list[dict[str, Any]]
+) -> list[str]:
     """Ids of pending OpenSpec impl tasks whose cached plan files shipped.
 
     OpenSpec task artifacts do not carry file scope, so this check only trusts a
@@ -615,8 +630,8 @@ def _pending_openspec_stale(
 
 
 def _pending_tail_stale(
-    spec_dir: Path, tasks: Optional[List[Dict[str, Any]]] = None
-) -> List[str]:
+    spec_dir: Path, tasks: list[dict[str, Any]] | None = None
+) -> list[str]:
     """Same check as `_pending_impl_stale`, for tail-kind (e2e/cleanup) tasks
     instead of impl tasks: ids of pending tail tasks whose `files:` are ALL
     already git-tracked on the base checkout -- i.e. the tail work landed (e.g.
@@ -638,11 +653,12 @@ def _pending_tail_stale(
         and t.get("kind", "impl") in _TAIL_KINDS
         and t.get("files")
     ]
-    status_by_id: Dict[str, List[Any]] = {}
+    status_by_id: dict[str, list[Any]] = {}
     for row in tasks:
         status_by_id.setdefault(str(row.get("id")), []).append(row.get("status"))
     empty_cleanup = [
-        t for t in tasks
+        t
+        for t in tasks
         if t.get("status") != "completed"
         and t.get("kind", "impl") == "cleanup"
         and not t.get("files")
@@ -657,7 +673,7 @@ def _pending_tail_stale(
         return [t["id"] for t in empty_cleanup]
     all_files = sorted({f for t in candidates for f in t["files"]})
     tracked = _git_tracked(repo, all_files)
-    stale: List[str] = [t["id"] for t in empty_cleanup]
+    stale: list[str] = [t["id"] for t in empty_cleanup]
     for t in candidates:
         files = t["files"]
         if _task_files_are_shipped(repo, files, tracked):
@@ -670,7 +686,9 @@ def _pending_tail_stale(
 _STATUS_RE = re.compile(
     r"^\**\s*status\s*\**\s*:\s*\**\s*([A-Za-z][\w -]*)", re.IGNORECASE | re.MULTILINE
 )
-_CLARIFICATIONS_RE = re.compile(r"^#{1,6}\s+clarifications\b", re.IGNORECASE | re.MULTILINE)
+_CLARIFICATIONS_RE = re.compile(
+    r"^#{1,6}\s+clarifications\b", re.IGNORECASE | re.MULTILINE
+)
 # The authoritative "needs spec-check" signal: an unresolved marker specs.spec-check
 # consumes. Far more reliable than the heading, which most specs never emit.
 _CLAR_MARKER_RE = re.compile(r"\[NEEDS CLARIFICATION", re.IGNORECASE)
@@ -680,12 +698,12 @@ _FEATURE_SUMMARY_RE = re.compile(
 )
 
 
-def _status_header(spec_text: str) -> Optional[str]:
+def _status_header(spec_text: str) -> str | None:
     m = _STATUS_RE.search(spec_text)
     return m.group(1).strip() if m else None
 
 
-def _feature_summary(spec_text: str) -> Optional[str]:
+def _feature_summary(spec_text: str) -> str | None:
     m = _FEATURE_SUMMARY_RE.search(spec_text)
     if m:
         val = m.group(1).strip()
@@ -700,7 +718,7 @@ def _feature_summary(spec_text: str) -> Optional[str]:
 _PR_NUMBER_RE = re.compile(r"/pull/(\d+)")
 
 
-def _pr_number(pr_url: Optional[str]) -> str:
+def _pr_number(pr_url: str | None) -> str:
     """Extract the `#N` PR number from a GitHub PR URL for compact rendering."""
     m = _PR_NUMBER_RE.search(pr_url or "")
     return m.group(1) if m else "?"
@@ -718,8 +736,17 @@ def _group_merged_on_base(repo: Path, pr_url: str) -> bool:
         return False
     try:
         result = subprocess.run(
-            ["git", "-C", str(repo), "log", "--oneline", "--fixed-strings",
-             "--grep", f"(#{m.group(1)})", "-1"],
+            [
+                "git",
+                "-C",
+                str(repo),
+                "log",
+                "--oneline",
+                "--fixed-strings",
+                "--grep",
+                f"(#{m.group(1)})",
+                "-1",
+            ],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
@@ -739,7 +766,9 @@ def _journal_verify_pending(spec_dir: Path) -> bool:
     try:
         spec_dir = Path(spec_dir)
         repo = spec_dir.parent.parent.parent
-        journal_path = repo.parent / f"{repo.name}-worktrees" / f"run-{spec_dir.name}.json"
+        journal_path = (
+            repo.parent / f"{repo.name}-worktrees" / f"run-{spec_dir.name}.json"
+        )
         if not journal_path.is_file():
             return False
         journal = json.loads(journal_path.read_text())
@@ -751,17 +780,21 @@ def _journal_verify_pending(spec_dir: Path) -> bool:
         pending = [g for g in groups.values() if g.get("state") != "MERGED"]
         if not pending:
             return False
-        return any(not _group_merged_on_base(repo, g.get("pr_url", "")) for g in pending)
+        return any(
+            not _group_merged_on_base(repo, g.get("pr_url", "")) for g in pending
+        )
     except (json.JSONDecodeError, OSError, KeyError, TypeError):
         return False
 
 
-def _status_phase(spec_dir: Path) -> Optional[str]:
+def _status_phase(spec_dir: Path) -> str | None:
     """Best-effort read of the orchestrator heartbeat sidecar phase."""
     try:
         spec_dir = Path(spec_dir)
         repo = spec_dir.parent.parent.parent
-        status_path = repo.parent / f"{repo.name}-worktrees" / f"run-{spec_dir.name}.status.json"
+        status_path = (
+            repo.parent / f"{repo.name}-worktrees" / f"run-{spec_dir.name}.status.json"
+        )
         if not status_path.is_file():
             return None
         return json.loads(status_path.read_text()).get("phase")
@@ -791,7 +824,7 @@ def _sync_pending(spec_dir: Path) -> bool:
         return True
 
 
-def detect_stage(spec_dir: Path, probe_stale: bool = True) -> Dict[str, Any]:
+def detect_stage(spec_dir: Path, probe_stale: bool = True) -> dict[str, Any]:
     """Stage-detect one spec folder. probe_stale=False skips the per-spec
     `git ls-files` stale-bookkeeping probe — callers that only need the stage
     label for display (e.g. the overlap gate) avoid a subprocess per spec."""
@@ -809,7 +842,7 @@ def detect_stage(spec_dir: Path, probe_stale: bool = True) -> Dict[str, Any]:
     tasks = _load_tasks(spec_dir)
     counts = _count_tasks(spec_dir, tasks)
 
-    info: Dict[str, Any] = {
+    info: dict[str, Any] = {
         "id": spec_dir.name,
         "spec_file": spec_file.name if spec_file else None,
         "status_header": status,
@@ -832,8 +865,10 @@ def detect_stage(spec_dir: Path, probe_stale: bool = True) -> Dict[str, Any]:
     # tail/impl tasks must still surface (fall through to the task-based branch below)
     # rather than being permanently masked by a stamp that predates them (brief
     # 20260713-201900).
-    if status and status.lower() in ("backfill", "implemented") and (
-        not counts or counts.get("pending", 0) == 0
+    if (
+        status
+        and status.lower() in ("backfill", "implemented")
+        and (not counts or counts.get("pending", 0) == 0)
     ):
         info.update(stage="done", next_action="none (backfill)")
         return info
@@ -852,7 +887,9 @@ def detect_stage(spec_dir: Path, probe_stale: bool = True) -> Dict[str, Any]:
         # onto the orchestrator path (which would re-implement merged code). Only
         # probed when impl work appears outstanding (keeps the common path git-free).
         stale_ids = (
-            _pending_impl_stale(spec_dir, tasks) if (probe_stale and pending_impl > 0) else []
+            _pending_impl_stale(spec_dir, tasks)
+            if (probe_stale and pending_impl > 0)
+            else []
         )
         pending_impl_real = pending_impl - len(stale_ids)
         if pending_impl_real > 0:
@@ -876,7 +913,8 @@ def detect_stage(spec_dir: Path, probe_stale: bool = True) -> Dict[str, Any]:
         elif _journal_verify_pending(spec_dir):
             # Impl complete but group PRs still need verify → merge → cleanup.
             info.update(
-                stage="verify-pending", next_action="resume full-real (verify → merge → cleanup)"
+                stage="verify-pending",
+                next_action="resume full-real (verify → merge → cleanup)",
             )
         elif counts.get("pending_tail", 0) > 0:
             # Impl groups merged; tail-kind (e2e/cleanup) work is outstanding by
@@ -916,7 +954,9 @@ def detect_stage(spec_dir: Path, probe_stale: bool = True) -> Dict[str, Any]:
                 next_action="sync (reconcile spec ↔ code; update knowledge-graph.json)",
             )
         else:
-            info.update(stage="complete", next_action="open PR / sync (verify merge state)")
+            info.update(
+                stage="complete", next_action="open PR / sync (verify merge state)"
+            )
         return info
     # 3 & 4. No tasks and no spec doc. A folder carrying only user-request.md is an
     # unspec'd feature (brainstorm seeded the request but never produced the spec) --
@@ -972,7 +1012,7 @@ def _is_spec_folder(d: Path) -> bool:
     )
 
 
-def _safe_detect_stage(spec_dir: Path) -> Dict[str, Any]:
+def _safe_detect_stage(spec_dir: Path) -> dict[str, Any]:
     """Per-spec isolation: one unreadable/broken spec folder degrades to an
     `error` row instead of killing the whole dashboard (the /go front door)."""
     try:
@@ -1012,7 +1052,7 @@ def _openspec_headings(text: str) -> tuple[set[str], set[str]]:
 def _rename_requirement_name(value: str) -> str:
     value = value.strip().strip("`").strip()
     prefix = "### Requirement:"
-    return value[len(prefix):].strip() if value.startswith(prefix) else value
+    return value[len(prefix) :].strip() if value.startswith(prefix) else value
 
 
 def _iter_openspec_delta_sections(text: str) -> Iterator[tuple[str, str]]:
@@ -1020,7 +1060,7 @@ def _iter_openspec_delta_sections(text: str) -> Iterator[tuple[str, str]]:
     sections = list(_OPENSPEC_DELTA_SECTION.finditer(text))
     for index, section in enumerate(sections):
         end = sections[index + 1].start() if index + 1 < len(sections) else len(text)
-        yield section.group(1), text[section.end():end]
+        yield section.group(1), text[section.end() : end]
 
 
 def _openspec_delta_current_requirements(kind: str, body: str) -> set[str]:
@@ -1040,7 +1080,7 @@ def _openspec_delta_current_requirements(kind: str, body: str) -> set[str]:
     return set()
 
 
-def _git_last_commit_time(repo: Path, path: Path) -> Optional[int]:
+def _git_last_commit_time(repo: Path, path: Path) -> int | None:
     """Unix timestamp of `path`'s most recent commit, or None if it has none
     (e.g. an uncommitted-only file)."""
     try:
@@ -1058,7 +1098,7 @@ def _git_last_commit_time(repo: Path, path: Path) -> Optional[int]:
         return None
 
 
-def _git_added_commit_time(repo: Path, path: Path) -> Optional[int]:
+def _git_added_commit_time(repo: Path, path: Path) -> int | None:
     """Unix timestamp of `path`'s add commit, or None if it has none.
 
     Prefers the commit that first added `path` under its current name
@@ -1069,7 +1109,17 @@ def _git_added_commit_time(repo: Path, path: Path) -> Optional[int]:
     """
     try:
         result = subprocess.run(
-            ["git", "-C", str(repo), "log", "--diff-filter=A", "-1", "--format=%ct", "--", str(path)],
+            [
+                "git",
+                "-C",
+                str(repo),
+                "log",
+                "--diff-filter=A",
+                "-1",
+                "--format=%ct",
+                "--",
+                str(path),
+            ],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
@@ -1078,7 +1128,16 @@ def _git_added_commit_time(repo: Path, path: Path) -> Optional[int]:
             return int(result.stdout.strip())
 
         result = subprocess.run(
-            ["git", "-C", str(repo), "log", "--follow", "--format=%ct", "--", str(path)],
+            [
+                "git",
+                "-C",
+                str(repo),
+                "log",
+                "--follow",
+                "--format=%ct",
+                "--",
+                str(path),
+            ],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
@@ -1091,7 +1150,7 @@ def _git_added_commit_time(repo: Path, path: Path) -> Optional[int]:
         return None
 
 
-def _openspec_delta_drift(change_dir: Path, repo: Path) -> List[Dict[str, str]]:
+def _openspec_delta_drift(change_dir: Path, repo: Path) -> list[dict[str, str]]:
     """Requirement names an open change's delta MODIFIED/RENAMED that an archived
     sibling touched more recently.
 
@@ -1099,7 +1158,7 @@ def _openspec_delta_drift(change_dir: Path, repo: Path) -> List[Dict[str, str]]:
     -- never a model call.
     """
     try:
-        drift: List[Dict[str, str]] = []
+        drift: list[dict[str, str]] = []
         for delta_file in sorted((change_dir / "specs").glob("**/spec.md")):
             capability = delta_file.relative_to(change_dir / "specs").parent
             text = delta_file.read_text(errors="ignore")
@@ -1122,7 +1181,9 @@ def _openspec_delta_drift(change_dir: Path, repo: Path) -> List[Dict[str, str]]:
                 archived_names: set[str] = set()
                 for kind, body in _iter_openspec_delta_sections(archived_text):
                     if kind in {"ADDED", "MODIFIED", "RENAMED"}:
-                        archived_names |= _openspec_delta_current_requirements(kind, body)
+                        archived_names |= _openspec_delta_current_requirements(
+                            kind, body
+                        )
 
                 for name in open_names & archived_names:
                     archived_time = _git_added_commit_time(repo, archived_spec)
@@ -1175,31 +1236,37 @@ def _openspec_delta_reconciled(change_dir: Path) -> bool:
                 if requirements & canonical_requirements:
                     return False
             else:
-                rename_values: Dict[str, List[str]] = {"FROM": [], "TO": []}
+                rename_values: dict[str, list[str]] = {"FROM": [], "TO": []}
                 for direction, value in _OPENSPEC_RENAME.findall(body):
                     rename_values[direction].append(_rename_requirement_name(value))
                 if not rename_values["FROM"] or len(rename_values["FROM"]) != len(
                     rename_values["TO"]
                 ):
                     raise ValueError(f"malformed RENAMED Requirements in {delta_file}")
-                if any(name in canonical_requirements for name in rename_values["FROM"]):
+                if any(
+                    name in canonical_requirements for name in rename_values["FROM"]
+                ):
                     return False
-                if any(name not in canonical_requirements for name in rename_values["TO"]):
+                if any(
+                    name not in canonical_requirements for name in rename_values["TO"]
+                ):
                     return False
     return True
 
 
-def _safe_detect_openspec(change_dir: Path) -> Dict[str, Any]:
+def _safe_detect_openspec(change_dir: Path) -> dict[str, Any]:
     """Project an OpenSpec change into the dashboard's common stage shape."""
     try:
         spec_id, tasks = _taskformats.load_spec(change_dir)
         pending = [t for t in tasks if t.get("status") != "completed"]
-        stale_ids: List[str] = []
+        stale_ids: list[str] = []
         if not tasks:
             stage, next_action = "needs-tasks", "create tasks"
         elif pending:
             stale_ids = _pending_openspec_stale(change_dir, spec_id, tasks)
-            pending_impl = [t for t in pending if t.get("kind", "impl") not in _TAIL_KINDS]
+            pending_impl = [
+                t for t in pending if t.get("kind", "impl") not in _TAIL_KINDS
+            ]
             pending_impl_real = len(pending_impl) - len(
                 set(stale_ids) & {t["id"] for t in pending_impl}
             )
@@ -1229,12 +1296,16 @@ def _safe_detect_openspec(change_dir: Path) -> Dict[str, Any]:
             "id": spec_id,
             "format": "openspec",
             "path": str(change_dir),
-            "spec_file": str(change_dir / "proposal.md") if (change_dir / "proposal.md").is_file() else None,
+            "spec_file": str(change_dir / "proposal.md")
+            if (change_dir / "proposal.md").is_file()
+            else None,
             "status_header": None,
             "has_clarifications": False,
             "clarification_markers": False,
             "has_user_request": False,
-            "technical_plan": "present" if (change_dir / "design.md").is_file() else "missing",
+            "technical_plan": "present"
+            if (change_dir / "design.md").is_file()
+            else "missing",
             "tasks": tasks,
             "feature_summary": None,
             "stage": stage,
@@ -1265,20 +1336,32 @@ def _safe_detect_openspec(change_dir: Path) -> Dict[str, Any]:
         }
 
 
-def _openspec_change_dirs(repo: Path) -> List[Path]:
+def _openspec_change_dirs(repo: Path) -> list[Path]:
     changes = Path(repo) / "openspec" / "changes"
     if not changes.is_dir():
         return []
     return sorted(d for d in changes.iterdir() if d.is_dir() and d.name != "archive")
 
 
-def scan(specs_root: Path) -> List[Dict[str, Any]]:
+def scan(specs_root: Path) -> list[dict[str, Any]]:
     specs_root = Path(specs_root)
     if not specs_root.is_dir():
-        repo_root = specs_root.parent.parent if specs_root.name == "specs" and specs_root.parent.name == "docs" else None
-        return [_safe_detect_openspec(d) for d in _openspec_change_dirs(repo_root)] if repo_root else []
+        repo_root = (
+            specs_root.parent.parent
+            if specs_root.name == "specs" and specs_root.parent.name == "docs"
+            else None
+        )
+        return (
+            [_safe_detect_openspec(d) for d in _openspec_change_dirs(repo_root)]
+            if repo_root
+            else []
+        )
     spec_dirs = sorted(d for d in specs_root.iterdir() if _is_spec_folder(d))
-    repo_root = specs_root.parent.parent if specs_root.name == "specs" and specs_root.parent.name == "docs" else None
+    repo_root = (
+        specs_root.parent.parent
+        if specs_root.name == "specs" and specs_root.parent.name == "docs"
+        else None
+    )
     if spec_dirs:
         with ThreadPoolExecutor() as ex:
             rows = list(ex.map(_safe_detect_stage, spec_dirs))
@@ -1311,10 +1394,18 @@ EPIC_ID_RE = re.compile(r"^\d{3}-[a-z0-9][a-z0-9-]*$")
 # finished as a planning artifact -- every feature is either specced,
 # delivered, or intentionally dropped, so it stops surfacing as a gap
 # regardless of citation count.
-TERMINAL_EPIC_STATUSES = frozenset({
-    "completed", "complete", "delivered", "done", "closed",
-    "superseded", "cancelled", "abandoned",
-})
+TERMINAL_EPIC_STATUSES = frozenset(
+    {
+        "completed",
+        "complete",
+        "delivered",
+        "done",
+        "closed",
+        "superseded",
+        "cancelled",
+        "abandoned",
+    }
+)
 
 _EPIC_STATUS_LINE_RE = re.compile(r"^\*\*Status:\*\*\s*(.+?)\s*$", re.MULTILINE)
 _EPIC_FEATURE_HEADING_RE = re.compile(r"^###\s+Feature\b", re.MULTILINE)
@@ -1324,7 +1415,7 @@ _EPIC_FUTURE_SPEC_ID_RE = re.compile(
 )
 
 
-def _epic_status_header(text: str) -> Optional[str]:
+def _epic_status_header(text: str) -> str | None:
     match = _EPIC_STATUS_LINE_RE.search(text)
     return match.group(1).strip() if match else None
 
@@ -1333,7 +1424,7 @@ def _count_epic_features(text: str) -> int:
     return len(_EPIC_FEATURE_HEADING_RE.findall(text))
 
 
-def _epic_citation_patterns(epic_id: str, epic_text: str) -> List[re.Pattern]:
+def _epic_citation_patterns(epic_id: str, epic_text: str) -> list[re.Pattern]:
     """Signals that count a spec/change folder as citing this epic.
 
     The literal epic id string is the strongest signal, but real citations
@@ -1344,18 +1435,20 @@ def _epic_citation_patterns(epic_id: str, epic_text: str) -> List[re.Pattern]:
     unambiguous signal once a citing file names it. Matching only the literal
     epic id string undercounts real citations.
     """
-    patterns: List[re.Pattern] = [re.compile(re.escape(epic_id))]
+    patterns: list[re.Pattern] = [re.compile(re.escape(epic_id))]
     number_match = _EPIC_NUMBER_RE.match(epic_id)
     if number_match:
-        patterns.append(re.compile(
-            rf"\bEpic\s+{number_match.group(1)}\s+Feature\s+\d+\b",
-            re.IGNORECASE))
+        patterns.append(
+            re.compile(
+                rf"\bEpic\s+{number_match.group(1)}\s+Feature\s+\d+\b", re.IGNORECASE
+            )
+        )
     for future_spec_id in _EPIC_FUTURE_SPEC_ID_RE.findall(epic_text):
         patterns.append(re.compile(re.escape(future_spec_id)))
     return patterns
 
 
-def _epic_citing_spec_ids(repo: Path, patterns: List[re.Pattern]) -> List[str]:
+def _epic_citing_spec_ids(repo: Path, patterns: list[re.Pattern]) -> list[str]:
     """Spec/change folders whose markdown matches any epic citation pattern.
 
     Scans both supported spec formats, since an epic's features can ship as
@@ -1364,7 +1457,7 @@ def _epic_citing_spec_ids(repo: Path, patterns: List[re.Pattern]) -> List[str]:
     `changes/archive/<date>-<slug>/` and its nested `specs/<slug>/spec.md`
     copy, both of which sit one level deeper than a live change).
     """
-    citing: List[str] = []
+    citing: list[str] = []
     seen: set = set()
 
     def _add(name: str) -> None:
@@ -1408,7 +1501,7 @@ def _epic_citing_spec_ids(repo: Path, patterns: List[re.Pattern]) -> List[str]:
     return citing
 
 
-def detect_epic_stage(epic_file: Path, repo: Path) -> Dict[str, Any]:
+def detect_epic_stage(epic_file: Path, repo: Path) -> dict[str, Any]:
     """Stage-detect one `docs/specs/epics/*.md` decomposition document.
 
     Returns a dict with `stage` one of:
@@ -1425,7 +1518,7 @@ def detect_epic_stage(epic_file: Path, repo: Path) -> Dict[str, Any]:
     text = epic_file.read_text(encoding="utf-8")
     status = _epic_status_header(text)
 
-    info: Dict[str, Any] = {
+    info: dict[str, Any] = {
         "id": epic_id,
         "epic_file": epic_file.name,
         "status_header": status,
@@ -1474,7 +1567,7 @@ def detect_epic_stage(epic_file: Path, repo: Path) -> Dict[str, Any]:
     return info
 
 
-def _safe_detect_epic_stage(epic_file: Path, repo: Path) -> Dict[str, Any]:
+def _safe_detect_epic_stage(epic_file: Path, repo: Path) -> dict[str, Any]:
     """Per-epic-file isolation: one unreadable/unparseable epic file degrades
     to an `error` row instead of killing the whole epic scan."""
     try:
@@ -1492,7 +1585,7 @@ def _safe_detect_epic_stage(epic_file: Path, repo: Path) -> Dict[str, Any]:
         }
 
 
-def scan_epics(repo: Path) -> List[Dict[str, Any]]:
+def scan_epics(repo: Path) -> list[dict[str, Any]]:
     """Sibling to `scan()`: one row per `docs/specs/epics/*.md` decomposition
     document whose stem matches `EPIC_ID_RE`. Non-matching files in that
     directory (an index/README, a stray note) are skipped, not misclassified.
@@ -1502,16 +1595,14 @@ def scan_epics(repo: Path) -> List[Dict[str, Any]]:
     epics_dir = repo / "docs" / "specs" / "epics"
     if not epics_dir.is_dir():
         return []
-    epic_files = sorted(
-        f for f in epics_dir.glob("*.md") if EPIC_ID_RE.match(f.stem)
-    )
+    epic_files = sorted(f for f in epics_dir.glob("*.md") if EPIC_ID_RE.match(f.stem))
     if not epic_files:
         return []
     with ThreadPoolExecutor() as ex:
         return list(ex.map(lambda f: _safe_detect_epic_stage(f, repo), epic_files))
 
 
-def constitution_status(specs_root: Path) -> Dict[str, bool]:
+def constitution_status(specs_root: Path) -> dict[str, bool]:
     """Phase 0 architectural DNA lives beside the specs: docs/specs/architecture.md
     + ontology.md (verified: constitution skill writes them there). Advisory only --
     the lifecycle works without it, so `go` suggests, never gates."""
@@ -1553,7 +1644,7 @@ def _runlock_held(lock_path: Path) -> bool:
         fh.close()
 
 
-def _resolve_repo_dir(repo: Any, repos_root: Optional[Any]) -> Optional[Path]:
+def _resolve_repo_dir(repo: Any, repos_root: Any | None) -> Path | None:
     """Resolve a brief's `repo:` frontmatter value to an on-disk directory.
 
     Absolute/HOME-relative paths (the normal, intended case) resolve
@@ -1577,7 +1668,7 @@ def _resolve_repo_dir(repo: Any, repos_root: Optional[Any]) -> Optional[Path]:
     return None
 
 
-def _repo_busy_reason(repo: Any, repos_root: Optional[Any] = None) -> Optional[str]:
+def _repo_busy_reason(repo: Any, repos_root: Any | None = None) -> str | None:
     """Skip-reason string when a brief's repo can't be safely auto-claimed.
 
     - `no-repo`: brief has no repo frontmatter — no collision surface to verify.
@@ -1610,7 +1701,9 @@ def _repo_busy_reason(repo: Any, repos_root: Optional[Any] = None) -> Optional[s
     return None
 
 
-def _remote_spec_branch(repo: Any, target_spec: Any, repos_root: Optional[Any] = None) -> Optional[str]:
+def _remote_spec_branch(
+    repo: Any, target_spec: Any, repos_root: Any | None = None
+) -> str | None:
     """Return a matching remote branch ref for a queued target spec, if any."""
     if not repo or not target_spec:
         return None
@@ -1621,8 +1714,14 @@ def _remote_spec_branch(repo: Any, target_spec: Any, repos_root: Optional[Any] =
     try:
         result = subprocess.run(
             [
-                "git", "-C", str(repo_path), "ls-remote", "--heads", "origin",
-                f"spec/{spec_id}*", f"chg/{spec_id}-*",
+                "git",
+                "-C",
+                str(repo_path),
+                "ls-remote",
+                "--heads",
+                "origin",
+                f"spec/{spec_id}*",
+                f"chg/{spec_id}-*",
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -1642,8 +1741,8 @@ def _remote_spec_branch(repo: Any, target_spec: Any, repos_root: Optional[Any] =
 
 
 def _dashboard_task_candidates(
-    repo: Any, target_spec: Any, *, repos_root: Optional[Any] = None
-) -> List[Dict[str, Any]]:
+    repo: Any, target_spec: Any, *, repos_root: Any | None = None
+) -> list[dict[str, Any]]:
     """`cluster_detect.compute_clusters()`'s `task_candidates_fn` adapter
     (Dashboard Advisory Surfaces Brief-vs-Task Matches).
 
@@ -1672,16 +1771,18 @@ def _dashboard_task_candidates(
     from . import overlap_check as _overlap_check
 
     openspec_root = repo_dir / "openspec"
-    is_openspec = (openspec_root / "changes").is_dir() or (openspec_root / "specs").is_dir()
+    is_openspec = (openspec_root / "changes").is_dir() or (
+        openspec_root / "specs"
+    ).is_dir()
     specs_root = openspec_root if is_openspec else repo_dir / "docs" / "specs"
     return _overlap_check.task_candidates(specs_root, str(target_spec))
 
 
 def auto_pick_brief(
-    queue_briefs: List[Dict[str, Any]],
-    repo_filter: Optional[str] = None,
-    repos_root: Optional[Any] = None,
-) -> Dict[str, Any]:
+    queue_briefs: list[dict[str, Any]],
+    repo_filter: str | None = None,
+    repos_root: Any | None = None,
+) -> dict[str, Any]:
     """Deterministically pick the next brief for /go auto (spec 017 REQ-002/003).
 
     Ranking is FIFO oldest-first by the YYYYMMDD-HHMMSS filename prefix
@@ -1712,11 +1813,11 @@ def auto_pick_brief(
 
     Returns {"pick": {...}|None, "skipped": [{"id", "reason"}, ...]}.
     """
-    skipped: List[Dict[str, str]] = []
+    skipped: list[dict[str, str]] = []
     _TRIAGE_RANK = {"blocker": 0, None: 1, "deferred": 2}
-    policy_cache: Dict[str, Optional[Dict[str, Any]]] = {}
+    policy_cache: dict[str, dict[str, Any] | None] = {}
 
-    def _release_gate_for(repo: Any) -> Optional[str]:
+    def _release_gate_for(repo: Any) -> str | None:
         resolved = _resolve_repo_dir(repo, repos_root)
         if resolved is None:
             return None
@@ -1727,7 +1828,7 @@ def auto_pick_brief(
         gate = (pol or {}).get("release_gate")
         return str(gate) if gate else None
 
-    def _rank_key(x: Dict[str, Any]):
+    def _rank_key(x: dict[str, Any]):
         triage = x.get("triage") if x.get("triage") in ("blocker", "deferred") else None
         return (_TRIAGE_RANK[triage], x.get("filename") or "")
 
@@ -1752,7 +1853,11 @@ def auto_pick_brief(
             skipped.append({"id": stem, "reason": "recently-released"})
             continue
         path = b.get("path")
-        fm = _parse_fm(Path(path).read_text(errors="ignore")) if path and Path(path).is_file() else {}
+        fm = (
+            _parse_fm(Path(path).read_text(errors="ignore"))
+            if path and Path(path).is_file()
+            else {}
+        )
         repo = fm.get("repo")
         if repo_filter:
             rf = str(repo_filter).rstrip("/")
@@ -1770,7 +1875,9 @@ def auto_pick_brief(
             continue
         remote_branch = _remote_spec_branch(repo, fm.get("target-spec"), repos_root)
         if remote_branch:
-            skipped.append({"id": stem, "reason": f"remote-spec-branch:{remote_branch}"})
+            skipped.append(
+                {"id": stem, "reason": f"remote-spec-branch:{remote_branch}"}
+            )
             continue
         return {
             "pick": {
@@ -1789,7 +1896,7 @@ AUTO_PICK_MISS_LOG_ENV = "WORKTRAIL_AUTO_PICK_MISS_LOG"
 MAX_AUTO_PICK_MISS_ENTRIES = 200  # bounded like agent_capacity.py's audit log
 
 
-def auto_pick_miss_log_path(path: Optional[Path] = None) -> Path:
+def auto_pick_miss_log_path(path: Path | None = None) -> Path:
     if path:
         return path
     override = env_setting(AUTO_PICK_MISS_LOG_ENV)
@@ -1799,10 +1906,10 @@ def auto_pick_miss_log_path(path: Optional[Path] = None) -> Path:
 
 
 def log_auto_pick_miss(
-    auto_pick: Dict[str, Any],
+    auto_pick: dict[str, Any],
     total_briefs: int,
-    repo_filter: Optional[str] = None,
-    path: Optional[Path] = None,
+    repo_filter: str | None = None,
+    path: Path | None = None,
 ) -> None:
     """Append a JSONL record of WHY `--auto` found nothing to pick, when it found
     nothing to pick.
@@ -1824,7 +1931,7 @@ def log_auto_pick_miss(
         return
     log_path = auto_pick_miss_log_path(path)
     skipped = auto_pick.get("skipped") or []
-    reasons: Dict[str, int] = {}
+    reasons: dict[str, int] = {}
     for entry in skipped:
         reason = str(entry.get("reason", "")).split(":", 1)[0]
         reasons[reason] = reasons.get(reason, 0) + 1
@@ -1852,7 +1959,7 @@ def log_auto_pick_miss(
         pass
 
 
-def _hours_since_claim(claimed_at: Any) -> Optional[float]:
+def _hours_since_claim(claimed_at: Any) -> float | None:
     """Hours elapsed since an ISO-8601 `claimed-at` stamp; None if absent/unparseable."""
     if not claimed_at:
         return None
@@ -1866,7 +1973,9 @@ def _hours_since_claim(claimed_at: Any) -> Optional[float]:
     return (now - dt).total_seconds() / 3600.0
 
 
-INFLIGHT_STALE_HOURS = 48.0  # a picked brief younger than this is presumed actively owned
+INFLIGHT_STALE_HOURS = (
+    48.0  # a picked brief younger than this is presumed actively owned
+)
 
 # Cluster-detection precision (cluster_telemetry.summarize()) is only worth
 # surfacing once there's enough decided (consolidated + declined) outcomes
@@ -1875,8 +1984,8 @@ CLUSTER_PRECISION_MIN_DECIDED = 5
 
 
 def inflight_briefs(
-    picked_dir: Optional[Path], stale_hours: float = INFLIGHT_STALE_HOURS
-) -> List[Dict[str, Any]]:
+    picked_dir: Path | None, stale_hours: float = INFLIGHT_STALE_HOURS
+) -> list[dict[str, Any]]:
     """Scan picked_dir for briefs with status: picked (not done) that look
     ABANDONED. Returns a list of stalled in-flight briefs with: filename, focus,
     claimed_at, hours_since_claim, repo, status, batched.
@@ -1902,7 +2011,7 @@ def inflight_briefs(
     if not picked_dir.is_dir():
         return []
 
-    picked: List[Dict[str, Any]] = []
+    picked: list[dict[str, Any]] = []
     for brief_file in sorted(picked_dir.glob("*.md")):
         text = brief_file.read_text(errors="ignore")
         fm = _parse_fm(text)
@@ -1935,13 +2044,13 @@ def inflight_briefs(
         )
 
     picked_stems = {b["stem"] for b in picked}
-    companion_counts: Dict[str, int] = {}
+    companion_counts: dict[str, int] = {}
     for b in picked:
         bp = b["batch_primary"]
         if bp and bp != b["stem"] and bp in picked_stems:
             companion_counts[bp] = companion_counts.get(bp, 0) + 1
 
-    results: List[Dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
     for b in picked:
         bp = b["batch_primary"]
         if bp and bp != b["stem"] and bp in picked_stems:
@@ -2009,7 +2118,7 @@ _CATEGORY_ORDER = [
 ]
 
 
-def _constitution_hint(con: Optional[Dict[str, bool]]) -> Optional[str]:
+def _constitution_hint(con: dict[str, bool] | None) -> str | None:
     """One-line nudge, shown only when something's missing (quiet when present)."""
     if not con or (con["architecture"] and con["ontology"]):
         return None
@@ -2026,7 +2135,7 @@ def _constitution_hint(con: Optional[Dict[str, bool]]) -> Optional[str]:
 # outstanding (in-progress) work. Pure file inspection, same as the single-repo path.
 
 
-def _find_worktrees(parent: Path, repo_name: str) -> List[Path]:
+def _find_worktrees(parent: Path, repo_name: str) -> list[Path]:
     """Worktree checkouts live at <parent>/<repo_name>-worktrees/<branch>/.
     Each is a git worktree with a .git FILE (not dir) pointing back to the
     canonical repo. Returns sorted list; empty if the directory doesn't exist
@@ -2048,7 +2157,9 @@ def _detect_for_repo(args: tuple) -> tuple:
     return (repo_key, _safe_detect_stage(spec_dir))
 
 
-def scan_repos(parent: Path, run_record_dir: Optional[Path] = None) -> List[Dict[str, Any]]:
+def scan_repos(
+    parent: Path, run_record_dir: Path | None = None
+) -> list[dict[str, Any]]:
     """One row per candidate repo under `parent`, repos with active specs first.
 
     Scans each repo's BASE-BRANCH `docs/specs` only -- worktree spec state is
@@ -2103,9 +2214,9 @@ def scan_repos(parent: Path, run_record_dir: Optional[Path] = None) -> List[Dict
     repos = _list_candidate_repos(parent)
 
     # Collect metadata and spec dirs for all repos in one pass.
-    repo_keys: List[str] = []
-    repo_info: Dict[str, Dict[str, Any]] = {}
-    all_pairs: List[tuple] = []
+    repo_keys: list[str] = []
+    repo_info: dict[str, dict[str, Any]] = {}
+    all_pairs: list[tuple] = []
     sibling_names = (
         _discover_repo_names(parent) if _discover_repo_names is not None else []
     )
@@ -2113,24 +2224,26 @@ def scan_repos(parent: Path, run_record_dir: Optional[Path] = None) -> List[Dict
         repo_key = str(repo)
         repo_keys.append(repo_key)
         specs_root = repo / "docs" / "specs"
-        policy_findings: List[Dict[str, Any]] = []
+        policy_findings: list[dict[str, Any]] = []
         if _policy_check_repo is not None:
             policy_findings = _policy_check_repo(repo, sibling_names)["findings"]
-        automerge_findings: List[Dict[str, Any]] = []
+        automerge_findings: list[dict[str, Any]] = []
         if _automerge_check_repo is not None:
             automerge_findings = _automerge_check_repo(repo)["findings"]
-        drift_findings: List[Dict[str, Any]] = []
+        drift_findings: list[dict[str, Any]] = []
         if _policy_drift_check_repo is not None:
             drift_findings = _policy_drift_check_repo(repo)["findings"]
-        quarantine_findings: List[Dict[str, Any]] = []
-        quarantine_resumable: List[Dict[str, Any]] = []
+        quarantine_findings: list[dict[str, Any]] = []
+        quarantine_resumable: list[dict[str, Any]] = []
         if _quarantine_check_repo is not None:
             _qr = _quarantine_check_repo(repo)
             quarantine_findings = _qr["findings"]
             quarantine_resumable = _qr["resumable"]
-        journal_findings: List[Dict[str, Any]] = []
+        journal_findings: list[dict[str, Any]] = []
         if _journal_check_repo is not None:
-            journal_findings = _journal_check_repo(repo, run_record_dir=run_record_dir)["findings"]
+            journal_findings = _journal_check_repo(repo, run_record_dir=run_record_dir)[
+                "findings"
+            ]
         repo_info[repo_key] = {
             "name": repo.name,
             "path": str(repo),
@@ -2150,14 +2263,14 @@ def scan_repos(parent: Path, run_record_dir: Optional[Path] = None) -> List[Dict
         all_pairs.extend((repo_key, d) for d in _openspec_change_dirs(repo))
 
     # Flat parallel detect_stage across every spec dir in every repo.
-    repo_specs: Dict[str, List[Dict[str, Any]]] = {k: [] for k in repo_keys}
+    repo_specs: dict[str, list[dict[str, Any]]] = {k: [] for k in repo_keys}
     if all_pairs:
         with ThreadPoolExecutor() as ex:
             for repo_key, stage in ex.map(_detect_for_repo, all_pairs):
                 repo_specs[repo_key].append(stage)
 
     # Assemble per-repo rows, preserving original repo order before the final sort.
-    rows: List[Dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
     for repo_key in repo_keys:
         info = repo_info[repo_key]
         specs = repo_specs[repo_key]
@@ -2213,7 +2326,7 @@ _STAGE_PRIORITY = {
 }
 
 
-def _repo_scope_match(item_repo: Optional[str], queue_repo: str) -> bool:
+def _repo_scope_match(item_repo: str | None, queue_repo: str) -> bool:
     """Same comparison auto_pick_brief applies for its repo_filter: exact
     (trailing-slash-insensitive) or basename equality, so an item whose
     `repo:` is a path still matches a bare repo name and vice versa. An
@@ -2227,22 +2340,22 @@ def _repo_scope_match(item_repo: Optional[str], queue_repo: str) -> bool:
 # --- two-level category picker -----------------------------------------------
 
 _CATEGORY_DESC = {
-    "decisions":   "Answer a blocked product decision — unblocks the brief automatically.",
-    "ready":       "Run orchestrator, continue verify, or sync on these specs.",
+    "decisions": "Answer a blocked product decision — unblocks the brief automatically.",
+    "ready": "Run orchestrator, continue verify, or sync on these specs.",
     "needs-tasks": "Generate task DAG (spec-to-tasks) or resolve clarifications.",
-    "workqueue":   "Claim a queued brief or resume stalled in-flight work.",
-    "new-work":    "Brainstorm a new feature or pick from the backlog.",
+    "workqueue": "Claim a queued brief or resume stalled in-flight work.",
+    "new-work": "Brainstorm a new feature or pick from the backlog.",
 }
 
 
 def build_category_actions(
-    repo_rows: Optional[List[Dict[str, Any]]],
-    spec_rows: Optional[List[Dict[str, Any]]],
-    inflight: List[Dict[str, Any]],
-    queue_briefs: List[Dict[str, Any]],
-    open_decisions: Optional[List[Dict[str, Any]]] = None,
-    queue_repo: Optional[str] = None,
-) -> List[Dict[str, Any]]:
+    repo_rows: list[dict[str, Any]] | None,
+    spec_rows: list[dict[str, Any]] | None,
+    inflight: list[dict[str, Any]],
+    queue_briefs: list[dict[str, Any]],
+    open_decisions: list[dict[str, Any]] | None = None,
+    queue_repo: str | None = None,
+) -> list[dict[str, Any]]:
     """Level-1 AskUserQuestion buttons: one per work category (≤4).
 
     Categories are only included when they have actionable items. The five
@@ -2257,12 +2370,16 @@ def build_category_actions(
     buttons (see `_repo_scope_match`)."""
     if queue_repo:
         inflight = [b for b in inflight if _repo_scope_match(b.get("repo"), queue_repo)]
-        queue_briefs = [b for b in queue_briefs if _repo_scope_match(b.get("repo"), queue_repo)]
+        queue_briefs = [
+            b for b in queue_briefs if _repo_scope_match(b.get("repo"), queue_repo)
+        ]
         open_decisions = [
-            d for d in (open_decisions or []) if _repo_scope_match(d.get("repo"), queue_repo)
+            d
+            for d in (open_decisions or [])
+            if _repo_scope_match(d.get("repo"), queue_repo)
         ]
 
-    actives: List[Dict[str, Any]] = []
+    actives: list[dict[str, Any]] = []
     if repo_rows is not None:
         for repo in repo_rows:
             actives.extend(repo.get("active_specs") or [])
@@ -2278,41 +2395,53 @@ def build_category_actions(
     queue_count = len(inflight) + sum(
         1
         for b in queue_briefs
-        if not b.get("blocked") and not b.get("not_yet_due") and not b.get("recently_released")
+        if not b.get("blocked")
+        and not b.get("not_yet_due")
+        and not b.get("recently_released")
     )
 
     decisions_count = len(open_decisions or [])
 
-    categories: List[Dict[str, Any]] = []
+    categories: list[dict[str, Any]] = []
     if decisions_count:
-        categories.append({
-            "label": f"Open decisions ({decisions_count})",
-            "description": _CATEGORY_DESC["decisions"],
-            "category": "decisions",
-        })
+        categories.append(
+            {
+                "label": f"Open decisions ({decisions_count})",
+                "description": _CATEGORY_DESC["decisions"],
+                "category": "decisions",
+            }
+        )
     if ready_count:
-        categories.append({
-            "label": f"Ready / in-progress ({ready_count})",
-            "description": _CATEGORY_DESC["ready"],
-            "category": "ready",
-        })
+        categories.append(
+            {
+                "label": f"Ready / in-progress ({ready_count})",
+                "description": _CATEGORY_DESC["ready"],
+                "category": "ready",
+            }
+        )
     if tasks_count:
-        categories.append({
-            "label": f"Needs tasking ({tasks_count})",
-            "description": _CATEGORY_DESC["needs-tasks"],
-            "category": "needs-tasks",
-        })
+        categories.append(
+            {
+                "label": f"Needs tasking ({tasks_count})",
+                "description": _CATEGORY_DESC["needs-tasks"],
+                "category": "needs-tasks",
+            }
+        )
     if queue_count:
-        categories.append({
-            "label": f"Work queue ({queue_count})",
-            "description": _CATEGORY_DESC["workqueue"],
-            "category": "workqueue",
-        })
-    categories.append({
-        "label": "New work",
-        "description": _CATEGORY_DESC["new-work"],
-        "category": "new-work",
-    })
+        categories.append(
+            {
+                "label": f"Work queue ({queue_count})",
+                "description": _CATEGORY_DESC["workqueue"],
+                "category": "workqueue",
+            }
+        )
+    categories.append(
+        {
+            "label": "New work",
+            "description": _CATEGORY_DESC["new-work"],
+            "category": "new-work",
+        }
+    )
 
     for n, cat in enumerate(categories[:4], 1):
         cat["n"] = n
@@ -2320,15 +2449,15 @@ def build_category_actions(
 
 
 def build_category_items(
-    repo_rows: Optional[List[Dict[str, Any]]],
-    spec_rows: Optional[List[Dict[str, Any]]],
-    inflight: List[Dict[str, Any]],
-    queue_briefs: List[Dict[str, Any]],
+    repo_rows: list[dict[str, Any]] | None,
+    spec_rows: list[dict[str, Any]] | None,
+    inflight: list[dict[str, Any]],
+    queue_briefs: list[dict[str, Any]],
     backlog_total: int = 0,
-    clusters: Optional[List[Dict[str, Any]]] = None,
-    open_decisions: Optional[List[Dict[str, Any]]] = None,
-    queue_repo: Optional[str] = None,
-) -> Dict[str, List[Dict[str, Any]]]:
+    clusters: list[dict[str, Any]] | None = None,
+    open_decisions: list[dict[str, Any]] | None = None,
+    queue_repo: str | None = None,
+) -> dict[str, list[dict[str, Any]]]:
     """Level-2 items per category for the two-level /go picker.
 
     Returns a dict keyed by category string. Each value is a list of ≤4 items
@@ -2350,12 +2479,16 @@ def build_category_items(
     if queue_repo:
         inflight = [b for b in inflight if _repo_scope_match(b.get("repo"), queue_repo)]
         open_decisions = [
-            d for d in (open_decisions or []) if _repo_scope_match(d.get("repo"), queue_repo)
+            d
+            for d in (open_decisions or [])
+            if _repo_scope_match(d.get("repo"), queue_repo)
         ]
 
     default_repo_root = _dashboard_repo_root()
 
-    def _spec_item(s: Dict[str, Any], repo: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def _spec_item(
+        s: dict[str, Any], repo: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         label = f"{repo['repo']}: {s['id']}" if repo else s["id"]
         # stale-bookkeeping closes out by flipping task status (files already merged),
         # NOT by dispatching the orchestrator -- a distinct action keeps it off route E.
@@ -2374,8 +2507,8 @@ def build_category_items(
             "planned-agent": _planned_agent_for_item(repo_root),
         }
 
-    ready_items: List[Dict[str, Any]] = []
-    tasks_items: List[Dict[str, Any]] = []
+    ready_items: list[dict[str, Any]] = []
+    tasks_items: list[dict[str, Any]] = []
 
     # Most-actionable stage first (id is the tiebreaker) — priority must lead the
     # key, or the ≤4-item cap fills in spec-id order and a stuck run can vanish.
@@ -2404,8 +2537,10 @@ def build_category_items(
             elif s["stage"] in _TASK_STAGES:
                 tasks_items.append(_spec_item(s))
 
-    workqueue_items: List[Dict[str, Any]] = []
-    for brief in sorted(inflight, key=lambda b: b.get("claimed_at") or "", reverse=True)[:2]:
+    workqueue_items: list[dict[str, Any]] = []
+    for brief in sorted(
+        inflight, key=lambda b: b.get("claimed_at") or "", reverse=True
+    )[:2]:
         brief_id = brief["filename"].replace(".md", "")
         batched = brief.get("batched") or 0
         desc = (
@@ -2413,14 +2548,18 @@ def build_category_items(
             if batched
             else "Resume this stalled brief — claimed long ago with no completion; likely an abandoned session."
         )
-        workqueue_items.append({
-            "type": "inflight",
-            "label": f"Resume: {brief_id}",
-            "description": desc,
-            "action": "resume",
-            "id": brief_id,
-            "planned-agent": _planned_agent_for_item(_item_repo_root(brief, default_repo_root)),
-        })
+        workqueue_items.append(
+            {
+                "type": "inflight",
+                "label": f"Resume: {brief_id}",
+                "description": desc,
+                "action": "resume",
+                "id": brief_id,
+                "planned-agent": _planned_agent_for_item(
+                    _item_repo_root(brief, default_repo_root)
+                ),
+            }
+        )
 
     queue_ids = {b["filename"].replace(".md", "") for b in queue_briefs}
     cluster_member_ids: set = set()
@@ -2436,14 +2575,16 @@ def build_category_items(
             label = f"Consolidate {len(filtered_members)} briefs" + (
                 f" ({signals[0]})" if signals else ""
             )
-            workqueue_items.append({
-                "type": "cluster",
-                "label": label,
-                "description": "Review this cluster of related briefs for consolidation into one action.",
-                "action": "consolidate-cluster",
-                "members": filtered_members,
-                "signals": signals,
-            })
+            workqueue_items.append(
+                {
+                    "type": "cluster",
+                    "label": label,
+                    "description": "Review this cluster of related briefs for consolidation into one action.",
+                    "action": "consolidate-cluster",
+                    "members": filtered_members,
+                    "signals": signals,
+                }
+            )
             cluster_member_ids.update(filtered_members)
             remaining_slots -= 1
 
@@ -2451,10 +2592,13 @@ def build_category_items(
     # above): a repo-scoped picker must not offer another repo's brief as a
     # direct claim target.
     if queue_repo:
-        queue_briefs = [b for b in queue_briefs if _repo_scope_match(b.get("repo"), queue_repo)]
+        queue_briefs = [
+            b for b in queue_briefs if _repo_scope_match(b.get("repo"), queue_repo)
+        ]
 
     unblocked_queue = [
-        b for b in queue_briefs
+        b
+        for b in queue_briefs
         if not b.get("blocked")
         and not b.get("not_yet_due")
         and not b.get("recently_released")
@@ -2463,31 +2607,39 @@ def build_category_items(
     remaining_slots = 4 - len(workqueue_items)
     if remaining_slots > 0:
         if len(unblocked_queue) > remaining_slots:
-            visible_queue = unblocked_queue[:remaining_slots - 1]
-            overflow_queue = unblocked_queue[remaining_slots - 1:]
+            visible_queue = unblocked_queue[: remaining_slots - 1]
+            overflow_queue = unblocked_queue[remaining_slots - 1 :]
         else:
             visible_queue = unblocked_queue[:remaining_slots]
             overflow_queue = []
         for brief in visible_queue:
             brief_id = brief["filename"].replace(".md", "")
-            workqueue_items.append({
-                "type": "queue",
-                "label": (brief.get("focus") or brief_id)[:60],
-                "description": "Claim and start this queued brief.",
-                "action": "claim",
-                "id": brief_id,
-                "planned-agent": _planned_agent_for_item(_item_repo_root(brief, default_repo_root)),
-            })
+            workqueue_items.append(
+                {
+                    "type": "queue",
+                    "label": (brief.get("focus") or brief_id)[:60],
+                    "description": "Claim and start this queued brief.",
+                    "action": "claim",
+                    "id": brief_id,
+                    "planned-agent": _planned_agent_for_item(
+                        _item_repo_root(brief, default_repo_root)
+                    ),
+                }
+            )
         if overflow_queue:
-            workqueue_items.append({
-                "type": "see-more",
-                "label": f"Show more ({len(overflow_queue)} remaining)",
-                "description": "See additional queued briefs.",
-                "action": "see-more",
-                "overflow_ids": [b["filename"].replace(".md", "") for b in overflow_queue],
-            })
+            workqueue_items.append(
+                {
+                    "type": "see-more",
+                    "label": f"Show more ({len(overflow_queue)} remaining)",
+                    "description": "See additional queued briefs.",
+                    "action": "see-more",
+                    "overflow_ids": [
+                        b["filename"].replace(".md", "") for b in overflow_queue
+                    ],
+                }
+            )
 
-    new_work_items: List[Dict[str, Any]] = [
+    new_work_items: list[dict[str, Any]] = [
         {
             "type": "fixed",
             "label": "Start new feature",
@@ -2496,14 +2648,16 @@ def build_category_items(
         }
     ]
     if backlog_total:
-        new_work_items.append({
-            "type": "fixed",
-            "label": f"Pick from backlog ({backlog_total})",
-            "description": "Browse the unspec'd backlog and brainstorm one.",
-            "action": "see-backlog",
-        })
+        new_work_items.append(
+            {
+                "type": "fixed",
+                "label": f"Pick from backlog ({backlog_total})",
+                "description": "Browse the unspec'd backlog and brainstorm one.",
+                "action": "see-backlog",
+            }
+        )
 
-    decision_items: List[Dict[str, Any]] = []
+    decision_items: list[dict[str, Any]] = []
     for decision in (open_decisions or [])[:4]:
         question = decision.get("question")
         item = {
@@ -2519,7 +2673,7 @@ def build_category_items(
             item["brief"] = decision["brief"]
         decision_items.append(item)
 
-    result: Dict[str, List[Dict[str, Any]]] = {}
+    result: dict[str, list[dict[str, Any]]] = {}
     for key, items in [
         ("decisions", decision_items),
         ("ready", ready_items),
@@ -2537,8 +2691,8 @@ def build_category_items(
 
 
 def load_recent_runs(
-    repo: Path, limit: int = 5, runs_dir: Optional[Path] = None
-) -> List[Dict[str, Any]]:
+    repo: Path, limit: int = 5, runs_dir: Path | None = None
+) -> list[dict[str, Any]]:
     """Read the `limit` most-recent go run records for `repo`.
 
     Records live at `<runs_dir>/<repo-name>/<run-id>.yaml` (run_record.py's own
@@ -2553,43 +2707,49 @@ def load_recent_runs(
         return []
     if runs_dir is None:
         override = env_setting("WORKTRAIL_RUN_RECORD_DIR")
-        runs_dir = Path(override).expanduser() if override else worktrail_home() / "runs"
+        runs_dir = (
+            Path(override).expanduser() if override else worktrail_home() / "runs"
+        )
     run_dir = runs_dir / Path(repo).resolve().name
     if not run_dir.is_dir():
         return []
-    records: List[Dict[str, Any]] = []
+    records: list[dict[str, Any]] = []
     for path in run_dir.glob("*.yaml"):
         try:
             record = _load_run_record(path)
         except Exception:  # noqa: BLE001 - a corrupt record must not break the render
             continue
-        records.append({
-            "run_id": record.get("run_id"),
-            "selected_route": record.get("selected_route"),
-            "final_status": record.get("final_status"),
-            "pull_request": record.get("pull_request"),
-            "started_at": record.get("started_at"),
-            "completed_at": record.get("completed_at"),
-        })
-    records.sort(key=lambda r: r.get("completed_at") or r.get("started_at") or "", reverse=True)
+        records.append(
+            {
+                "run_id": record.get("run_id"),
+                "selected_route": record.get("selected_route"),
+                "final_status": record.get("final_status"),
+                "pull_request": record.get("pull_request"),
+                "started_at": record.get("started_at"),
+                "completed_at": record.get("completed_at"),
+            }
+        )
+    records.sort(
+        key=lambda r: r.get("completed_at") or r.get("started_at") or "", reverse=True
+    )
     return records[:limit]
 
 
 def render_dashboard(
-    repo_rows: Optional[List[Dict[str, Any]]],
-    spec_rows: Optional[List[Dict[str, Any]]],
-    inflight: List[Dict[str, Any]],
-    queue_briefs: List[Dict[str, Any]],
-    worktrees: Optional[List[str]] = None,
-    con: Optional[Dict[str, bool]] = None,
-    clusters: Optional[List[Dict[str, Any]]] = None,
-    cluster_precision: Optional[Dict[str, Any]] = None,
-    capacity: Optional[Dict[str, Any]] = None,
-    postmerge_check_failures: Optional[Dict[str, Any]] = None,
-    recent_runs: Optional[List[Dict[str, Any]]] = None,
-    staleness_warnings: Optional[List[Dict[str, Any]]] = None,
-    queue_repo: Optional[str] = None,
-    epic_rows: Optional[List[Dict[str, Any]]] = None,
+    repo_rows: list[dict[str, Any]] | None,
+    spec_rows: list[dict[str, Any]] | None,
+    inflight: list[dict[str, Any]],
+    queue_briefs: list[dict[str, Any]],
+    worktrees: list[str] | None = None,
+    con: dict[str, bool] | None = None,
+    clusters: list[dict[str, Any]] | None = None,
+    cluster_precision: dict[str, Any] | None = None,
+    capacity: dict[str, Any] | None = None,
+    postmerge_check_failures: dict[str, Any] | None = None,
+    recent_runs: list[dict[str, Any]] | None = None,
+    staleness_warnings: list[dict[str, Any]] | None = None,
+    queue_repo: str | None = None,
+    epic_rows: list[dict[str, Any]] | None = None,
 ) -> str:
     """The compact, category-grouped, deterministic dashboard the conductor prints
     verbatim (no LLM rendering). Active specs are grouped by work-category in
@@ -2620,7 +2780,7 @@ def render_dashboard(
         s = (s or "").strip()
         return (s[:n] + "…") if len(s) > n else s
 
-    def _queue_repo_match(brief_repo: Optional[str]) -> bool:
+    def _queue_repo_match(brief_repo: str | None) -> bool:
         return _repo_scope_match(brief_repo, queue_repo)
 
     if queue_repo:
@@ -2628,33 +2788,43 @@ def render_dashboard(
         # repos' queued/in-flight briefs as if they were claimable here
         # (observed live 2026-08-13: `worktrail-go devops` listed datalena
         # briefs). Hidden counts are still surfaced -- never silently.
-        inflight_hidden = sum(1 for b in inflight if not _queue_repo_match(b.get("repo")))
+        inflight_hidden = sum(
+            1 for b in inflight if not _queue_repo_match(b.get("repo"))
+        )
         inflight = [b for b in inflight if _queue_repo_match(b.get("repo"))]
-        queue_hidden = sum(1 for b in queue_briefs if not _queue_repo_match(b.get("repo")))
+        queue_hidden = sum(
+            1 for b in queue_briefs if not _queue_repo_match(b.get("repo"))
+        )
         queue_briefs = [b for b in queue_briefs if _queue_repo_match(b.get("repo"))]
     else:
         inflight_hidden = queue_hidden = 0
 
-    actives: List[Dict[str, Any]] = []
-    backlog: List[str] = []
-    wt: List[str] = list(worktrees or [])
-    policy_flags: List[str] = []
-    automerge_flags: List[str] = []
-    drift_flags: List[str] = []
-    quarantine_flags: List[str] = []
-    quarantine_resumable_flags: List[str] = []
-    stranded_flags: List[str] = []
-    outstanding_epics: List[str] = []
-    runs: List[Dict[str, Any]] = []
+    actives: list[dict[str, Any]] = []
+    backlog: list[str] = []
+    wt: list[str] = list(worktrees or [])
+    policy_flags: list[str] = []
+    automerge_flags: list[str] = []
+    drift_flags: list[str] = []
+    quarantine_flags: list[str] = []
+    quarantine_resumable_flags: list[str] = []
+    stranded_flags: list[str] = []
+    outstanding_epics: list[str] = []
+    runs: list[dict[str, Any]] = []
     if repo_rows is not None:
         for r in repo_rows:
             for s in r.get("active_specs", []):
                 actives.append({"who": r["repo"], **s})
             backlog.extend(f"{r['repo']} {bid}" for bid in r.get("backlog_ids", []))
             wt.extend(f"{r['repo']}/{w}" for w in r.get("worktrees", []))
-            policy_flags.extend(f"{r['repo']} ({f['signal']})" for f in r.get("policy_findings", []))
-            automerge_flags.extend(f"{r['repo']} ({f['signal']})" for f in r.get("automerge_findings", []))
-            drift_flags.extend(f"{r['repo']} ({f['signal']})" for f in r.get("drift_findings", []))
+            policy_flags.extend(
+                f"{r['repo']} ({f['signal']})" for f in r.get("policy_findings", [])
+            )
+            automerge_flags.extend(
+                f"{r['repo']} ({f['signal']})" for f in r.get("automerge_findings", [])
+            )
+            drift_flags.extend(
+                f"{r['repo']} ({f['signal']})" for f in r.get("drift_findings", [])
+            )
             quarantine_flags.extend(
                 f"{r['repo']} ({f['spec_id']}/{f['group']}, {f['age_days']:.0f}d)"
                 for f in r.get("quarantine_findings", [])
@@ -2674,7 +2844,10 @@ def render_dashboard(
             )
             for run in r.get("recent_runs", []) or []:
                 runs.append({"who": r["repo"], **run})
-        runs.sort(key=lambda x: x.get("completed_at") or x.get("started_at") or "", reverse=True)
+        runs.sort(
+            key=lambda x: x.get("completed_at") or x.get("started_at") or "",
+            reverse=True,
+        )
         runs = runs[:5]
     else:
         for s in spec_rows or []:
@@ -2689,7 +2862,7 @@ def render_dashboard(
             if e.get("stage") in ("epic-gap", "epic-unparseable")
         )
 
-    lines: List[str] = []
+    lines: list[str] = []
     if staleness_warnings:
         for w in staleness_warnings:
             who = f"{w['repo']}: " if w.get("repo") else ""
@@ -2700,7 +2873,7 @@ def render_dashboard(
         lines += [hint, ""]
 
     if actives:
-        by_stage: Dict[str, List[Dict[str, Any]]] = {}
+        by_stage: dict[str, list[dict[str, Any]]] = {}
         for a in actives:
             by_stage.setdefault(a["stage"], []).append(a)
         lines.append("📋 Active work")
@@ -2717,9 +2890,15 @@ def render_dashboard(
                 lines.append(f"    {who}{a['id']}")
 
     if inflight:
-        ordered = sorted(inflight, key=lambda b: b.get("claimed_at") or "", reverse=True)
-        inflight_note = f", +{inflight_hidden} in other repos" if inflight_hidden else ""
-        lines.append(f"🛠️  Stalled in-flight ({len(ordered)}{inflight_note}) — claimed long ago, likely abandoned")
+        ordered = sorted(
+            inflight, key=lambda b: b.get("claimed_at") or "", reverse=True
+        )
+        inflight_note = (
+            f", +{inflight_hidden} in other repos" if inflight_hidden else ""
+        )
+        lines.append(
+            f"🛠️  Stalled in-flight ({len(ordered)}{inflight_note}) — claimed long ago, likely abandoned"
+        )
         for b in ordered[:3]:
             bid = b["filename"].replace(".md", "")
             batched = b.get("batched") or 0
@@ -2736,14 +2915,24 @@ def render_dashboard(
         ordered_q = sorted(
             queue_briefs,
             key=lambda b: (
-                bool(b.get("blocked") or b.get("not_yet_due") or b.get("recently_released")),
+                bool(
+                    b.get("blocked")
+                    or b.get("not_yet_due")
+                    or b.get("recently_released")
+                ),
                 {"blocker": 0, "deferred": 2}.get(str(b.get("triage") or ""), 1),
             ),
         )
         n_blockers = sum(1 for b in queue_briefs if b.get("triage") == "blocker")
-        blocker_note = f", {n_blockers} blocker" + ("s" if n_blockers != 1 else "") if n_blockers else ""
+        blocker_note = (
+            f", {n_blockers} blocker" + ("s" if n_blockers != 1 else "")
+            if n_blockers
+            else ""
+        )
         hidden_note = f", +{queue_hidden} in other repos" if queue_hidden else ""
-        lines.append(f"📥 Queued handoffs ({len(ordered_q)}{blocker_note}{hidden_note})")
+        lines.append(
+            f"📥 Queued handoffs ({len(ordered_q)}{blocker_note}{hidden_note})"
+        )
         for b in ordered_q[:3]:
             label = _clip(b.get("focus") or b["filename"].replace(".md", ""))
             if b.get("blocked"):
@@ -2751,7 +2940,11 @@ def render_dashboard(
             elif b.get("not_yet_due"):
                 tag = " [watching]"
             elif b.get("recently_released"):
-                by = f" by {b['recently_released_by']}" if b.get("recently_released_by") else ""
+                by = (
+                    f" by {b['recently_released_by']}"
+                    if b.get("recently_released_by")
+                    else ""
+                )
                 tag = f" [recently released{by}]"
             elif b.get("triage") == "blocker":
                 tag = " [blocker]"
@@ -2765,7 +2958,9 @@ def render_dashboard(
     elif queue_hidden:
         # Every queued brief belongs to other repos: keep the queue visible as
         # a count so the repo-scoped view never implies the queue is empty.
-        lines.append(f"📥 Queued handoffs: none for this repo (+{queue_hidden} in other repos)")
+        lines.append(
+            f"📥 Queued handoffs: none for this repo (+{queue_hidden} in other repos)"
+        )
 
     if backlog:
         head = ", ".join(backlog[:2])
@@ -2781,7 +2976,9 @@ def render_dashboard(
     if policy_flags:
         head = ", ".join(policy_flags[:4])
         more = f" … +{len(policy_flags) - 4}" if len(policy_flags) > 4 else ""
-        lines.append(f"🚩 Policy contamination ({len(policy_flags)}): {head}{more} → review worktrail-go-policy.yaml")
+        lines.append(
+            f"🚩 Policy contamination ({len(policy_flags)}): {head}{more} → review worktrail-go-policy.yaml"
+        )
 
     if automerge_flags:
         head = ", ".join(automerge_flags[:4])
@@ -2818,13 +3015,16 @@ def render_dashboard(
     if quarantine_flags:
         head = ", ".join(quarantine_flags[:4])
         more = f" … +{len(quarantine_flags) - 4}" if len(quarantine_flags) > 4 else ""
-        lines.append(f"🚩 Quarantined groups ({len(quarantine_flags)}): {head}{more} → review")
+        lines.append(
+            f"🚩 Quarantined groups ({len(quarantine_flags)}): {head}{more} → review"
+        )
 
     if quarantine_resumable_flags:
         head = ", ".join(quarantine_resumable_flags[:4])
         more = (
             f" … +{len(quarantine_resumable_flags) - 4}"
-            if len(quarantine_resumable_flags) > 4 else ""
+            if len(quarantine_resumable_flags) > 4
+            else ""
         )
         lines.append(
             f"🔁 Resumable quarantines ({len(quarantine_resumable_flags)}): {head}{more} "
@@ -2852,7 +3052,8 @@ def render_dashboard(
     if postmerge_check_failures and postmerge_check_failures.get("flagged"):
         pmf_flagged = postmerge_check_failures["flagged"]
         entries = ", ".join(
-            f"{item.get('repo', '?')}#{_pr_number(item.get('url'))}" for item in pmf_flagged[:4]
+            f"{item.get('repo', '?')}#{_pr_number(item.get('url'))}"
+            for item in pmf_flagged[:4]
         )
         more = f" … +{len(pmf_flagged) - 4}" if len(pmf_flagged) > 4 else ""
         lines.append(
@@ -2889,7 +3090,9 @@ def render_dashboard(
             who = f"{r['who']} " if r.get("who") else ""
             status = r.get("final_status") or "in progress"
             pr = r.get("pull_request") or "-"
-            lines.append(f"    {who}{r.get('run_id')} | {r.get('selected_route')} | {status} | {pr}")
+            lines.append(
+                f"    {who}{r.get('run_id')} | {r.get('selected_route')} | {status} | {pr}"
+            )
 
     if not (actives or inflight or queue_briefs or backlog):
         lines.append(
@@ -2899,7 +3102,7 @@ def render_dashboard(
     return "\n".join(lines)
 
 
-def _staleness_warnings(named_paths: List[tuple]) -> List[Dict[str, Any]]:
+def _staleness_warnings(named_paths: list[tuple]) -> list[dict[str, Any]]:
     """Run `check_repo_freshness.check()` once per (name, path) pair; return
     only the entries found stale, as `{"repo": name, "warning": str}`.
 
@@ -2909,7 +3112,7 @@ def _staleness_warnings(named_paths: List[tuple]) -> List[Dict[str, Any]]:
     """
     if _check_repo_freshness is None:
         return []
-    warnings: List[Dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
     for name, path in named_paths:
         try:
             result = _check_repo_freshness(Path(path))
@@ -2920,7 +3123,7 @@ def _staleness_warnings(named_paths: List[tuple]) -> List[Dict[str, Any]]:
     return warnings
 
 
-def _resolve_json_arg(inline: Optional[str], file_path: Optional[str]) -> Optional[str]:
+def _resolve_json_arg(inline: str | None, file_path: str | None) -> str | None:
     """Resolve a `--foo-json`/`--foo-json-file` pair to the raw JSON string.
 
     `file_path` wins when both are given -- it exists specifically to sidestep
@@ -2938,7 +3141,9 @@ def _resolve_json_arg(inline: Optional[str], file_path: Optional[str]) -> Option
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="sdd-workflow conductor resume dashboard")
-    p.add_argument("--root", default="docs/specs", help="specs root to scan (default: docs/specs)")
+    p.add_argument(
+        "--root", default="docs/specs", help="specs root to scan (default: docs/specs)"
+    )
     p.add_argument(
         "--picked-dir",
         default=None,
@@ -2967,7 +3172,9 @@ def main(argv=None) -> int:
     )
     p.add_argument("--json", action="store_true", help="emit JSON instead of a table")
     p.add_argument(
-        "--spec", default=None, help="inspect a single spec folder and print its stage JSON"
+        "--spec",
+        default=None,
+        help="inspect a single spec folder and print its stage JSON",
     )
     p.add_argument(
         "--repos",
@@ -3031,16 +3238,20 @@ def main(argv=None) -> int:
         "repo is real network cost on every render",
     )
     args = p.parse_args(argv)
-    run_record_dir = Path(args.run_record_dir).expanduser() if args.run_record_dir else None
+    run_record_dir = (
+        Path(args.run_record_dir).expanduser() if args.run_record_dir else None
+    )
 
     if args.spec:
         print(json.dumps(detect_stage(Path(args.spec)), indent=2))
         return 0
 
     # Resolve picked_dir early so every branch (--repos and --root) can use it.
-    picked_dir: Optional[Path] = None
+    picked_dir: Path | None = None
     work_queue_env = (
-        Path(os.environ.get("WORK_QUEUE_DIR", "")) if os.environ.get("WORK_QUEUE_DIR") else None
+        Path(os.environ.get("WORK_QUEUE_DIR", ""))
+        if os.environ.get("WORK_QUEUE_DIR")
+        else None
     )
     if args.picked_dir:
         picked_dir = Path(args.picked_dir)
@@ -3097,7 +3308,7 @@ def main(argv=None) -> int:
     # like log_shown above) -- interactive text-only renders should see the
     # same precision line as a --json caller. Best-effort: never crash the
     # dashboard render over a telemetry read failure.
-    cluster_precision: Optional[Dict[str, Any]] = None
+    cluster_precision: dict[str, Any] | None = None
     if cluster_telemetry:
         try:
             cluster_precision = cluster_telemetry.summarize()
@@ -3125,7 +3336,7 @@ def main(argv=None) -> int:
             postmerge_check_failures = None
 
     # Parse queue briefs from --queue-json/--queue-json-file if provided.
-    queue_briefs: List[Dict[str, Any]] = []
+    queue_briefs: list[dict[str, Any]] = []
     queue_json_raw = _resolve_json_arg(args.queue_json, args.queue_json_file)
     if queue_json_raw:
         try:
@@ -3135,12 +3346,16 @@ def main(argv=None) -> int:
             pass
 
     # Parse open decisions from --decisions-json/--decisions-json-file if provided.
-    open_decisions: List[Dict[str, Any]] = []
-    decisions_json_raw = _resolve_json_arg(args.decisions_json, args.decisions_json_file)
+    open_decisions: list[dict[str, Any]] = []
+    decisions_json_raw = _resolve_json_arg(
+        args.decisions_json, args.decisions_json_file
+    )
     if decisions_json_raw:
         try:
             parsed = json.loads(decisions_json_raw)
-            open_decisions = parsed.get("decisions", []) if isinstance(parsed, dict) else []
+            open_decisions = (
+                parsed.get("decisions", []) if isinstance(parsed, dict) else []
+            )
         except (json.JSONDecodeError, AttributeError):
             pass
 
@@ -3180,17 +3395,25 @@ def main(argv=None) -> int:
     if args.repos:
         repo_rows = scan_repos(Path(args.repos), run_record_dir=run_record_dir)
         for row in repo_rows:
-            row["recent_runs"] = load_recent_runs(Path(row["path"]), runs_dir=run_record_dir)
+            row["recent_runs"] = load_recent_runs(
+                Path(row["path"]), runs_dir=run_record_dir
+            )
             row["epics"] = scan_epics(Path(row["path"]))
         backlog_total = sum(r.get("backlog", 0) for r in repo_rows)
         inflight = inflight_briefs(picked_dir, stale_hours=args.inflight_stale_hours)
         staleness_warnings = (
             _staleness_warnings([(r["repo"], r["path"]) for r in repo_rows])
-            if args.check_freshness else []
+            if args.check_freshness
+            else []
         )
         rendered = render_dashboard(
-            repo_rows, None, inflight, queue_briefs, clusters=clusters,
-            cluster_precision=cluster_precision, capacity=capacity,
+            repo_rows,
+            None,
+            inflight,
+            queue_briefs,
+            clusters=clusters,
+            cluster_precision=cluster_precision,
+            capacity=capacity,
             postmerge_check_failures=postmerge_check_failures,
             staleness_warnings=staleness_warnings,
         )
@@ -3203,10 +3426,19 @@ def main(argv=None) -> int:
                         "handoff_queue": unblocked_queue_total,
                         "inflight": inflight,
                         "category_actions": build_category_actions(
-                            repo_rows, None, inflight, queue_briefs, open_decisions=open_decisions
+                            repo_rows,
+                            None,
+                            inflight,
+                            queue_briefs,
+                            open_decisions=open_decisions,
                         ),
                         "category_items": build_category_items(
-                            repo_rows, None, inflight, queue_briefs, backlog_total, clusters=clusters,
+                            repo_rows,
+                            None,
+                            inflight,
+                            queue_briefs,
+                            backlog_total,
+                            clusters=clusters,
                             open_decisions=open_decisions,
                         ),
                         "auto_pick": auto_pick,
@@ -3235,7 +3467,8 @@ def main(argv=None) -> int:
     # multi-repo total -- same queue_repo scoping as everything else in this
     # branch, applied to the pre-existing "not blocked" formula.
     scoped_handoff_queue = sum(
-        1 for b in queue_briefs
+        1
+        for b in queue_briefs
         if not b.get("blocked") and _repo_scope_match(b.get("repo"), repo_dir.name)
     )
     epic_rows = scan_epics(repo_dir)
@@ -3247,9 +3480,17 @@ def main(argv=None) -> int:
         _staleness_warnings([(repo_dir.name, repo_dir)]) if args.check_freshness else []
     )
     rendered = render_dashboard(
-        None, rows, inflight, queue_briefs, worktrees, con, clusters=clusters,
-        cluster_precision=cluster_precision, capacity=capacity,
-        postmerge_check_failures=postmerge_check_failures, recent_runs=recent_runs,
+        None,
+        rows,
+        inflight,
+        queue_briefs,
+        worktrees,
+        con,
+        clusters=clusters,
+        cluster_precision=cluster_precision,
+        capacity=capacity,
+        postmerge_check_failures=postmerge_check_failures,
+        recent_runs=recent_runs,
         staleness_warnings=staleness_warnings,
         # Single-repo mode IS the repo-scoped view: rendering other repos'
         # queued/in-flight briefs here misleads (`/go devops` listed datalena
@@ -3270,12 +3511,22 @@ def main(argv=None) -> int:
                     "inflight": inflight,
                     "worktrees": worktrees,
                     "category_actions": build_category_actions(
-                        None, rows, inflight, queue_briefs, open_decisions=open_decisions,
+                        None,
+                        rows,
+                        inflight,
+                        queue_briefs,
+                        open_decisions=open_decisions,
                         queue_repo=repo_dir.name,
                     ),
                     "category_items": build_category_items(
-                        None, rows, inflight, queue_briefs, backlog_total, clusters=clusters,
-                        open_decisions=open_decisions, queue_repo=repo_dir.name,
+                        None,
+                        rows,
+                        inflight,
+                        queue_briefs,
+                        backlog_total,
+                        clusters=clusters,
+                        open_decisions=open_decisions,
+                        queue_repo=repo_dir.name,
                     ),
                     "auto_pick": auto_pick,
                     "clusters": clusters,
@@ -3283,7 +3534,8 @@ def main(argv=None) -> int:
                     # (queue_repo) -- a repo-scoped dashboard's raw open_decisions
                     # field must not leak another repo's decision record either.
                     "open_decisions": [
-                        d for d in open_decisions
+                        d
+                        for d in open_decisions
                         if _repo_scope_match(d.get("repo"), repo_dir.name)
                     ],
                     "cluster_precision": cluster_precision,

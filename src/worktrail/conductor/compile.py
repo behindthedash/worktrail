@@ -34,11 +34,11 @@ import json
 import re
 import subprocess
 import sys
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any
 
 from worktrail.conductor import req_coverage, runplan
-from worktrail.orchestrator.coordinator import TAIL_KINDS
 from worktrail.conductor.runplan import (
     COMPILE_MARKER_NAME,
     SOURCE_BASELINE,
@@ -47,16 +47,17 @@ from worktrail.conductor.runplan import (
     RunPlan,
     TaskPlan,
 )
+from worktrail.orchestrator.coordinator import TAIL_KINDS
 
 COMPILE_TIMEOUT_DEFAULT = 900
 
 
-def marker_path(spec_dir: "str | Path") -> Path:
+def marker_path(spec_dir: str | Path) -> Path:
     """Where a passing compile records its validated content fingerprint."""
     return Path(spec_dir) / COMPILE_MARKER_NAME
 
 
-def write_marker(spec_dir: "str | Path", fp: str) -> None:
+def write_marker(spec_dir: str | Path, fp: str) -> None:
     """Record a passing compile so CI can verify it later without an LLM call.
 
     Overwritten on every passing compile -- a marker left over from a prior
@@ -67,7 +68,7 @@ def write_marker(spec_dir: "str | Path", fp: str) -> None:
     Path(marker_path(spec_dir)).write_text(fp + "\n", encoding="utf-8")
 
 
-def default_cache_dir(repo: "str | Path") -> Path:
+def default_cache_dir(repo: str | Path) -> Path:
     """Where compiled plans live: `<repo>-worktrees/runplans/`.
 
     Deliberately the same `<repo>-worktrees/` root that `live.journal_path_for`
@@ -78,7 +79,7 @@ def default_cache_dir(repo: "str | Path") -> Path:
     return repo.parent / f"{repo.name}-worktrees" / "runplans"
 
 
-def _git_repo_root(path: Path) -> Optional[Path]:
+def _git_repo_root(path: Path) -> Path | None:
     """Return the canonical checkout root that owns ``path``'s Git state.
 
     Resolves via ``--git-common-dir`` rather than ``--show-toplevel``: a spec
@@ -94,7 +95,14 @@ def _git_repo_root(path: Path) -> Optional[Path]:
     """
     try:
         result = subprocess.run(
-            ["git", "-C", str(path), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            [
+                "git",
+                "-C",
+                str(path),
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-common-dir",
+            ],
             capture_output=True,
             text=True,
             check=False,
@@ -113,7 +121,9 @@ def _git_repo_root(path: Path) -> Optional[Path]:
 # --------------------------------------------------------------------------- #
 # Plans that need no model
 # --------------------------------------------------------------------------- #
-def _plan_from_tasks(spec_id: str, fp: str, tasks: Sequence[Dict[str, Any]], source: str) -> RunPlan:
+def _plan_from_tasks(
+    spec_id: str, fp: str, tasks: Sequence[dict[str, Any]], source: str
+) -> RunPlan:
     return RunPlan(
         spec_id=spec_id,
         fingerprint=fp,
@@ -132,7 +142,7 @@ def _plan_from_tasks(spec_id: str, fp: str, tasks: Sequence[Dict[str, Any]], sou
     )
 
 
-def needs_compile(tasks: Sequence[Dict[str, Any]]) -> List[str]:
+def needs_compile(tasks: Sequence[dict[str, Any]]) -> list[str]:
     """Task ids with no declared file scope -- the ones a model would have to infer.
 
     Tail tasks are excluded. `runnable_frontier` holds them out of the fan-out on
@@ -142,7 +152,8 @@ def needs_compile(tasks: Sequence[Dict[str, Any]]) -> List[str]:
     return [
         t["id"]
         for t in tasks
-        if t.get("kind") not in TAIL_KINDS and not runplan._norm_str_list(t.get("files"))
+        if t.get("kind") not in TAIL_KINDS
+        and not runplan._norm_str_list(t.get("files"))
     ]
 
 
@@ -209,7 +220,7 @@ Output nothing but this JSON object, in a ```json fenced block:
 """
 
 
-def _purpose_prompt_additions(purpose_tiers: Dict[str, str]) -> tuple[str, str]:
+def _purpose_prompt_additions(purpose_tiers: dict[str, str]) -> tuple[str, str]:
     """Prompt fragments requesting a per-task `purpose` classification.
 
     Both empty when the repo has no `routing.purpose_tiers` configured: a repo
@@ -229,7 +240,7 @@ def _purpose_prompt_additions(purpose_tiers: Dict[str, str]) -> tuple[str, str]:
     return instructions, field
 
 
-def _resolve_purpose_tiers(repo: Path) -> Dict[str, str]:
+def _resolve_purpose_tiers(repo: Path) -> dict[str, str]:
     """Resolve the target repo's `routing.purposes` (renamed from
     `purpose_tiers` by the target-selector routing schema, task 1.3) -- the
     `{purpose: tier}` vocabulary a repo declares for task-purpose
@@ -246,7 +257,7 @@ def _resolve_purpose_tiers(repo: Path) -> Dict[str, str]:
     return routing.get("purposes") or {}
 
 
-def _extract_json(text: str) -> Optional[Dict[str, Any]]:
+def _extract_json(text: str) -> dict[str, Any] | None:
     """Pull the result object out of an agent's final message.
 
     Prefers the last fenced ```json block, then falls back to the last balanced
@@ -262,7 +273,7 @@ def _extract_json(text: str) -> Optional[Dict[str, Any]]:
             return obj
 
     depth, start = 0, None
-    spans: List[tuple] = []
+    spans: list[tuple] = []
     for i, ch in enumerate(text):
         if ch == "{":
             if depth == 0:
@@ -283,8 +294,8 @@ def _extract_json(text: str) -> Optional[Dict[str, Any]]:
 
 
 def _validate(
-    payload: Dict[str, Any], ids: set, purpose_tiers: Optional[Dict[str, str]] = None
-) -> tuple[Optional[List[TaskPlan]], List[str], List[str]]:
+    payload: dict[str, Any], ids: set, purpose_tiers: dict[str, str] | None = None
+) -> tuple[list[TaskPlan] | None, list[str], list[str]]:
     """Turn a raw model payload into TaskPlans, or explain why it cannot be trusted.
 
     Rejection is all-or-nothing on task-set correctness (see
@@ -301,13 +312,13 @@ def _validate(
     affects the return value of `planned`.
     """
     valid_purposes = set(purpose_tiers or {})
-    problems: List[str] = []
-    warnings: List[str] = []
+    problems: list[str] = []
+    warnings: list[str] = []
     rows = payload.get("tasks")
     if not isinstance(rows, list):
         return None, ["payload has no `tasks` list"], warnings
 
-    seen: Dict[str, TaskPlan] = {}
+    seen: dict[str, TaskPlan] = {}
     for row in rows:
         if not isinstance(row, dict) or not row.get("id"):
             problems.append(f"unusable row: {row!r:.80}")
@@ -320,7 +331,7 @@ def _validate(
             problems.append(f"duplicate task id {tid!r}")
             continue
 
-        files: List[str] = []
+        files: list[str] = []
         for f in runplan._norm_str_list(row.get("files")):
             # Strip a leading `./` only. Not `lstrip("./")` -- that takes a
             # character SET, so it eats the whole `../../` of a traversal and
@@ -335,13 +346,19 @@ def _validate(
 
         purpose = str(row.get("purpose") or "").strip()
         if purpose and purpose not in valid_purposes:
-            warnings.append(f"{tid}: purpose {purpose!r} outside the configured vocabulary; dropped")
+            warnings.append(
+                f"{tid}: purpose {purpose!r} outside the configured vocabulary; dropped"
+            )
             purpose = ""
 
         seen[tid] = TaskPlan(
             id=tid,
             files=tuple(sorted(set(files))),
-            deps=tuple(d for d in runplan._norm_str_list(row.get("deps")) if d in ids and d != tid),
+            deps=tuple(
+                d
+                for d in runplan._norm_str_list(row.get("deps"))
+                if d in ids and d != tid
+            ),
             complexity=str(row.get("complexity") or ""),
             review=str(row.get("review") or ""),
             purpose=purpose,
@@ -354,7 +371,7 @@ def _validate(
     return [seen[i] for i in sorted(seen)], [], warnings
 
 
-def _resolve_compile_tier(repo: "str | Path") -> "tuple[str | None, str | None]":
+def _resolve_compile_tier(repo: str | Path) -> tuple[str | None, str | None]:
     """The tier (and, if declared, a preferred target) compile() spawns
     against: `routing.roles.compile.{tier,prefer}` if the repo declares one,
     else `routing.default_tier` with no preference (task 5.2 AC: resolve
@@ -380,9 +397,9 @@ def _default_spawn(
     timeout: int,
     log,
     *,
-    agent: Optional[str] = None,
-    model: Optional[str] = None,
-    fallback_agent: Optional["str | Sequence[str]"] = None,
+    agent: str | None = None,
+    model: str | None = None,
+    fallback_agent: str | Sequence[str] | None = None,
 ) -> str:
     """Spawn the compile worker.
 
@@ -420,7 +437,9 @@ def _default_spawn(
         raise ValueError(
             "--model requires --agent naming the routing.targets entry its value overrides"
         )
-    return _spawn_with_explicit_cell(prompt, cwd, timeout, log, target=prefer, model=model)
+    return _spawn_with_explicit_cell(
+        prompt, cwd, timeout, log, target=prefer, model=model
+    )
 
 
 def _spawn_with_explicit_cell(
@@ -437,10 +456,12 @@ def _spawn_with_explicit_cell(
 
     log(f"run plan: spawn policy resolved explicit cell target={target} model={model}")
     with spawnlib.explicit_cell_override(target, model):
-        return spawnlib.spawn_agent(prompt, cwd, tier="explicit", timeout=timeout, log=log).text
+        return spawnlib.spawn_agent(
+            prompt, cwd, tier="explicit", timeout=timeout, log=log
+        ).text
 
 
-def _parse_fallback_chain(value: Optional[str]) -> Optional[List[str]]:
+def _parse_fallback_chain(value: str | None) -> list[str] | None:
     """Parse a comma-separated fallback chain into ordered agent names."""
     if value is None:
         return None
@@ -452,17 +473,17 @@ def _parse_fallback_chain(value: Optional[str]) -> Optional[List[str]]:
 # Entry point
 # --------------------------------------------------------------------------- #
 def compile_run_plan(
-    spec_dir: "str | Path",
-    tasks: Sequence[Dict[str, Any]],
+    spec_dir: str | Path,
+    tasks: Sequence[dict[str, Any]],
     *,
     spec_id: str,
-    repo: "str | Path",
-    cache_dir: "str | Path | None" = None,
+    repo: str | Path,
+    cache_dir: str | Path | None = None,
     allow_llm: bool = True,
     force: bool = False,
     allow_force_over_active_worktrees: bool = False,
     timeout: int = COMPILE_TIMEOUT_DEFAULT,
-    spawn: Optional[Callable[..., str]] = None,
+    spawn: Callable[..., str] | None = None,
     log: Callable[[str], None] = lambda *_: None,
 ) -> RunPlan:
     """Return the RunPlan for this change, compiling only if it has to.
@@ -525,7 +546,9 @@ def compile_run_plan(
         spec_rel = spec_dir.resolve().relative_to(repo)
     except ValueError:
         spec_rel = spec_dir
-    task_list = "\n".join(f"- {t['id']}: {t.get('title') or ''}".rstrip() for t in tasks)
+    task_list = "\n".join(
+        f"- {t['id']}: {t.get('title') or ''}".rstrip() for t in tasks
+    )
     purpose_instructions, purpose_field = _purpose_prompt_additions(purpose_tiers)
     prompt = PROMPT.format(
         spec_rel=spec_rel,
@@ -551,19 +574,27 @@ def compile_run_plan(
 
     log(
         f"run plan: compiling {len(tasks)} task(s), {len(gaps)} without file scope"
-        + (f", {len(purpose_tiers)} purpose tier(s) configured" if purpose_tiers else "")
+        + (
+            f", {len(purpose_tiers)} purpose tier(s) configured"
+            if purpose_tiers
+            else ""
+        )
     )
     runner = spawn or _default_spawn
     try:
         text = runner(prompt, repo, timeout, log)
     except Exception as exc:  # noqa: BLE001 -- a failed compile must not fail the run
-        return give_up(f"compile failed ({type(exc).__name__}: {exc}); using the artifact's own deps")
+        return give_up(
+            f"compile failed ({type(exc).__name__}: {exc}); using the artifact's own deps"
+        )
 
     payload = _extract_json(text or "")
     if payload is None:
         return give_up("compile returned no JSON object; using the artifact's own deps")
 
-    planned, problems, purpose_warnings = _validate(payload, {t["id"] for t in tasks}, purpose_tiers)
+    planned, problems, purpose_warnings = _validate(
+        payload, {t["id"] for t in tasks}, purpose_tiers
+    )
     for w in purpose_warnings:
         log(f"run plan: {w}")
     if planned is None:
@@ -581,7 +612,8 @@ def compile_run_plan(
         # constructor would store them as-is. `frozen=True` stops rebinding a
         # field, not mutating what the field holds.
         tasks=tuple(
-            TaskPlan.from_dict({**tp.to_dict(), "kind": kinds.get(tp.id, "")}) for tp in planned
+            TaskPlan.from_dict({**tp.to_dict(), "kind": kinds.get(tp.id, "")})
+            for tp in planned
         ),
     )
     runplan.store(cache_dir, plan)
@@ -589,7 +621,7 @@ def compile_run_plan(
     return plan
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description="Compile a spec/change into a cached RunPlan (file scope + dependency edges)."
     )
@@ -601,8 +633,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         default=None,
         help="comma-separated fallback agent names, in order",
     )
-    ap.add_argument("--cache-dir", default=None, help="override the plan cache location")
-    ap.add_argument("--force", action="store_true", help="recompile even on a cache hit")
+    ap.add_argument(
+        "--cache-dir", default=None, help="override the plan cache location"
+    )
+    ap.add_argument(
+        "--force", action="store_true", help="recompile even on a cache hit"
+    )
     ap.add_argument(
         "--allow-force-over-active-worktrees",
         action="store_true",
@@ -612,7 +648,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "the plan those worktrees were fanned out under)"
         ),
     )
-    ap.add_argument("--no-llm", action="store_true", help="seed from the artifact only; never spawn")
+    ap.add_argument(
+        "--no-llm", action="store_true", help="seed from the artifact only; never spawn"
+    )
     ap.add_argument("--timeout", type=int, default=COMPILE_TIMEOUT_DEFAULT)
     ap.add_argument("--json", action="store_true", help="print the plan as JSON")
     a = ap.parse_args(argv)
@@ -675,11 +713,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 1 if (gaps or collisions or uncovered) else 0
 
     print(f"{plan.spec_id}  source={plan.source}  fingerprint={plan.fingerprint[:12]}")
-    print(f"  cache: {runplan.cache_path(a.cache_dir or default_cache_dir(repo), spec_id, plan.fingerprint)}")
+    print(
+        f"  cache: {runplan.cache_path(a.cache_dir or default_cache_dir(repo), spec_id, plan.fingerprint)}"
+    )
     for n in notes:
         print(f"  note: {n}")
     for t in merged:
-        print(f"  {t['id']:<10} deps={','.join(t.get('deps') or []) or '-':<24} files={len(t.get('files') or [])}")
+        print(
+            f"  {t['id']:<10} deps={','.join(t.get('deps') or []) or '-':<24} files={len(t.get('files') or [])}"
+        )
 
     if gaps:
         _print_scope_gap_error(gaps)
@@ -690,7 +732,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     return 1 if (gaps or collisions or uncovered) else 0
 
 
-def _print_scope_gap_error(gaps: List[str]) -> None:
+def _print_scope_gap_error(gaps: list[str]) -> None:
     """Shared by both `main()` output modes -- stderr only, so `--json` stdout
     stays a clean, parseable plan even when the exit code reports failure."""
     print(
@@ -707,7 +749,7 @@ def _print_scope_gap_error(gaps: List[str]) -> None:
     )
 
 
-def _print_ordering_gap_error(collisions: List[tuple]) -> None:
+def _print_ordering_gap_error(collisions: list[tuple]) -> None:
     """Shared by both `main()` output modes, same shape as `_print_scope_gap_error`."""
     print(
         f"ERROR: {len(collisions)} file(s) are declared by two or more tasks with no "
@@ -725,7 +767,7 @@ def _print_ordering_gap_error(collisions: List[tuple]) -> None:
     )
 
 
-def _print_req_coverage_gap_error(uncovered: List[str]) -> None:
+def _print_req_coverage_gap_error(uncovered: list[str]) -> None:
     """Shared by both `main()` output modes, same shape as `_print_scope_gap_error`."""
     print(
         f"ERROR: {len(uncovered)} requirement(s) declared by this change have no "

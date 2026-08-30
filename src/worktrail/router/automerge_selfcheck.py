@@ -34,6 +34,7 @@ Usage:
   automerge_selfcheck.py --repo /path/to/repo [--json]
   automerge_selfcheck.py --repos-root ~/projects [--json]   # sweep every repo
 """
+
 from __future__ import annotations
 
 import argparse
@@ -41,7 +42,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import yaml
 
@@ -58,9 +59,9 @@ def _step_run_text(step: Any) -> str:
     return run if isinstance(run, str) else ""
 
 
-def find_automerge_steps(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
+def find_automerge_steps(doc: dict[str, Any]) -> list[dict[str, Any]]:
     """Every step across all jobs whose `run:` shells out to `gh pr merge --auto`."""
-    found: List[Dict[str, Any]] = []
+    found: list[dict[str, Any]] = []
     jobs = doc.get("jobs") if isinstance(doc, dict) else None
     if not isinstance(jobs, dict):
         return found
@@ -74,9 +75,9 @@ def find_automerge_steps(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
     return found
 
 
-def check_workflow_file(path: Path) -> Dict[str, Any]:
+def check_workflow_file(path: Path) -> dict[str, Any]:
     """Findings for one workflow file. Empty `findings` = clean or not applicable."""
-    result: Dict[str, Any] = {"path": str(path), "has_automerge": False, "findings": []}
+    result: dict[str, Any] = {"path": str(path), "has_automerge": False, "findings": []}
     try:
         text = path.read_text(encoding="utf-8")
         doc = yaml.safe_load(text)
@@ -112,12 +113,15 @@ def check_workflow_file(path: Path) -> Dict[str, Any]:
     return result
 
 
-def check_repo(repo: Path) -> Dict[str, Any]:
+def check_repo(repo: Path) -> dict[str, Any]:
     """Findings for every workflow file in one repo. Empty `findings` = clean."""
     repo = Path(repo)
-    result: Dict[str, Any] = {
-        "repo": repo.name, "path": str(repo), "has_automerge": False,
-        "sources": [], "findings": [],
+    result: dict[str, Any] = {
+        "repo": repo.name,
+        "path": str(repo),
+        "has_automerge": False,
+        "sources": [],
+        "findings": [],
     }
     wf_dir = repo / _WORKFLOWS_RELDIR
     if not wf_dir.is_dir():
@@ -132,7 +136,7 @@ def check_repo(repo: Path) -> Dict[str, Any]:
     return result
 
 
-def sweep(repos_root: Path) -> List[Dict[str, Any]]:
+def sweep(repos_root: Path) -> list[dict[str, Any]]:
     """check_repo() for every repo under `repos_root` that has an auto-merge workflow."""
     names = discover_repo_names(repos_root)
     results = []
@@ -143,7 +147,7 @@ def sweep(repos_root: Path) -> List[Dict[str, Any]]:
     return results
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--repo", help="single repo to check")
     p.add_argument("--repos-root", help="sweep every repo under this directory")
@@ -167,7 +171,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(json.dumps({"results": results, "flagged": len(flagged)}, indent=2))
     else:
         if not flagged:
-            print(f"automerge_selfcheck: {len(results)} repo(s) checked, no unguarded auto-merge signals")
+            print(
+                f"automerge_selfcheck: {len(results)} repo(s) checked, no unguarded auto-merge signals"
+            )
         for r in flagged:
             print(f"{r['repo']}:")
             for f in r["findings"]:

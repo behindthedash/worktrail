@@ -22,10 +22,9 @@ import argparse
 import json
 import sys
 from collections import defaultdict
+from collections.abc import Iterable, Iterator
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
-
-import yaml
+from typing import Any
 
 from ..shared.brief_frontmatter import split_frontmatter
 
@@ -46,8 +45,12 @@ def _normalize_domain(value: Any) -> str:
     return domain if domain else DEFAULT_DOMAIN
 
 
-def _pair_key(complexity: str, domain: str) -> Tuple[int, str, str]:
-    return COMPLEXITY_ORDER.get(complexity, COMPLEXITY_ORDER["standard"]), domain, complexity
+def _pair_key(complexity: str, domain: str) -> tuple[int, str, str]:
+    return (
+        COMPLEXITY_ORDER.get(complexity, COMPLEXITY_ORDER["standard"]),
+        domain,
+        complexity,
+    )
 
 
 def _pair_label(complexity: str, domain: str) -> str:
@@ -62,8 +65,8 @@ def _iter_task_files(specs_root: Path) -> Iterator[Path]:
             yield path
 
 
-def _read_task_stamps(specs_root: Path) -> Dict[str, Dict[str, str]]:
-    stamps: Dict[str, Dict[str, str]] = {}
+def _read_task_stamps(specs_root: Path) -> dict[str, dict[str, str]]:
+    stamps: dict[str, dict[str, str]] = {}
     for task_file in _iter_task_files(specs_root):
         try:
             text = task_file.read_text(encoding="utf-8")
@@ -93,7 +96,7 @@ def _iter_journal_files(worktrees_root: Path) -> Iterator[Path]:
         yield path
 
 
-def _load_journal(path: Path) -> Optional[Dict[str, Any]]:
+def _load_journal(path: Path) -> dict[str, Any] | None:
     try:
         raw = path.read_text(encoding="utf-8")
     except OSError:
@@ -105,17 +108,17 @@ def _load_journal(path: Path) -> Optional[Dict[str, Any]]:
     return data if isinstance(data, dict) else None
 
 
-def _is_salvage_event(report: Dict[str, Any]) -> bool:
+def _is_salvage_event(report: dict[str, Any]) -> bool:
     notes = str(report.get("notes") or "")
     return "salvaged from git" in notes
 
 
-def _is_escalation(report: Dict[str, Any]) -> bool:
+def _is_escalation(report: dict[str, Any]) -> bool:
     terminal_status = str(report.get("terminal_status") or "").strip().lower()
     return terminal_status == "escalated"
 
 
-def _is_fix_strike_signal(entry: Dict[str, Any], report: Dict[str, Any]) -> bool:
+def _is_fix_strike_signal(entry: dict[str, Any], report: dict[str, Any]) -> bool:
     review_status = str(report.get("review_status") or "").strip().upper()
     if review_status == "FAILED":
         return True
@@ -124,7 +127,13 @@ def _is_fix_strike_signal(entry: Dict[str, Any], report: Dict[str, Any]) -> bool
     if role != "fix":
         return False
 
-    for field in ("fix_strike", "fix_strike_flag", "fix_strike_count", "strike", "strike_count"):
+    for field in (
+        "fix_strike",
+        "fix_strike_flag",
+        "fix_strike_count",
+        "strike",
+        "strike_count",
+    ):
         value = report.get(field)
         if value is None:
             continue
@@ -136,13 +145,20 @@ def _is_fix_strike_signal(entry: Dict[str, Any], report: Dict[str, Any]) -> bool
             if value > 0:
                 return True
             continue
-        if str(value).strip().lower() in {"1", "true", "yes", "failed", "strike", "struck"}:
+        if str(value).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "failed",
+            "strike",
+            "struck",
+        }:
             return True
 
     return False
 
 
-def _journal_entries(journal: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
+def _journal_entries(journal: dict[str, Any]) -> Iterable[dict[str, Any]]:
     entries = journal.get("entries") or []
     if not isinstance(entries, list):
         return []
@@ -152,11 +168,13 @@ def _journal_entries(journal: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
 def aggregate_tier_accuracy(
     *,
     repo_root: Path,
-    specs_root: Optional[Path] = None,
-    worktrees_root: Optional[Path] = None,
-) -> Dict[str, Any]:
+    specs_root: Path | None = None,
+    worktrees_root: Path | None = None,
+) -> dict[str, Any]:
     repo_root = Path(repo_root)
-    specs_root = Path(specs_root) if specs_root is not None else repo_root / "docs" / "specs"
+    specs_root = (
+        Path(specs_root) if specs_root is not None else repo_root / "docs" / "specs"
+    )
     worktrees_root = (
         Path(worktrees_root)
         if worktrees_root is not None
@@ -164,14 +182,14 @@ def aggregate_tier_accuracy(
     )
 
     task_stamps = _read_task_stamps(specs_root) if specs_root.is_dir() else {}
-    pair_tasks: Dict[Tuple[str, str], set[str]] = defaultdict(set)
-    task_to_pair: Dict[str, Tuple[str, str]] = {}
+    pair_tasks: dict[tuple[str, str], set[str]] = defaultdict(set)
+    task_to_pair: dict[str, tuple[str, str]] = {}
     for task_id, stamp in task_stamps.items():
         pair = (stamp["complexity"], stamp["domain"])
         pair_tasks[pair].add(task_id)
         task_to_pair[task_id] = pair
 
-    pair_stats: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    pair_stats: dict[tuple[str, str], dict[str, Any]] = {}
     for pair, task_ids in pair_tasks.items():
         pair_stats[pair] = {
             "complexity": pair[0],
@@ -187,7 +205,9 @@ def aggregate_tier_accuracy(
 
     parsed_journals = 0
     skipped_journals = 0
-    for journal_file in _iter_journal_files(worktrees_root) if worktrees_root.is_dir() else []:
+    for journal_file in (
+        _iter_journal_files(worktrees_root) if worktrees_root.is_dir() else []
+    ):
         journal = _load_journal(journal_file)
         if journal is None:
             skipped_journals += 1
@@ -225,8 +245,8 @@ def aggregate_tier_accuracy(
             stats["review_pass_rate"] = None
             stats["fix_strike_rate"] = None
 
-    flags: List[Dict[str, Any]] = []
-    by_domain: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    flags: list[dict[str, Any]] = []
+    by_domain: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for stats in pair_stats.values():
         if stats["status"] != "ok":
             continue
@@ -267,7 +287,9 @@ def aggregate_tier_accuracy(
                         }
                     )
 
-    ordered_pairs = sorted(pair_stats.values(), key=lambda s: _pair_key(s["complexity"], s["domain"]))
+    ordered_pairs = sorted(
+        pair_stats.values(), key=lambda s: _pair_key(s["complexity"], s["domain"])
+    )
     report = {
         "repo_root": str(repo_root),
         "specs_root": str(specs_root),
@@ -282,7 +304,7 @@ def aggregate_tier_accuracy(
     return report
 
 
-def render_report(report: Dict[str, Any]) -> str:
+def render_report(report: dict[str, Any]) -> str:
     lines = [
         "Tier-Accuracy Report",
         f"repo root: {report['repo_root']}",
@@ -326,7 +348,9 @@ def render_report(report: Dict[str, Any]) -> str:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Aggregate Tier-Accuracy Report statistics")
+    parser = argparse.ArgumentParser(
+        description="Aggregate Tier-Accuracy Report statistics"
+    )
     parser.add_argument(
         "--repo-root",
         default=".",
@@ -342,11 +366,13 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override the journal directory (default: <repo-root>-worktrees)",
     )
-    parser.add_argument("--json", action="store_true", help="emit JSON instead of human-readable text")
+    parser.add_argument(
+        "--json", action="store_true", help="emit JSON instead of human-readable text"
+    )
     return parser
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
     emit_json = "--json" in raw
     argv = [arg for arg in raw if arg != "--json"]
@@ -355,7 +381,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     repo_root = Path(args.repo_root).expanduser()
     specs_root = Path(args.specs_root).expanduser() if args.specs_root else None
-    worktrees_root = Path(args.worktrees_root).expanduser() if args.worktrees_root else None
+    worktrees_root = (
+        Path(args.worktrees_root).expanduser() if args.worktrees_root else None
+    )
 
     if specs_root is None:
         specs_root = repo_root / "docs" / "specs"

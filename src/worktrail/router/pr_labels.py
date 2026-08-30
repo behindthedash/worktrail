@@ -30,6 +30,7 @@ label-add call sites below use that REST endpoint instead of `gh pr edit` for
 this reason -- `_current_pr_labels`'s read-only `gh pr view` is unaffected and
 unchanged.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -38,8 +39,8 @@ import re
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
 
 from .automerge_preflight import owner_repo_from_git
 from .run_record import _load as load_run_record
@@ -76,7 +77,11 @@ def _run_gh_cmd(cmd, repo, runner=None, timeout=30) -> subprocess.CompletedProce
     attempt = 0
     while True:
         result = (runner or subprocess.run)(
-            cmd, capture_output=True, text=True, cwd=repo, timeout=timeout,
+            cmd,
+            capture_output=True,
+            text=True,
+            cwd=repo,
+            timeout=timeout,
         )
         if result.returncode == 0 or not _is_transient_tls(result.stderr):
             return result
@@ -84,13 +89,16 @@ def _run_gh_cmd(cmd, repo, runner=None, timeout=30) -> subprocess.CompletedProce
         if attempt >= _RETRY_ATTEMPTS:
             return result
         delay = _RETRY_BACKOFF_BASE_S * attempt
-        print(f"warning: pr_labels: transient TLS failure on {cmd[0]} '...' "
-              f"({result.stderr.strip()}); retrying in {delay:.1f}s "
-              f"({attempt}/{_RETRY_ATTEMPTS})", file=sys.stderr)
+        print(
+            f"warning: pr_labels: transient TLS failure on {cmd[0]} '...' "
+            f"({result.stderr.strip()}); retrying in {delay:.1f}s "
+            f"({attempt}/{_RETRY_ATTEMPTS})",
+            file=sys.stderr,
+        )
         time.sleep(delay)
 
 
-def _parse_pr_url(pr_url: str) -> Optional[Tuple[str, str, str]]:
+def _parse_pr_url(pr_url: str) -> tuple[str, str, str] | None:
     """(owner, repo, issue_number) from a `https://github.com/OWNER/REPO/pull/N`
     URL, or None if it doesn't match that shape."""
     match = _PR_URL_RE.match(pr_url)
@@ -100,8 +108,9 @@ def _parse_pr_url(pr_url: str) -> Optional[Tuple[str, str, str]]:
     return owner, repo_name, number
 
 
-def _owner_repo_number(repo: str, pr_url: str,
-                       runner: Optional[Runner] = None) -> Optional[Tuple[str, str, str]]:
+def _owner_repo_number(
+    repo: str, pr_url: str, runner: Runner | None = None
+) -> tuple[str, str, str] | None:
     """(owner, repo, issue_number) from either shape callers pass as `pr_url`:
     a full `https://github.com/OWNER/REPO/pull/N` URL (`poll_run.py`,
     `drain.py`, `reconcile_pr_labels.py`, this module's own `main()`), or a
@@ -121,31 +130,48 @@ def _owner_repo_number(repo: str, pr_url: str,
     return owner, repo_name, pr_url.strip()
 
 
-def _add_label(repo: str, pr_url: str, label: str,
-               runner: Optional[Runner] = None) -> Optional[str]:
+def _add_label(
+    repo: str, pr_url: str, label: str, runner: Runner | None = None
+) -> str | None:
     """Add `label` to the PR via the REST issues-labels endpoint (see module
     docstring for why not `gh pr edit --add-label`). Returns `label` on
     success, None on any failure -- logging a warning to stderr first so a
     swallowed failure is never silent."""
     parsed = _owner_repo_number(repo, pr_url, runner)
     if parsed is None:
-        print(f"warning: pr_labels: could not resolve owner/repo/number for "
-              f"PR {pr_url!r}; skipping label add", file=sys.stderr)
+        print(
+            f"warning: pr_labels: could not resolve owner/repo/number for "
+            f"PR {pr_url!r}; skipping label add",
+            file=sys.stderr,
+        )
         return None
     owner, repo_name, number = parsed
     result = _run_gh_cmd(
-        ["gh", "api", f"repos/{owner}/{repo_name}/issues/{number}/labels",
-         "-X", "POST", "-f", f"labels[]={label}"],
-        repo, runner,
+        [
+            "gh",
+            "api",
+            f"repos/{owner}/{repo_name}/issues/{number}/labels",
+            "-X",
+            "POST",
+            "-f",
+            f"labels[]={label}",
+        ],
+        repo,
+        runner,
     )
     if result.returncode != 0:
-        print(f"warning: pr_labels: failed to add label {label!r} to "
-              f"{pr_url}: {result.stderr.strip()}", file=sys.stderr)
+        print(
+            f"warning: pr_labels: failed to add label {label!r} to "
+            f"{pr_url}: {result.stderr.strip()}",
+            file=sys.stderr,
+        )
         return None
     return label
 
 
-def _current_pr_labels(repo: str, pr_url: str, runner: Optional[Runner] = None) -> Optional[List[str]]:
+def _current_pr_labels(
+    repo: str, pr_url: str, runner: Runner | None = None
+) -> list[str] | None:
     """Live label names on a PR, or None if the `gh` call fails or is
     unparseable (never guess from stale/absent data).
 
@@ -155,7 +181,8 @@ def _current_pr_labels(repo: str, pr_url: str, runner: Optional[Runner] = None) 
     """
     result = _run_gh_cmd(
         ["gh", "pr", "view", pr_url, "--json", "labels"],
-        repo, runner,
+        repo,
+        runner,
     )
     if result.returncode != 0:
         return None
@@ -166,8 +193,9 @@ def _current_pr_labels(repo: str, pr_url: str, runner: Optional[Runner] = None) 
     return [label.get("name", "") for label in data.get("labels", [])]
 
 
-def ensure_pr_risk_label(repo: Optional[str], pr_url: Optional[str],
-                         risk_level: Optional[str]) -> Optional[str]:
+def ensure_pr_risk_label(
+    repo: str | None, pr_url: str | None, risk_level: str | None
+) -> str | None:
     """Add a go:risk-<level> label to a PR that carries none.
 
     This is a minimal, safe correction, not a re-run of `automerge_eligible()`:
@@ -185,8 +213,9 @@ def ensure_pr_risk_label(repo: Optional[str], pr_url: Optional[str],
     return _add_label(repo, pr_url, f"go:risk-{risk_level}")
 
 
-def ensure_pr_no_automerge_label(repo: Optional[str], pr_url: Optional[str],
-                                 eligible: bool, runner: Optional[Runner] = None) -> Optional[str]:
+def ensure_pr_no_automerge_label(
+    repo: str | None, pr_url: str | None, eligible: bool, runner: Runner | None = None
+) -> str | None:
     """Add a `go:no-automerge` label to a PR that carries none but is
     ineligible -- either per a full `automerge_eligible()` recompute the
     caller already performed (needs `gates`, which only run records
@@ -226,13 +255,17 @@ def main(argv=None) -> int:
     go:risk-* label.
     """
     parser = argparse.ArgumentParser(
-        description="Apply the go:risk-* PR label post-hoc correction from a run record.")
+        description="Apply the go:risk-* PR label post-hoc correction from a run record."
+    )
     parser.add_argument("--run", required=True, help="Path to run record YAML file")
     args = parser.parse_args(argv)
     record = load_run_record(Path(args.run))
     pr_url = record.get("pull_request")
-    applied = (ensure_pr_risk_label(record.get("repository"), pr_url, record.get("risk_level"))
-               if pr_url else None)
+    applied = (
+        ensure_pr_risk_label(record.get("repository"), pr_url, record.get("risk_level"))
+        if pr_url
+        else None
+    )
     print(json.dumps({"applied": applied}))
     return 0
 

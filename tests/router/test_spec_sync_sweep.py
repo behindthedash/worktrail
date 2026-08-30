@@ -22,7 +22,9 @@ from worktrail.router import spec_sync_sweep as sss
 
 def _git_init(repo: Path) -> None:
     repo.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "init", "-q"], cwd=repo, capture_output=True, text=True, check=True)
+    subprocess.run(
+        ["git", "init", "-q"], cwd=repo, capture_output=True, text=True, check=True
+    )
 
 
 def _write(path: Path, content: str) -> None:
@@ -177,7 +179,9 @@ class RunSweepOrchestrationTests(unittest.TestCase):
         files = list((self.queue_base / "queue").glob("*.md"))
         self.assertEqual(len(files), 1)
 
-    def test_repo_with_check_error_is_recorded_as_failed_and_others_still_processed(self) -> None:
+    def test_repo_with_check_error_is_recorded_as_failed_and_others_still_processed(
+        self,
+    ) -> None:
         _make_clean_repo(self.repos_root, "clean-repo")
         errored = _make_drifted_repo(self.repos_root, "errored-repo")
 
@@ -187,7 +191,9 @@ class RunSweepOrchestrationTests(unittest.TestCase):
             return _real_check_repo_drift(repo)
 
         # Patch at the module level used inside run_sweep.
-        with mock.patch("worktrail.router.spec_sync_sweep.check_repo_drift", side_effect=fake_check):
+        with mock.patch(
+            "worktrail.router.spec_sync_sweep.check_repo_drift", side_effect=fake_check
+        ):
             record = sss.run_sweep(self.repos_root, self.queue_base, self.lock_path)
 
         self.assertIn(str(errored), record["checked"])
@@ -197,7 +203,9 @@ class RunSweepOrchestrationTests(unittest.TestCase):
         # The other repo in the same run is still fully processed.
         self.assertEqual(len(record["checked"]), 2)
 
-    def test_drifted_repo_with_existing_unresolved_brief_is_skipped_not_filed(self) -> None:
+    def test_drifted_repo_with_existing_unresolved_brief_is_skipped_not_filed(
+        self,
+    ) -> None:
         drifted = _make_drifted_repo(self.repos_root, "drifted-repo")
 
         queue_dir = self.queue_base / "queue"
@@ -232,7 +240,9 @@ pre-existing drift
         self.addCleanup(holder.close)
         fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
 
-        with mock.patch("worktrail.router.spec_sync_sweep.discover_repos_with_specs") as spy:
+        with mock.patch(
+            "worktrail.router.spec_sync_sweep.discover_repos_with_specs"
+        ) as spy:
             record = sss.run_sweep(self.repos_root, self.queue_base, self.lock_path)
             spy.assert_not_called()
 
@@ -282,7 +292,9 @@ pre-existing drift
         files = list((self.queue_base / "queue").glob("*.md"))
         self.assertEqual(len(files), 1)
 
-    def test_checkbox_drifted_repo_with_no_existing_brief_is_drifted_and_filed(self) -> None:
+    def test_checkbox_drifted_repo_with_no_existing_brief_is_drifted_and_filed(
+        self,
+    ) -> None:
         checkbox_drifted = _make_checkbox_drifted_repo(self.repos_root, "checkbox-repo")
 
         record = sss.run_sweep(self.repos_root, self.queue_base, self.lock_path)
@@ -295,20 +307,29 @@ pre-existing drift
         self.assertNotIn(str(checkbox_drifted), record["drifted"])
         self.assertNotIn(str(checkbox_drifted), record["filed"])
 
-    def test_checkbox_check_error_recorded_in_checkbox_failed_others_still_run(self) -> None:
+    def test_checkbox_check_error_recorded_in_checkbox_failed_others_still_run(
+        self,
+    ) -> None:
         _make_clean_repo(self.repos_root, "clean-repo")
         errored = _make_drifted_repo(self.repos_root, "errored-repo")
         other_checkbox = _make_checkbox_drifted_repo(self.repos_root, "checkbox-repo")
 
         def fake_checkbox_check(repo: Path):
             if repo.name == "errored-repo":
-                return {"repo": str(repo), "findings": [], "error": "simulated checkbox failure"}
-            from worktrail.router.spec_sync_sweep_checkbox_check import check_repo_checkbox_drift as real
+                return {
+                    "repo": str(repo),
+                    "findings": [],
+                    "error": "simulated checkbox failure",
+                }
+            from worktrail.router.spec_sync_sweep_checkbox_check import (
+                check_repo_checkbox_drift as real,
+            )
 
             return real(repo)
 
         with mock.patch(
-            "worktrail.router.spec_sync_sweep.check_repo_checkbox_drift", side_effect=fake_checkbox_check
+            "worktrail.router.spec_sync_sweep.check_repo_checkbox_drift",
+            side_effect=fake_checkbox_check,
         ):
             record = sss.run_sweep(self.repos_root, self.queue_base, self.lock_path)
 
@@ -339,7 +360,9 @@ pre-existing drift
         files = list((self.queue_base / "queue").glob("*.md"))
         self.assertEqual(len(files), 1)  # no new checkbox-drift brief filed
 
-    def test_repo_with_outstanding_spec_sync_brief_still_gets_new_checkbox_brief(self) -> None:
+    def test_repo_with_outstanding_spec_sync_brief_still_gets_new_checkbox_brief(
+        self,
+    ) -> None:
         both = _make_drifted_and_checkbox_drifted_repo(self.repos_root, "both-repo")
         _seed_existing_brief(self.queue_base, both, "spec-sync-sweep")
 
@@ -367,7 +390,9 @@ pre-existing drift
         self.assertEqual(len(second["skipped_existing"]), 1)
         self.assertEqual(len(second["checkbox_skipped_existing"]), 1)
         files = list((self.queue_base / "queue").glob("*.md"))
-        self.assertEqual(len(files), 2)  # one spec-sync-drift brief, one checkbox-drift brief
+        self.assertEqual(
+            len(files), 2
+        )  # one spec-sync-drift brief, one checkbox-drift brief
 
     def test_no_checkbox_drift_anywhere_returns_empty_checkbox_lists(self) -> None:
         _make_clean_repo(self.repos_root, "clean-repo")
@@ -442,7 +467,9 @@ class MainCliTests(unittest.TestCase):
             },
         )
 
-    def test_unwritable_queue_dir_returns_nonzero_exit_distinct_from_per_repo_failure(self) -> None:
+    def test_unwritable_queue_dir_returns_nonzero_exit_distinct_from_per_repo_failure(
+        self,
+    ) -> None:
         _make_drifted_repo(self.repos_root, "drifted-repo")
         self.queue_dir.mkdir(parents=True)
         self.queue_dir.chmod(0o500)  # read + execute only, no write

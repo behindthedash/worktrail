@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Unit tests for preflight.py (stdlib unittest, mirrors test_pre_pr_gate.py style)."""
+
 from __future__ import annotations
 
 import json
@@ -14,19 +15,34 @@ from unittest import mock
 from worktrail.addons.base import AddOnResult
 from worktrail.router.policy import load_policy
 from worktrail.router.preflight import (
-    ADDON_REQUIRED_FAILURE_EXIT, DIRTY_TREE_EXIT,
-    check, dirty_tree_reason, duplicate_work_warning, is_running,
-    is_unparseable_command, labels_in_command, main, marker_path, read_marker,
-    read_running_lock, remove_running_lock, running_lock_path, tree_state,
-    write_marker, write_running_lock,
+    ADDON_REQUIRED_FAILURE_EXIT,
+    DIRTY_TREE_EXIT,
+    _pr_touched_files,
+    _resolve_base_ref,
+    _touched_files,
+    check,
+    dirty_tree_reason,
+    duplicate_work_warning,
+    is_running,
+    is_unparseable_command,
+    labels_in_command,
+    main,
+    marker_path,
+    read_marker,
+    read_running_lock,
+    remove_running_lock,
+    running_lock_path,
+    tree_state,
+    write_marker,
+    write_running_lock,
 )
-from worktrail.router.preflight import _pr_touched_files, _resolve_base_ref, _touched_files
 
 
 class _GitRepoCase(unittest.TestCase):
     def _git(self, repo: str, *args: str) -> subprocess.CompletedProcess:
-        return subprocess.run(["git", *args], cwd=repo, capture_output=True,
-                              text=True, check=True)
+        return subprocess.run(
+            ["git", *args], cwd=repo, capture_output=True, text=True, check=True
+        )
 
     def _init_repo(self, policy_yaml: str = 'pre_pr_cmd: "true"\n') -> str:
         d = tempfile.mkdtemp(prefix="preflight-")
@@ -47,10 +63,13 @@ class _GitRepoCase(unittest.TestCase):
 
     def _add_worktree(self, repo: str, branch: str, start_point: str = "HEAD") -> str:
         import shutil
+
         wt_dir = tempfile.mkdtemp(prefix="preflight-wt-")
         shutil.rmtree(wt_dir)
         self._git(repo, "worktree", "add", "-b", branch, wt_dir, start_point)
-        self.addCleanup(lambda: self._git(repo, "worktree", "remove", "--force", wt_dir))
+        self.addCleanup(
+            lambda: self._git(repo, "worktree", "remove", "--force", wt_dir)
+        )
         return wt_dir
 
 
@@ -150,9 +169,7 @@ class TestCheckDirtyTree(_GitRepoCase):
         self.assertEqual(verdict["decision"], "deny")
 
     def test_dirty_tree_denies_even_on_docs_only_diff(self) -> None:
-        repo = self._init_repo(
-            'pre_pr_cmd: "exit 9"\ndocs_only_paths:\n  - docs/**\n'
-        )
+        repo = self._init_repo('pre_pr_cmd: "exit 9"\ndocs_only_paths:\n  - docs/**\n')
         self._git(repo, "checkout", "-q", "-b", "feature")
         self._write(repo, "docs/new-note.md")
         self._git(repo, "add", ".")
@@ -225,7 +242,9 @@ class TestMarkerRoundtrip(_GitRepoCase):
     def test_labels_round_trip(self) -> None:
         repo = self._init_repo()
         state = tree_state(Path(repo))
-        write_marker(Path(repo), state, "pytest -q", ["go:risk-high", "go:no-automerge"])
+        write_marker(
+            Path(repo), state, "pytest -q", ["go:risk-high", "go:no-automerge"]
+        )
         marker = read_marker(Path(repo))
         self.assertEqual(marker["labels"], ["go:risk-high", "go:no-automerge"])
 
@@ -264,7 +283,8 @@ class TestRunningLock(_GitRepoCase):
         dead_pid = proc.pid
         proc.wait()
         running_lock_path(Path(repo)).write_text(
-            json.dumps({"pid": dead_pid, "started_at": 0}), encoding="utf-8",
+            json.dumps({"pid": dead_pid, "started_at": 0}),
+            encoding="utf-8",
         )
         self.assertFalse(is_running(Path(repo)))
         self.assertIsNone(read_running_lock(Path(repo)))
@@ -342,9 +362,7 @@ class TestCheckVerdict(_GitRepoCase):
         self.assertEqual(verdict["decision"], "allow")
 
     def test_docs_only_diff_allows(self) -> None:
-        repo = self._init_repo(
-            'pre_pr_cmd: "exit 9"\ndocs_only_paths:\n  - docs/**\n'
-        )
+        repo = self._init_repo('pre_pr_cmd: "exit 9"\ndocs_only_paths:\n  - docs/**\n')
         self._git(repo, "checkout", "-q", "-b", "feature")
         self._write(repo, "docs/new-note.md")
         self._git(repo, "add", ".")
@@ -389,7 +407,9 @@ class TestCheckVerdict(_GitRepoCase):
         write_marker(Path(repo), state, "true", ["go:risk-high", "go:no-automerge"])
         verdict = check(Path(repo))
         self.assertEqual(verdict["decision"], "allow")
-        self.assertEqual(verdict["required_labels"], ["go:risk-high", "go:no-automerge"])
+        self.assertEqual(
+            verdict["required_labels"], ["go:risk-high", "go:no-automerge"]
+        )
 
     def test_gh_pr_create_missing_required_label_denies(self) -> None:
         repo = self._init_repo('pre_pr_cmd: "true"\n')
@@ -452,6 +472,7 @@ class TestCheckCli(_GitRepoCase):
         repo = self._init_repo("pre_pr_cmd: skip\n")
         import contextlib
         import io
+
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             code = main(["check", "--repo", repo])
@@ -463,6 +484,7 @@ class TestCheckCli(_GitRepoCase):
         repo = self._init_repo('pre_pr_cmd: "true"\n')
         import contextlib
         import io
+
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             code = main(["check", "--repo", repo])
@@ -476,12 +498,18 @@ class TestCheckCli(_GitRepoCase):
         write_marker(Path(repo), state, "true", ["go:risk-critical", "go:no-automerge"])
         import contextlib
         import io
+
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            code = main([
-                "check", "--repo", repo,
-                "--command", "gh pr create --title x --label go:risk-critical",
-            ])
+            code = main(
+                [
+                    "check",
+                    "--repo",
+                    repo,
+                    "--command",
+                    "gh pr create --title x --label go:risk-critical",
+                ]
+            )
         self.assertEqual(code, 1)
         payload = json.loads(out.getvalue())
         self.assertEqual(payload["decision"], "deny")
@@ -517,16 +545,26 @@ class TestRunCli(_GitRepoCase):
         # never_automerge short-circuits automerge_eligible() before any live
         # required-checks lookup, so this stays fully offline/deterministic.
         repo = self._init_repo('pre_pr_cmd: "true"\n')
-        code = main([
-            "run", "--repo", repo, "--risk", "critical", "--gates", "never_automerge",
-        ])
+        code = main(
+            [
+                "run",
+                "--repo",
+                repo,
+                "--risk",
+                "critical",
+                "--gates",
+                "never_automerge",
+            ]
+        )
         self.assertEqual(code, 0)
         self.assertEqual(
-            read_marker(Path(repo))["labels"], ["go:risk-critical", "go:no-automerge"],
+            read_marker(Path(repo))["labels"],
+            ["go:risk-critical", "go:no-automerge"],
         )
         # And check() now enforces that label set against a gh pr create command.
         verdict = check(
-            Path(repo), command="gh pr create --title x --label go:risk-critical",
+            Path(repo),
+            command="gh pr create --title x --label go:risk-critical",
         )
         self.assertEqual(verdict["decision"], "deny")
 
@@ -577,7 +615,7 @@ class TestRunAddons(_GitRepoCase):
         # pre_pr_cmd itself asserts the add-on's commit is already HEAD,
         # so a passing gate proves the commit landed before the gate ran.
         repo = self._init_repo(
-            'pre_pr_cmd: \'git log -1 --pretty=%s | grep -q '
+            "pre_pr_cmd: 'git log -1 --pretty=%s | grep -q "
             '"^chore(fakeaddon): synced$"\'\n'
         )
         policy = load_policy(Path(repo))
@@ -591,17 +629,24 @@ class TestRunAddons(_GitRepoCase):
         fake_addon = mock.Mock()
         fake_addon.run.side_effect = _run
 
-        with mock.patch(
-            "worktrail.router.preflight.load_policy", return_value=policy,
-        ), mock.patch(
-            "worktrail.addons.runner.addon_for", return_value=fake_addon,
+        with (
+            mock.patch(
+                "worktrail.router.preflight.load_policy",
+                return_value=policy,
+            ),
+            mock.patch(
+                "worktrail.addons.runner.addon_for",
+                return_value=fake_addon,
+            ),
         ):
             code = main(["run", "--repo", repo])
         self.assertEqual(code, 0)
         fake_addon.run.assert_called_once()
         subject = subprocess.run(
             ["git", "-C", repo, "log", "-1", "--pretty=%s"],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout.strip()
         self.assertEqual(subject, "chore(fakeaddon): synced")
 
@@ -613,10 +658,15 @@ class TestRunAddons(_GitRepoCase):
         fake_addon = mock.Mock()
         fake_addon.install.side_effect = RuntimeError("boom")
 
-        with mock.patch(
-            "worktrail.router.preflight.load_policy", return_value=policy,
-        ), mock.patch(
-            "worktrail.addons.runner.addon_for", return_value=fake_addon,
+        with (
+            mock.patch(
+                "worktrail.router.preflight.load_policy",
+                return_value=policy,
+            ),
+            mock.patch(
+                "worktrail.addons.runner.addon_for",
+                return_value=fake_addon,
+            ),
         ):
             code = main(["run", "--repo", repo])
         self.assertEqual(code, ADDON_REQUIRED_FAILURE_EXIT)
@@ -653,22 +703,29 @@ class TestWaitCli(_GitRepoCase):
 class TestOpenPrBranches(_GitRepoCase):
     def test_gh_missing_returns_empty(self) -> None:
         from worktrail.router.preflight import _open_pr_branches
+
         repo = self._init_repo()
         with mock.patch("subprocess.run", side_effect=FileNotFoundError("gh")):
             self.assertEqual(_open_pr_branches(Path(repo)), [])
 
     def test_gh_nonzero_exit_returns_empty(self) -> None:
         from worktrail.router.preflight import _open_pr_branches
+
         repo = self._init_repo()
-        result = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="err")
+        result = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="err"
+        )
         with mock.patch("subprocess.run", return_value=result):
             self.assertEqual(_open_pr_branches(Path(repo)), [])
 
     def test_gh_success_parses_branch_names(self) -> None:
         from worktrail.router.preflight import _open_pr_branches
+
         repo = self._init_repo()
         payload = json.dumps([{"headRefName": "a-b-c"}, {"headRefName": "d-e-f"}])
-        result = subprocess.CompletedProcess(args=[], returncode=0, stdout=payload, stderr="")
+        result = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=payload, stderr=""
+        )
         with mock.patch("subprocess.run", return_value=result):
             self.assertEqual(_open_pr_branches(Path(repo)), ["a-b-c", "d-e-f"])
 
@@ -681,18 +738,24 @@ class TestPrTouchedFiles(_GitRepoCase):
 
     def test_gh_nonzero_exit_returns_none(self) -> None:
         repo = self._init_repo()
-        result = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="err")
+        result = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="err"
+        )
         with mock.patch("subprocess.run", return_value=result):
             self.assertIsNone(_pr_touched_files(Path(repo), "some-branch"))
 
     def test_gh_success_parses_file_names(self) -> None:
         repo = self._init_repo()
         result = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="a.py\nb.py\n", stderr="",
+            args=[],
+            returncode=0,
+            stdout="a.py\nb.py\n",
+            stderr="",
         )
         with mock.patch("subprocess.run", return_value=result):
             self.assertEqual(
-                _pr_touched_files(Path(repo), "some-branch"), frozenset({"a.py", "b.py"}),
+                _pr_touched_files(Path(repo), "some-branch"),
+                frozenset({"a.py", "b.py"}),
             )
 
 
@@ -718,7 +781,8 @@ class TestTouchedFiles(_GitRepoCase):
         self._git(repo, "add", ".")
         self._git(repo, "commit", "-q", "-m", "add file")
         self.assertEqual(
-            _touched_files(Path(repo), "main", "feature"), frozenset({"src/new_file.py"}),
+            _touched_files(Path(repo), "main", "feature"),
+            frozenset({"src/new_file.py"}),
         )
 
     def test_empty_when_no_divergence(self) -> None:
@@ -731,14 +795,18 @@ class TestDuplicateWorkWarning(_GitRepoCase):
     def test_no_siblings_and_no_open_prs_returns_none(self) -> None:
         repo = self._init_repo()
         self._git(repo, "checkout", "-q", "-b", "add-metrics-dashboard")
-        with mock.patch("worktrail.router.preflight._open_pr_branches", return_value=[]):
+        with mock.patch(
+            "worktrail.router.preflight._open_pr_branches", return_value=[]
+        ):
             self.assertIsNone(duplicate_work_warning(Path(repo)))
 
     def test_overlapping_sibling_worktree_warns(self) -> None:
         repo = self._init_repo()
         self._git(repo, "checkout", "-q", "-b", "wire-plan-audit-into-verify")
         self._add_worktree(repo, "investigate-wire-plan-audit-into-verify")
-        with mock.patch("worktrail.router.preflight._open_pr_branches", return_value=[]):
+        with mock.patch(
+            "worktrail.router.preflight._open_pr_branches", return_value=[]
+        ):
             warning = duplicate_work_warning(Path(repo))
         assert warning is not None
         self.assertIn("investigate-wire-plan-audit-into-verify", warning)
@@ -748,13 +816,17 @@ class TestDuplicateWorkWarning(_GitRepoCase):
         repo = self._init_repo()
         self._git(repo, "checkout", "-q", "-b", "fix-typo-in-readme")
         self._add_worktree(repo, "add-metrics-dashboard")
-        with mock.patch("worktrail.router.preflight._open_pr_branches", return_value=[]):
+        with mock.patch(
+            "worktrail.router.preflight._open_pr_branches", return_value=[]
+        ):
             self.assertIsNone(duplicate_work_warning(Path(repo)))
 
     def test_own_worktree_never_self_matches(self) -> None:
         repo = self._init_repo()
         self._git(repo, "checkout", "-q", "-b", "wire-plan-audit-into-verify")
-        with mock.patch("worktrail.router.preflight._open_pr_branches", return_value=[]):
+        with mock.patch(
+            "worktrail.router.preflight._open_pr_branches", return_value=[]
+        ):
             self.assertIsNone(duplicate_work_warning(Path(repo)))
 
     def test_matching_open_pr_warns(self) -> None:
@@ -771,7 +843,9 @@ class TestDuplicateWorkWarning(_GitRepoCase):
     def test_single_word_branch_never_warns(self) -> None:
         repo = self._init_repo()
         self._git(repo, "checkout", "-q", "-b", "fix")
-        with mock.patch("worktrail.router.preflight._open_pr_branches", return_value=["fixes"]):
+        with mock.patch(
+            "worktrail.router.preflight._open_pr_branches", return_value=["fixes"]
+        ):
             self.assertIsNone(duplicate_work_warning(Path(repo)))
 
     def test_low_overlap_does_not_warn(self) -> None:
@@ -792,12 +866,16 @@ class TestDuplicateWorkWarningFileOverlap(_GitRepoCase):
         self._git(repo, "add", ".")
         self._git(repo, "commit", "-q", "-m", "touch shared module")
 
-        wt_dir = self._add_worktree(repo, "polish-signup-experience", start_point="main")
+        wt_dir = self._add_worktree(
+            repo, "polish-signup-experience", start_point="main"
+        )
         self._write(wt_dir, "src/shared_module.py", "other change\n")
         self._git(wt_dir, "add", ".")
         self._git(wt_dir, "commit", "-q", "-m", "touch shared module too")
 
-        with mock.patch("worktrail.router.preflight._open_pr_branches", return_value=[]):
+        with mock.patch(
+            "worktrail.router.preflight._open_pr_branches", return_value=[]
+        ):
             warning = duplicate_work_warning(Path(repo))
         assert warning is not None
         self.assertIn("shared_module.py", warning)
@@ -811,12 +889,15 @@ class TestDuplicateWorkWarningFileOverlap(_GitRepoCase):
         self._git(repo, "add", ".")
         self._git(repo, "commit", "-q", "-m", "touch shared module")
 
-        with mock.patch(
-            "worktrail.router.preflight._open_pr_branches",
-            return_value=["polish-signup-experience"],
-        ), mock.patch(
-            "worktrail.router.preflight._pr_touched_files",
-            return_value=frozenset({"src/shared_module.py", "docs/notes.md"}),
+        with (
+            mock.patch(
+                "worktrail.router.preflight._open_pr_branches",
+                return_value=["polish-signup-experience"],
+            ),
+            mock.patch(
+                "worktrail.router.preflight._pr_touched_files",
+                return_value=frozenset({"src/shared_module.py", "docs/notes.md"}),
+            ),
         ):
             warning = duplicate_work_warning(Path(repo))
         assert warning is not None
@@ -830,12 +911,15 @@ class TestDuplicateWorkWarningFileOverlap(_GitRepoCase):
         self._git(repo, "add", ".")
         self._git(repo, "commit", "-q", "-m", "touch onboarding")
 
-        with mock.patch(
-            "worktrail.router.preflight._open_pr_branches",
-            return_value=["polish-signup-experience"],
-        ), mock.patch(
-            "worktrail.router.preflight._pr_touched_files",
-            return_value=frozenset({"src/billing.py"}),
+        with (
+            mock.patch(
+                "worktrail.router.preflight._open_pr_branches",
+                return_value=["polish-signup-experience"],
+            ),
+            mock.patch(
+                "worktrail.router.preflight._pr_touched_files",
+                return_value=frozenset({"src/billing.py"}),
+            ),
         ):
             self.assertIsNone(duplicate_work_warning(Path(repo)))
 
@@ -846,12 +930,15 @@ class TestDuplicateWorkWarningFileOverlap(_GitRepoCase):
         self._git(repo, "add", ".")
         self._git(repo, "commit", "-q", "-m", "touch onboarding")
 
-        with mock.patch(
-            "worktrail.router.preflight._open_pr_branches",
-            return_value=["polish-signup-experience"],
-        ), mock.patch(
-            "worktrail.router.preflight._pr_touched_files",
-            return_value=None,
+        with (
+            mock.patch(
+                "worktrail.router.preflight._open_pr_branches",
+                return_value=["polish-signup-experience"],
+            ),
+            mock.patch(
+                "worktrail.router.preflight._pr_touched_files",
+                return_value=None,
+            ),
         ):
             self.assertIsNone(duplicate_work_warning(Path(repo)))
 
@@ -886,7 +973,9 @@ class TestCheckWarningIntegration(_GitRepoCase):
         self._git(repo, "checkout", "-q", "-b", "add-metrics-dashboard")
         state = tree_state(Path(repo))
         write_marker(Path(repo), state, "true")
-        with mock.patch("worktrail.router.preflight._open_pr_branches", return_value=[]):
+        with mock.patch(
+            "worktrail.router.preflight._open_pr_branches", return_value=[]
+        ):
             verdict = check(Path(repo))
         self.assertEqual(verdict["decision"], "allow")
         self.assertNotIn("warning", verdict)

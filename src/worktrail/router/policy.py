@@ -16,16 +16,16 @@ Safe defaults: auto-merge OFF, no protected paths, run records under
 
 Usage: policy.py --repo /path/to/repo [--json]
 """
+
 from __future__ import annotations
 
 import argparse
 import copy
 import fnmatch
 import json
-import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import yaml
 
@@ -51,7 +51,8 @@ def default_run_record_dir() -> str:
     so it slots into the policy dict exactly like a repo-declared value."""
     return str(worktrail_home() / "runs")
 
-DEFAULTS: Dict[str, Any] = {
+
+DEFAULTS: dict[str, Any] = {
     # None -> auto-detect from `git remote show origin` (HEAD branch).
     "base_branch": None,
     # ENFORCEMENT SCOPE (2026-07 key-vs-consumer audit): only `automerge_eligible()`
@@ -65,8 +66,8 @@ DEFAULTS: Dict[str, Any] = {
     # tracked separately (handoff 20260714-120011-go-automerge-coordination).
     "automerge": {
         "enabled": False,
-        "max_risk": "low",            # low|medium — high/critical never eligible
-        "target_branches": [],         # empty = base branch only
+        "max_risk": "low",  # low|medium — high/critical never eligible
+        "target_branches": [],  # empty = base branch only
     },
     # Paths whose changes always require a human merge decision. Enforced by
     # `automerge_eligible()`: any changed path matching one of these glob
@@ -239,7 +240,7 @@ VALID_POOLS = ("subscription", "free", "api")
 # which selects a model variant, not a reasoning-effort level, so it has no
 # effort vocabulary at all -- `None` means every value is out of vocabulary,
 # not "unconstrained".
-EFFORT_VOCABULARY: Dict[str, Optional[Tuple[str, ...]]] = {
+EFFORT_VOCABULARY: dict[str, tuple[str, ...] | None] = {
     "claude": ("low", "medium", "high"),
     "codex": ("minimal", "low", "medium", "high"),
     "opencode": None,
@@ -252,7 +253,9 @@ def _parse_scalar(raw: str) -> Any:
         return None
     if "#" in s and not (s.startswith('"') or s.startswith("'")):
         s = s.split("#", 1)[0].strip()
-    if (s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'")):
+    if (s.startswith('"') and s.endswith('"')) or (
+        s.startswith("'") and s.endswith("'")
+    ):
         return s[1:-1]
     low = s.lower()
     if low in ("true", "yes", "on"):
@@ -267,11 +270,11 @@ def _parse_scalar(raw: str) -> Any:
         return s
 
 
-def parse_policy_yaml(text: str) -> Dict[str, Any]:
+def parse_policy_yaml(text: str) -> dict[str, Any]:
     """Parse the supported YAML subset into a dict."""
-    result: Dict[str, Any] = {}
-    current_key: Optional[str] = None   # nesting context (one level)
-    current_list: Optional[List[Any]] = None
+    result: dict[str, Any] = {}
+    current_key: str | None = None  # nesting context (one level)
+    current_list: list[Any] | None = None
     for raw_line in text.splitlines():
         line = raw_line.rstrip()
         if not line.strip() or line.strip().startswith("#"):
@@ -319,7 +322,9 @@ def parse_policy_yaml(text: str) -> Dict[str, Any]:
     return result
 
 
-def _validate_agent_entry(value: Any, meta: Dict[str, Any], label: str) -> Optional[Dict[str, Any]]:
+def _validate_agent_entry(
+    value: Any, meta: dict[str, Any], label: str
+) -> dict[str, Any] | None:
     """Normalize one routing agent entry (`"claude"` or `{agent_cli, agent_model}`,
     also accepting the `{agent, model}` shorthand used by `routing.tiers`).
 
@@ -339,7 +344,8 @@ def _validate_agent_entry(value: Any, meta: Dict[str, Any], label: str) -> Optio
         return None
     if agent_cli not in VALID_AGENT_CLIS:
         meta["warnings"].append(
-            f"{label}: invalid agent literal {agent_cli!r} (allowed: {VALID_AGENT_CLIS}); dropped")
+            f"{label}: invalid agent literal {agent_cli!r} (allowed: {VALID_AGENT_CLIS}); dropped"
+        )
         return None
     if agent_model is not None and not isinstance(agent_model, str):
         meta["warnings"].append(f"{label}: agent_model must be a string; dropped")
@@ -350,7 +356,9 @@ def _validate_agent_entry(value: Any, meta: Dict[str, Any], label: str) -> Optio
     return {"agent_cli": agent_cli, "agent_model": agent_model, "effort": effort}
 
 
-def _validate_routing_targets(raw: Any, meta: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+def _validate_routing_targets(
+    raw: Any, meta: dict[str, Any]
+) -> dict[str, dict[str, Any]]:
     """`routing.targets`: the ordered `{name: {harness, pool, api_opt_in?, auth?}}`
     mapping (design D3) that separates *harness* (which CLI runs the task) from
     *pool* (which capacity/auth surface it draws from) -- the schema `tiers`
@@ -372,35 +380,43 @@ def _validate_routing_targets(raw: Any, meta: Dict[str, Any]) -> Dict[str, Dict[
     if raw is None:
         return {}
     if not isinstance(raw, dict):
-        meta["warnings"].append(f"routing.targets must be a mapping; got {raw!r} — ignored")
+        meta["warnings"].append(
+            f"routing.targets must be a mapping; got {raw!r} — ignored"
+        )
         return {}
-    resolved: Dict[str, Dict[str, Any]] = {}
+    resolved: dict[str, dict[str, Any]] = {}
     for name, entry in raw.items():
         if not isinstance(name, str):
-            meta["warnings"].append(f"routing.targets: key must be a string; got {name!r} — ignored")
+            meta["warnings"].append(
+                f"routing.targets: key must be a string; got {name!r} — ignored"
+            )
             continue
         if not isinstance(entry, dict):
             meta["warnings"].append(
                 f"routing.targets.{name} must be a mapping ({{harness, pool, api_opt_in?, auth?}}); "
-                f"got {entry!r} — dropped")
+                f"got {entry!r} — dropped"
+            )
             continue
         harness = entry.get("harness")
         if harness not in SUPPORTED_AGENTS:
             meta["warnings"].append(
                 f"routing.targets.{name}.harness: invalid harness {harness!r} "
-                f"(allowed: {SUPPORTED_AGENTS}); dropped")
+                f"(allowed: {SUPPORTED_AGENTS}); dropped"
+            )
             continue
         pool = entry.get("pool")
         if pool not in VALID_POOLS:
             meta["warnings"].append(
                 f"routing.targets.{name}.pool: invalid pool {pool!r} "
-                f"(allowed: {VALID_POOLS}); dropped")
+                f"(allowed: {VALID_POOLS}); dropped"
+            )
             continue
         api_opt_in = bool(entry.get("api_opt_in", False))
         if pool == "api" and not api_opt_in:
             meta["warnings"].append(
                 f"routing.targets.{name}: pool 'api' requires explicit api_opt_in: true; "
-                "target kept but ineligible until opted in")
+                "target kept but ineligible until opted in"
+            )
         auth = entry.get("auth")
         resolved[name] = {
             "harness": harness,
@@ -411,7 +427,9 @@ def _validate_routing_targets(raw: Any, meta: Dict[str, Any]) -> Dict[str, Dict[
     return resolved
 
 
-def _validate_routing_agents(raw: Any, meta: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+def _validate_routing_agents(
+    raw: Any, meta: dict[str, Any]
+) -> dict[str, dict[str, Any]]:
     """`routing.agents`: `{<agent>: {default_model: str}}` — the per-agent
     default-model table `default_model_for_agent()` resolves against, replacing
     the retired `model-defaults.yaml` (D2/D3). Unlike the other
@@ -421,31 +439,36 @@ def _validate_routing_agents(raw: Any, meta: Dict[str, Any]) -> Dict[str, Dict[s
     if raw is None:
         return {}
     if not isinstance(raw, dict):
-        meta["warnings"].append(f"routing.agents must be a mapping; got {raw!r} — ignored")
+        meta["warnings"].append(
+            f"routing.agents must be a mapping; got {raw!r} — ignored"
+        )
         return {}
-    resolved: Dict[str, Dict[str, Any]] = {}
+    resolved: dict[str, dict[str, Any]] = {}
     for agent, entry in raw.items():
         if not isinstance(agent, str) or agent not in VALID_AGENT_CLIS:
             meta["warnings"].append(
                 f"routing.agents: invalid agent literal {agent!r} "
-                f"(allowed: {VALID_AGENT_CLIS}); dropped")
+                f"(allowed: {VALID_AGENT_CLIS}); dropped"
+            )
             continue
         if not isinstance(entry, dict):
             meta["warnings"].append(
                 f"routing.agents.{agent} must be a mapping ({{default_model: str}}); "
-                f"got {entry!r} — dropped")
+                f"got {entry!r} — dropped"
+            )
             continue
         default_model = entry.get("default_model")
         if not isinstance(default_model, str):
             meta["warnings"].append(
                 f"routing.agents.{agent}.default_model must be a string; "
-                f"got {default_model!r} — dropped")
+                f"got {default_model!r} — dropped"
+            )
             continue
         resolved[agent] = {"default_model": default_model}
     return resolved
 
 
-def _validate_routing_drain(raw: Any, meta: Dict[str, Any]) -> Dict[str, Any]:
+def _validate_routing_drain(raw: Any, meta: dict[str, Any]) -> dict[str, Any]:
     """`routing.drain`: `{agent: str, fallback_agents: [str], max_workers: int>=1}` —
     the machine-wide drain defaults formerly read from `config.json` by
     `shared/operator_config.py::drain_config()`, consolidated into
@@ -464,15 +487,22 @@ def _validate_routing_drain(raw: Any, meta: Dict[str, Any]) -> Dict[str, Any]:
         raise OperatorConfigError("routing.drain.agent must be a string")
     fallback_agents = raw.get("fallback_agents", [])
     if not isinstance(fallback_agents, list) or any(
-            not isinstance(f, str) for f in fallback_agents):
+        not isinstance(f, str) for f in fallback_agents
+    ):
         raise OperatorConfigError(
-            "routing.drain.fallback_agents must be a list of strings")
+            "routing.drain.fallback_agents must be a list of strings"
+        )
     max_workers = raw.get("max_workers")
     if max_workers is None:
         max_workers = 2
-    elif not isinstance(max_workers, int) or isinstance(max_workers, bool) or max_workers < 1:
+    elif (
+        not isinstance(max_workers, int)
+        or isinstance(max_workers, bool)
+        or max_workers < 1
+    ):
         raise OperatorConfigError(
-            "routing.drain.max_workers must be a positive integer")
+            "routing.drain.max_workers must be a positive integer"
+        )
     return {
         "agent": agent,
         "fallback_agents": list(fallback_agents),
@@ -480,24 +510,31 @@ def _validate_routing_drain(raw: Any, meta: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _validate_routing_defaults(raw: Any, meta: Dict[str, Any]) -> Dict[str, Dict[str, Dict[str, Any]]]:
+def _validate_routing_defaults(
+    raw: Any, meta: dict[str, Any]
+) -> dict[str, dict[str, dict[str, Any]]]:
     """`routing.defaults`: `{route: {risk: agent-entry}}` — the `(route, risk)` table
     `resolve_routing()` consults for the primary agent/model."""
     if raw is None:
         return {}
     if not isinstance(raw, dict):
-        meta["warnings"].append(f"routing.defaults must be a mapping; got {raw!r} — ignored")
+        meta["warnings"].append(
+            f"routing.defaults must be a mapping; got {raw!r} — ignored"
+        )
         return {}
-    resolved: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    resolved: dict[str, dict[str, dict[str, Any]]] = {}
     for route, risk_map in raw.items():
         if not isinstance(risk_map, dict):
             meta["warnings"].append(
                 f"routing.defaults.{route} must be a mapping of risk -> agent entry; "
-                f"got {risk_map!r} — ignored")
+                f"got {risk_map!r} — ignored"
+            )
             continue
-        risks: Dict[str, Dict[str, Any]] = {}
+        risks: dict[str, dict[str, Any]] = {}
         for risk, entry in risk_map.items():
-            normalized = _validate_agent_entry(entry, meta, f"routing.defaults.{route}.{risk}")
+            normalized = _validate_agent_entry(
+                entry, meta, f"routing.defaults.{route}.{risk}"
+            )
             if normalized is not None:
                 risks[risk] = normalized
         if risks:
@@ -506,9 +543,11 @@ def _validate_routing_defaults(raw: Any, meta: Dict[str, Any]) -> Dict[str, Dict
 
 
 def _validate_routing_roles(
-    raw: Any, tiers: Dict[str, Dict[str, Dict[str, Any]]],
-    targets: Dict[str, Dict[str, Any]], meta: Dict[str, Any]
-) -> Dict[str, Dict[str, Any]]:
+    raw: Any,
+    tiers: dict[str, dict[str, dict[str, Any]]],
+    targets: dict[str, dict[str, Any]],
+    meta: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
     """`routing.roles`: `{role: {tier, prefer?, independent?}}` — a role now
     resolves to a *tier row* (`routing.tiers`, task 1.2), not directly to an
     agent/model: `dispatch.tier_for()` (task 4.1) reads `tier` to pick the row
@@ -529,38 +568,46 @@ def _validate_routing_roles(
     if raw is None:
         return {}
     if not isinstance(raw, dict):
-        meta["warnings"].append(f"routing.roles must be a mapping; got {raw!r} — ignored")
+        meta["warnings"].append(
+            f"routing.roles must be a mapping; got {raw!r} — ignored"
+        )
         return {}
-    resolved: Dict[str, Dict[str, Any]] = {}
+    resolved: dict[str, dict[str, Any]] = {}
     for role, entry in raw.items():
         if not isinstance(entry, dict):
             meta["warnings"].append(
                 f"routing.roles.{role} must be a mapping ({{tier, prefer?, independent?}}); "
-                f"got {entry!r} — dropped")
+                f"got {entry!r} — dropped"
+            )
             continue
         tier = entry.get("tier")
         if not isinstance(tier, str) or tier not in tiers:
             meta["warnings"].append(
                 f"routing.roles.{role}.tier {tier!r} does not name a declared "
-                "routing.tiers row; dropped")
+                "routing.tiers row; dropped"
+            )
             continue
         prefer = entry.get("prefer")
-        if prefer is not None and (not isinstance(prefer, str) or prefer not in targets):
+        if prefer is not None and (
+            not isinstance(prefer, str) or prefer not in targets
+        ):
             meta["warnings"].append(
                 f"routing.roles.{role}.prefer {prefer!r} does not name a declared "
-                "routing.targets entry; dropped")
+                "routing.targets entry; dropped"
+            )
             continue
         independent = entry.get("independent", False)
         if not isinstance(independent, bool):
             meta["warnings"].append(
                 f"routing.roles.{role}.independent must be a boolean; "
-                f"got {independent!r} — dropped")
+                f"got {independent!r} — dropped"
+            )
             independent = False
         resolved[role] = {"tier": tier, "prefer": prefer, "independent": independent}
     return resolved
 
 
-def _validate_routing_purpose_tiers(raw: Any, meta: Dict[str, Any]) -> Dict[str, str]:
+def _validate_routing_purpose_tiers(raw: Any, meta: dict[str, Any]) -> dict[str, str]:
     """`routing.purposes`: `{purpose: tier}` — a plain string-to-string map
     (unlike `routing.roles`/`routing.tiers`, values here are tier names, not
     agent entries) that `dispatch.tier_for()` (task 4.1) consults ahead of
@@ -568,21 +615,24 @@ def _validate_routing_purpose_tiers(raw: Any, meta: Dict[str, Any]) -> Dict[str,
     if raw is None:
         return {}
     if not isinstance(raw, dict):
-        meta["warnings"].append(f"routing.purposes must be a mapping; got {raw!r} — ignored")
+        meta["warnings"].append(
+            f"routing.purposes must be a mapping; got {raw!r} — ignored"
+        )
         return {}
-    resolved: Dict[str, str] = {}
+    resolved: dict[str, str] = {}
     for purpose, tier in raw.items():
         if not isinstance(purpose, str) or not isinstance(tier, str):
             meta["warnings"].append(
-                f"routing.purposes.{purpose!r}: value must be a string; got {tier!r} — dropped")
+                f"routing.purposes.{purpose!r}: value must be a string; got {tier!r} — dropped"
+            )
             continue
         resolved[purpose] = tier
     return resolved
 
 
 def _validate_routing_tiers(
-    raw: Any, targets: Dict[str, Dict[str, Any]], meta: Dict[str, Any]
-) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    raw: Any, targets: dict[str, dict[str, Any]], meta: dict[str, Any]
+) -> dict[str, dict[str, dict[str, Any]]]:
     """`routing.tiers`: `{<row>: {<target>: {model, effort?}}}` — tier rows
     keyed by declared target name (`routing.targets`, task 1.1), replacing the
     old `(complexity, domain)`-keyed agent-entry table.
@@ -611,40 +661,49 @@ def _validate_routing_tiers(
     if raw is None:
         return {}
     if not isinstance(raw, dict):
-        meta["warnings"].append(f"routing.tiers must be a mapping; got {raw!r} — ignored")
+        meta["warnings"].append(
+            f"routing.tiers must be a mapping; got {raw!r} — ignored"
+        )
         return {}
-    resolved: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    resolved: dict[str, dict[str, dict[str, Any]]] = {}
     for row, cells in raw.items():
         if not isinstance(row, str):
-            meta["warnings"].append(f"routing.tiers: key must be a string; got {row!r} — ignored")
+            meta["warnings"].append(
+                f"routing.tiers: key must be a string; got {row!r} — ignored"
+            )
             continue
         if not isinstance(cells, dict):
             meta["warnings"].append(
                 f"routing.tiers.{row} must be a mapping of target -> {{model, effort?}}; "
-                f"got {cells!r} — ignored")
+                f"got {cells!r} — ignored"
+            )
             continue
-        row_resolved: Dict[str, Dict[str, Any]] = {}
+        row_resolved: dict[str, dict[str, Any]] = {}
         for target, cell in cells.items():
             if not isinstance(target, str) or target not in targets:
                 meta["warnings"].append(
                     f"routing.tiers.{row}.{target!r}: undeclared target "
-                    "(not in routing.targets); dropped")
+                    "(not in routing.targets); dropped"
+                )
                 continue
             if not isinstance(cell, dict):
                 meta["warnings"].append(
                     f"routing.tiers.{row}.{target} must be a mapping ({{model, effort?}}); "
-                    f"got {cell!r} — dropped")
+                    f"got {cell!r} — dropped"
+                )
                 continue
             model = cell.get("model")
             if not isinstance(model, str):
                 meta["warnings"].append(
                     f"routing.tiers.{row}.{target}.model must be a string; "
-                    f"got {model!r} — dropped")
+                    f"got {model!r} — dropped"
+                )
                 continue
             effort = cell.get("effort")
             if effort is not None and not isinstance(effort, str):
                 meta["warnings"].append(
-                    f"routing.tiers.{row}.{target}.effort must be a string; dropped")
+                    f"routing.tiers.{row}.{target}.effort must be a string; dropped"
+                )
                 effort = None
             if effort is not None:
                 harness = targets[target]["harness"]
@@ -652,11 +711,13 @@ def _validate_routing_tiers(
                 if vocabulary is None:
                     meta["warnings"].append(
                         f"routing.tiers.{row}.{target}.effort {effort!r}: "
-                        f"ignored by harness {harness!r}")
+                        f"ignored by harness {harness!r}"
+                    )
                 elif effort not in vocabulary:
                     meta["warnings"].append(
                         f"routing.tiers.{row}.{target}.effort {effort!r} is outside "
-                        f"{harness!r}'s effort vocabulary (allowed: {vocabulary})")
+                        f"{harness!r}'s effort vocabulary (allowed: {vocabulary})"
+                    )
             row_resolved[target] = {"model": model, "effort": effort}
         if row_resolved:
             resolved[row] = row_resolved
@@ -664,8 +725,8 @@ def _validate_routing_tiers(
 
 
 def _validate_routing_default_tier(
-    raw: Any, tiers: Dict[str, Dict[str, Dict[str, Any]]], meta: Dict[str, Any]
-) -> Optional[str]:
+    raw: Any, tiers: dict[str, dict[str, dict[str, Any]]], meta: dict[str, Any]
+) -> str | None:
     """`routing.default_tier`: the tier row used absent any more specific
     role/purpose/task tier (`dispatch.tier_for()`, task 4.1). Must name a
     declared row of the already-resolved `routing.tiers` table; anything else
@@ -674,25 +735,30 @@ def _validate_routing_default_tier(
     if raw is None:
         return None
     if not isinstance(raw, str):
-        meta["warnings"].append(f"routing.default_tier must be a string; got {raw!r} — ignored")
+        meta["warnings"].append(
+            f"routing.default_tier must be a string; got {raw!r} — ignored"
+        )
         return None
     if raw not in tiers:
         meta["warnings"].append(
-            f"routing.default_tier {raw!r} does not name a declared routing.tiers row; ignored")
+            f"routing.default_tier {raw!r} does not name a declared routing.tiers row; ignored"
+        )
         return None
     return raw
 
 
-def _validate_routing_fallback(raw: Any, meta: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _validate_routing_fallback(raw: Any, meta: dict[str, Any]) -> list[dict[str, Any]]:
     """`routing.fallback`: an ordered list of agent entries (`"codex"` or
     `{agent_cli, agent_model, effort, api_opt_in}`). An `API_AGENT_LITERALS` entry is
     dropped unless `api_opt_in: true` is set explicitly (AC-005)."""
     if raw is None:
         return []
     if not isinstance(raw, list):
-        meta["warnings"].append(f"routing.fallback must be a list; got {raw!r} — ignored")
+        meta["warnings"].append(
+            f"routing.fallback must be a list; got {raw!r} — ignored"
+        )
         return []
-    resolved: List[Dict[str, Any]] = []
+    resolved: list[dict[str, Any]] = []
     for entry in raw:
         if isinstance(entry, str):
             agent_cli, agent_model, effort, api_opt_in = entry, None, None, False
@@ -702,34 +768,51 @@ def _validate_routing_fallback(raw: Any, meta: Dict[str, Any]) -> List[Dict[str,
             effort = entry.get("effort")
             api_opt_in = bool(entry.get("api_opt_in", False))
         else:
-            meta["warnings"].append(f"routing.fallback: malformed entry {entry!r}; dropped")
+            meta["warnings"].append(
+                f"routing.fallback: malformed entry {entry!r}; dropped"
+            )
             continue
         if agent_model is not None and not isinstance(agent_model, str):
-            meta["warnings"].append("routing.fallback: agent_model must be a string; dropped")
+            meta["warnings"].append(
+                "routing.fallback: agent_model must be a string; dropped"
+            )
             agent_model = None
         if effort is not None and not isinstance(effort, str):
-            meta["warnings"].append("routing.fallback: effort must be a string; dropped")
+            meta["warnings"].append(
+                "routing.fallback: effort must be a string; dropped"
+            )
             effort = None
         if agent_cli in VALID_AGENT_CLIS:
-            resolved.append({"agent_cli": agent_cli, "agent_model": agent_model, "effort": effort})
+            resolved.append(
+                {"agent_cli": agent_cli, "agent_model": agent_model, "effort": effort}
+            )
         elif agent_cli in API_AGENT_LITERALS:
             if api_opt_in:
-                resolved.append({"agent_cli": agent_cli, "agent_model": agent_model, "effort": effort, "api": True})
+                resolved.append(
+                    {
+                        "agent_cli": agent_cli,
+                        "agent_model": agent_model,
+                        "effort": effort,
+                        "api": True,
+                    }
+                )
             else:
                 meta["warnings"].append(
                     f"routing.fallback: API/OpenRouter agent {agent_cli!r} excluded "
-                    "(requires explicit api_opt_in: true); ignored")
+                    "(requires explicit api_opt_in: true); ignored"
+                )
         else:
             meta["warnings"].append(
                 f"routing.fallback: invalid agent literal {agent_cli!r} "
-                f"(allowed: {VALID_AGENT_CLIS + API_AGENT_LITERALS}); dropped")
+                f"(allowed: {VALID_AGENT_CLIS + API_AGENT_LITERALS}); dropped"
+            )
     return resolved
 
 
 MIGRATE_HINT = "run `worktrail-routing --migrate` to convert it to the current schema"
 
 
-def _reject_legacy_routing_keys(raw: Dict[str, Any]) -> None:
+def _reject_legacy_routing_keys(raw: dict[str, Any]) -> None:
     """Fail loud on any pre-target-selector `routing:` shape, rather than
     silently misinterpreting or dropping it.
 
@@ -760,38 +843,54 @@ def _reject_legacy_routing_keys(raw: Dict[str, Any]) -> None:
     """
     declared_targets = raw.get("targets")
     declared_target_names = (
-        set(declared_targets) if isinstance(declared_targets, dict) else set())
+        set(declared_targets) if isinstance(declared_targets, dict) else set()
+    )
     if "agents" in raw:
         raise OperatorConfigError(f"routing.agents is a retired key; {MIGRATE_HINT}")
     if "fallback" in raw:
         raise OperatorConfigError(f"routing.fallback is a retired key; {MIGRATE_HINT}")
     if "purpose_tiers" in raw:
         raise OperatorConfigError(
-            f"routing.purpose_tiers is a retired key (renamed to routing.purposes); {MIGRATE_HINT}")
+            f"routing.purpose_tiers is a retired key (renamed to routing.purposes); {MIGRATE_HINT}"
+        )
     drain = raw.get("drain")
     if isinstance(drain, dict):
         if "agent" in drain:
-            raise OperatorConfigError(f"routing.drain.agent is a retired key; {MIGRATE_HINT}")
+            raise OperatorConfigError(
+                f"routing.drain.agent is a retired key; {MIGRATE_HINT}"
+            )
         if "fallback_agents" in drain:
-            raise OperatorConfigError(f"routing.drain.fallback_agents is a retired key; {MIGRATE_HINT}")
+            raise OperatorConfigError(
+                f"routing.drain.fallback_agents is a retired key; {MIGRATE_HINT}"
+            )
     tiers = raw.get("tiers")
     if isinstance(tiers, dict):
         for row, cells in tiers.items():
-            if isinstance(cells, dict) and cells and all(
-                    k in VALID_AGENT_CLIS and k not in declared_target_names for k in cells):
+            if (
+                isinstance(cells, dict)
+                and cells
+                and all(
+                    k in VALID_AGENT_CLIS and k not in declared_target_names
+                    for k in cells
+                )
+            ):
                 raise OperatorConfigError(
                     f"routing.tiers.{row} uses the retired harness-keyed cell form "
-                    f"(cells must be keyed by a declared routing.targets name); {MIGRATE_HINT}")
+                    f"(cells must be keyed by a declared routing.targets name); {MIGRATE_HINT}"
+                )
     roles = raw.get("roles")
     if isinstance(roles, dict):
         for role, entry in roles.items():
-            if isinstance(entry, dict) and ("agent_cli" in entry or "agent_model" in entry):
+            if isinstance(entry, dict) and (
+                "agent_cli" in entry or "agent_model" in entry
+            ):
                 raise OperatorConfigError(
                     f"routing.roles.{role} uses the retired agent_cli/agent_model role form "
-                    f"(roles now resolve to {{tier, prefer?, independent?}}); {MIGRATE_HINT}")
+                    f"(roles now resolve to {{tier, prefer?, independent?}}); {MIGRATE_HINT}"
+                )
 
 
-def _validate_routing(raw: Any, meta: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _validate_routing(raw: Any, meta: dict[str, Any]) -> dict[str, Any] | None:
     """Validate a raw `routing:` mapping (from either `go-policy.yaml` or the
     machine-wide routing file) into
     `{targets, defaults, roles, tiers, default_tier, fallback, purposes,
@@ -815,7 +914,8 @@ def _validate_routing(raw: Any, meta: Dict[str, Any]) -> Optional[Dict[str, Any]
         return None
     if not isinstance(raw, dict):
         meta["warnings"].append(
-            f"routing must be a mapping (defaults/roles/tiers/fallback); got {raw!r} — ignored")
+            f"routing must be a mapping (defaults/roles/tiers/fallback); got {raw!r} — ignored"
+        )
         return None
     if not raw:
         return None
@@ -827,7 +927,9 @@ def _validate_routing(raw: Any, meta: Dict[str, Any]) -> Optional[Dict[str, Any]
         "defaults": _validate_routing_defaults(raw.get("defaults"), meta),
         "roles": _validate_routing_roles(raw.get("roles"), tiers, targets, meta),
         "tiers": tiers,
-        "default_tier": _validate_routing_default_tier(raw.get("default_tier"), tiers, meta),
+        "default_tier": _validate_routing_default_tier(
+            raw.get("default_tier"), tiers, meta
+        ),
         "fallback": _validate_routing_fallback(raw.get("fallback"), meta),
         "purposes": _validate_routing_purpose_tiers(raw.get("purposes"), meta),
         "agents": _validate_routing_agents(raw.get("agents"), meta),
@@ -835,7 +937,7 @@ def _validate_routing(raw: Any, meta: Dict[str, Any]) -> Optional[Dict[str, Any]
     }
 
 
-def _load_yaml_mapping(text: str) -> Optional[Dict[str, Any]]:
+def _load_yaml_mapping(text: str) -> dict[str, Any] | None:
     """`yaml.safe_load` a full document, returning it only if it parsed to a
     mapping; `None` on malformed YAML or a non-mapping top level (never raises)."""
     try:
@@ -845,7 +947,9 @@ def _load_yaml_mapping(text: str) -> Optional[Dict[str, Any]]:
     return loaded if isinstance(loaded, dict) else None
 
 
-def _resolve_add_ons(parsed_local: Dict[str, Any], meta: Dict[str, Any]) -> Dict[str, Any]:
+def _resolve_add_ons(
+    parsed_local: dict[str, Any], meta: dict[str, Any]
+) -> dict[str, Any]:
     """Resolve `policy["add_ons"]` from the repo-local block, re-parsed with
     real YAML (design D3: `Dict[str, Dict[str, Any]]`, arbitrary per-add-on
     nesting `add_ons.<name>.<key>`) rather than `parse_policy_yaml`'s
@@ -864,7 +968,8 @@ def _resolve_add_ons(parsed_local: Dict[str, Any], meta: Dict[str, Any]) -> Dict
         return {}
     if not isinstance(raw, dict):
         meta["warnings"].append(
-            f"add_ons must be a mapping of add-on name -> config; got {raw!r} — ignored")
+            f"add_ons must be a mapping of add-on name -> config; got {raw!r} — ignored"
+        )
         return {}
     return raw
 
@@ -881,7 +986,9 @@ def resolved_routing_file_path() -> Path:
     return Path(override).expanduser() if override else default_routing_file()
 
 
-def _resolve_routing(repo: Path, parsed_local: Dict[str, Any], meta: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _resolve_routing(
+    repo: Path, parsed_local: dict[str, Any], meta: dict[str, Any]
+) -> dict[str, Any] | None:
     """Resolve `policy["routing"]`: repo-local `routing:` block, else the
     machine-wide routing file (`WORKTRAIL_ROUTING_FILE`, default `worktrail_home()/routing.yaml`),
     else `None` (flat keys remain the last-resort default — AC-003/AC-004).
@@ -904,12 +1011,15 @@ def _resolve_routing(repo: Path, parsed_local: Dict[str, Any], meta: Dict[str, A
     mw_raw = _load_yaml_mapping(text)
     if mw_raw is None:
         meta["warnings"].append(
-            f"machine-wide routing file {routing_path} is malformed YAML; ignored")
+            f"machine-wide routing file {routing_path} is malformed YAML; ignored"
+        )
         return None
     return _validate_routing(mw_raw, meta)
 
 
-def resolve_routing(policy: Dict[str, Any], route: str = "", risk: str = "") -> Dict[str, Any]:
+def resolve_routing(
+    policy: dict[str, Any], route: str = "", risk: str = ""
+) -> dict[str, Any]:
     """Deterministically resolve the effective targets/tiers/roles/purposes/
     drain configuration — the single source of truth for the selector
     (`select_cell()`, task 2.1) and dispatch (`tier_for()`, task 4.1).
@@ -957,7 +1067,9 @@ def resolve_routing(policy: Dict[str, Any], route: str = "", risk: str = "") -> 
             "drain": {},
         }
     drain_raw = routing.get("drain") or {}
-    drain = {"max_workers": drain_raw["max_workers"]} if "max_workers" in drain_raw else {}
+    drain = (
+        {"max_workers": drain_raw["max_workers"]} if "max_workers" in drain_raw else {}
+    )
     return {
         "targets": routing.get("targets") or {},
         "tiers": routing.get("tiers") or {},
@@ -968,7 +1080,7 @@ def resolve_routing(policy: Dict[str, Any], route: str = "", risk: str = "") -> 
     }
 
 
-def resolve_tier_map(policy: Dict[str, Any]) -> Dict[str, Dict[str, Dict[str, Any]]]:
+def resolve_tier_map(policy: dict[str, Any]) -> dict[str, dict[str, dict[str, Any]]]:
     """Resolve `policy["routing"]["tiers"]` into the selector-ready
     `{row: {target: {"model", "effort"}}}` mapping (task 2.1's `select_cell()`
     walks one row across its declared targets in preference order).
@@ -997,7 +1109,7 @@ def _json_safe(obj: Any) -> Any:
     1.2 rewrite, so this is now a defensive no-op for it specifically; kept
     generic in case a future validator stores another non-JSON-safe key."""
     if isinstance(obj, dict):
-        safe: Dict[Any, Any] = {}
+        safe: dict[Any, Any] = {}
         for key, value in obj.items():
             if isinstance(key, tuple):
                 complexity, domain = key
@@ -1009,25 +1121,29 @@ def _json_safe(obj: Any) -> Any:
     return obj
 
 
-def detect_external_automerge(repo: Path) -> Dict[str, Any]:
+def detect_external_automerge(repo: Path) -> dict[str, Any]:
     """Scan `.github/workflows/*.yml`/`*.yaml` for a repo's own auto-merge automation.
 
     Independent of `go-policy.yaml` — reads only the workflows directory, sorted by
     name so "first match wins" is deterministic.
     """
     workflows_dir = repo / ".github" / "workflows"
-    result: Dict[str, Any] = {"detected": False, "workflow_file": None}
+    result: dict[str, Any] = {"detected": False, "workflow_file": None}
     if not workflows_dir.is_dir():
         return result
-    candidates = sorted(workflows_dir.glob("*.yml")) + sorted(workflows_dir.glob("*.yaml"))
+    candidates = sorted(workflows_dir.glob("*.yml")) + sorted(
+        workflows_dir.glob("*.yaml")
+    )
     candidates.sort(key=lambda p: p.name)
     for wf in candidates:
         if not wf.is_file():
             continue
         text = wf.read_text(encoding="utf-8")
-        if (("gh pr merge" in text and "--auto" in text)
-                or "enable-auto-merge" in text
-                or "enable-pull-request-automerge" in text):
+        if (
+            ("gh pr merge" in text and "--auto" in text)
+            or "enable-auto-merge" in text
+            or "enable-pull-request-automerge" in text
+        ):
             result["detected"] = True
             result["workflow_file"] = str(wf.relative_to(repo))
             break
@@ -1045,14 +1161,14 @@ def has_policy_file(repo: Path) -> bool:
     return policy_file_path(repo).is_file()
 
 
-def load_policy(repo: Path) -> Dict[str, Any]:
+def load_policy(repo: Path) -> dict[str, Any]:
     policy = copy.deepcopy(DEFAULTS)
     # Resolved here (not in DEFAULTS) so the worktrail-home lookup stays lazy;
     # a repo-declared `run_record_dir` below still overrides it.
     policy["run_record_dir"] = default_run_record_dir()
-    meta: Dict[str, Any] = {"source": None, "unknown_keys": [], "warnings": []}
+    meta: dict[str, Any] = {"source": None, "unknown_keys": [], "warnings": []}
     src = policy_file_path(repo)
-    parsed: Dict[str, Any] = {}
+    parsed: dict[str, Any] = {}
     if src.is_file():
         meta["source"] = str(src)
         parsed = parse_policy_yaml(src.read_text(encoding="utf-8"))
@@ -1069,7 +1185,8 @@ def load_policy(repo: Path) -> Dict[str, Any]:
                     # keep the safe defaults and say so.
                     meta["warnings"].append(
                         "automerge must be a mapping (enabled/max_risk/...); "
-                        f"got {value!r} — ignored, defaults kept")
+                        f"got {value!r} — ignored, defaults kept"
+                    )
             elif key == "routing":
                 # `parse_policy_yaml`'s one-level-nesting subset can't represent
                 # `routing`'s arbitrary nesting — resolved separately below via
@@ -1098,14 +1215,16 @@ def load_policy(repo: Path) -> Dict[str, Any]:
     mr = policy["automerge"].get("max_risk", "low")
     if mr not in VALID_MAX_RISK:
         meta["warnings"].append(
-            f"automerge.max_risk '{mr}' invalid (allowed: {VALID_MAX_RISK}); clamped to 'low'")
+            f"automerge.max_risk '{mr}' invalid (allowed: {VALID_MAX_RISK}); clamped to 'low'"
+        )
         policy["automerge"]["max_risk"] = "low"
     if not isinstance(policy["automerge"].get("enabled"), bool):
         meta["warnings"].append("automerge.enabled not boolean; forced to false")
         policy["automerge"]["enabled"] = False
     if not isinstance(policy.get("allow_seeded_implementation"), bool):
         meta["warnings"].append(
-            "allow_seeded_implementation not boolean; forced to false")
+            "allow_seeded_implementation not boolean; forced to false"
+        )
         policy["allow_seeded_implementation"] = False
     for key in ("agent_cli", "fallback_agent_cli"):
         value = policy.get(key)
@@ -1114,7 +1233,9 @@ def load_policy(repo: Path) -> Dict[str, Any]:
                 f"{key} '{value}' invalid (allowed: {VALID_AGENT_CLIS}); dropped"
             )
             policy[key] = None
-    if policy.get("agent_model") is not None and not isinstance(policy["agent_model"], str):
+    if policy.get("agent_model") is not None and not isinstance(
+        policy["agent_model"], str
+    ):
         meta["warnings"].append("agent_model must be a string; dropped")
         policy["agent_model"] = None
     # Integer keys threaded verbatim into the orchestrator invocation — a bad
@@ -1134,33 +1255,37 @@ def load_policy(repo: Path) -> Dict[str, Any]:
         if mmb:
             meta["warnings"].append(
                 "merge_method_by_base must be a mapping (branch: method); "
-                f"got {mmb!r} — ignored, defaults kept")
+                f"got {mmb!r} — ignored, defaults kept"
+            )
         policy["merge_method_by_base"] = {}
     else:
-        cleaned: Dict[str, Any] = {}
+        cleaned: dict[str, Any] = {}
         for branch, method in mmb.items():
             if method in VALID_MERGE_METHODS:
                 cleaned[branch] = method
             else:
                 meta["warnings"].append(
                     f"merge_method_by_base.{branch} '{method}' invalid "
-                    f"(allowed: {VALID_MERGE_METHODS}); dropped")
+                    f"(allowed: {VALID_MERGE_METHODS}); dropped"
+                )
         policy["merge_method_by_base"] = cleaned
     pp = policy.get("promotion_pairs")
     if not isinstance(pp, dict):
         if pp:
             meta["warnings"].append(
                 "promotion_pairs must be a mapping (branch: head_branch); "
-                f"got {pp!r} — ignored, defaults kept")
+                f"got {pp!r} — ignored, defaults kept"
+            )
         policy["promotion_pairs"] = {}
     else:
-        cleaned_pp: Dict[str, Any] = {}
+        cleaned_pp: dict[str, Any] = {}
         for branch, head in pp.items():
             if isinstance(head, str) and head.strip():
                 cleaned_pp[branch] = head
             else:
                 meta["warnings"].append(
-                    f"promotion_pairs.{branch} must be a non-empty string; dropped")
+                    f"promotion_pairs.{branch} must be a non-empty string; dropped"
+                )
         policy["promotion_pairs"] = cleaned_pp
     # Nudge: a repo with specs but no integrated-smoke command ships group PRs whose
     # cross-task integration is only checked at CI/merge — the per-task review loop is
@@ -1174,13 +1299,14 @@ def load_policy(repo: Path) -> Dict[str, Any]:
             meta["warnings"].append(
                 "integrate_smoke_cmd unset: group PRs won't be smoke-tested before merge; "
                 "cross-task integration bugs will surface only at CI. Consider adding the "
-                "repo's fast test command to docs/specs/go-policy.yaml.")
+                "repo's fast test command to docs/specs/go-policy.yaml."
+            )
     meta["external_automerge"] = detect_external_automerge(repo)
     policy["_meta"] = meta
     return policy
 
 
-def _protected_path_match(path: str, patterns: List[str]) -> Optional[str]:
+def _protected_path_match(path: str, patterns: list[str]) -> str | None:
     """First pattern matching `path`, or None. A trailing '/' pattern is a
     directory-prefix match (`protected_paths` examples use "migrations/" to
     mean everything under migrations/); anything else is an fnmatch glob."""
@@ -1193,9 +1319,14 @@ def _protected_path_match(path: str, patterns: List[str]) -> Optional[str]:
     return None
 
 
-def automerge_eligible(policy: Dict[str, Any], risk: str, gates: List[str],
-                       target_branch: str, route: Optional[str] = None,
-                       changed_paths: Optional[List[str]] = None) -> Tuple[bool, str]:
+def automerge_eligible(
+    policy: dict[str, Any],
+    risk: str,
+    gates: list[str],
+    target_branch: str,
+    route: str | None = None,
+    changed_paths: list[str] | None = None,
+) -> tuple[bool, str]:
     """The deterministic part of the merge gate (CI/review state is checked live).
 
     `route` and `changed_paths` are optional and each check applies only when
@@ -1215,13 +1346,15 @@ def automerge_eligible(policy: Dict[str, Any], risk: str, gates: List[str],
             matched = _protected_path_match(path, protected)
             if matched:
                 return False, (
-                    f"changed path '{path}' matches protected_paths pattern '{matched}'")
+                    f"changed path '{path}' matches protected_paths pattern '{matched}'"
+                )
     if not am.get("enabled"):
         external = policy.get("_meta", {}).get("external_automerge", {})
         if external.get("detected"):
             return True, (
                 f"this repo's own CI automation ({external.get('workflow_file')}) handles "
-                "merging; no agent or human action needed")
+                "merging; no agent or human action needed"
+            )
         return False, "automerge disabled by policy"
     order = ["low", "medium", "high", "critical"]
     if order.index(risk) > order.index(am.get("max_risk", "low")):
@@ -1232,7 +1365,7 @@ def automerge_eligible(policy: Dict[str, Any], risk: str, gates: List[str],
     return True, "eligible (pending live CI + review checks)"
 
 
-def automerge_labels(eligible: bool, risk: str) -> List[str]:
+def automerge_labels(eligible: bool, risk: str) -> list[str]:
     """GitHub labels encoding `automerge_eligible()`'s verdict on a PR.
 
     A repo's own CI (e.g. `gh pr merge --auto` in `auto-merge.yml`) cannot call
@@ -1249,7 +1382,7 @@ def automerge_labels(eligible: bool, risk: str) -> List[str]:
     return labels
 
 
-def merge_method_for_branch(policy: Dict[str, Any], target_branch: str) -> Optional[str]:
+def merge_method_for_branch(policy: dict[str, Any], target_branch: str) -> str | None:
     """Return the configured `merge_method_by_base` override for `target_branch`.
 
     None means "no override" — the caller (verify.py's `_detect_merge_method()`)
@@ -1260,7 +1393,7 @@ def merge_method_for_branch(policy: Dict[str, Any], target_branch: str) -> Optio
     return method if method in VALID_MERGE_METHODS else None
 
 
-def resolve_post_merge_smoke_cmd(policy: Dict[str, Any]) -> Optional[str]:
+def resolve_post_merge_smoke_cmd(policy: dict[str, Any]) -> str | None:
     """Resolve verify.py's cumulative post-merge gate command.
 
     `post_merge_smoke_cmd` wins; `integrate_smoke_cmd` is the fallback (mirrors
@@ -1280,26 +1413,45 @@ def main(argv=None) -> int:
     p.add_argument("--repo", required=True)
     p.add_argument("--json", action="store_true")
     p.add_argument(
-        "--check-automerge", action="store_true",
-        help="print the deterministic automerge_eligible() decision instead of the policy")
-    p.add_argument("--risk", default="low", choices=("low", "medium", "high", "critical"))
-    p.add_argument("--gates", default="",
-                    help="comma-separated classifier gates, e.g. never_automerge,require_human_approval")
+        "--check-automerge",
+        action="store_true",
+        help="print the deterministic automerge_eligible() decision instead of the policy",
+    )
+    p.add_argument(
+        "--risk", default="low", choices=("low", "medium", "high", "critical")
+    )
+    p.add_argument(
+        "--gates",
+        default="",
+        help="comma-separated classifier gates, e.g. never_automerge,require_human_approval",
+    )
     p.add_argument("--target-branch", default="main")
-    p.add_argument("--route", default=None,
-                    help="classified route letter, for --check-automerge's "
-                         "require_human_routes check")
-    p.add_argument("--changed-paths", default="",
-                    help="comma-separated changed paths, for --check-automerge's "
-                         "protected_paths check")
     p.add_argument(
-        "--merge-method-for-branch", default=None, metavar="BRANCH",
+        "--route",
+        default=None,
+        help="classified route letter, for --check-automerge's "
+        "require_human_routes check",
+    )
+    p.add_argument(
+        "--changed-paths",
+        default="",
+        help="comma-separated changed paths, for --check-automerge's "
+        "protected_paths check",
+    )
+    p.add_argument(
+        "--merge-method-for-branch",
+        default=None,
+        metavar="BRANCH",
         help="print the merge_method_by_base override for BRANCH (null if unset) "
-             "instead of the policy")
+        "instead of the policy",
+    )
     p.add_argument(
-        "--resolve-routing", default=None, metavar="ROUTE:RISK",
+        "--resolve-routing",
+        default=None,
+        metavar="ROUTE:RISK",
         help="print the resolve_routing() result for ROUTE:RISK (e.g. B:medium) "
-             "instead of the policy")
+        "instead of the policy",
+    )
     args = p.parse_args(argv)
     policy = load_policy(Path(args.repo))
     if args.resolve_routing is not None:
@@ -1310,10 +1462,19 @@ def main(argv=None) -> int:
         gates = [g for g in args.gates.split(",") if g]
         changed_paths = [p for p in args.changed_paths.split(",") if p]
         eligible, reason = automerge_eligible(
-            policy, args.risk, gates, args.target_branch,
-            route=args.route, changed_paths=changed_paths or None)
+            policy,
+            args.risk,
+            gates,
+            args.target_branch,
+            route=args.route,
+            changed_paths=changed_paths or None,
+        )
         labels = automerge_labels(eligible, args.risk)
-        print(json.dumps({"eligible": eligible, "reason": reason, "labels": labels}, indent=2))
+        print(
+            json.dumps(
+                {"eligible": eligible, "reason": reason, "labels": labels}, indent=2
+            )
+        )
         return 0
     if args.merge_method_for_branch is not None:
         method = merge_method_for_branch(policy, args.merge_method_for_branch)

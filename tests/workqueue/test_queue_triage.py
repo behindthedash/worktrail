@@ -88,9 +88,7 @@ class TestGroupQueueByRepo(QueueTriageTestBase):
         self.assertEqual(
             sorted(p.name for p in groups[qt.NO_REPO_KEY]), ["a.md", "b.md"]
         )
-        self.assertEqual(
-            [p.name for p in groups["behindthedash/worktrail"]], ["c.md"]
-        )
+        self.assertEqual([p.name for p in groups["behindthedash/worktrail"]], ["c.md"])
 
     def test_empty_queue_dir_yields_no_groups(self):
         self.assertEqual(qt.group_queue_by_repo(), {})
@@ -219,10 +217,10 @@ class TestParseVerdicts(unittest.TestCase):
 
     def test_multiple_wellformed_verdicts_parsed_in_expected_order(self):
         raw = (
-            'reasoning text here\n'
+            "reasoning text here\n"
             '{"brief_id": "b", "verdict": "keep", "duplicate_of": null, '
             '"evidence": "still relevant", "confidence": "low"}\n'
-            'more reasoning\n'
+            "more reasoning\n"
             '{"brief_id": "a", "verdict": "needs-update", "duplicate_of": null, '
             '"evidence": "target file renamed", "confidence": "high"}\n'
         )
@@ -305,7 +303,9 @@ class TestParseVerdicts(unittest.TestCase):
             '{"brief_id": "a", "verdict": "keep", "duplicate_of": null, '
             '"evidence": "second attempt is valid", "confidence": "medium"}'
         )
-        bad = '{"brief_id": "a", "verdict": "keep", "duplicate_of": null, "evidence": ""}'
+        bad = (
+            '{"brief_id": "a", "verdict": "keep", "duplicate_of": null, "evidence": ""}'
+        )
         raw = f"{bad}\n{good}"
         verdicts = qt.parse_verdicts(raw, ["a"])
 
@@ -320,22 +320,27 @@ class TestEvaluateGroupArchivedShortCircuit(QueueTriageTestBase):
     Faked via `subprocess.run`/`spawn_agent` patches -- never hits the network.
     """
 
-    def _completed(self, returncode: int, stdout: str = "") -> subprocess.CompletedProcess:
+    def _completed(
+        self, returncode: int, stdout: str = ""
+    ) -> subprocess.CompletedProcess:
         return subprocess.CompletedProcess(
             args=["gh"], returncode=returncode, stdout=stdout, stderr=""
         )
 
-    def test_confirmed_archival_synthesizes_group_wide_stale_close_without_spawning(self):
+    def test_confirmed_archival_synthesizes_group_wide_stale_close_without_spawning(
+        self,
+    ):
         repo = "behindthedash/retired-repo"
         briefs = [self.write("a.md", repo=repo), self.write("b.md", repo=repo)]
 
         gh_stdout = json.dumps({"isArchived": True, "name": repo})
-        with mock.patch(
-            "worktrail.workqueue.queue_triage.subprocess.run",
-            return_value=self._completed(0, gh_stdout),
-        ) as mock_run, mock.patch(
-            "worktrail.orchestrator.spawnlib.spawn_agent"
-        ) as mock_spawn:
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run",
+                return_value=self._completed(0, gh_stdout),
+            ) as mock_run,
+            mock.patch("worktrail.orchestrator.spawnlib.spawn_agent") as mock_spawn,
+        ):
             result = qt.evaluate_group(repo, briefs, cwd=self.base)
 
         mock_run.assert_called_once()
@@ -363,13 +368,16 @@ class TestEvaluateGroupArchivedShortCircuit(QueueTriageTestBase):
             '{"brief_id": "a", "verdict": "keep", "duplicate_of": null, '
             '"evidence": "still relevant", "confidence": "medium"}'
         )
-        with mock.patch(
-            "worktrail.workqueue.queue_triage.subprocess.run",
-            return_value=self._completed(1, ""),
-        ) as mock_run, mock.patch(
-            "worktrail.orchestrator.spawnlib.spawn_agent",
-            return_value=SpawnResult(text=evaluator_text, usage={}),
-        ) as mock_spawn:
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run",
+                return_value=self._completed(1, ""),
+            ) as mock_run,
+            mock.patch(
+                "worktrail.orchestrator.spawnlib.spawn_agent",
+                return_value=SpawnResult(text=evaluator_text, usage={}),
+            ) as mock_spawn,
+        ):
             result = qt.evaluate_group(repo, briefs, cwd=self.base)
 
         mock_run.assert_called_once()
@@ -389,13 +397,16 @@ class TestEvaluateGroupArchivedShortCircuit(QueueTriageTestBase):
             '{"brief_id": "a", "verdict": "keep", "duplicate_of": null, '
             '"evidence": "gh unavailable, kept as fail-open", "confidence": "low"}'
         )
-        with mock.patch(
-            "worktrail.workqueue.queue_triage.subprocess.run",
-            side_effect=OSError("gh not found"),
-        ) as mock_run, mock.patch(
-            "worktrail.orchestrator.spawnlib.spawn_agent",
-            return_value=SpawnResult(text=evaluator_text, usage={}),
-        ) as mock_spawn:
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run",
+                side_effect=OSError("gh not found"),
+            ) as mock_run,
+            mock.patch(
+                "worktrail.orchestrator.spawnlib.spawn_agent",
+                return_value=SpawnResult(text=evaluator_text, usage={}),
+            ) as mock_spawn,
+        ):
             result = qt.evaluate_group(repo, briefs, cwd=self.base)
 
         mock_run.assert_called_once()
@@ -525,7 +536,9 @@ class TestResolveDuplicateTargets(unittest.TestCase):
     `keep`, with a warning logged, rather than acted on against a moving target.
     """
 
-    def _dup(self, brief_id: str, target: str, evidence: str = "same premise") -> qt.Verdict:
+    def _dup(
+        self, brief_id: str, target: str, evidence: str = "same premise"
+    ) -> qt.Verdict:
         return qt.Verdict(
             brief_id=brief_id,
             verdict="duplicate-of",
@@ -538,8 +551,11 @@ class TestResolveDuplicateTargets(unittest.TestCase):
         verdicts = [
             self._dup("a", "b"),
             qt.Verdict(
-                brief_id="b", verdict="stale-close", duplicate_of=None,
-                evidence="already shipped", confidence="high",
+                brief_id="b",
+                verdict="stale-close",
+                duplicate_of=None,
+                evidence="already shipped",
+                confidence="high",
             ),
         ]
 
@@ -559,8 +575,11 @@ class TestResolveDuplicateTargets(unittest.TestCase):
         verdicts = [
             self._dup("a", "b"),
             qt.Verdict(
-                brief_id="b", verdict="needs-update", duplicate_of=None,
-                evidence="file renamed", confidence="high",
+                brief_id="b",
+                verdict="needs-update",
+                duplicate_of=None,
+                evidence="file renamed",
+                confidence="high",
             ),
         ]
 
@@ -588,8 +607,11 @@ class TestResolveDuplicateTargets(unittest.TestCase):
         verdicts = [
             self._dup("a", "b"),
             qt.Verdict(
-                brief_id="b", verdict="keep", duplicate_of=None,
-                evidence="still relevant", confidence="low",
+                brief_id="b",
+                verdict="keep",
+                duplicate_of=None,
+                evidence="still relevant",
+                confidence="low",
             ),
         ]
 
@@ -609,12 +631,18 @@ class TestResolveDuplicateTargets(unittest.TestCase):
     def test_non_duplicate_of_verdicts_pass_through_unchanged(self):
         verdicts = [
             qt.Verdict(
-                brief_id="a", verdict="stale-close", duplicate_of=None,
-                evidence="shipped", confidence="high",
+                brief_id="a",
+                verdict="stale-close",
+                duplicate_of=None,
+                evidence="shipped",
+                confidence="high",
             ),
             qt.Verdict(
-                brief_id="b", verdict="keep", duplicate_of=None,
-                evidence="still relevant", confidence="low",
+                brief_id="b",
+                verdict="keep",
+                duplicate_of=None,
+                evidence="still relevant",
+                confidence="low",
             ),
         ]
 
@@ -639,7 +667,9 @@ class TestReportAndVerdictFileOutput(QueueTriageTestBase):
     @staticmethod
     def _report_counts(report_text: str) -> dict:
         """Parse the `## Verdict counts` section's `- <type>: <n>` lines back into a dict."""
-        section = report_text.split("## Verdict counts", 1)[1].split("## Skipped via dedup", 1)[0]
+        section = report_text.split("## Verdict counts", 1)[1].split(
+            "## Skipped via dedup", 1
+        )[0]
         counts = {}
         for line in section.strip().splitlines():
             line = line.strip()
@@ -652,27 +682,44 @@ class TestReportAndVerdictFileOutput(QueueTriageTestBase):
     def _verdicts(self):
         return [
             qt.Verdict(
-                brief_id="repo-a-1", verdict="stale-close", duplicate_of=None,
-                evidence="PR #42 already shipped this", confidence="high",
+                brief_id="repo-a-1",
+                verdict="stale-close",
+                duplicate_of=None,
+                evidence="PR #42 already shipped this",
+                confidence="high",
             ),
             qt.Verdict(
-                brief_id="repo-a-2", verdict="stale-close", duplicate_of=None,
-                evidence="repo archived", confidence="high",
+                brief_id="repo-a-2",
+                verdict="stale-close",
+                duplicate_of=None,
+                evidence="repo archived",
+                confidence="high",
             ),
             qt.Verdict(
-                brief_id="repo-b-1", verdict="needs-update", duplicate_of=None,
-                evidence="target file renamed", confidence="medium",
+                brief_id="repo-b-1",
+                verdict="needs-update",
+                duplicate_of=None,
+                evidence="target file renamed",
+                confidence="medium",
             ),
             qt.Verdict(
-                brief_id="repo-b-2", verdict="duplicate-of", duplicate_of="repo-a-1",
-                evidence="same premise as repo-a-1", confidence="medium",
+                brief_id="repo-b-2",
+                verdict="duplicate-of",
+                duplicate_of="repo-a-1",
+                evidence="same premise as repo-a-1",
+                confidence="medium",
             ),
             qt.Verdict(
-                brief_id="__none__-1", verdict="keep", duplicate_of=None,
-                evidence="still relevant", confidence="low",
+                brief_id="__none__-1",
+                verdict="keep",
+                duplicate_of=None,
+                evidence="still relevant",
+                confidence="low",
             ),
             qt.Verdict(
-                brief_id="__none__-2", verdict="keep", duplicate_of=None,
+                brief_id="__none__-2",
+                verdict="keep",
+                duplicate_of=None,
                 evidence="the evaluator rambled and never emitted any JSON at all",
                 confidence=None,
             ),
@@ -738,40 +785,72 @@ class TestReportAndVerdictFileOutput(QueueTriageTestBase):
         def fake_evaluate_group(repo, briefs, *, agent="claude", model=None, cwd=None):
             ids = [p.stem for p in briefs]
             if repo == "behindthedash/repo-a":
-                raw = "\n".join([
-                    json.dumps({
-                        "brief_id": ids[0], "verdict": "stale-close", "duplicate_of": None,
-                        "evidence": "PR #42 already shipped this", "confidence": "high",
-                    }),
-                    json.dumps({
-                        "brief_id": ids[1], "verdict": "stale-close", "duplicate_of": None,
-                        "evidence": "repo archived", "confidence": "high",
-                    }),
-                ])
+                raw = "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "brief_id": ids[0],
+                                "verdict": "stale-close",
+                                "duplicate_of": None,
+                                "evidence": "PR #42 already shipped this",
+                                "confidence": "high",
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "brief_id": ids[1],
+                                "verdict": "stale-close",
+                                "duplicate_of": None,
+                                "evidence": "repo archived",
+                                "confidence": "high",
+                            }
+                        ),
+                    ]
+                )
             elif repo == "behindthedash/repo-b":
-                raw = "\n".join([
-                    json.dumps({
-                        "brief_id": ids[0], "verdict": "needs-update", "duplicate_of": None,
-                        "evidence": "target file renamed", "confidence": "medium",
-                    }),
-                    json.dumps({
-                        "brief_id": ids[1], "verdict": "duplicate-of", "duplicate_of": ids[0],
-                        "evidence": "same premise", "confidence": "medium",
-                    }),
-                ])
+                raw = "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "brief_id": ids[0],
+                                "verdict": "needs-update",
+                                "duplicate_of": None,
+                                "evidence": "target file renamed",
+                                "confidence": "medium",
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "brief_id": ids[1],
+                                "verdict": "duplicate-of",
+                                "duplicate_of": ids[0],
+                                "evidence": "same premise",
+                                "confidence": "medium",
+                            }
+                        ),
+                    ]
+                )
             else:
-                raw = "\n".join([
-                    json.dumps({
-                        "brief_id": ids[0], "verdict": "keep", "duplicate_of": None,
-                        "evidence": "still relevant", "confidence": "low",
-                    }),
-                    "the evaluator rambled and never emitted valid JSON for the second brief",
-                ])
+                raw = "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "brief_id": ids[0],
+                                "verdict": "keep",
+                                "duplicate_of": None,
+                                "evidence": "still relevant",
+                                "confidence": "low",
+                            }
+                        ),
+                        "the evaluator rambled and never emitted valid JSON for the second brief",
+                    ]
+                )
             return [{"repo": repo, "brief_ids": ids, "raw_text": raw}]
 
         out_dir = self.base / "out-run"
         with mock.patch(
-            "worktrail.workqueue.queue_triage.evaluate_group", side_effect=fake_evaluate_group,
+            "worktrail.workqueue.queue_triage.evaluate_group",
+            side_effect=fake_evaluate_group,
         ) as mock_eval:
             exit_code = qt.main(["evaluate", "--out-dir", str(out_dir)])
 
@@ -791,11 +870,17 @@ class TestReportAndVerdictFileOutput(QueueTriageTestBase):
         report_text = report_path.read_text(encoding="utf-8")
         report_counts = self._report_counts(report_text)
 
-        expected_counts = {"keep": 0, "stale-close": 0, "needs-update": 0, "duplicate-of": 0}
+        expected_counts = {
+            "keep": 0,
+            "stale-close": 0,
+            "needs-update": 0,
+            "duplicate-of": 0,
+        }
         expected_counts.update(json_counts)
         self.assertEqual(report_counts, expected_counts)
         self.assertEqual(
-            report_counts, {"keep": 2, "stale-close": 2, "needs-update": 1, "duplicate-of": 1},
+            report_counts,
+            {"keep": 2, "stale-close": 2, "needs-update": 1, "duplicate-of": 1},
         )
 
         self.assertEqual(len(json_verdicts), 6)
@@ -825,7 +910,9 @@ class TestReportAndVerdictFileOutput(QueueTriageTestBase):
         json_verdicts = json.loads(verdict_path.read_text(encoding="utf-8"))
         report_text = report_path.read_text(encoding="utf-8")
 
-        self.assertEqual([e["brief_id"] for e in json_verdicts], [v.brief_id for v in verdicts])
+        self.assertEqual(
+            [e["brief_id"] for e in json_verdicts], [v.brief_id for v in verdicts]
+        )
         for entry in json_verdicts:
             # tie brief_id and verdict together, not just each present somewhere in
             # the report: `write_report()` zero-fills every verdict type in the

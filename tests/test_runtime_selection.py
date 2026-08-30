@@ -9,10 +9,13 @@ from worktrail.runtime.selection import (
     select_execution_target,
 )
 
-
 CATALOG = [
     {"provider": "claude", "model": "sonnet", "purposes": ["implementation"]},
-    {"provider": "claude", "model": "haiku", "purposes": ["classification", "implementation"]},
+    {
+        "provider": "claude",
+        "model": "haiku",
+        "purposes": ["classification", "implementation"],
+    },
     {"provider": "opencode", "model": "zen/free", "purposes": ["classification"]},
     {"provider": "codex", "model": "gpt-5", "purposes": ["implementation"]},
 ]
@@ -34,7 +37,10 @@ def test_explicit_override_wins_over_inherited_and_policy():
         policy={"defaults": ["opencode:zen/free"]},
     )
     assert (target.provider, target.model, target.reason) == (
-        "codex", "gpt-5", "explicit override")
+        "codex",
+        "gpt-5",
+        "explicit override",
+    )
 
 
 def test_subcall_inherits_provider_before_routing_policy():
@@ -54,9 +60,11 @@ def test_originating_call_uses_purpose_policy_and_model_can_drive_provider():
     target = select_execution_target(
         CATALOG,
         purpose="classification",
-        policy={"purpose_targets": {"classification": [
-            {"model": "zen/free"}, "claude:haiku"
-        ]}},
+        policy={
+            "purpose_targets": {
+                "classification": [{"model": "zen/free"}, "claude:haiku"]
+            }
+        },
     )
     assert (target.provider, target.model) == ("opencode", "zen/free")
     assert target.reason == "purpose/tier policy"
@@ -90,13 +98,19 @@ def test_capacity_reader_honors_ttl_at_injected_time():
 
     policy = {"defaults": ["claude:sonnet", "codex:gpt-5"]}
     gated = select_execution_target(
-        CATALOG, purpose="implementation", policy=policy, capacity=Capacity(),
+        CATALOG,
+        purpose="implementation",
+        policy=policy,
+        capacity=Capacity(),
         now=retry_after - timedelta(seconds=1),
     )
     assert (gated.provider, gated.model) == ("codex", "gpt-5")
 
     expired = select_execution_target(
-        CATALOG, purpose="implementation", policy=policy, capacity=Capacity(),
+        CATALOG,
+        purpose="implementation",
+        policy=policy,
+        capacity=Capacity(),
         now=retry_after,
     )
     assert (expired.provider, expired.model) == ("claude", "sonnet")
@@ -104,7 +118,9 @@ def test_capacity_reader_honors_ttl_at_injected_time():
 
 def test_unsupported_explicit_values_fail_instead_of_silent_fallback():
     with pytest.raises(InvalidCandidate, match="unsupported explicit target"):
-        select_execution_target(CATALOG, explicit_provider="codex", explicit_model="sonnet")
+        select_execution_target(
+            CATALOG, explicit_provider="codex", explicit_model="sonnet"
+        )
 
 
 def test_disabled_candidates_and_all_capacity_gates_are_reported():

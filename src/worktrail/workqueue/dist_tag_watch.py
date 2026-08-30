@@ -43,7 +43,7 @@ import re
 import sys
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from ..shared.brief_frontmatter import read_frontmatter
 
@@ -71,14 +71,14 @@ _GITHUB_ISSUE_API_URL = "https://api.github.com/repos/{owner}/{repo}/issues/{num
 # --------------------------------------------------------------------------- #
 
 
-def base_dir(queue_dir_arg: Optional[str] = None) -> Path:
+def base_dir(queue_dir_arg: str | None = None) -> Path:
     """Resolve the work-queue root: --queue-dir, else $WORK_QUEUE_DIR, else ~/work-queue."""
     if queue_dir_arg:
         return Path(queue_dir_arg).expanduser()
     return Path(os.environ.get("WORK_QUEUE_DIR", "~/work-queue")).expanduser()
 
 
-def queue_dir(queue_dir_arg: Optional[str] = None) -> Path:
+def queue_dir(queue_dir_arg: str | None = None) -> Path:
     return base_dir(queue_dir_arg) / "queue"
 
 
@@ -102,7 +102,7 @@ def _remove_fm_field(content: str, key: str) -> str:
     return content[: m.start(1)] + new_block + content[m.end(1) :]
 
 
-def _set_fm_list_field(content: str, key: str, values: List[str]) -> str:
+def _set_fm_list_field(content: str, key: str, values: list[str]) -> str:
     """Set/replace a list field inside the YAML frontmatter block.
 
     Renders the field as a YAML block sequence, preserving key order and every
@@ -114,7 +114,7 @@ def _set_fm_list_field(content: str, key: str, values: List[str]) -> str:
 
     block = m.group(1)
     lines = block.split("\n")
-    new_lines: List[str] = []
+    new_lines: list[str] = []
     skip_continuations = False
     key_found = False
     key_re = re.compile(r"^" + re.escape(key) + r"\s*:")
@@ -146,7 +146,7 @@ def _set_fm_list_field(content: str, key: str, values: List[str]) -> str:
 # --------------------------------------------------------------------------- #
 
 
-def parse_watch_entry(raw: str) -> Tuple[Optional[Tuple[str, str, str]], Optional[str]]:
+def parse_watch_entry(raw: str) -> tuple[tuple[str, str, str] | None, str | None]:
     """Parse one `watch:` list item.
 
     Returns ``((registry, package, version), None)`` on success, or
@@ -173,13 +173,13 @@ def parse_watch_entry(raw: str) -> Tuple[Optional[Tuple[str, str, str]], Optiona
 
 def _default_fetch(url: str) -> str:
     """Real network fetch -- GET `url`, return the response body as text."""
-    with urllib.request.urlopen(url, timeout=_FETCH_TIMEOUT) as resp:  # noqa: S310 -- read-only, no-auth registry GET
+    with urllib.request.urlopen(url, timeout=_FETCH_TIMEOUT) as resp:
         return resp.read().decode("utf-8")
 
 
 def query_latest_version(
     registry: str, package: str, fetch: Any = _default_fetch
-) -> Tuple[Optional[str], Optional[str]]:
+) -> tuple[str | None, str | None]:
     """Query a registry for `package`'s latest published version.
 
     Returns ``(version, None)`` on success, or ``(None, error_message)`` on any
@@ -216,7 +216,7 @@ def query_latest_version(
 
 def query_github_issue_state(
     owner: str, repo: str, number: str, fetch: Any = _default_fetch
-) -> Tuple[Optional[str], Optional[str]]:
+) -> tuple[str | None, str | None]:
     """Query the GitHub API for one issue's current state.
 
     Returns ``("open" | "closed", None)`` on success, or ``(None, error_message)``
@@ -236,7 +236,10 @@ def query_github_issue_state(
 
     state = data.get("state") if isinstance(data, dict) else None
     if state not in ("open", "closed"):
-        return None, f"missing/invalid 'state' field in GitHub response for {owner}/{repo}#{number}"
+        return (
+            None,
+            f"missing/invalid 'state' field in GitHub response for {owner}/{repo}#{number}",
+        )
     return state, None
 
 
@@ -245,7 +248,9 @@ def query_github_issue_state(
 # --------------------------------------------------------------------------- #
 
 
-def check_brief(path: Path, fetch: Any = _default_fetch, dry_run: bool = False) -> Optional[Dict[str, Any]]:
+def check_brief(
+    path: Path, fetch: Any = _default_fetch, dry_run: bool = False
+) -> dict[str, Any] | None:
     """Check one brief's `watch:` entries; returns ``None`` if it has none.
 
     Queries every entry independently, rewrites `next-check-after`/`watch:` in
@@ -262,8 +267,8 @@ def check_brief(path: Path, fetch: Any = _default_fetch, dry_run: bool = False) 
     if not isinstance(raw_entries, list):
         return None
 
-    entries: List[Dict[str, Any]] = []
-    new_watch_values: List[str] = []
+    entries: list[dict[str, Any]] = []
+    new_watch_values: list[str] = []
     any_changed = False
 
     for raw in raw_entries:
@@ -273,7 +278,9 @@ def check_brief(path: Path, fetch: Any = _default_fetch, dry_run: bool = False) 
         if gh_match:
             owner, repo, number = gh_match.group("owner", "repo", "number")
             recorded_state = "closed" if gh_match.group("marker") else "open"
-            latest_state, fetch_err = query_github_issue_state(owner, repo, number, fetch=fetch)
+            latest_state, fetch_err = query_github_issue_state(
+                owner, repo, number, fetch=fetch
+            )
             if fetch_err is not None:
                 entries.append(
                     {
@@ -304,7 +311,9 @@ def check_brief(path: Path, fetch: Any = _default_fetch, dry_run: bool = False) 
             if changed:
                 any_changed = True
                 base_url = f"https://github.com/{owner}/{repo}/issues/{number}"
-                new_watch_values.append(f"{base_url}#closed" if latest_state == "closed" else base_url)
+                new_watch_values.append(
+                    f"{base_url}#closed" if latest_state == "closed" else base_url
+                )
             else:
                 new_watch_values.append(raw_str)
             continue
@@ -381,17 +390,17 @@ def check_brief(path: Path, fetch: Any = _default_fetch, dry_run: bool = False) 
 # --------------------------------------------------------------------------- #
 
 
-def _md_files(d: Path) -> List[Path]:
+def _md_files(d: Path) -> list[Path]:
     if not d.is_dir():
         return []
     return sorted(f for f in d.iterdir() if f.is_file() and f.suffix == ".md")
 
 
 def run_check(
-    queue_dir_arg: Optional[str] = None, fetch: Any = _default_fetch, dry_run: bool = False
-) -> Dict[str, Any]:
+    queue_dir_arg: str | None = None, fetch: Any = _default_fetch, dry_run: bool = False
+) -> dict[str, Any]:
     """Check every brief in the queue dir; returns the `--json` report shape."""
-    briefs: List[Dict[str, Any]] = []
+    briefs: list[dict[str, Any]] = []
     changed = 0
     errors = 0
     for path in _md_files(queue_dir(queue_dir_arg)):
@@ -417,7 +426,7 @@ def run_check(
 # --------------------------------------------------------------------------- #
 
 
-def _print_human(result: Dict[str, Any]) -> None:
+def _print_human(result: dict[str, Any]) -> None:
     print(
         f"checked {result['checked']} brief(s), {result['changed']} changed, "
         f"{result['errors']} error(s)" + (" [dry-run]" if result["dry_run"] else "")
@@ -425,7 +434,9 @@ def _print_human(result: Dict[str, Any]) -> None:
     for brief in result["briefs"]:
         for entry in brief["entries"]:
             if entry["error"]:
-                print(f"  {brief['filename']}: {entry['raw']} -- error: {entry['error']}")
+                print(
+                    f"  {brief['filename']}: {entry['raw']} -- error: {entry['error']}"
+                )
             elif entry["changed"]:
                 print(
                     f"  {brief['filename']}: {entry['raw']} -> "
@@ -437,7 +448,9 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="dist-tag watcher for handoff briefs")
     p.add_argument("--queue-dir", default=None, help="work-queue root's queue/ parent")
     p.add_argument("--json", action="store_true", help="emit JSON")
-    p.add_argument("--dry-run", action="store_true", help="report verdicts without writing")
+    p.add_argument(
+        "--dry-run", action="store_true", help="report verdicts without writing"
+    )
     args = p.parse_args(argv)
 
     result = run_check(queue_dir_arg=args.queue_dir, dry_run=args.dry_run)

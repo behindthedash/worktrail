@@ -42,7 +42,9 @@ def test_detect_format(path, expected):
 def test_detect_works_on_a_path_that_does_not_exist_yet():
     """A worktree can be branched before its spec folder lands; detection must
     not depend on the directory existing."""
-    assert resolve.detect_format("/nope/openspec/changes/ghost") == resolve.FORMAT_OPENSPEC
+    assert (
+        resolve.detect_format("/nope/openspec/changes/ghost") == resolve.FORMAT_OPENSPEC
+    )
 
 
 @pytest.mark.parametrize(
@@ -108,7 +110,14 @@ def test_load_spec_dispatches_to_devkit(tmp_path):
 
 
 def test_nested_devkit_change_preserves_parent_spec_path(tmp_path):
-    d = tmp_path / "docs" / "specs" / "053-parent" / "changes" / "2026-07-21-output-contract"
+    d = (
+        tmp_path
+        / "docs"
+        / "specs"
+        / "053-parent"
+        / "changes"
+        / "2026-07-21-output-contract"
+    )
     (d / "tasks").mkdir(parents=True)
     (d / "tasks" / "TASK-CHG-003.md").write_text(
         "---\nid: TASK-CHG-003\ntitle: API\nstatus: pending\nkind: impl\n---\n\nbody\n"
@@ -157,7 +166,9 @@ def test_worker_prompt_names_the_spec_root_of_the_running_format():
     assert "docs/specs" not in os_prompt
 
     dk_prompt = dispatch.build_worker_prompt(
-        "implement", {"id": "TASK-001", "files": ["src/a.py"]}, _ctx("docs/specs/025-feature/")
+        "implement",
+        {"id": "TASK-001", "files": ["src/a.py"]},
+        _ctx("docs/specs/025-feature/"),
     )
     assert "Do NOT modify docs/specs/** at all." in dk_prompt
     assert "openspec/" not in dk_prompt
@@ -165,8 +176,15 @@ def test_worker_prompt_names_the_spec_root_of_the_running_format():
 
 def test_worker_prompt_defaults_to_devkit_for_callers_predating_the_seam():
     """`spec_root_prefix` absent from ctx must not silently drop the guard."""
-    ctx = {"spec_id": "x", "spec_folder": "docs/specs/025/", "worktree_path": "/w", "branch": "b"}
-    prompt = dispatch.build_worker_prompt("implement", {"id": "TASK-001", "files": []}, ctx)
+    ctx = {
+        "spec_id": "x",
+        "spec_folder": "docs/specs/025/",
+        "worktree_path": "/w",
+        "branch": "b",
+    }
+    prompt = dispatch.build_worker_prompt(
+        "implement", {"id": "TASK-001", "files": []}, ctx
+    )
     assert "Do NOT modify docs/specs/** at all." in prompt
 
 

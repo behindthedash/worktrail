@@ -5,7 +5,6 @@ from pathlib import Path
 from worktrail.taskformats.speckit import schema
 from worktrail.taskformats.speckit.source import SpecKitTaskSource
 
-
 TASKS = """# Tasks: Export
 
 ## Phase 1: Setup

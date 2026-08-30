@@ -24,8 +24,8 @@ import os
 import shutil
 import sys
 import uuid
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
-from typing import Callable, Mapping, Optional
 
 SUPPORTED_AGENTS = ("claude", "codex", "opencode")
 
@@ -51,12 +51,12 @@ class InvocationContext:
     dispatch_mode: str
     capability_source: str
     dispatch_id: str
-    blocked_reason: Optional[str] = None
-    warning: Optional[str] = None
-    model: Optional[str] = None
+    blocked_reason: str | None = None
+    warning: str | None = None
+    model: str | None = None
 
 
-def _which(name: str) -> Optional[str]:
+def _which(name: str) -> str | None:
     return shutil.which(name)
 
 
@@ -76,8 +76,8 @@ def _generate_dispatch_id() -> str:
 
 
 def _resolve_agent(
-    agent: Optional[str],
-    policy_agent: Optional[str],
+    agent: str | None,
+    policy_agent: str | None,
     environ: Mapping[str, str],
 ) -> str:
     """Precedence: explicit invocation > repository policy > machine-wide env >
@@ -89,7 +89,11 @@ def _resolve_agent(
         or environ.get("GO_AGENT_CLI")
         or environ.get("ORCH_AGENT")
         or ("opencode" if environ.get("OPENCODE_PARENT") else None)
-        or ("codex" if environ.get("CODEX_CI") or environ.get("CODEX_THREAD_ID") else None)
+        or (
+            "codex"
+            if environ.get("CODEX_CI") or environ.get("CODEX_THREAD_ID")
+            else None
+        )
         or "claude"
     )
     if resolved not in SUPPORTED_AGENTS:
@@ -100,9 +104,9 @@ def _resolve_agent(
 
 
 def _resolve_capability(
-    native_skill: Optional[bool],
+    native_skill: bool | None,
     environ: Mapping[str, str],
-) -> tuple[bool, str, Optional[str]]:
+) -> tuple[bool, str, str | None]:
     if native_skill is not None:
         return native_skill, "explicit", None
     if CAPABILITY_ENV not in environ:
@@ -112,22 +116,26 @@ def _resolve_capability(
         return True, "environment", None
     if raw in _FALSE:
         return False, "environment", None
-    return False, "unset", (
-        f"{CAPABILITY_ENV}={environ[CAPABILITY_ENV]!r} is not a recognized boolean; "
-        "treating native Skill as unavailable"
+    return (
+        False,
+        "unset",
+        (
+            f"{CAPABILITY_ENV}={environ[CAPABILITY_ENV]!r} is not a recognized boolean; "
+            "treating native Skill as unavailable"
+        ),
     )
 
 
 def resolve(
     *,
-    agent: Optional[str] = None,
-    model: Optional[str] = None,
-    policy_agent: Optional[str] = None,
-    native_skill: Optional[bool] = None,
+    agent: str | None = None,
+    model: str | None = None,
+    policy_agent: str | None = None,
+    native_skill: bool | None = None,
     active_resume: bool = False,
-    dispatch_id: Optional[str] = None,
-    environ: Optional[Mapping[str, str]] = None,
-    which: Optional[Callable[[str], Optional[str]]] = None,
+    dispatch_id: str | None = None,
+    environ: Mapping[str, str] | None = None,
+    which: Callable[[str], str | None] | None = None,
 ) -> InvocationContext:
     """Resolve both axes once and apply the deterministic decision tree."""
     env = os.environ if environ is None else environ
@@ -166,11 +174,13 @@ def resolve(
     )
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--agent", help="explicit provider override")
     parser.add_argument("--model", help="explicit model inherited by subcalls")
-    parser.add_argument("--policy-agent", help="agent_cli resolved from repository policy")
+    parser.add_argument(
+        "--policy-agent", help="agent_cli resolved from repository policy"
+    )
     capability = parser.add_mutually_exclusive_group()
     capability.add_argument(
         "--native-skill",

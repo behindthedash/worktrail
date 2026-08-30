@@ -96,7 +96,9 @@ def test_create_handoff_uses_semantic_summary_when_available(
         lambda focus, repo: "semantic issue summary",
     )
 
-    result = create_handoff("Fix the thing", queue_base=tmp_path / "queue", repo=str(repo))
+    result = create_handoff(
+        "Fix the thing", queue_base=tmp_path / "queue", repo=str(repo)
+    )
     assert Path(result["path"]).stem.split("-", 2)[2] == "semantic-issue-summary"
 
 
@@ -111,9 +113,13 @@ def test_create_handoff_normalizes_bare_repo_name_against_projects_home(
     (projects / "devops").mkdir(parents=True)
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
 
-    result = create_handoff("Fix the thing", queue_base=tmp_path / "queue", repo="devops")
+    result = create_handoff(
+        "Fix the thing", queue_base=tmp_path / "queue", repo="devops"
+    )
 
-    assert read_frontmatter(Path(result["path"]))["repo"] == str((projects / "devops").resolve())
+    assert read_frontmatter(Path(result["path"]))["repo"] == str(
+        (projects / "devops").resolve()
+    )
 
 
 def test_create_handoff_normalizes_owner_slash_name_repo(tmp_path: Path, monkeypatch):
@@ -125,32 +131,46 @@ def test_create_handoff_normalizes_owner_slash_name_repo(tmp_path: Path, monkeyp
         "Fix the thing", queue_base=tmp_path / "queue", repo="behindthedash/devops"
     )
 
-    assert read_frontmatter(Path(result["path"]))["repo"] == str((projects / "devops").resolve())
+    assert read_frontmatter(Path(result["path"]))["repo"] == str(
+        (projects / "devops").resolve()
+    )
 
 
-def test_create_handoff_leaves_unresolvable_repo_value_unchanged(tmp_path: Path, monkeypatch):
+def test_create_handoff_leaves_unresolvable_repo_value_unchanged(
+    tmp_path: Path, monkeypatch
+):
     """No matching checkout anywhere -- normalization must not fabricate a
     path; leave the value as given (same as today) rather than guess wrong."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
 
-    result = create_handoff("Fix the thing", queue_base=tmp_path / "queue", repo="nonexistent-repo")
+    result = create_handoff(
+        "Fix the thing", queue_base=tmp_path / "queue", repo="nonexistent-repo"
+    )
 
     assert read_frontmatter(Path(result["path"]))["repo"] == "nonexistent-repo"
 
 
-def test_create_handoff_infers_repo_from_focus_project_prefix(tmp_path: Path, monkeypatch):
+def test_create_handoff_infers_repo_from_focus_project_prefix(
+    tmp_path: Path, monkeypatch
+):
     """`repo: null` hides a brief from same-repo batch detection; a focus that
     opens with `<project>: ` names the checkout, so resolve it at capture."""
     projects = tmp_path / "home" / "projects"
     (projects / "datalena").mkdir(parents=True)
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
 
-    result = create_handoff("datalena: add a CI guard for X", queue_base=tmp_path / "queue")
+    result = create_handoff(
+        "datalena: add a CI guard for X", queue_base=tmp_path / "queue"
+    )
 
-    assert read_frontmatter(Path(result["path"]))["repo"] == str((projects / "datalena").resolve())
+    assert read_frontmatter(Path(result["path"]))["repo"] == str(
+        (projects / "datalena").resolve()
+    )
 
 
-def test_create_handoff_explicit_repo_wins_over_focus_prefix(tmp_path: Path, monkeypatch):
+def test_create_handoff_explicit_repo_wins_over_focus_prefix(
+    tmp_path: Path, monkeypatch
+):
     projects = tmp_path / "home" / "projects"
     (projects / "datalena").mkdir(parents=True)
     (projects / "devops").mkdir(parents=True)
@@ -160,7 +180,9 @@ def test_create_handoff_explicit_repo_wins_over_focus_prefix(tmp_path: Path, mon
         "datalena: add a CI guard for X", queue_base=tmp_path / "queue", repo="devops"
     )
 
-    assert read_frontmatter(Path(result["path"]))["repo"] == str((projects / "devops").resolve())
+    assert read_frontmatter(Path(result["path"]))["repo"] == str(
+        (projects / "devops").resolve()
+    )
 
 
 def test_create_handoff_focus_prefix_without_matching_checkout_stays_null(
@@ -177,12 +199,20 @@ def test_create_handoff_focus_prefix_without_matching_checkout_stays_null(
 
 
 def test_cli_emits_json_and_accepts_structured_fields(tmp_path: Path, capsys):
-    assert main([
-        "--focus", "Create a new OpenSpec handoff",
-        "--queue-dir", str(tmp_path),
-        "--change-kind", "new",
-        "--json",
-    ]) == 0
+    assert (
+        main(
+            [
+                "--focus",
+                "Create a new OpenSpec handoff",
+                "--queue-dir",
+                str(tmp_path),
+                "--change-kind",
+                "new",
+                "--json",
+            ]
+        )
+        == 0
+    )
     output = json.loads(capsys.readouterr().out)
     assert output["status"] == "created"
     assert read_frontmatter(Path(output["path"]))["change-kind"] == "new"
@@ -242,7 +272,9 @@ def test_cli_repeated_blocked_by_flags_preserve_order(tmp_path: Path, capsys):
 
 
 def test_create_handoff_rejects_blank_blocked_by_without_touching_queue(tmp_path: Path):
-    with pytest.raises(ValueError, match="blocked-by values must be non-empty dependency references"):
+    with pytest.raises(
+        ValueError, match="blocked-by values must be non-empty dependency references"
+    ):
         create_handoff("Fix the thing", queue_base=tmp_path, blocked_by=["   "])
 
     assert not (tmp_path / "queue").exists()
@@ -266,7 +298,9 @@ def test_cli_rejects_comma_joined_blocked_by_with_actionable_guidance_and_no_que
         == 1
     )
     captured = capsys.readouterr()
-    assert "blocked-by accepts exactly one dependency reference per flag" in captured.err
+    assert (
+        "blocked-by accepts exactly one dependency reference per flag" in captured.err
+    )
     assert "repeat --blocked-by for each prerequisite" in captured.err
     assert not (tmp_path / "queue").exists()
     assert not list(tmp_path.rglob("*.md"))
@@ -321,8 +355,12 @@ def test_create_handoff_with_only_target_spec_omits_target_task(tmp_path: Path):
     assert "target-task" not in frontmatter
 
 
-def test_create_handoff_rejects_blank_target_task_without_touching_queue(tmp_path: Path):
-    with pytest.raises(ValueError, match="target-task must be a non-empty task reference"):
+def test_create_handoff_rejects_blank_target_task_without_touching_queue(
+    tmp_path: Path,
+):
+    with pytest.raises(
+        ValueError, match="target-task must be a non-empty task reference"
+    ):
         create_handoff("Fix the thing", queue_base=tmp_path, target_task="   ")
 
     assert not (tmp_path / "queue").exists()
@@ -340,7 +378,10 @@ def test_create_handoff_body_omits_duplicate_focus_section(tmp_path: Path):
     body = Path(result["path"]).read_text(encoding="utf-8")
     assert "## Focus" not in body
     assert "## Suggested approach" in body
-    assert read_frontmatter(Path(result["path"]))["focus"] == "Fix the broken handoff dashboard"
+    assert (
+        read_frontmatter(Path(result["path"]))["focus"]
+        == "Fix the broken handoff dashboard"
+    )
 
 
 def test_slugify_caps_character_length():
@@ -385,7 +426,9 @@ def _stub_gh_pr_list(monkeypatch, *, stdout="", returncode=0, raise_exc=None):
             calls.append(cmd)
             if raise_exc is not None:
                 raise raise_exc
-            return subprocess.CompletedProcess(args[0], returncode, stdout=stdout, stderr="")
+            return subprocess.CompletedProcess(
+                args[0], returncode, stdout=stdout, stderr=""
+            )
         return real_run(*args, **kwargs)
 
     monkeypatch.setattr("worktrail.workqueue.create_handoff.subprocess.run", fake_run)
@@ -414,12 +457,16 @@ def test_create_handoff_warns_on_spec_slug_overlap(tmp_path: Path):
     assert read_frontmatter(path)["repo"] == str(repo.resolve())
 
 
-def test_create_handoff_warns_on_open_pr_overlap_with_stubbed_gh(tmp_path: Path, monkeypatch):
+def test_create_handoff_warns_on_open_pr_overlap_with_stubbed_gh(
+    tmp_path: Path, monkeypatch
+):
     repo = tmp_path / "repo"
     repo.mkdir()
     calls = _stub_gh_pr_list(
         monkeypatch,
-        stdout=json.dumps([{"number": 42, "title": "Fix broken auth dashboard access"}]),
+        stdout=json.dumps(
+            [{"number": 42, "title": "Fix broken auth dashboard access"}]
+        ),
     )
 
     result = create_handoff(
@@ -450,7 +497,9 @@ def test_create_handoff_warns_on_open_pr_overlap_with_stubbed_gh(tmp_path: Path,
     assert Path(result["path"]).is_file()
 
 
-def test_create_handoff_below_threshold_overlap_stays_silent(tmp_path: Path, monkeypatch):
+def test_create_handoff_below_threshold_overlap_stays_silent(
+    tmp_path: Path, monkeypatch
+):
     """Candidates that tokenize below OVERLAP_THRESHOLD against the focus must
     not appear as warnings -- from any of the three durable-artifact surfaces."""
     repo = tmp_path / "repo"
@@ -458,7 +507,9 @@ def test_create_handoff_below_threshold_overlap_stays_silent(tmp_path: Path, mon
     (repo / "openspec" / "changes" / "telemetry-export-config").mkdir(parents=True)
     _stub_gh_pr_list(
         monkeypatch,
-        stdout=json.dumps([{"number": 7, "title": "Refactor telemetry exporter settings"}]),
+        stdout=json.dumps(
+            [{"number": 7, "title": "Refactor telemetry exporter settings"}]
+        ),
     )
 
     result = create_handoff(
@@ -504,17 +555,23 @@ def test_create_handoff_gh_failure_modes_stay_silent_and_write_brief(
     assert validate_brief(path)[0]
 
 
-def test_create_handoff_null_remote_skips_open_pr_scan_entirely(tmp_path: Path, monkeypatch):
+def test_create_handoff_null_remote_skips_open_pr_scan_entirely(
+    tmp_path: Path, monkeypatch
+):
     calls = _stub_gh_pr_list(monkeypatch)
 
-    result = create_handoff("Fix the thing", queue_base=tmp_path, repo=str(tmp_path / "repo"))
+    result = create_handoff(
+        "Fix the thing", queue_base=tmp_path, repo=str(tmp_path / "repo")
+    )
 
     assert calls == []
     assert result["overlap_warnings"] == []
     assert Path(result["path"]).is_file()
 
 
-def test_create_handoff_unreadable_repo_degrades_to_silent_capture(tmp_path: Path, monkeypatch):
+def test_create_handoff_unreadable_repo_degrades_to_silent_capture(
+    tmp_path: Path, monkeypatch
+):
     """A repo path that resolves to nothing contributes no spec/openspec
     candidates; combined with an unavailable gh the whole scan is silent --
     and the capture still succeeds."""
@@ -534,7 +591,9 @@ def test_create_handoff_unreadable_repo_degrades_to_silent_capture(tmp_path: Pat
     assert validate_brief(path)[0]
 
 
-def test_cli_human_mode_reports_overlap_warning_to_stderr_without_blocking(tmp_path, capsys):
+def test_cli_human_mode_reports_overlap_warning_to_stderr_without_blocking(
+    tmp_path, capsys
+):
     repo = tmp_path / "repo"
     (repo / "docs" / "specs" / "add-durable-artifact-dedup-gate").mkdir(parents=True)
 

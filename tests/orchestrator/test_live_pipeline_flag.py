@@ -24,12 +24,18 @@ class SequentialHardError(unittest.TestCase):
     def _main(self, *extra):
         argv = [
             "full-real",
-            "--repo", "/fake/repo",
-            "--spec", "docs/specs/001-foo",
+            "--repo",
+            "/fake/repo",
+            "--spec",
+            "docs/specs/001-foo",
         ] + list(extra)
         printed = []
-        with patch.object(live, "full_real", return_value={}) as mock_fr, patch(
-            "builtins.print", side_effect=lambda *a, **k: printed.append(" ".join(map(str, a)))
+        with (
+            patch.object(live, "full_real", return_value={}) as mock_fr,
+            patch(
+                "builtins.print",
+                side_effect=lambda *a, **k: printed.append(" ".join(map(str, a))),
+            ),
         ):
             rc = live.main(argv)
         return rc, mock_fr, printed
@@ -61,7 +67,9 @@ class FullRealSignature(unittest.TestCase):
         self.assertNotIn("pipeline", inspect.signature(live.full_real).parameters)
 
     def test_full_real_inner_has_no_pipeline_param(self):
-        self.assertNotIn("pipeline", inspect.signature(live._full_real_inner).parameters)
+        self.assertNotIn(
+            "pipeline", inspect.signature(live._full_real_inner).parameters
+        )
 
 
 class UnconditionalPipelineRouting(unittest.TestCase):
@@ -72,13 +80,29 @@ class UnconditionalPipelineRouting(unittest.TestCase):
         fake_git.stdout = "dev"
         fake_integrate = types.ModuleType("integrate")
         fake_verify = types.ModuleType("verify")
-        fake_sched_result = {"group_prs": [], "final": None, "quarantined": {}, "merged": []}
+        fake_sched_result = {
+            "group_prs": [],
+            "final": None,
+            "quarantined": {},
+            "merged": [],
+        }
         return [
-            patch.dict(sys.modules, {"integrate": fake_integrate, "verify": fake_verify}),
+            patch.dict(
+                sys.modules, {"integrate": fake_integrate, "verify": fake_verify}
+            ),
             patch("worktrail.orchestrator.live._git", return_value=fake_git),
-            patch("worktrail.orchestrator.live.journal_path_for", return_value="/tmp/fake-journal-pipeline-test.json"),
-            patch("worktrail.orchestrator.live.read_or_create_run_id", return_value="full-test"),
-            patch("worktrail.orchestrator.live._pipeline_scheduler", return_value=fake_sched_result),
+            patch(
+                "worktrail.orchestrator.live.journal_path_for",
+                return_value="/tmp/fake-journal-pipeline-test.json",
+            ),
+            patch(
+                "worktrail.orchestrator.live.read_or_create_run_id",
+                return_value="full-test",
+            ),
+            patch(
+                "worktrail.orchestrator.live._pipeline_scheduler",
+                return_value=fake_sched_result,
+            ),
         ]
 
     def test_routes_to_pipeline_scheduler(self):

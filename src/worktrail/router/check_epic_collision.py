@@ -40,6 +40,7 @@ plus a non-null `warning`, mirroring `check_repo_freshness.py`'s and
 `check_spec_collision.py`'s own contract -- callers must treat `checked:
 false` as "no signal", never as "no collision".
 """
+
 from __future__ import annotations
 
 import argparse
@@ -47,7 +48,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .dashboard import EPIC_ID_RE, detect_epic_stage
 
@@ -91,9 +92,9 @@ def build_pending_decision(
     epic_id: str,
     repo: str,
     *,
-    run_id: Optional[str] = None,
-    dispatch_mode: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
+    run_id: str | None = None,
+    dispatch_mode: str | None = None,
+) -> dict[str, Any] | None:
     """Build the versioned pending-decision envelope for an ambiguous epic
     match (a matched candidate whose `citing_specs` don't clearly resolve to
     one delivery vehicle).
@@ -113,10 +114,16 @@ def build_pending_decision(
             return None
         decision_id = identity(GUARD_SOURCE, repo, epic_id, DECISION_QUESTION)
         return envelope(
-            decision_id=decision_id, question=DECISION_QUESTION,
-            options=list(DECISION_OPTIONS), source=GUARD_SOURCE,
-            repo=repo, subject=epic_id, brief=None,
-            run_id=run_id, dispatch_mode=dispatch_mode)
+            decision_id=decision_id,
+            question=DECISION_QUESTION,
+            options=list(DECISION_OPTIONS),
+            source=GUARD_SOURCE,
+            repo=repo,
+            subject=epic_id,
+            brief=None,
+            run_id=run_id,
+            dispatch_mode=dispatch_mode,
+        )
     except Exception:  # noqa: BLE001 - envelope is additive, never fatal
         return None
 
@@ -137,7 +144,7 @@ def _epic_title(text: str, epic_id: str) -> str:
     return epic_id
 
 
-def _epic_feature_summary(text: str) -> Optional[str]:
+def _epic_feature_summary(text: str) -> str | None:
     m = _BUSINESS_OBJECTIVE_RE.search(text)
     if not m:
         return None
@@ -145,7 +152,7 @@ def _epic_feature_summary(text: str) -> Optional[str]:
     return paragraph or None
 
 
-def check(repo: Path, root: str = "docs/specs/epics") -> Dict[str, object]:
+def check(repo: Path, root: str = "docs/specs/epics") -> dict[str, object]:
     """Enumerate `docs/specs/epics/` candidates for the calling agent to judge.
 
     Returns `{"checked": bool, "candidates": [{"epic_id", "title", "status",
@@ -157,7 +164,7 @@ def check(repo: Path, root: str = "docs/specs/epics") -> Dict[str, object]:
     treat that as "no signal", never as "no collision".
     """
     repo = Path(repo)
-    result: Dict[str, object] = {"checked": False, "candidates": [], "warning": None}
+    result: dict[str, object] = {"checked": False, "candidates": [], "warning": None}
 
     epics_dir = repo / root
     if not epics_dir.is_dir():
@@ -167,62 +174,72 @@ def check(repo: Path, root: str = "docs/specs/epics") -> Dict[str, object]:
         epic_files = sorted(
             f for f in epics_dir.glob("*.md") if EPIC_ID_RE.match(f.stem)
         )
-    except OSError as exc:  # noqa: BLE001 - best-effort, never raise to caller
+    except OSError as exc:
         result["warning"] = f"failed to list {epics_dir}: {exc!r}"
         return result
 
-    candidates: List[Dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
     for epic_file in epic_files:
         try:
             text = epic_file.read_text(encoding="utf-8")
             stage_info = detect_epic_stage(epic_file, repo)
         except Exception:  # noqa: BLE001 - one bad epic file, skip it
             continue
-        candidates.append({
-            "epic_id": stage_info["id"],
-            "title": _epic_title(text, stage_info["id"]),
-            "status": stage_info.get("status_header"),
-            "feature_summary": _epic_feature_summary(text),
-            "stage": stage_info.get("stage"),
-            "features": stage_info.get("features"),
-            "citing_specs": stage_info.get("citing_specs") or [],
-        })
+        candidates.append(
+            {
+                "epic_id": stage_info["id"],
+                "title": _epic_title(text, stage_info["id"]),
+                "status": stage_info.get("status_header"),
+                "feature_summary": _epic_feature_summary(text),
+                "stage": stage_info.get("stage"),
+                "features": stage_info.get("features"),
+                "citing_specs": stage_info.get("citing_specs") or [],
+            }
+        )
 
     result["checked"] = True
     result["candidates"] = candidates
     return result
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="pre-dispatch epic-collision guard for Route B"
     )
     parser.add_argument("--repo", required=True, help="repo root to scan")
     parser.add_argument(
-        "--root", default="docs/specs/epics",
+        "--root",
+        default="docs/specs/epics",
         help="epics directory relative to --repo (default: docs/specs/epics)",
     )
     parser.add_argument(
-        "--decision-for", metavar="EPIC_ID",
+        "--decision-for",
+        metavar="EPIC_ID",
         help=(
             "build the pending-decision envelope for an ambiguous match "
             "against this epic id, instead of listing candidates"
         ),
     )
     parser.add_argument("--run-id", help="run record id, for --decision-for's envelope")
-    parser.add_argument("--dispatch-mode", help="dispatch mode, for --decision-for's envelope")
+    parser.add_argument(
+        "--dispatch-mode", help="dispatch mode, for --decision-for's envelope"
+    )
     parser.add_argument("--json", action="store_true", help="emit JSON")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     if args.decision_for:
         decision = build_pending_decision(
-            args.decision_for, args.repo,
-            run_id=args.run_id, dispatch_mode=args.dispatch_mode,
+            args.decision_for,
+            args.repo,
+            run_id=args.run_id,
+            dispatch_mode=args.dispatch_mode,
         )
         if args.json:
             print(json.dumps(decision))
         else:
-            print(decision or "pending_decision: null (decision primitives unavailable)")
+            print(
+                decision or "pending_decision: null (decision primitives unavailable)"
+            )
         return 0
 
     result = check(Path(args.repo), args.root)

@@ -17,6 +17,7 @@ Usage:
   classify.py --request "text" [--state '{"active_specs":1,...}']
               [--handoff-route F] --json
 """
+
 from __future__ import annotations
 
 import argparse
@@ -24,8 +25,9 @@ import json
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any
 
 Runner = Callable[..., "subprocess.CompletedProcess[str]"]
 
@@ -57,11 +59,11 @@ _SPEC_ID_RE = re.compile(r"(?<!#)\b\d{3}-[a-z0-9][a-z0-9-]*\b")
 _PR_NUMBER_RE = re.compile(r"\bpr\s*#?(\d+)\b", re.IGNORECASE)
 
 
-def _sig(pattern: str, weight: int, label: str) -> Tuple[re.Pattern, int, str]:
+def _sig(pattern: str, weight: int, label: str) -> tuple[re.Pattern, int, str]:
     return (re.compile(pattern, re.IGNORECASE), weight, label)
 
 
-ROUTE_SIGNALS: Dict[str, List[Tuple[re.Pattern, int, str]]] = {
+ROUTE_SIGNALS: dict[str, list[tuple[re.Pattern, int, str]]] = {
     "J": [
         _sig(r"\bgo\s+(skill|v2|front[- ]?door|conductor)\b", 4, "go-skill"),
         _sig(r"\bfront[- ]?door\b", 3, "front-door"),
@@ -85,46 +87,97 @@ ROUTE_SIGNALS: Dict[str, List[Tuple[re.Pattern, int, str]]] = {
         _sig(r"\bdispatch guidance\b", 3, "dispatch-guidance"),
     ],
     "E": [
-        _sig(r"\bcontinue\b|\bresume\b|\bpick (it |this )?up\b|\bcarry on\b", 3, "resume-verb"),
-        _sig(r"\bleft off\b|\bunfinished\b|\bpartially (complete|done)\b|\bhalf[- ]done\b", 3, "unfinished"),
+        _sig(
+            r"\bcontinue\b|\bresume\b|\bpick (it |this )?up\b|\bcarry on\b",
+            3,
+            "resume-verb",
+        ),
+        _sig(
+            r"\bleft off\b|\bunfinished\b|\bpartially (complete|done)\b|\bhalf[- ]done\b",
+            3,
+            "unfinished",
+        ),
         _sig(r"\bwhere (was|am) i\b|\bwhat'?s next\b|\bstatus\b", 2, "whereami"),
         _sig(r"\bhandoff\b", 4, "handoff"),
         _sig(r"\bfinish\b.*\b(work|task|spec|feature|branch|pr)\b", 3, "finish-work"),
         _sig(r"\banother agent\b|\bprevious (session|agent|run)\b", 3, "other-agent"),
-        _sig(r"\bworktree\b|\bmy branch\b|\bopen pr\b|\bexisting (branch|pr)\b", 2, "existing-work"),
+        _sig(
+            r"\bworktree\b|\bmy branch\b|\bopen pr\b|\bexisting (branch|pr)\b",
+            2,
+            "existing-work",
+        ),
     ],
     "F": [
         _sig(r"\bbug\b|\bdefect\b|\bregression\b", 3, "bug-word"),
-        _sig(r"\bbroken\b|\bstopped working\b|\bdoesn'?t work\b|\bnot working\b", 3, "broken"),
+        _sig(
+            r"\bbroken\b|\bstopped working\b|\bdoesn'?t work\b|\bnot working\b",
+            3,
+            "broken",
+        ),
         # `\b5\d\d\b` alone matched any bare PR/issue-number citation in the
         # 500s (e.g. "PR #547") -- the `(?<!#)` guard excludes a bare 3-digit
         # number immediately preceded by a `#` marker, which is never an
         # HTTP-status mention (20260821-211818).
-        _sig(r"\bcrash(es|ed|ing)?\b|(?<!#)\b5\d\d\b|\bexception\b|\bstack trace\b", 3, "crash"),
+        _sig(
+            r"\bcrash(es|ed|ing)?\b|(?<!#)\b5\d\d\b|\bexception\b|\bstack trace\b",
+            3,
+            "crash",
+        ),
         _sig(r"\bfix\b", 2, "fix-verb"),
         _sig(r"\bfails?\b|\bfailing\b|\berrors?\b", 2, "fails"),
-        _sig(r"\bwrong(ly)?\b|\bincorrect(ly)?\b|\bshould (be|return|show)\b.*\bbut\b", 3, "violates-expectation"),
+        _sig(
+            r"\bwrong(ly)?\b|\bincorrect(ly)?\b|\bshould (be|return|show)\b.*\bbut\b",
+            3,
+            "violates-expectation",
+        ),
         _sig(r"\bsilent(ly)?\b", 2, "silent-failure"),
-        _sig(r"\b(?:no|missing|lacks?|without)\b(?:\s+\S+){0,4}\s+"
-             r"(?:guard|gate|check(?:s|ed)?|rule(?:s)?|coverage|safeguard|validation|skip)\b",
-             2, "missing-safeguard"),
+        _sig(
+            r"\b(?:no|missing|lacks?|without)\b(?:\s+\S+){0,4}\s+"
+            r"(?:guard|gate|check(?:s|ed)?|rule(?:s)?|coverage|safeguard|validation|skip)\b",
+            2,
+            "missing-safeguard",
+        ),
     ],
     "I": [
-        _sig(r"\binvestigat\w*\b|\bdiagnos\w*\b|\blook into\b|\bdig into\b", 4, "investigate-verb"),
+        _sig(
+            r"\binvestigat\w*\b|\bdiagnos\w*\b|\blook into\b|\bdig into\b",
+            4,
+            "investigate-verb",
+        ),
         _sig(r"\broot[- ]cause\b", 3, "root-cause"),
         _sig(r"\bwhy (does|is|did|are|do)\b", 3, "why-question"),
-        _sig(r"\bintermittent(ly)?\b|\bsometimes\b|\bflaky\b|\brandomly\b", 3, "nondeterministic"),
-        _sig(r"\bnot sure\b|\bno idea\b|\bunknown\b|\bcan'?t (tell|figure)\b", 3, "unknown-cause"),
+        _sig(
+            r"\bintermittent(ly)?\b|\bsometimes\b|\bflaky\b|\brandomly\b",
+            3,
+            "nondeterministic",
+        ),
+        _sig(
+            r"\bnot sure\b|\bno idea\b|\bunknown\b|\bcan'?t (tell|figure)\b",
+            3,
+            "unknown-cause",
+        ),
         _sig(r"\baudit\w*\b", 3, "audit"),
-        _sig(r"\bdo(?:es)?\s*not\s+fix\b|\bdon'?t fix\b|\bwithout fixing\b", 3, "no-fix"),
-        _sig(r"\brecommend(?:ed|ation)?\b.{0,40}\b(follow[- ]?up|next (?:route|action|step))\b", 3, "recommend-next"),
+        _sig(
+            r"\bdo(?:es)?\s*not\s+fix\b|\bdon'?t fix\b|\bwithout fixing\b", 3, "no-fix"
+        ),
+        _sig(
+            r"\brecommend(?:ed|ation)?\b.{0,40}\b(follow[- ]?up|next (?:route|action|step))\b",
+            3,
+            "recommend-next",
+        ),
     ],
     "G": [
-        _sig(r"\bchange the (spec|specification|behaviou?r|contract)\b", 4, "change-spec"),
+        _sig(
+            r"\bchange the (spec|specification|behaviou?r|contract)\b", 4, "change-spec"
+        ),
         _sig(r"\binstead of\b|\brather than\b", 2, "instead-of"),
         _sig(r"\bshould now\b|\bfrom now on\b|\bno longer\b", 3, "new-rule"),
         _sig(r"\bdeprecate\b|\bsunset\b|\bretire\b", 3, "deprecate"),
-        _sig(r"\bupdate the spec\b|\brevise the spec\b|\bspec(ification)? change\b", 4, "spec-update"),
+        _sig(
+            r"\bupdate the spec\b|\brevise the spec\b|\bspec(ification)? change\b",
+            4,
+            "spec-update",
+        ),
         # Requires change-request INTENT ("change X from A to B" as a command,
         # or "should/please/need to change ... from ... to ..."), not a bare
         # mention of a value that merely can/does transition -- the unbounded
@@ -132,10 +185,13 @@ ROUTE_SIGNALS: Dict[str, List[Tuple[re.Pattern, int, str]]] = {
         # existing or automatic state changes anywhere the three words
         # happened to appear in order (20260820-005527, same shape as B's
         # epic-word bug, 20260819-215848/PR #552).
-        _sig(r"(?:^|\b(?:please|should|we should|need(?:s)? to|want(?:s)? to"
-             r"|let'?s|plan(?:s)? to|going to))\s*"
-             r"change\b(?:\s+\S+){0,3}\s+from\b.{0,30}\bto\b",
-             3, "from-to"),
+        _sig(
+            r"(?:^|\b(?:please|should|we should|need(?:s)? to|want(?:s)? to"
+            r"|let'?s|plan(?:s)? to|going to))\s*"
+            r"change\b(?:\s+\S+){0,3}\s+from\b.{0,30}\bto\b",
+            3,
+            "from-to",
+        ),
     ],
     "H": [
         # Requires refactor-request INTENT (an imperative "refactor ... to/into
@@ -144,20 +200,43 @@ ROUTE_SIGNALS: Dict[str, List[Tuple[re.Pattern, int, str]]] = {
         # `\brefactor(ing)?\b` fired on prose merely describing prior refactor
         # work or its absence (20260820-005527, same shape as B's epic-word
         # bug, 20260819-215848/PR #552).
-        _sig(r"(?:^|\b(?:please|should|we should|need(?:s)? to|want(?:s)? to"
-             r"|let'?s|plan(?:s)? to|going to))\s*refactor(?:ing)?\b"
-             r"|\brefactor(?:ing)?\b(?:\s+\S+){0,4}\s+(?:to|into)\b",
-             4, "refactor-word"),
+        _sig(
+            r"(?:^|\b(?:please|should|we should|need(?:s)? to|want(?:s)? to"
+            r"|let'?s|plan(?:s)? to|going to))\s*refactor(?:ing)?\b"
+            r"|\brefactor(?:ing)?\b(?:\s+\S+){0,4}\s+(?:to|into)\b",
+            4,
+            "refactor-word",
+        ),
         _sig(r"\btech(nical)? debt\b", 4, "tech-debt"),
         _sig(r"\bclean[- ]?up\b|\btidy\b", 3, "cleanup"),
-        _sig(r"\bsimplify\b|\bextract\b|\bconsolidate\b|\breorganiz(e|ation)\b|\bmoderniz(e|ation)\b", 2, "restructure"),
-        _sig(r"\b(no|without( any)?|preserv\w+) behaviou?r(al)?( change)?\b", 4, "behavior-preserving"),
-        _sig(r"\bperformance\b.*\b(improv|optimi|speed)\w*\b|\boptimi[sz]e\b", 2, "performance"),
+        _sig(
+            r"\bsimplify\b|\bextract\b|\bconsolidate\b|\breorganiz(e|ation)\b|\bmoderniz(e|ation)\b",
+            2,
+            "restructure",
+        ),
+        _sig(
+            r"\b(no|without( any)?|preserv\w+) behaviou?r(al)?( change)?\b",
+            4,
+            "behavior-preserving",
+        ),
+        _sig(
+            r"\bperformance\b.*\b(improv|optimi|speed)\w*\b|\boptimi[sz]e\b",
+            2,
+            "performance",
+        ),
     ],
     "D": [
-        _sig(r"\bimplement\b|\bbuild (it|out|the)\b|\bship\b|\bcode (it|up)\b", 3, "implement-verb"),
+        _sig(
+            r"\bimplement\b|\bbuild (it|out|the)\b|\bship\b|\bcode (it|up)\b",
+            3,
+            "implement-verb",
+        ),
         (_SPEC_ID_RE, 3, "spec-id"),
-        _sig(r"\bapproved (spec|feature|epic|plan)\b|\bspec is (ready|approved|done)\b", 4, "approved-spec"),
+        _sig(
+            r"\bapproved (spec|feature|epic|plan)\b|\bspec is (ready|approved|done)\b",
+            4,
+            "approved-spec",
+        ),
         _sig(r"\bstart (the )?(implementation|coding)\b", 3, "start-impl"),
     ],
     "C": [
@@ -167,11 +246,18 @@ ROUTE_SIGNALS: Dict[str, List[Tuple[re.Pattern, int, str]]] = {
         # prose describing an existing feature (e.g. a bug report naming "the
         # login feature") purely from keyword collision (20260820-005527,
         # same shape as B's epic-word bug, 20260819-215848/PR #552).
-        _sig(r"\b(?:new|add(?:ing)?|build(?:ing)?|creat(?:e|ing)|support(?:ing)?"
-             r"|ship(?:ping)?|implement(?:ing)?|need(?:s|ed)?|want(?:s|ed)?"
-             r"|request(?:ing|ed)?)\b(?:\s+\S+){0,4}\s+feature\b",
-             2, "feature-word"),
-        _sig(r"\badd\b|\bsupport\b|\benable\b|\ballow (users?|admins?|people)\b", 2, "add-capability"),
+        _sig(
+            r"\b(?:new|add(?:ing)?|build(?:ing)?|creat(?:e|ing)|support(?:ing)?"
+            r"|ship(?:ping)?|implement(?:ing)?|need(?:s|ed)?|want(?:s|ed)?"
+            r"|request(?:ing|ed)?)\b(?:\s+\S+){0,4}\s+feature\b",
+            2,
+            "feature-word",
+        ),
+        _sig(
+            r"\badd\b|\bsupport\b|\benable\b|\ballow (users?|admins?|people)\b",
+            2,
+            "add-capability",
+        ),
         _sig(r"\bplan\b", 2, "plan-verb"),
         _sig(r"\bspec( |-)?(out|up)?\b.*\bfor\b|\bwrite a spec\b", 3, "spec-authoring"),
         _sig(r"\busers? (should|can|need)\b", 2, "user-capability"),
@@ -182,20 +268,41 @@ ROUTE_SIGNALS: Dict[str, List[Tuple[re.Pattern, int, str]]] = {
         # any prose describing existing epic-related work (e.g. "Route B
         # epic-closure has no check for X", "epic 001 was closed"), which
         # scored B purely from keyword collision (20260819-215848).
-        _sig(r"\b(?:plan|create|start|scope) (?:an? |the )?epic\b"
-             r"|\bas an epic\b|\binto an epic\b|\bepic (?:for|covering|around)\b"
-             r"|\bnew epic\b|\bbreak (?:this |it )?down into (?:an? )?epic\b",
-             4, "epic-intent"),
+        _sig(
+            r"\b(?:plan|create|start|scope) (?:an? |the )?epic\b"
+            r"|\bas an epic\b|\binto an epic\b|\bepic (?:for|covering|around)\b"
+            r"|\bnew epic\b|\bbreak (?:this |it )?down into (?:an? )?epic\b",
+            4,
+            "epic-intent",
+        ),
         _sig(r"\broadmap\b|\bmulti[- ]phase\b|\bphased\b", 3, "phased"),
-        _sig(r"\bplatform\b|\bsuite\b|\bsystem for\b|\bend[- ]to[- ]end (capability|solution)\b", 3, "platform-scale"),
-        _sig(r"\bseveral features\b|\bmultiple features\b|\bbreak (this |it )?down into features\b", 4, "multi-feature"),
+        _sig(
+            r"\bplatform\b|\bsuite\b|\bsystem for\b|\bend[- ]to[- ]end (capability|solution)\b",
+            3,
+            "platform-scale",
+        ),
+        _sig(
+            r"\bseveral features\b|\bmultiple features\b|\bbreak (this |it )?down into features\b",
+            4,
+            "multi-feature",
+        ),
     ],
     "A": [
         _sig(r"\bidea\b|\bbrainstorm\b", 3, "idea-word"),
-        _sig(r"\bwhat if\b|\bcould we\b|\bwould it make sense\b|\bwondering\b", 3, "speculative"),
+        _sig(
+            r"\bwhat if\b|\bcould we\b|\bwould it make sense\b|\bwondering\b",
+            3,
+            "speculative",
+        ),
         _sig(r"\bexplore\b|\bthinking about\b|\bkick around\b", 3, "explore-verb"),
-        _sig(r"\bproblem\s*:\s|\bpain point\b|\bstruggl\w+ with\b", 2, "problem-statement"),
-        _sig(r"\bnot sure (what|how|if) we (want|need|should)\b", 3, "undefined-outcome"),
+        _sig(
+            r"\bproblem\s*:\s|\bpain point\b|\bstruggl\w+ with\b",
+            2,
+            "problem-statement",
+        ),
+        _sig(
+            r"\bnot sure (what|how|if) we (want|need|should)\b", 3, "undefined-outcome"
+        ),
     ],
 }
 
@@ -229,14 +336,62 @@ CI_REPAIR = [
 # unrelated-but-real code change should get a human's attention at least once
 # rather than have its risk silently downgraded from prose analysis alone.
 RISK_SIGNALS = [
-    ("critical", _sig(r"\bbilling\b|\bpayments?\b|\bstripe\b|\binvoic\w+\b", 0, "billing")),
-    ("critical", _sig(r"\bsecrets?\b|\bcredentials?\b|\bapi[- _]?keys?\b|\btokens? rotation\b", 0, "secrets")),
-    ("critical", _sig(r"\bdrop\b.{0,40}\b(table|column|database)\b|\bdelete (all|every|production)\b|\bwipe\b|\btruncate\b", 0, "destructive-data")),
-    ("critical", _sig(r"\bdisable (auth|authorization|authentication|security)\b|\bbypass (auth|permission)\w*\b", 0, "auth-weakening")),
-    ("high", _sig(r"\bauth(entication|orization)?\b|\blogin\b|\bpermissions?\b|\broles?\b|\baccess control\b", 0, "authz")),
-    ("high", _sig(r"\bmigrations?\b|\bschema change\b|\balter table\b", 0, "migration")),
-    ("high", _sig(r"\bpii\b|\bpersonal data\b|\bpasswords?\b|\bencryption\b", 0, "sensitive-data")),
-    ("medium", _sig(r"\bapi\b|\bendpoints?\b|\bcontracts?\b|\bpublic interface\b|\bdatabase\b|\bschema\b", 0, "interface")),
+    (
+        "critical",
+        _sig(r"\bbilling\b|\bpayments?\b|\bstripe\b|\binvoic\w+\b", 0, "billing"),
+    ),
+    (
+        "critical",
+        _sig(
+            r"\bsecrets?\b|\bcredentials?\b|\bapi[- _]?keys?\b|\btokens? rotation\b",
+            0,
+            "secrets",
+        ),
+    ),
+    (
+        "critical",
+        _sig(
+            r"\bdrop\b.{0,40}\b(table|column|database)\b|\bdelete (all|every|production)\b|\bwipe\b|\btruncate\b",
+            0,
+            "destructive-data",
+        ),
+    ),
+    (
+        "critical",
+        _sig(
+            r"\bdisable (auth|authorization|authentication|security)\b|\bbypass (auth|permission)\w*\b",
+            0,
+            "auth-weakening",
+        ),
+    ),
+    (
+        "high",
+        _sig(
+            r"\bauth(entication|orization)?\b|\blogin\b|\bpermissions?\b|\broles?\b|\baccess control\b",
+            0,
+            "authz",
+        ),
+    ),
+    (
+        "high",
+        _sig(r"\bmigrations?\b|\bschema change\b|\balter table\b", 0, "migration"),
+    ),
+    (
+        "high",
+        _sig(
+            r"\bpii\b|\bpersonal data\b|\bpasswords?\b|\bencryption\b",
+            0,
+            "sensitive-data",
+        ),
+    ),
+    (
+        "medium",
+        _sig(
+            r"\bapi\b|\bendpoints?\b|\bcontracts?\b|\bpublic interface\b|\bdatabase\b|\bschema\b",
+            0,
+            "interface",
+        ),
+    ),
     # Requires an actual doc/comment-change INTENT (an update/edit/write/add/
     # revise/correct/fix verb applied to docs/readme/comments/typo within a
     # short window), not a bare mention of the noun -- the unscoped
@@ -246,32 +401,47 @@ RISK_SIGNALS = [
     # ROUTE_SIGNALS' bare-word bugs (20260819-215848/PR #552, 20260821-225442/
     # PR #620), but in this table, left out of that pass because it scoped
     # only the 10 ROUTE_SIGNALS tables, not RISK_SIGNALS (20260822-005150).
-    ("low", _sig(
-        r"\b(?:update|updat(?:e|ing)|edit(?:ing)?|writ(?:e|ing)|add(?:ing)?|"
-        r"revis(?:e|ing)|correct(?:ing)?|fix(?:ing)?)\b(?:\s+\S+){0,4}\s+"
-        r"(?:docs?|documentation|readme|comments?|typos?)\b",
-        0, "docs-only")),
+    (
+        "low",
+        _sig(
+            r"\b(?:update|updat(?:e|ing)|edit(?:ing)?|writ(?:e|ing)|add(?:ing)?|"
+            r"revis(?:e|ing)|correct(?:ing)?|fix(?:ing)?)\b(?:\s+\S+){0,4}\s+"
+            r"(?:docs?|documentation|readme|comments?|typos?)\b",
+            0,
+            "docs-only",
+        ),
+    ),
 ]
 
 # Protected operations: never auto-merge regardless of policy (v2-design §2.14).
 PROTECTED_SIGNALS = [
     _sig(r"\bbilling\b|\bpayments?\b|\bstripe\b", 0, "billing"),
     _sig(r"\bsecrets?\b|\bcredentials?\b|\bapi[- _]?keys?\b", 0, "secrets"),
-    _sig(r"\bdrop\b.{0,40}\b(table|column|database)\b|\bdelete (all|every|production)\b|\bwipe\b|\btruncate\b", 0, "destructive-migration"),
-    _sig(r"\bdisable (auth|authorization|authentication|security)\b|\bbypass (auth|permission)\w*\b", 0, "auth-weakening"),
+    _sig(
+        r"\bdrop\b.{0,40}\b(table|column|database)\b|\bdelete (all|every|production)\b|\bwipe\b|\btruncate\b",
+        0,
+        "destructive-migration",
+    ),
+    _sig(
+        r"\bdisable (auth|authorization|authentication|security)\b|\bbypass (auth|permission)\w*\b",
+        0,
+        "auth-weakening",
+    ),
     _sig(r"\bmajor (dependency|version) (upgrade|bump)\b", 0, "major-dep-upgrade"),
 ]
 
 # Pairs where misrouting materially changes the outcome -> ask one question.
-MATERIAL_PAIRS = {frozenset(p) for p in (("F", "G"), ("A", "C"), ("B", "C"), ("C", "D"))}
+MATERIAL_PAIRS = {
+    frozenset(p) for p in (("F", "G"), ("A", "C"), ("B", "C"), ("C", "D"))
+}
 TIE_THRESHOLD = 2
 
 RISK_ORDER = ["low", "medium", "high", "critical"]
 
 
-def _score_routes(text: str) -> Tuple[Dict[str, int], Dict[str, List[str]]]:
-    scores: Dict[str, int] = {r: 0 for r in ROUTE_NAMES}
-    hits: Dict[str, List[str]] = {r: [] for r in ROUTE_NAMES}
+def _score_routes(text: str) -> tuple[dict[str, int], dict[str, list[str]]]:
+    scores: dict[str, int] = {r: 0 for r in ROUTE_NAMES}
+    hits: dict[str, list[str]] = {r: [] for r in ROUTE_NAMES}
     for route, signals in ROUTE_SIGNALS.items():
         for rx, weight, label in signals:
             if rx.search(text):
@@ -280,7 +450,7 @@ def _score_routes(text: str) -> Tuple[Dict[str, int], Dict[str, List[str]]]:
     return scores, hits
 
 
-def _pr_repair_settled(text: str, pr_states: Optional[Dict[str, str]]) -> bool:
+def _pr_repair_settled(text: str, pr_states: dict[str, str] | None) -> bool:
     """True when every PR number cited in `text` is known MERGED/CLOSED --
     the pr-repair signal must not fire for delivery that's already settled.
     No PR-state info (None/{}) means unknown, so this returns False and the
@@ -293,7 +463,7 @@ def _pr_repair_settled(text: str, pr_states: Optional[Dict[str, str]]) -> bool:
     return all(pr_states.get(n, "").upper() in ("MERGED", "CLOSED") for n in numbers)
 
 
-def _ci_repair_hits(text: str, pr_states: Optional[Dict[str, str]] = None) -> List[str]:
+def _ci_repair_hits(text: str, pr_states: dict[str, str] | None = None) -> list[str]:
     hits = []
     for rx, _w, label in CI_REPAIR:
         if not rx.search(text):
@@ -304,13 +474,18 @@ def _ci_repair_hits(text: str, pr_states: Optional[Dict[str, str]] = None) -> Li
     return hits
 
 
-def _pr_state(number: str, repo: Path, runner: Runner = subprocess.run) -> Optional[str]:
+def _pr_state(number: str, repo: Path, runner: Runner = subprocess.run) -> str | None:
     """`gh pr view <number> --json state` -> "OPEN"/"MERGED"/"CLOSED", or None
     if unresolvable. Best-effort/fail-open: any subprocess or parse failure
     returns None (unknown), never a guessed state."""
     try:
-        result = runner(["gh", "pr", "view", number, "--json", "state"],
-                         cwd=str(repo), capture_output=True, text=True, timeout=10)
+        result = runner(
+            ["gh", "pr", "view", number, "--json", "state"],
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
     except (OSError, subprocess.TimeoutExpired):
         return None
     if result.returncode != 0:
@@ -321,15 +496,16 @@ def _pr_state(number: str, repo: Path, runner: Runner = subprocess.run) -> Optio
         return None
 
 
-def cited_pr_states(text: str, repo: Optional[Path],
-                     runner: Runner = subprocess.run) -> Dict[str, str]:
+def cited_pr_states(
+    text: str, repo: Path | None, runner: Runner = subprocess.run
+) -> dict[str, str]:
     """Best-effort GitHub state for every `PR #NNN` cited in `text`, keyed by
     PR number string. Returns {} when `repo` is None or every lookup is
     unresolvable -- fail-open, so an unreachable `gh` never narrows scoring
     beyond "no information available"."""
     if not repo:
         return {}
-    states: Dict[str, str] = {}
+    states: dict[str, str] = {}
     for number in sorted(set(_PR_NUMBER_RE.findall(text))):
         state = _pr_state(number, repo, runner)
         if state:
@@ -337,9 +513,9 @@ def cited_pr_states(text: str, repo: Optional[Path],
     return states
 
 
-def classify_risk(text: str) -> Tuple[str, List[str]]:
+def classify_risk(text: str) -> tuple[str, list[str]]:
     best = "low"
-    labels: List[str] = []
+    labels: list[str] = []
     for tier, (rx, _w, label) in RISK_SIGNALS:
         if rx.search(text):
             labels.append(f"{tier}:{label}")
@@ -348,15 +524,17 @@ def classify_risk(text: str) -> Tuple[str, List[str]]:
     return best, labels
 
 
-def protected_operations(text: str) -> List[str]:
+def protected_operations(text: str) -> list[str]:
     return [label for rx, _w, label in PROTECTED_SIGNALS if rx.search(text)]
 
 
-def classify(request: str,
-             state: Optional[Dict[str, Any]] = None,
-             handoff_route: Optional[str] = None,
-             pr_states: Optional[Dict[str, str]] = None,
-             resumable_state: Optional[bool] = None) -> Dict[str, Any]:
+def classify(
+    request: str,
+    state: dict[str, Any] | None = None,
+    handoff_route: str | None = None,
+    pr_states: dict[str, str] | None = None,
+    resumable_state: bool | None = None,
+) -> dict[str, Any]:
     """Classify a request. `state` keys (all optional): active_specs (int),
     pending_tasks (bool), open_prs (int), handoff_queue (int), worktrees (int).
     `pr_states` (optional): GitHub state per cited PR number string (from
@@ -372,7 +550,7 @@ def classify(request: str,
     lookups happen only in `main()`/the caller's pre-check, never here."""
     text = (request or "").strip()
     state = state or {}
-    reason_parts: List[str] = []
+    reason_parts: list[str] = []
 
     # 0. Explicit override: "route:X ..." pins the route.
     m = re.match(r"^\s*route\s*:\s*([A-J])\b", text, re.IGNORECASE)
@@ -380,9 +558,11 @@ def classify(request: str,
 
     scores, hits = _score_routes(text)
 
-    handoff_route_norm = (handoff_route.upper()
-                           if handoff_route and handoff_route.upper() in ROUTE_NAMES
-                           else None)
+    handoff_route_norm = (
+        handoff_route.upper()
+        if handoff_route and handoff_route.upper() in ROUTE_NAMES
+        else None
+    )
 
     # CI/PR repair overrides bug wording: existing delivery is the controlling
     # artifact, so repair routes through E (restore state) with F secondary.
@@ -406,14 +586,16 @@ def classify(request: str,
     # worktree exists" (both contain the word "worktree").
     if resumable_state is False:
         scores["E"] = -1
-        reason_parts.append("E disqualified: resumable-state check found no in-flight "
-                             "run/worktree or open PR for this brief")
+        reason_parts.append(
+            "E disqualified: resumable-state check found no in-flight "
+            "run/worktree or open PR for this brief"
+        )
 
     risk, risk_labels = classify_risk(text)
     protected = protected_operations(text)
 
     # Pick the route.
-    ambiguous_between: List[str] = []
+    ambiguous_between: list[str] = []
     question = None
     no_signal_default = False
     if forced:
@@ -435,13 +617,16 @@ def classify(request: str,
         else:
             route = top_route
             margin = top_score - second_score
-            if (margin < TIE_THRESHOLD
-                    and frozenset((top_route, second_route)) in MATERIAL_PAIRS):
+            if (
+                margin < TIE_THRESHOLD
+                and frozenset((top_route, second_route)) in MATERIAL_PAIRS
+            ):
                 ambiguous_between = sorted([top_route, second_route])
                 question = _ambiguity_question(top_route, second_route)
                 confidence = "low"
                 reason_parts.append(
-                    f"material tie {top_route}({top_score}) vs {second_route}({second_score})")
+                    f"material tie {top_route}({top_score}) vs {second_route}({second_score})"
+                )
             elif margin >= 4 and top_score >= 3:
                 confidence = "high"
             elif margin >= 2:
@@ -449,7 +634,8 @@ def classify(request: str,
             else:
                 confidence = "low" if top_score < 3 else "medium"
             reason_parts.append(
-                f"{top_route} signals: {hits[top_route]} (score {top_score}, runner-up {second_route}={second_score})")
+                f"{top_route} signals: {hits[top_route]} (score {top_score}, runner-up {second_route}={second_score})"
+            )
 
     # Handoff-recommended-route override. Auto mode has no human present to
     # catch a bad low/medium-confidence guess, so an explicit brief
@@ -477,22 +663,30 @@ def classify(request: str,
     # should not silently beat.
     route_source = "no-signal-default" if no_signal_default else "classifier"
     handoff_route_unsupported = (
-        not forced and not no_signal_default
+        not forced
+        and not no_signal_default
         and scores.get(handoff_route_norm or "", 0) <= 0
-        and second_score > 0)
-    if (not forced and handoff_route_norm and confidence in ("low", "medium")
-            and route != handoff_route_norm
-            and not (handoff_route_norm == "E" and resumable_state is False)):
+        and second_score > 0
+    )
+    if (
+        not forced
+        and handoff_route_norm
+        and confidence in ("low", "medium")
+        and route != handoff_route_norm
+        and not (handoff_route_norm == "E" and resumable_state is False)
+    ):
         if handoff_route_unsupported:
             reason_parts.append(
                 f"brief recommended-route {handoff_route_norm} ignored: absent from "
                 f"organic scores while runner-up {second_route}={second_score} also "
                 f"scored (broad organic agreement); organic {route} "
-                f"(confidence {confidence}) kept")
+                f"(confidence {confidence}) kept"
+            )
         else:
             reason_parts.append(
                 f"overrode organic route {route} (confidence {confidence}) "
-                f"with brief recommended-route {handoff_route_norm}")
+                f"with brief recommended-route {handoff_route_norm}"
+            )
             route = handoff_route_norm
             confidence = "medium"
             ambiguous_between = []
@@ -500,7 +694,7 @@ def classify(request: str,
             route_source = "handoff-recommended-override"
 
     # Secondary routes.
-    secondary: List[str] = []
+    secondary: list[str] = []
     if ci_hits and route == "E":
         secondary.append("F")
     for r, s in scores.items():
@@ -509,7 +703,7 @@ def classify(request: str,
     secondary = sorted(set(secondary))
 
     # Gates (bounded autonomy).
-    gates: List[str] = []
+    gates: list[str] = []
     if protected:
         gates.append("require_human_approval")
         gates.append("never_automerge")
@@ -542,45 +736,71 @@ def classify(request: str,
 def _ambiguity_question(a: str, b: str) -> str:
     pair = frozenset((a, b))
     if pair == frozenset(("F", "G")):
-        return ("Is the current behavior violating the documented/expected behavior "
-                "(bug fix), or are we intentionally changing what the accepted "
-                "behavior should be (spec change)?")
+        return (
+            "Is the current behavior violating the documented/expected behavior "
+            "(bug fix), or are we intentionally changing what the accepted "
+            "behavior should be (spec change)?"
+        )
     if pair == frozenset(("A", "C")):
-        return ("Is this still an open idea to explore, or a defined feature ready "
-                "to be specified?")
+        return (
+            "Is this still an open idea to explore, or a defined feature ready "
+            "to be specified?"
+        )
     if pair == frozenset(("B", "C")):
-        return ("Should this be planned as one feature, or decomposed into an epic "
-                "with multiple independently valuable features?")
+        return (
+            "Should this be planned as one feature, or decomposed into an epic "
+            "with multiple independently valuable features?"
+        )
     if pair == frozenset(("C", "D")):
-        return ("Do you want a specification first, or is this approved to go "
-                "straight to implementation?")
+        return (
+            "Do you want a specification first, or is this approved to go "
+            "straight to implementation?"
+        )
     return f"Route {a} or route {b}?"
 
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--request", default="", help="the user's request text")
-    p.add_argument("--state", default=None,
-                   help="JSON object of repo-state signals (active_specs, pending_tasks, ...)")
-    p.add_argument("--handoff-route", default=None,
-                   help="recommended-route letter from a handoff brief")
-    p.add_argument("--resumable-state", default=None, choices=["true", "false"],
-                   help="result of check_resumable_state.py for a brief-sourced "
-                        "dispatch: 'false' disqualifies Route E outright regardless "
-                        "of text signals. Omit for a free-text dispatch with no "
-                        "claimed brief (leaves E's scoring unchanged).")
-    p.add_argument("--repo", default=None,
-                   help="repo path for a best-effort gh lookup of cited PR numbers' "
-                        "state, so the pr-repair signal doesn't fire for a PR that's "
-                        "already merged/closed (omit to skip; fail-open on any error)")
+    p.add_argument(
+        "--state",
+        default=None,
+        help="JSON object of repo-state signals (active_specs, pending_tasks, ...)",
+    )
+    p.add_argument(
+        "--handoff-route",
+        default=None,
+        help="recommended-route letter from a handoff brief",
+    )
+    p.add_argument(
+        "--resumable-state",
+        default=None,
+        choices=["true", "false"],
+        help="result of check_resumable_state.py for a brief-sourced "
+        "dispatch: 'false' disqualifies Route E outright regardless "
+        "of text signals. Omit for a free-text dispatch with no "
+        "claimed brief (leaves E's scoring unchanged).",
+    )
+    p.add_argument(
+        "--repo",
+        default=None,
+        help="repo path for a best-effort gh lookup of cited PR numbers' "
+        "state, so the pr-repair signal doesn't fire for a PR that's "
+        "already merged/closed (omit to skip; fail-open on any error)",
+    )
     p.add_argument("--json", action="store_true", help="emit JSON (default)")
     args = p.parse_args(argv)
 
     state = json.loads(args.state) if args.state else None
     pr_states = cited_pr_states(args.request, Path(args.repo) if args.repo else None)
     resumable_state = {"true": True, "false": False}.get(args.resumable_state)
-    result = classify(args.request, state=state, handoff_route=args.handoff_route,
-                       pr_states=pr_states, resumable_state=resumable_state)
+    result = classify(
+        args.request,
+        state=state,
+        handoff_route=args.handoff_route,
+        pr_states=pr_states,
+        resumable_state=resumable_state,
+    )
     print(json.dumps(result, indent=2))
     return 0
 

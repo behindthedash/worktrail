@@ -4,7 +4,6 @@ import json
 import os
 from pathlib import Path
 
-
 HOOK_PATH = Path(__file__).with_name("suggest_next_step.py")
 SPEC = importlib.util.spec_from_file_location("suggest_next_step", HOOK_PATH)
 assert SPEC and SPEC.loader
@@ -15,7 +14,9 @@ SPEC.loader.exec_module(hook)
 def _write_transcript(path: Path, tool_name: str, tool_input=None) -> None:
     entry = {
         "message": {
-            "content": [{"type": "tool_use", "name": tool_name, "input": tool_input or {}}]
+            "content": [
+                {"type": "tool_use", "name": tool_name, "input": tool_input or {}}
+            ]
         }
     }
     path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
@@ -44,7 +45,9 @@ def _write_entries(path: Path, entries: list[dict]) -> None:
 def _tool_entry(tool_name: str, tool_input=None) -> dict:
     return {
         "message": {
-            "content": [{"type": "tool_use", "name": tool_name, "input": tool_input or {}}]
+            "content": [
+                {"type": "tool_use", "name": tool_name, "input": tool_input or {}}
+            ]
         }
     }
 
@@ -59,10 +62,15 @@ def test_scan_transcript_collects_touched_durable_paths_from_edit_tools(tmp_path
         transcript,
         [
             _tool_entry("Write", {"file_path": spec_path}),
-            _tool_entry("Edit", {"file_path": "/repo/openspec/changes/my-change/tasks.md"}),
+            _tool_entry(
+                "Edit", {"file_path": "/repo/openspec/changes/my-change/tasks.md"}
+            ),
             _tool_entry("MultiEdit", {"file_path": "/repo/src/main.py"}),
             _tool_entry("Read", {"file_path": spec_path}),
-            _tool_entry("NotebookEdit", {"notebook_path": "/repo/openspec/changes/my-change/nb.ipynb"}),
+            _tool_entry(
+                "NotebookEdit",
+                {"notebook_path": "/repo/openspec/changes/my-change/nb.ipynb"},
+            ),
         ],
     )
     has_work, run_records, durable_paths = hook.scan_transcript(str(transcript))
@@ -75,7 +83,9 @@ def test_scan_transcript_collects_touched_durable_paths_from_edit_tools(tmp_path
     ]
 
 
-def test_scan_transcript_collects_touched_durable_paths_from_bash_write_markers(tmp_path):
+def test_scan_transcript_collects_touched_durable_paths_from_bash_write_markers(
+    tmp_path,
+):
     """Bash commands carrying a write marker AND naming a durable-artifact
     path contribute that path; the same mention in a command without a write
     marker (plain `cat | grep`) does not."""
@@ -85,10 +95,16 @@ def test_scan_transcript_collects_touched_durable_paths_from_bash_write_markers(
         [
             _tool_entry(
                 "Bash",
-                {"command": "mkdir -p openspec/changes/new-idea && cat > openspec/changes/new-idea/proposal.md <<'EOF'\nbody\nEOF"},
+                {
+                    "command": "mkdir -p openspec/changes/new-idea && cat > openspec/changes/new-idea/proposal.md <<'EOF'\nbody\nEOF"
+                },
             ),
-            _tool_entry("Bash", {"command": "sed -i 's/old/new/' docs/specs/001-task/design.md"}),
-            _tool_entry("Bash", {"command": "cat docs/specs/001-task/design.md | grep todo"}),
+            _tool_entry(
+                "Bash", {"command": "sed -i 's/old/new/' docs/specs/001-task/design.md"}
+            ),
+            _tool_entry(
+                "Bash", {"command": "cat docs/specs/001-task/design.md | grep todo"}
+            ),
             _tool_entry("Bash", {"command": "pytest -q > /tmp/out.txt"}),
         ],
     )
@@ -112,7 +128,12 @@ def test_scan_transcript_collects_all_signals_in_one_pass_and_dedupes(tmp_path):
             _tool_entry("Bash", {"command": "git push origin HEAD"}),
             {
                 "message": {
-                    "content": [{"type": "text", "text": f"See run record {record} for details."}]
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": f"See run record {record} for details.",
+                        }
+                    ]
                 }
             },
             _tool_entry("Edit", {"file_path": "/repo/docs/specs/late-entry.md"}),
@@ -135,7 +156,9 @@ def test_instruction_is_worktrail_native_and_value_gated():
     assert "verified blocker" in hook.INSTRUCTION
     assert "Creating a handoff is optional, not the default" in hook.INSTRUCTION
     assert "Do NOT capture routine polish" in hook.INSTRUCTION
-    assert "No handoff captured; no exceptional next step identified." in hook.INSTRUCTION
+    assert (
+        "No handoff captured; no exceptional next step identified." in hook.INSTRUCTION
+    )
     assert "developer-kit" not in hook.INSTRUCTION
 
 
@@ -203,7 +226,9 @@ def _install_check_deferred_work_handoff_shim(tmp_path: Path, monkeypatch) -> No
     monkeypatch.setenv("WORK_QUEUE_DIR", str(tmp_path / "work-queue"))
 
 
-def test_main_output_unchanged_when_run_record_flags_nothing(tmp_path, monkeypatch, capsys):
+def test_main_output_unchanged_when_run_record_flags_nothing(
+    tmp_path, monkeypatch, capsys
+):
     """Run-record path literals in the transcript, one with an empty
     `deferred_work` and one with a fully phrase-non-matching `deferred_work`,
     must not change the emitted `reason` at all (Requirement: Additive And
@@ -223,16 +248,27 @@ def test_main_output_unchanged_when_run_record_flags_nothing(tmp_path, monkeypat
     monkeypatch.setattr(
         hook.sys,
         "stdin",
-        io.StringIO(json.dumps({"session_id": "baseline", "transcript_path": str(baseline_transcript)})),
+        io.StringIO(
+            json.dumps(
+                {"session_id": "baseline", "transcript_path": str(baseline_transcript)}
+            )
+        ),
     )
     assert hook.main() == 0
     baseline_output = capsys.readouterr().out
-    assert baseline_output == json.dumps({"decision": "block", "reason": hook.INSTRUCTION}) + "\n"
+    assert (
+        baseline_output
+        == json.dumps({"decision": "block", "reason": hook.INSTRUCTION}) + "\n"
+    )
 
     empty_record = tmp_path / ".worktrail" / "runs" / "some-repo" / "run-empty.yaml"
     _write_run_record(empty_record, deferred_work=[])
-    nonmatching_record = tmp_path / ".worktrail" / "runs" / "some-repo" / "run-nonmatching.yaml"
-    _write_run_record(nonmatching_record, deferred_work=["ship the new onboarding flow next quarter"])
+    nonmatching_record = (
+        tmp_path / ".worktrail" / "runs" / "some-repo" / "run-nonmatching.yaml"
+    )
+    _write_run_record(
+        nonmatching_record, deferred_work=["ship the new onboarding flow next quarter"]
+    )
 
     assert hook.check_deferred_work([str(empty_record), str(nonmatching_record)]) == []
 
@@ -253,7 +289,14 @@ def test_main_output_unchanged_when_run_record_flags_nothing(tmp_path, monkeypat
     monkeypatch.setattr(
         hook.sys,
         "stdin",
-        io.StringIO(json.dumps({"session_id": "with-path", "transcript_path": str(with_path_transcript)})),
+        io.StringIO(
+            json.dumps(
+                {
+                    "session_id": "with-path",
+                    "transcript_path": str(with_path_transcript),
+                }
+            )
+        ),
     )
     assert hook.main() == 0
     with_path_output = capsys.readouterr().out
@@ -261,7 +304,9 @@ def test_main_output_unchanged_when_run_record_flags_nothing(tmp_path, monkeypat
     assert with_path_output == baseline_output
 
 
-def test_main_appends_deferred_work_block_for_unmatched_flagged_entry(tmp_path, monkeypatch, capsys):
+def test_main_appends_deferred_work_block_for_unmatched_flagged_entry(
+    tmp_path, monkeypatch, capsys
+):
     """A run-record path literal whose `deferred_work` has an unmatched,
     phrase-matching entry must produce output containing both the unmodified
     EXCEPTIONAL-VALUE instruction and the new deferral-flag block
@@ -306,7 +351,12 @@ def test_main_appends_deferred_work_block_for_unmatched_flagged_entry(tmp_path, 
         hook.sys,
         "stdin",
         io.StringIO(
-            json.dumps({"session_id": "with-flagged-path", "transcript_path": str(with_path_transcript)})
+            json.dumps(
+                {
+                    "session_id": "with-flagged-path",
+                    "transcript_path": str(with_path_transcript),
+                }
+            )
         ),
     )
     assert hook.main() == 0
@@ -319,7 +369,9 @@ def test_main_appends_deferred_work_block_for_unmatched_flagged_entry(tmp_path, 
     assert str(flagged_record) in reason
 
 
-def test_main_fail_open_no_path_missing_binary_and_headless(tmp_path, monkeypatch, capsys):
+def test_main_fail_open_no_path_missing_binary_and_headless(
+    tmp_path, monkeypatch, capsys
+):
     """Three independent fail-open paths (Requirement: Run-Record Discovery Via
     Transcript Grep / Requirement: Fail-Open And Headless-Excluded), each
     compared against the same baseline reason: a transcript with no
@@ -337,17 +389,28 @@ def test_main_fail_open_no_path_missing_binary_and_headless(tmp_path, monkeypatc
     monkeypatch.setattr(
         hook.sys,
         "stdin",
-        io.StringIO(json.dumps({"session_id": "baseline", "transcript_path": str(baseline_transcript)})),
+        io.StringIO(
+            json.dumps(
+                {"session_id": "baseline", "transcript_path": str(baseline_transcript)}
+            )
+        ),
     )
     assert hook.main() == 0
     baseline_output = capsys.readouterr().out
-    assert baseline_output == json.dumps({"decision": "block", "reason": hook.INSTRUCTION}) + "\n"
+    assert (
+        baseline_output
+        == json.dumps({"decision": "block", "reason": hook.INSTRUCTION}) + "\n"
+    )
 
     # Case 1: no run-record path literal anywhere in the transcript.
     monkeypatch.setattr(
         hook.sys,
         "stdin",
-        io.StringIO(json.dumps({"session_id": "no-path", "transcript_path": str(baseline_transcript)})),
+        io.StringIO(
+            json.dumps(
+                {"session_id": "no-path", "transcript_path": str(baseline_transcript)}
+            )
+        ),
     )
     assert hook.main() == 0
     assert capsys.readouterr().out == baseline_output
@@ -367,7 +430,10 @@ def test_main_fail_open_no_path_missing_binary_and_headless(tmp_path, monkeypatc
         "message": {
             "content": [
                 {"type": "tool_use", "name": "Write", "input": {}},
-                {"type": "text", "text": f"See run record {flagged_record} for details."},
+                {
+                    "type": "text",
+                    "text": f"See run record {flagged_record} for details.",
+                },
             ]
         }
     }
@@ -375,7 +441,14 @@ def test_main_fail_open_no_path_missing_binary_and_headless(tmp_path, monkeypatc
     monkeypatch.setattr(
         hook.sys,
         "stdin",
-        io.StringIO(json.dumps({"session_id": "missing-binary", "transcript_path": str(with_path_transcript)})),
+        io.StringIO(
+            json.dumps(
+                {
+                    "session_id": "missing-binary",
+                    "transcript_path": str(with_path_transcript),
+                }
+            )
+        ),
     )
     assert hook.main() == 0
     assert capsys.readouterr().out == baseline_output
@@ -385,7 +458,11 @@ def test_main_fail_open_no_path_missing_binary_and_headless(tmp_path, monkeypatc
     monkeypatch.setattr(
         hook.sys,
         "stdin",
-        io.StringIO(json.dumps({"session_id": "headless", "transcript_path": str(with_path_transcript)})),
+        io.StringIO(
+            json.dumps(
+                {"session_id": "headless", "transcript_path": str(with_path_transcript)}
+            )
+        ),
     )
     assert hook.main() == 0
     assert capsys.readouterr().out == ""
@@ -393,7 +470,9 @@ def test_main_fail_open_no_path_missing_binary_and_headless(tmp_path, monkeypatc
 
 def test_main_skips_continuation_and_headless_worker(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(hook, "STATE_DIR", tmp_path / "state")
-    monkeypatch.setattr(hook.sys, "stdin", io.StringIO(json.dumps({"stop_hook_active": True})))
+    monkeypatch.setattr(
+        hook.sys, "stdin", io.StringIO(json.dumps({"stop_hook_active": True}))
+    )
     assert hook.main() == 0
     assert capsys.readouterr().out == ""
 
@@ -403,7 +482,9 @@ def test_main_skips_continuation_and_headless_worker(tmp_path, monkeypatch, caps
     assert not (tmp_path / "state").exists()
 
 
-def _install_check_durable_artifact_capture_gate_shim(tmp_path: Path, monkeypatch) -> None:
+def _install_check_durable_artifact_capture_gate_shim(
+    tmp_path: Path, monkeypatch
+) -> None:
     """A real `worktrail-check-durable-artifact-capture-gate` on `PATH`, backed
     by this worktree's own `src/` (never the machine's separately
     `pip install -e`'d `worktrail`) -- the same subprocess-boundary pattern as
@@ -427,7 +508,9 @@ def _install_check_durable_artifact_capture_gate_shim(tmp_path: Path, monkeypatc
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
 
 
-def test_main_no_hit_output_byte_identical_to_pre_gate_instruction(tmp_path, monkeypatch, capsys):
+def test_main_no_hit_output_byte_identical_to_pre_gate_instruction(
+    tmp_path, monkeypatch, capsys
+):
     """A transcript that feeds the dedup gate a real input yielding zero hits
     (a run-record literal whose record finished a non-planned status) must emit
     byte-for-byte the pre-gate instruction -- identical stdout to a session
@@ -447,13 +530,22 @@ def test_main_no_hit_output_byte_identical_to_pre_gate_instruction(tmp_path, mon
     monkeypatch.setattr(
         hook.sys,
         "stdin",
-        io.StringIO(json.dumps({"session_id": "baseline", "transcript_path": str(baseline_transcript)})),
+        io.StringIO(
+            json.dumps(
+                {"session_id": "baseline", "transcript_path": str(baseline_transcript)}
+            )
+        ),
     )
     assert hook.main() == 0
     baseline_output = capsys.readouterr().out
-    assert baseline_output == json.dumps({"decision": "block", "reason": hook.INSTRUCTION}) + "\n"
+    assert (
+        baseline_output
+        == json.dumps({"decision": "block", "reason": hook.INSTRUCTION}) + "\n"
+    )
 
-    implemented_record = tmp_path / ".worktrail" / "runs" / "some-repo" / "run-implemented.yaml"
+    implemented_record = (
+        tmp_path / ".worktrail" / "runs" / "some-repo" / "run-implemented.yaml"
+    )
     _write_run_record(implemented_record, deferred_work=[], final_status="implemented")
 
     with_path_transcript = tmp_path / "with_path.jsonl"
@@ -473,13 +565,19 @@ def test_main_no_hit_output_byte_identical_to_pre_gate_instruction(tmp_path, mon
     monkeypatch.setattr(
         hook.sys,
         "stdin",
-        io.StringIO(json.dumps({"session_id": "no-hit", "transcript_path": str(with_path_transcript)})),
+        io.StringIO(
+            json.dumps(
+                {"session_id": "no-hit", "transcript_path": str(with_path_transcript)}
+            )
+        ),
     )
     assert hook.main() == 0
     assert capsys.readouterr().out == baseline_output
 
 
-def test_main_hit_appends_dedup_gate_block_naming_artifact(tmp_path, monkeypatch, capsys):
+def test_main_hit_appends_dedup_gate_block_naming_artifact(
+    tmp_path, monkeypatch, capsys
+):
     """An Edit touching a `docs/specs/**` path must produce output that starts
     with the unmodified pre-gate instruction and appends exactly the DEDUP GATE
     block naming the touched artifact -- forbidding auto-capture, requiring a
@@ -503,12 +601,16 @@ def test_main_hit_appends_dedup_gate_block_naming_artifact(tmp_path, monkeypatch
     )
 
     expected_hits = hook.check_dedup_gate([spec_path], [])
-    assert expected_hits == [{"kind": "session_touched_durable_artifact", "path": spec_path}]
+    assert expected_hits == [
+        {"kind": "session_touched_durable_artifact", "path": spec_path}
+    ]
 
     monkeypatch.setattr(
         hook.sys,
         "stdin",
-        io.StringIO(json.dumps({"session_id": "dedup-hit", "transcript_path": str(transcript)})),
+        io.StringIO(
+            json.dumps({"session_id": "dedup-hit", "transcript_path": str(transcript)})
+        ),
     )
     assert hook.main() == 0
     reason = json.loads(capsys.readouterr().out)["reason"]
@@ -529,7 +631,10 @@ def test_build_dedup_gate_block_renders_every_hit_kind():
     rather than vanishing."""
     block = hook.build_dedup_gate_block(
         [
-            {"kind": "session_touched_durable_artifact", "path": "/repo/docs/specs/x/spec.md"},
+            {
+                "kind": "session_touched_durable_artifact",
+                "path": "/repo/docs/specs/x/spec.md",
+            },
             {
                 "kind": "planned_run_record",
                 "run_record": "/repo/run.yaml",
@@ -543,10 +648,16 @@ def test_build_dedup_gate_block_renders_every_hit_kind():
             {"unexpected": "shape"},
         ]
     )
-    assert "- durable artifact touched this session: /repo/docs/specs/x/spec.md" in block
-    assert "- run record finished planned_ready_for_implementation: /repo/run.yaml" in block
     assert (
-        "- merged docs-only spec PR (merge marker(s): gh pr merge): /repo/docs/specs/y.md" in block
+        "- durable artifact touched this session: /repo/docs/specs/x/spec.md" in block
+    )
+    assert (
+        "- run record finished planned_ready_for_implementation: /repo/run.yaml"
+        in block
+    )
+    assert (
+        "- merged docs-only spec PR (merge marker(s): gh pr merge): /repo/docs/specs/y.md"
+        in block
     )
     assert "- unrecognized dedup hit:" in block
 
@@ -567,11 +678,18 @@ def test_main_fail_open_when_dedup_gate_binary_missing(tmp_path, monkeypatch, ca
     monkeypatch.setattr(
         hook.sys,
         "stdin",
-        io.StringIO(json.dumps({"session_id": "baseline", "transcript_path": str(baseline_transcript)})),
+        io.StringIO(
+            json.dumps(
+                {"session_id": "baseline", "transcript_path": str(baseline_transcript)}
+            )
+        ),
     )
     assert hook.main() == 0
     baseline_output = capsys.readouterr().out
-    assert baseline_output == json.dumps({"decision": "block", "reason": hook.INSTRUCTION}) + "\n"
+    assert (
+        baseline_output
+        == json.dumps({"decision": "block", "reason": hook.INSTRUCTION}) + "\n"
+    )
 
     monkeypatch.setenv("PATH", "")
     assert hook.shutil.which(hook.DEDUP_GATE_BINARY) is None
@@ -579,14 +697,21 @@ def test_main_fail_open_when_dedup_gate_binary_missing(tmp_path, monkeypatch, ca
     would_hit_transcript = tmp_path / "would_hit.jsonl"
     _write_entries(
         would_hit_transcript,
-        [_tool_entry("Edit", {"file_path": "/repo/openspec/changes/my-change/tasks.md"})],
+        [
+            _tool_entry(
+                "Edit", {"file_path": "/repo/openspec/changes/my-change/tasks.md"}
+            )
+        ],
     )
     monkeypatch.setattr(
         hook.sys,
         "stdin",
         io.StringIO(
             json.dumps(
-                {"session_id": "missing-dedup-binary", "transcript_path": str(would_hit_transcript)}
+                {
+                    "session_id": "missing-dedup-binary",
+                    "transcript_path": str(would_hit_transcript),
+                }
             )
         ),
     )
@@ -594,7 +719,9 @@ def test_main_fail_open_when_dedup_gate_binary_missing(tmp_path, monkeypatch, ca
     assert capsys.readouterr().out == baseline_output
 
 
-def test_main_headless_skips_even_when_dedup_gate_would_hit(tmp_path, monkeypatch, capsys):
+def test_main_headless_skips_even_when_dedup_gate_would_hit(
+    tmp_path, monkeypatch, capsys
+):
     """`CC_HEADLESS=1` skips the hook entirely, even when the transcript would
     otherwise produce a dedup-gate hit -- headless workers stay unaffected,
     same as before the gate existed (Requirement: Fail-Open And
@@ -603,11 +730,17 @@ def test_main_headless_skips_even_when_dedup_gate_would_hit(tmp_path, monkeypatc
     monkeypatch.setattr(hook, "STATE_DIR", tmp_path / "state")
 
     transcript = tmp_path / "would_hit.jsonl"
-    _write_entries(transcript, [_tool_entry("Edit", {"file_path": "/repo/docs/specs/x/spec.md"})])
+    _write_entries(
+        transcript, [_tool_entry("Edit", {"file_path": "/repo/docs/specs/x/spec.md"})]
+    )
     monkeypatch.setattr(
         hook.sys,
         "stdin",
-        io.StringIO(json.dumps({"session_id": "headless-hit", "transcript_path": str(transcript)})),
+        io.StringIO(
+            json.dumps(
+                {"session_id": "headless-hit", "transcript_path": str(transcript)}
+            )
+        ),
     )
     assert hook.main() == 0
     assert capsys.readouterr().out == ""

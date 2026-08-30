@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-import sys
 import os
 import re
-import yaml
-from datetime import datetime, date
+import sys
+from datetime import date, datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+
+import yaml
 
 # --- Helpers ---
 
@@ -61,7 +61,11 @@ FIELD_SCHEMA = {
     "timeout": {"type": int, "required": False},
     "files": {"type": list, "required": False},
     "files-sync-exempt": {"type": list, "required": False},
-    "kind": {"type": str, "required": False, "values": ["impl", "e2e", "cleanup", "docs"]},
+    "kind": {
+        "type": str,
+        "required": False,
+        "values": ["impl", "e2e", "cleanup", "docs"],
+    },
     "complexity": {"type": str, "required": False},
     "domain": {"type": str, "required": False},
     "purpose": {"type": str, "required": False},
@@ -73,7 +77,7 @@ COMPLETION_AUDIT_SECTIONS = ("Acceptance Criteria", "Definition of Done (DoD)")
 # --- Core Functions ---
 
 
-def read_task_file(path: Path) -> Tuple[Optional[Dict], Optional[str], str]:
+def read_task_file(path: Path) -> tuple[dict | None, str | None, str]:
     """Reads a task file and returns (frontmatter, error, body)."""
     if not path.exists():
         return None, f"File not found: {path}", ""
@@ -90,7 +94,7 @@ def read_task_file(path: Path) -> Tuple[Optional[Dict], Optional[str], str]:
         return None, str(e), ""
 
 
-def write_task_file(path: Path, frontmatter: Dict, body: str):
+def write_task_file(path: Path, frontmatter: dict, body: str):
     """Writes a task file with updated frontmatter."""
     content = "---\n" + yaml.dump(frontmatter, sort_keys=False) + "---\n" + body
     path.write_text(content)
@@ -107,22 +111,20 @@ def _all_dod_complete(body: str) -> bool:
     return unchecked == 0
 
 
-def _extract_sections(body: str, sections: Tuple[str, ...]) -> str:
+def _extract_sections(body: str, sections: tuple[str, ...]) -> str:
     """Concatenate the text of each named `## <heading>` section in body.
 
     A heading not present in the body simply contributes no text.
     """
     parts = []
     for heading in sections:
-        match = re.search(
-            rf"## {re.escape(heading)}(.*?)(?=\n## |\Z)", body, re.DOTALL
-        )
+        match = re.search(rf"## {re.escape(heading)}(.*?)(?=\n## |\Z)", body, re.DOTALL)
         if match:
             parts.append(match.group(0))
     return "\n".join(parts)
 
 
-def _all_checkboxes_checked(body: str, sections: Optional[Tuple[str, ...]] = None) -> bool:
+def _all_checkboxes_checked(body: str, sections: tuple[str, ...] | None = None) -> bool:
     """Whether every checkbox in the body (or in the given sections) is ticked
     (and at least one exists).
 
@@ -144,7 +146,7 @@ def _all_checkboxes_checked(body: str, sections: Optional[Tuple[str, ...]] = Non
     return total > 0 and checked == total
 
 
-def detect_status_from_body(body: str, old_status: Optional[str] = None) -> str:
+def detect_status_from_body(body: str, old_status: str | None = None) -> str:
     """Heuristic to detect status from checkboxes and DoD in the body.
 
     Progression when all checkboxes are checked:
@@ -211,13 +213,17 @@ def update_status(filepath: str):
         today = datetime.now().strftime("%Y-%m-%d")
         if new_status == TaskStatus.IN_PROGRESS and not frontmatter.get("started_date"):
             frontmatter["started_date"] = today
-        elif new_status == TaskStatus.IMPLEMENTED and not frontmatter.get("implemented_date"):
+        elif new_status == TaskStatus.IMPLEMENTED and not frontmatter.get(
+            "implemented_date"
+        ):
             frontmatter["implemented_date"] = today
             if not frontmatter.get("started_date"):
                 frontmatter["started_date"] = today
         elif new_status == TaskStatus.REVIEWED and not frontmatter.get("reviewed_date"):
             frontmatter["reviewed_date"] = today
-        elif new_status == TaskStatus.COMPLETED and not frontmatter.get("completed_date"):
+        elif new_status == TaskStatus.COMPLETED and not frontmatter.get(
+            "completed_date"
+        ):
             frontmatter["completed_date"] = today
 
         write_task_file(path, frontmatter, body)
@@ -244,7 +250,9 @@ def validate_task(filepath: str) -> bool:
                             f"Invalid type for {field}: expected one of {', '.join(t.__name__ for t in expected)}"
                         )
                 elif not isinstance(val, expected) and val is not None:
-                    errors.append(f"Invalid type for {field}: expected {expected.__name__}")
+                    errors.append(
+                        f"Invalid type for {field}: expected {expected.__name__}"
+                    )
                 if "values" in rules and val not in rules["values"]:
                     errors.append(f"Invalid value for {field}: {val}")
 

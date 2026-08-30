@@ -154,7 +154,9 @@ class LoadSpecTests(unittest.TestCase):
                 "TASK-001.md",
                 "---\nid: TASK-001\nstatus: pending\ndependencies: []\nfiles: [a.ts]\nkind: impl\n---\n",
             )
-            self._write_task(tasks, "TASK-001--review.md", "---\nid: TASK-001--review\n---\n")
+            self._write_task(
+                tasks, "TASK-001--review.md", "---\nid: TASK-001--review\n---\n"
+            )
             _, loaded = loader.load_spec(str(spec))
             ids = [t["id"] for t in loaded]
             self.assertIn("TASK-001", ids)
@@ -377,21 +379,29 @@ class ExternalDependenciesTests(unittest.TestCase):
             )
 
     def test_missing_separator_produces_one_warning(self):
-        warnings = loader.validate_external_dependencies(["TASK-036"], label="TASK-001.md")
+        warnings = loader.validate_external_dependencies(
+            ["TASK-036"], label="TASK-001.md"
+        )
         self.assertEqual(len(warnings), 1)
         self.assertIn("TASK-001.md", warnings[0])
         self.assertIn("TASK-036", warnings[0])
 
     def test_empty_spec_id_segment_produces_one_warning(self):
-        warnings = loader.validate_external_dependencies(["/TASK-036"], label="TASK-001.md")
+        warnings = loader.validate_external_dependencies(
+            ["/TASK-036"], label="TASK-001.md"
+        )
         self.assertEqual(len(warnings), 1)
 
     def test_empty_task_id_segment_produces_one_warning(self):
-        warnings = loader.validate_external_dependencies(["098-x/"], label="TASK-001.md")
+        warnings = loader.validate_external_dependencies(
+            ["098-x/"], label="TASK-001.md"
+        )
         self.assertEqual(len(warnings), 1)
 
     def test_well_formed_entry_produces_no_warnings(self):
-        warnings = loader.validate_external_dependencies(["098-x/TASK-036"], label="TASK-001.md")
+        warnings = loader.validate_external_dependencies(
+            ["098-x/TASK-036"], label="TASK-001.md"
+        )
         self.assertEqual(warnings, [])
 
     def test_malformed_entry_retained_in_external_deps(self):
@@ -410,7 +420,9 @@ class ExternalDependenciesTests(unittest.TestCase):
             self.assertEqual(loaded[0]["external_deps"], ["TASK-036"])
             self.assertEqual(len(loaded[0]["external_deps_warnings"]), 1)
 
-    def test_dependencies_and_external_dependencies_independent_no_cross_contamination(self):
+    def test_dependencies_and_external_dependencies_independent_no_cross_contamination(
+        self,
+    ):
         with tempfile.TemporaryDirectory() as t:
             spec = Path(t) / "001-spec"
             tasks = spec / "tasks"
@@ -708,9 +720,13 @@ class ResolveExternalDependencyTests(unittest.TestCase):
             (repo_root / "docs/specs/098-x/tasks").mkdir(parents=True)
             # Planted OUTSIDE repo_root at the exact spot a naive `../` join
             # from docs/specs/098-x/tasks/ would land on.
-            self._write_task(outer / "TASK-001.md", "---\nid: TASK-001\nstatus: done\n---\n")
+            self._write_task(
+                outer / "TASK-001.md", "---\nid: TASK-001\nstatus: done\n---\n"
+            )
 
-            result = loader.resolve_external_dependency(repo_root, "098-x/../../../../../TASK-001")
+            result = loader.resolve_external_dependency(
+                repo_root, "098-x/../../../../../TASK-001"
+            )
             self.assertFalse(result["resolved"])
             self.assertFalse(result["satisfied"])
 

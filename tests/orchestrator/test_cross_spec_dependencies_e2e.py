@@ -42,11 +42,13 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import coordinator  # noqa: E402
-from worktrail.orchestrator import dispatch  # noqa: E402
-from worktrail.orchestrator import live  # noqa: E402
-from worktrail.taskformats.devkit import source as loader  # noqa: E402
-from worktrail.orchestrator import progress  # noqa: E402
+from worktrail.orchestrator import (
+    coordinator,
+    dispatch,
+    live,
+    progress,
+)
+from worktrail.taskformats.devkit import source as loader
 
 _HERE = Path(__file__).resolve().parent
 
@@ -324,7 +326,9 @@ class TestUnresolvedSpecIdTypo(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "repo"
             _init_repo(repo)
-            _write_task_file(repo, "099-y", "TASK-038", external_deps=["098-x-typo/TASK-036"])
+            _write_task_file(
+                repo, "099-y", "TASK-038", external_deps=["098-x-typo/TASK-036"]
+            )
 
             result = _run_precheck(repo, "docs/specs/099-y")
             self.assertNotEqual(result.returncode, 0)
@@ -345,7 +349,9 @@ class TestUnresolvedTaskIdMissing(unittest.TestCase):
             repo = Path(tmp) / "repo"
             _init_repo(repo)
             (repo / "docs" / "specs" / "098-x" / "tasks").mkdir(parents=True)
-            _write_task_file(repo, "099-y", "TASK-038", external_deps=["098-x/TASK-036"])
+            _write_task_file(
+                repo, "099-y", "TASK-038", external_deps=["098-x/TASK-036"]
+            )
 
             result = _run_precheck(repo, "docs/specs/099-y")
             self.assertNotEqual(result.returncode, 0)
@@ -365,7 +371,9 @@ class TestMalformedEntryFullFlow(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "repo"
             _init_repo(repo)
-            _write_task_file(repo, "099-y", "TASK-038", external_deps=["not-a-valid-ref"])
+            _write_task_file(
+                repo, "099-y", "TASK-038", external_deps=["not-a-valid-ref"]
+            )
 
             result = _run_precheck(repo, "docs/specs/099-y")
             self.assertNotEqual(result.returncode, 0)
@@ -395,12 +403,16 @@ class TestReciprocalCrossSpecDependencies(unittest.TestCase):
         _init_repo(self.repo)
         # 098-x has a root task and a task gated on 099-y/TASK-038 (already done).
         _write_task_file(self.repo, "098-x", "TASK-036", status="pending")
-        _write_task_file(self.repo, "098-x", "TASK-040", external_deps=["099-y/TASK-038"])
+        _write_task_file(
+            self.repo, "098-x", "TASK-040", external_deps=["099-y/TASK-038"]
+        )
         # 099-y has a root task (the one 098-x/TASK-040 depends on) and a task
         # gated on 098-x/TASK-036 (still pending) -- a DIFFERENT specific task
         # in each direction, matching the real shape.
         _write_task_file(self.repo, "099-y", "TASK-038", status="done")
-        _write_task_file(self.repo, "099-y", "TASK-039", external_deps=["098-x/TASK-036"])
+        _write_task_file(
+            self.repo, "099-y", "TASK-039", external_deps=["098-x/TASK-036"]
+        )
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -456,7 +468,9 @@ class TestStalledExternalDepSurfacesThroughHeartbeat(unittest.TestCase):
             )
             tasks = _load(repo, "docs/specs/099-y")
             self.assertFalse(tasks[0]["external_deps_ok"])
-            self.assertIn("098-x-missing/TASK-036", tasks[0]["external_deps_blockers"][0])
+            self.assertIn(
+                "098-x-missing/TASK-036", tasks[0]["external_deps_blockers"][0]
+            )
 
             journal_path = live.journal_path_for(repo, "docs/specs/099-y")
             # The detail shape a stalled run's fanout_failed heartbeat carries
@@ -495,7 +509,9 @@ class TestPrecheckIdempotent(unittest.TestCase):
             repo = Path(tmp) / "repo"
             _init_repo(repo)
             _write_task_file(repo, "098-x", "TASK-036", status="pending")
-            _write_task_file(repo, "099-y", "TASK-038", external_deps=["098-x/TASK-036"])
+            _write_task_file(
+                repo, "099-y", "TASK-038", external_deps=["098-x/TASK-036"]
+            )
 
             first = _run_precheck(repo, "docs/specs/099-y")
             second = _run_precheck(repo, "docs/specs/099-y")
@@ -544,7 +560,7 @@ class TestRegressionNoExternalDeps(unittest.TestCase):
             self.assertNotIn(
                 "external_deps_ok",
                 t,
-                "a task with no external_deps entries must " "never be annotated at all",
+                "a task with no external_deps entries must never be annotated at all",
             )
 
     def test_dispatch_prompt_unaffected_by_external_deps_by_ref_param(self):
@@ -567,7 +583,10 @@ class TestRegressionNoExternalDeps(unittest.TestCase):
             ctx,
             by_id=by_id,
             external_deps_by_ref={
-                "098-x/TASK-036": {"id": "TASK-036", "files": ["should-never-appear.py"]}
+                "098-x/TASK-036": {
+                    "id": "TASK-036",
+                    "files": ["should-never-appear.py"],
+                }
             },
         )
         self.assertEqual(prompt_without, prompt_with_unrelated_ref)
@@ -575,7 +594,9 @@ class TestRegressionNoExternalDeps(unittest.TestCase):
     def test_worktree_stacking_unaffected(self):
         _, tasks = loader.load_spec(str(self.repo / "docs/specs/003-plain"))
         by_id = _by_id(tasks)
-        ref, extra = live.dependency_start_ref(self.repo, "003-plain", by_id["TASK-002"], by_id)
+        ref, extra = live.dependency_start_ref(
+            self.repo, "003-plain", by_id["TASK-002"], by_id
+        )
         self.assertEqual((ref, extra), ("HEAD", []))
 
 
@@ -630,7 +651,9 @@ class TestBuildExternalDepsByRef(unittest.TestCase):
         self.assertEqual(result, {})
 
     def test_malformed_ref_excluded(self):
-        _write_task_file(self.repo, "101-w", "TASK-001", external_deps=["not-a-valid-ref"])
+        _write_task_file(
+            self.repo, "101-w", "TASK-001", external_deps=["not-a-valid-ref"]
+        )
         _, tasks = loader.load_spec(str(self.repo / "docs/specs/101-w"))
         result = live.build_external_deps_by_ref(self.repo, tasks)
         self.assertEqual(result, {})

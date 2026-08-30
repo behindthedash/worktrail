@@ -3,8 +3,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any
 
 import yaml
 
@@ -35,7 +36,7 @@ yaml.SafeDumper.add_representer(LiteralStr, _represent_literal_str)
 
 
 def serialize_frontmatter(
-    frontmatter: Dict[str, Any], *, literal_keys: Sequence[str] = ("focus",)
+    frontmatter: dict[str, Any], *, literal_keys: Sequence[str] = ("focus",)
 ) -> str:
     """Canonically serialize a brief frontmatter dict to YAML text (no ``---`` fences).
 
@@ -90,7 +91,7 @@ def is_canonical_style(
     return raw_yaml.strip("\n") == canonical.strip("\n")
 
 
-def _find_frontmatter_block(content: str) -> Optional[Tuple[str, str]]:
+def _find_frontmatter_block(content: str) -> tuple[str, str] | None:
     """Return ``(raw_yaml_text, body)`` for a ``---``-fenced block, or None.
 
     Tolerates a UTF-8 BOM and a closing ``---`` fence without a trailing
@@ -98,8 +99,7 @@ def _find_frontmatter_block(content: str) -> Optional[Tuple[str, str]]:
     strict validator (`validate_brief_text`) so fence-detection never drifts
     between the two.
     """
-    if content.startswith("\ufeff"):
-        content = content[1:]
+    content = content.removeprefix("\ufeff")
 
     lines = content.splitlines(keepends=True)
     if not lines or lines[0].rstrip("\r\n") != "---":
@@ -120,7 +120,7 @@ def _find_frontmatter_block(content: str) -> Optional[Tuple[str, str]]:
     return content[len(lines[0]) : end], content[offset:]
 
 
-def split_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
+def split_frontmatter(content: str) -> tuple[dict[str, Any], str]:
     """Return ``(frontmatter, body)`` for a brief-like markdown document.
 
     Lenient by design (a caller just listing/displaying briefs must not
@@ -129,8 +129,7 @@ def split_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     `validate_brief_text` when a write path needs the opposite -- to catch a
     broken document instead of papering over it.
     """
-    if content.startswith("\ufeff"):
-        content = content[1:]
+    content = content.removeprefix("\ufeff")
 
     found = _find_frontmatter_block(content)
     if found is None:
@@ -146,7 +145,7 @@ def split_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     return frontmatter, body
 
 
-def read_frontmatter(path: Path) -> Dict[str, Any]:
+def read_frontmatter(path: Path) -> dict[str, Any]:
     """Read and parse a brief frontmatter block, returning ``{}`` on I/O error."""
     try:
         content = Path(path).read_text(encoding="utf-8")
@@ -158,7 +157,7 @@ def read_frontmatter(path: Path) -> Dict[str, Any]:
 
 def validate_brief_text(
     content: str, required: Sequence[str] = ("status",)
-) -> Tuple[bool, Optional[str]]:
+) -> tuple[bool, str | None]:
     """Strict counterpart to `split_frontmatter`: confirm `content` is a
     well-formed brief instead of silently degrading a malformed one to `{}`.
 
@@ -208,7 +207,7 @@ def validate_brief_text(
 
 def validate_brief(
     path: Path, required: Sequence[str] = ("status",)
-) -> Tuple[bool, Optional[str]]:
+) -> tuple[bool, str | None]:
     """Re-read `path` from disk and validate it via `validate_brief_text`."""
     try:
         content = Path(path).read_text(encoding="utf-8")

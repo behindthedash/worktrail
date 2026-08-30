@@ -33,7 +33,9 @@ CHANGE_ID = "001-x"
 
 
 def _git(repo, *args):
-    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True
+    )
 
 
 def _init_repo(root: Path, tasks_md: str) -> Path:
@@ -109,21 +111,31 @@ class TestPostIntegrationFreshRunReadsCommittedCheckbox:
 
         # First fresh run: nothing completed yet.
         _, tasks_before = OpenSpecTaskSource(repo).load(CHANGE_ID)
-        frontier_before = {t["id"] for t in coordinator.runnable_frontier(tasks_before, max_workers=4)}
+        frontier_before = {
+            t["id"] for t in coordinator.runnable_frontier(tasks_before, max_workers=4)
+        }
         assert frontier_before == {"1.1", "2.1"}
         assert "1.2" not in frontier_before  # blocked on 1.1
 
         # Simulate group "1" integrating: the real write path commits 1.1's checkbox.
         integrate._write_group_task_status(
-            repo, CHANGE_ID, {"name": "group-1", "tasks": ["1.1"]}, {"1.1": "completed"},
+            repo,
+            CHANGE_ID,
+            {"name": "group-1", "tasks": ["1.1"]},
+            {"1.1": "completed"},
         )
-        assert "- [x] 1.1 done already" in (repo / "openspec/changes" / CHANGE_ID / "tasks.md").read_text()
+        assert (
+            "- [x] 1.1 done already"
+            in (repo / "openspec/changes" / CHANGE_ID / "tasks.md").read_text()
+        )
 
         # Next fresh run (no journal survives a --fresh discard): re-load from disk.
         _, tasks_after = OpenSpecTaskSource(repo).load(CHANGE_ID)
         by_id_after = {t["id"]: t for t in tasks_after}
         assert by_id_after["1.1"]["status"] == "completed"
 
-        frontier_after = {t["id"] for t in coordinator.runnable_frontier(tasks_after, max_workers=4)}
+        frontier_after = {
+            t["id"] for t in coordinator.runnable_frontier(tasks_after, max_workers=4)
+        }
         assert "1.1" not in frontier_after
         assert "1.2" in frontier_after  # now unblocked by the committed completion

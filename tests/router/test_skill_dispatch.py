@@ -5,11 +5,11 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import timedelta
-from unittest.mock import patch
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import timedelta
 from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 from worktrail.orchestrator import agent_capacity
 from worktrail.router import run_record, skill_dispatch
@@ -20,14 +20,20 @@ from worktrail.workqueue import decisions as decisions_mod
 
 class SkillDispatchTests(unittest.TestCase):
     def test_claude_uses_native_style_prompt_and_provider(self):
-        command = skill_dispatch.build_command("claude", "worktrail-sdd-workflow", "route:E 002-bootstrap")
+        command = skill_dispatch.build_command(
+            "claude", "worktrail-sdd-workflow", "route:E 002-bootstrap"
+        )
         self.assertEqual(command[:2], ["claude", "-p"])
         self.assertIn("[WORKTRAIL INTERNAL DISPATCH]", command[2])
-        self.assertIn("Invocation: /worktrail-sdd-workflow route:E 002-bootstrap", command[2])
+        self.assertIn(
+            "Invocation: /worktrail-sdd-workflow route:E 002-bootstrap", command[2]
+        )
         self.assertIn("Do not invoke worktrail-go again", command[2])
 
     def test_codex_preserves_codex_binary(self):
-        command = skill_dispatch.build_command("codex", "worktrail-sdd-workflow", "route:E")
+        command = skill_dispatch.build_command(
+            "codex", "worktrail-sdd-workflow", "route:E"
+        )
         self.assertEqual(
             command[:5],
             ["codex", "exec", "--json", "-s", "danger-full-access"],
@@ -35,9 +41,12 @@ class SkillDispatchTests(unittest.TestCase):
         self.assertNotIn("-a", command)
         self.assertNotIn("on-request", command)
         self.assertIn("[WORKTRAIL INTERNAL DISPATCH]", command[-1])
-        self.assertIn("handoff", skill_dispatch.build_command(
-            "codex", "worktrail-sdd-workflow", "handoff:123 route:F"
-        )[-1])
+        self.assertIn(
+            "handoff",
+            skill_dispatch.build_command(
+                "codex", "worktrail-sdd-workflow", "handoff:123 route:F"
+            )[-1],
+        )
         self.assertNotIn("claude", command)
 
     def test_codex_receives_explicit_additional_writable_dirs(self):
@@ -51,7 +60,8 @@ class SkillDispatchTests(unittest.TestCase):
         self.assertEqual(
             command[
                 command.index("--add-dir") : command.index("--model")
-                if "--model" in command else -1
+                if "--model" in command
+                else -1
             ],
             ["--add-dir", "/runs", "--add-dir", "/repo-worktrees"],
         )
@@ -65,19 +75,28 @@ class SkillDispatchTests(unittest.TestCase):
                 self.assertNotIn("--add-dir", command)
 
     def test_opencode_preserves_opencode_binary(self):
-        command = skill_dispatch.build_command("opencode", "worktrail-sdd-workflow", "route:E")
+        command = skill_dispatch.build_command(
+            "opencode", "worktrail-sdd-workflow", "route:E"
+        )
         self.assertEqual(command[:4], ["opencode", "run", "--format", "json"])
         self.assertIn("Invocation: /worktrail-sdd-workflow route:E", command[-1])
 
     def test_args_are_one_argument_and_extra_args_are_not_shell_parsed(self):
-        command = skill_dispatch.build_command("codex", "worktrail-sdd-workflow", "route:E; do-not-execute", extra_args=("--flag", "value"))
+        command = skill_dispatch.build_command(
+            "codex",
+            "worktrail-sdd-workflow",
+            "route:E; do-not-execute",
+            extra_args=("--flag", "value"),
+        )
         self.assertIn("route:E; do-not-execute", command[-3])
         self.assertEqual(command[-2:], ["--flag", "value"])
 
     def test_cli_json_is_parseable(self):
         output = StringIO()
         with redirect_stdout(output):
-            skill_dispatch.main(["--agent", "opencode", "--skill", "x:y", "--json", "--dry-run"])
+            skill_dispatch.main(
+                ["--agent", "opencode", "--skill", "x:y", "--json", "--dry-run"]
+            )
         self.assertEqual(json.loads(output.getvalue())[0], "opencode")
 
 
@@ -96,7 +115,9 @@ class OpsxCommandNamespacingTests(unittest.TestCase):
         self.assertIn("/worktrail:opsx:sync spec-a", command)
 
     def test_an_already_namespaced_opsx_command_is_left_alone(self):
-        command = skill_dispatch.build_command("claude", "worktrail:opsx:propose", "req")
+        command = skill_dispatch.build_command(
+            "claude", "worktrail:opsx:propose", "req"
+        )
         self.assertIn("/worktrail:opsx:propose req", command)
 
     def test_a_non_opsx_skill_is_never_namespaced(self):
@@ -110,29 +131,48 @@ class OpsxCommandNamespacingTests(unittest.TestCase):
         run.return_value.returncode = 0
         with patch.object(skill_dispatch, "bootstrap_codex_skills", return_value=True):
             self.assertEqual(
-                skill_dispatch.main([
-                    "--agent", "codex", "--skill", "x:y", "--args", "route:E",
-                    "--codex-home", "/tmp/worktrail-codex-test",
-                    "--no-inherit-codex-auth",
-                ]), 0
+                skill_dispatch.main(
+                    [
+                        "--agent",
+                        "codex",
+                        "--skill",
+                        "x:y",
+                        "--args",
+                        "route:E",
+                        "--codex-home",
+                        "/tmp/worktrail-codex-test",
+                        "--no-inherit-codex-auth",
+                    ]
+                ),
+                0,
             )
         self.assertEqual(run.call_args.args[0][0], "codex")
         self.assertTrue(run.call_args.kwargs["check"] is False)
 
-    @patch.dict(os.environ, {"WORKTRAIL_CODEX_HOME": "/tmp/worktrail-codex"}, clear=False)
+    @patch.dict(
+        os.environ, {"WORKTRAIL_CODEX_HOME": "/tmp/worktrail-codex"}, clear=False
+    )
     @patch("worktrail.router.skill_dispatch.subprocess.run")
     def test_codex_home_environment_override_is_passed_to_child(self, run):
         run.return_value.returncode = 0
 
         with patch.object(skill_dispatch, "bootstrap_codex_skills", return_value=True):
             self.assertEqual(
-                skill_dispatch.main([
-                    "--agent", "codex", "--skill", "x:y",
-                    "--no-inherit-codex-auth",
-                ]), 0
+                skill_dispatch.main(
+                    [
+                        "--agent",
+                        "codex",
+                        "--skill",
+                        "x:y",
+                        "--no-inherit-codex-auth",
+                    ]
+                ),
+                0,
             )
 
-        self.assertEqual(run.call_args.kwargs["env"]["CODEX_HOME"], "/tmp/worktrail-codex")
+        self.assertEqual(
+            run.call_args.kwargs["env"]["CODEX_HOME"], "/tmp/worktrail-codex"
+        )
 
     @patch.dict(os.environ, {"WORKTRAIL_CODEX_HOME": "/tmp/from-env"}, clear=False)
     @patch("worktrail.router.skill_dispatch.subprocess.run")
@@ -140,14 +180,23 @@ class OpsxCommandNamespacingTests(unittest.TestCase):
         run.return_value.returncode = 0
 
         with patch.object(skill_dispatch, "bootstrap_codex_skills", return_value=True):
-            skill_dispatch.main([
-                "--agent", "codex", "--skill", "x:y", "--codex-home", "/tmp/explicit",
-                "--no-inherit-codex-auth",
-            ])
+            skill_dispatch.main(
+                [
+                    "--agent",
+                    "codex",
+                    "--skill",
+                    "x:y",
+                    "--codex-home",
+                    "/tmp/explicit",
+                    "--no-inherit-codex-auth",
+                ]
+            )
 
         self.assertEqual(run.call_args.kwargs["env"]["CODEX_HOME"], "/tmp/explicit")
 
-    @patch.dict(os.environ, {"WORKTRAIL_CODEX_HOME": "/tmp/should-not-leak"}, clear=False)
+    @patch.dict(
+        os.environ, {"WORKTRAIL_CODEX_HOME": "/tmp/should-not-leak"}, clear=False
+    )
     @patch("worktrail.router.skill_dispatch.subprocess.run")
     def test_codex_home_override_is_not_applied_to_other_providers(self, run):
         run.return_value.returncode = 0
@@ -165,10 +214,16 @@ class OpsxCommandNamespacingTests(unittest.TestCase):
     def test_internal_executor_recursion_is_bounded_before_spawn(self, run):
         stderr = StringIO()
         with redirect_stderr(stderr):
-            result = skill_dispatch.main([
-                "--agent", "claude", "--skill", "worktrail-sdd-workflow",
-                "--args", "handoff:20260812-083302 route:F",
-            ])
+            result = skill_dispatch.main(
+                [
+                    "--agent",
+                    "claude",
+                    "--skill",
+                    "worktrail-sdd-workflow",
+                    "--args",
+                    "handoff:20260812-083302 route:F",
+                ]
+            )
         self.assertEqual(result, 2)
         self.assertIn("blocked_internal_dispatch_recursion", stderr.getvalue())
         self.assertIn("handoff:<id> route:<X>", stderr.getvalue())
@@ -176,18 +231,29 @@ class OpsxCommandNamespacingTests(unittest.TestCase):
 
     @patch.dict(os.environ, {"WORKTRAIL_SKILL_DISPATCH_DEPTH": "0"})
     @patch("worktrail.router.skill_dispatch.subprocess.run")
-    def test_internal_executor_child_receives_depth_marker_for_every_provider(self, run):
+    def test_internal_executor_child_receives_depth_marker_for_every_provider(
+        self, run
+    ):
         run.return_value.returncode = 0
         for agent in skill_dispatch.SUPPORTED_AGENTS:
             with self.subTest(agent=agent):
                 arguments = [
-                    "--agent", agent, "--skill", "worktrail-sdd-workflow",
-                    "--args", "handoff:20260812-083302 route:F",
+                    "--agent",
+                    agent,
+                    "--skill",
+                    "worktrail-sdd-workflow",
+                    "--args",
+                    "handoff:20260812-083302 route:F",
                 ]
                 if agent == "codex":
-                    arguments += ["--codex-home", "/tmp/worktrail-codex-test",
-                                  "--no-inherit-codex-auth"]
-                with patch.object(skill_dispatch, "bootstrap_codex_skills", return_value=True):
+                    arguments += [
+                        "--codex-home",
+                        "/tmp/worktrail-codex-test",
+                        "--no-inherit-codex-auth",
+                    ]
+                with patch.object(
+                    skill_dispatch, "bootstrap_codex_skills", return_value=True
+                ):
                     self.assertEqual(skill_dispatch.main(arguments), 0)
                 self.assertEqual(
                     run.call_args.kwargs["env"]["WORKTRAIL_SKILL_DISPATCH_DEPTH"], "1"
@@ -207,7 +273,9 @@ class WorkingDirectoryTargetingTests(unittest.TestCase):
         self.assertEqual(command[command.index("-C") + 1], "/wt")
 
     def test_opencode_receives_its_native_working_root_flag(self):
-        command = skill_dispatch.build_command("opencode", "openspec-propose", cwd="/wt")
+        command = skill_dispatch.build_command(
+            "opencode", "openspec-propose", cwd="/wt"
+        )
         self.assertEqual(command[command.index("--dir") + 1], "/wt")
 
     def test_claude_has_no_working_root_flag_so_argv_is_unchanged(self):
@@ -225,7 +293,12 @@ class WorkingDirectoryTargetingTests(unittest.TestCase):
             for agent in skill_dispatch.SUPPORTED_AGENTS:
                 with self.subTest(agent=agent):
                     arguments = [
-                        "--agent", agent, "--skill", "openspec-propose", "--cwd", tmp
+                        "--agent",
+                        agent,
+                        "--skill",
+                        "openspec-propose",
+                        "--cwd",
+                        tmp,
                     ]
                     if agent == "codex":
                         arguments.append("--no-inherit-codex-auth")
@@ -237,7 +310,14 @@ class WorkingDirectoryTargetingTests(unittest.TestCase):
         stderr = StringIO()
         with redirect_stderr(stderr):
             result = skill_dispatch.main(
-                ["--agent", "claude", "--skill", "openspec-propose", "--cwd", "/no/such/wt"]
+                [
+                    "--agent",
+                    "claude",
+                    "--skill",
+                    "openspec-propose",
+                    "--cwd",
+                    "/no/such/wt",
+                ]
             )
         self.assertEqual(result, 1)
         self.assertIn("/no/such/wt", stderr.getvalue())
@@ -261,7 +341,8 @@ class HeadlessWritePermissionTests(unittest.TestCase):
 
     def test_opencode_auto_approves_permissions(self):
         self.assertIn(
-            "--auto", skill_dispatch.build_command("opencode", "openspec-propose", write=True)
+            "--auto",
+            skill_dispatch.build_command("opencode", "openspec-propose", write=True),
         )
 
     def test_codex_worker_always_uses_socket_enabled_sandbox(self):
@@ -287,15 +368,21 @@ class CodexHomePreflightTests(unittest.TestCase):
         self.assertTrue(skill_dispatch._is_chatgpt_login_status(status))
 
     def test_chatgpt_status_rejects_similar_or_failed_output(self):
-        self.assertFalse(skill_dispatch._is_chatgpt_login_status(
-            subprocess.CompletedProcess([], 0, "Not logged in using ChatGPT\n", "")
-        ))
-        self.assertFalse(skill_dispatch._is_chatgpt_login_status(
-            subprocess.CompletedProcess([], 1, "Logged in using ChatGPT\n", "")
-        ))
+        self.assertFalse(
+            skill_dispatch._is_chatgpt_login_status(
+                subprocess.CompletedProcess([], 0, "Not logged in using ChatGPT\n", "")
+            )
+        )
+        self.assertFalse(
+            skill_dispatch._is_chatgpt_login_status(
+                subprocess.CompletedProcess([], 1, "Logged in using ChatGPT\n", "")
+            )
+        )
 
     def test_resolve_codex_home_prefers_explicit_override(self):
-        self.assertEqual(skill_dispatch.resolve_codex_home("/tmp/explicit"), "/tmp/explicit")
+        self.assertEqual(
+            skill_dispatch.resolve_codex_home("/tmp/explicit"), "/tmp/explicit"
+        )
 
     @patch.dict(os.environ, {"CODEX_HOME": "/tmp/inherited"}, clear=False)
     def test_resolve_codex_home_falls_back_to_inherited_env(self):
@@ -323,7 +410,11 @@ class CodexHomePreflightTests(unittest.TestCase):
             try:
                 inherited = os.path.join(tmp, "codex-home")
                 with patch.dict(os.environ, {"CODEX_HOME": inherited}, clear=True):
-                    with patch.object(skill_dispatch, "default_worktrail_codex_home", return_value="/tmp/worktrail-default"):
+                    with patch.object(
+                        skill_dispatch,
+                        "default_worktrail_codex_home",
+                        return_value="/tmp/worktrail-default",
+                    ):
                         self.assertEqual(
                             skill_dispatch.select_codex_home(None),
                             ("/tmp/worktrail-default", True),
@@ -337,9 +428,13 @@ class CodexHomePreflightTests(unittest.TestCase):
             (source / "worktrail-sdd-workflow").mkdir(parents=True)
             (source / "worktrail-go").mkdir()
             child = Path(tmp) / "child-home"
-            with patch.object(skill_dispatch, "_codex_skill_roots", return_value=[source]):
+            with patch.object(
+                skill_dispatch, "_codex_skill_roots", return_value=[source]
+            ):
                 skill_dispatch.ensure_codex_home(str(child))
-                self.assertTrue(skill_dispatch.bootstrap_codex_skills(str(child), "worktrail-go"))
+                self.assertTrue(
+                    skill_dispatch.bootstrap_codex_skills(str(child), "worktrail-go")
+                )
             self.assertTrue((child / "skills/worktrail-go").is_symlink())
             self.assertTrue((child / "skills/worktrail-sdd-workflow").is_symlink())
 
@@ -353,7 +448,9 @@ class CodexHomePreflightTests(unittest.TestCase):
             destination.parent.mkdir(parents=True)
             destination.symlink_to(root / "deleted-plugin-cache/worktrail-sdd-workflow")
 
-            with patch.object(skill_dispatch, "_codex_skill_roots", return_value=[source]):
+            with patch.object(
+                skill_dispatch, "_codex_skill_roots", return_value=[source]
+            ):
                 self.assertTrue(
                     skill_dispatch.bootstrap_codex_skills(
                         str(child), "worktrail-sdd-workflow"
@@ -373,8 +470,12 @@ class CodexHomePreflightTests(unittest.TestCase):
             marker = destination / "user-owned"
             marker.write_text("keep")
 
-            with patch.object(skill_dispatch, "_codex_skill_roots", return_value=[source]):
-                self.assertTrue(skill_dispatch.bootstrap_codex_skills(str(child), "worktrail-go"))
+            with patch.object(
+                skill_dispatch, "_codex_skill_roots", return_value=[source]
+            ):
+                self.assertTrue(
+                    skill_dispatch.bootstrap_codex_skills(str(child), "worktrail-go")
+                )
 
             self.assertEqual(marker.read_text(), "keep")
 
@@ -395,7 +496,9 @@ class CodexHomePreflightTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             secret = Path(tmp) / "auth.json"
             secret.write_text('{"token": "should-never-be-read"}')
-            with patch("builtins.open", side_effect=AssertionError("must not open files")):
+            with patch(
+                "builtins.open", side_effect=AssertionError("must not open files")
+            ):
                 self.assertIsNone(skill_dispatch.codex_home_write_remediation(tmp))
 
     @patch("worktrail.router.skill_dispatch.subprocess.run")
@@ -413,12 +516,25 @@ class CodexHomePreflightTests(unittest.TestCase):
                 subprocess.CompletedProcess([], 0, "Logged in using ChatGPT\n", ""),
                 subprocess.CompletedProcess([], 0),
             ]
-            with patch.dict(os.environ, {"CODEX_HOME": str(parent)}, clear=True), \
-                    patch.object(skill_dispatch, "bootstrap_codex_skills", return_value=True):
-                self.assertEqual(skill_dispatch.main([
-                    "--agent", "codex", "--skill", "x:y",
-                    "--codex-home", str(child),
-                ]), 0)
+            with (
+                patch.dict(os.environ, {"CODEX_HOME": str(parent)}, clear=True),
+                patch.object(
+                    skill_dispatch, "bootstrap_codex_skills", return_value=True
+                ),
+            ):
+                self.assertEqual(
+                    skill_dispatch.main(
+                        [
+                            "--agent",
+                            "codex",
+                            "--skill",
+                            "x:y",
+                            "--codex-home",
+                            str(child),
+                        ]
+                    ),
+                    0,
+                )
 
             self.assertEqual((child / "auth.json").read_bytes(), secret)
             self.assertEqual(
@@ -427,7 +543,9 @@ class CodexHomePreflightTests(unittest.TestCase):
             )
             self.assertEqual(stat.S_IMODE(child.stat().st_mode), 0o700)
             self.assertEqual(stat.S_IMODE((child / "auth.json").stat().st_mode), 0o600)
-            self.assertEqual(stat.S_IMODE((child / "config.toml").stat().st_mode), 0o600)
+            self.assertEqual(
+                stat.S_IMODE((child / "config.toml").stat().st_mode), 0o600
+            )
             self.assertNotIn("private-model", (child / "config.toml").read_text())
 
     @patch("worktrail.router.skill_dispatch.subprocess.run")
@@ -438,12 +556,26 @@ class CodexHomePreflightTests(unittest.TestCase):
             child = Path(tmp) / "child"
             parent.mkdir()
             (parent / "auth.json").write_text("must-not-be-read")
-            with patch.dict(os.environ, {"CODEX_HOME": str(parent)}, clear=True), \
-                    patch.object(skill_dispatch, "bootstrap_codex_skills", return_value=True):
-                self.assertEqual(skill_dispatch.main([
-                    "--agent", "codex", "--skill", "x:y", "--codex-home", str(child),
-                    "--no-inherit-codex-auth",
-                ]), 0)
+            with (
+                patch.dict(os.environ, {"CODEX_HOME": str(parent)}, clear=True),
+                patch.object(
+                    skill_dispatch, "bootstrap_codex_skills", return_value=True
+                ),
+            ):
+                self.assertEqual(
+                    skill_dispatch.main(
+                        [
+                            "--agent",
+                            "codex",
+                            "--skill",
+                            "x:y",
+                            "--codex-home",
+                            str(child),
+                            "--no-inherit-codex-auth",
+                        ]
+                    ),
+                    0,
+                )
             self.assertFalse((child / "auth.json").exists())
 
     @patch("worktrail.router.skill_dispatch.subprocess.run")
@@ -460,12 +592,20 @@ class CodexHomePreflightTests(unittest.TestCase):
                 [], 0, "Logged in using ChatGPT\n", ""
             )
             stderr = StringIO()
-            with patch.dict(os.environ, {"CODEX_HOME": str(parent)}, clear=True), \
-                    redirect_stderr(stderr):
-                result = skill_dispatch.main([
-                    "--agent", "codex", "--skill", "x:y",
-                    "--codex-home", str(child),
-                ])
+            with (
+                patch.dict(os.environ, {"CODEX_HOME": str(parent)}, clear=True),
+                redirect_stderr(stderr),
+            ):
+                result = skill_dispatch.main(
+                    [
+                        "--agent",
+                        "codex",
+                        "--skill",
+                        "x:y",
+                        "--codex-home",
+                        str(child),
+                    ]
+                )
             self.assertEqual(result, 1)
             self.assertIn("blocked_external_dependency", stderr.getvalue())
             self.assertNotIn("unique-secret-value", stderr.getvalue())
@@ -473,35 +613,55 @@ class CodexHomePreflightTests(unittest.TestCase):
 
     @patch("worktrail.router.skill_dispatch.subprocess.run")
     def test_auth_inheritance_requires_chatgpt_login(self, run):
-        run.return_value = subprocess.CompletedProcess([], 0, "Logged in using an API key\n", "")
+        run.return_value = subprocess.CompletedProcess(
+            [], 0, "Logged in using an API key\n", ""
+        )
         with tempfile.TemporaryDirectory() as tmp:
             parent = Path(tmp) / "parent"
             parent.mkdir()
             stderr = StringIO()
-            with patch.dict(os.environ, {"CODEX_HOME": str(parent)}, clear=True), \
-                    redirect_stderr(stderr):
-                result = skill_dispatch.main([
-                    "--agent", "codex", "--skill", "x:y",
-                    "--codex-home", str(Path(tmp) / "child"),
-                ])
+            with (
+                patch.dict(os.environ, {"CODEX_HOME": str(parent)}, clear=True),
+                redirect_stderr(stderr),
+            ):
+                result = skill_dispatch.main(
+                    [
+                        "--agent",
+                        "codex",
+                        "--skill",
+                        "x:y",
+                        "--codex-home",
+                        str(Path(tmp) / "child"),
+                    ]
+                )
             self.assertEqual(result, 1)
             self.assertIn("not authenticated with ChatGPT", stderr.getvalue())
 
     @patch("worktrail.router.skill_dispatch.subprocess.run")
     def test_auth_inheritance_rejects_group_readable_auth_file(self, run):
-        run.return_value = subprocess.CompletedProcess([], 0, "Logged in using ChatGPT\n", "")
+        run.return_value = subprocess.CompletedProcess(
+            [], 0, "Logged in using ChatGPT\n", ""
+        )
         with tempfile.TemporaryDirectory() as tmp:
             parent = Path(tmp) / "parent"
             parent.mkdir()
             (parent / "auth.json").write_text("secret")
             (parent / "auth.json").chmod(0o640)
             stderr = StringIO()
-            with patch.dict(os.environ, {"CODEX_HOME": str(parent)}, clear=True), \
-                    redirect_stderr(stderr):
-                result = skill_dispatch.main([
-                    "--agent", "codex", "--skill", "x:y",
-                    "--codex-home", str(Path(tmp) / "child"),
-                ])
+            with (
+                patch.dict(os.environ, {"CODEX_HOME": str(parent)}, clear=True),
+                redirect_stderr(stderr),
+            ):
+                result = skill_dispatch.main(
+                    [
+                        "--agent",
+                        "codex",
+                        "--skill",
+                        "x:y",
+                        "--codex-home",
+                        str(Path(tmp) / "child"),
+                    ]
+                )
             self.assertEqual(result, 1)
             self.assertIn("permissions must be 0600", stderr.getvalue())
 
@@ -513,9 +673,16 @@ class CodexHomePreflightTests(unittest.TestCase):
                 target = os.path.join(tmp, "nested", "codex-home")
                 stderr = StringIO()
                 with redirect_stderr(stderr):
-                    result = skill_dispatch.main([
-                        "--agent", "codex", "--skill", "x:y", "--codex-home", target,
-                    ])
+                    result = skill_dispatch.main(
+                        [
+                            "--agent",
+                            "codex",
+                            "--skill",
+                            "x:y",
+                            "--codex-home",
+                            target,
+                        ]
+                    )
                 self.assertEqual(result, 1)
                 self.assertIn(target, stderr.getvalue())
                 run.assert_not_called()
@@ -527,12 +694,21 @@ class CodexHomePreflightTests(unittest.TestCase):
         run.return_value.returncode = 0
         with tempfile.TemporaryDirectory() as tmp:
             target = os.path.join(tmp, "codex-home")
-            with patch.object(skill_dispatch, "bootstrap_codex_skills", return_value=True):
+            with patch.object(
+                skill_dispatch, "bootstrap_codex_skills", return_value=True
+            ):
                 self.assertEqual(
-                    skill_dispatch.main([
-                        "--agent", "codex", "--skill", "x:y", "--codex-home", target,
-                        "--no-inherit-codex-auth",
-                    ]),
+                    skill_dispatch.main(
+                        [
+                            "--agent",
+                            "codex",
+                            "--skill",
+                            "x:y",
+                            "--codex-home",
+                            target,
+                            "--no-inherit-codex-auth",
+                        ]
+                    ),
                     0,
                 )
             run.assert_called_once()
@@ -545,10 +721,17 @@ class CodexHomePreflightTests(unittest.TestCase):
                 target = os.path.join(tmp, "nested", "codex-home")
                 output = StringIO()
                 with redirect_stdout(output):
-                    result = skill_dispatch.main([
-                        "--agent", "codex", "--skill", "x:y", "--codex-home", target,
-                        "--dry-run",
-                    ])
+                    result = skill_dispatch.main(
+                        [
+                            "--agent",
+                            "codex",
+                            "--skill",
+                            "x:y",
+                            "--codex-home",
+                            target,
+                            "--dry-run",
+                        ]
+                    )
                 self.assertEqual(result, 0)
                 run.assert_not_called()
             finally:
@@ -560,7 +743,9 @@ class CodexHomePreflightTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             os.chmod(tmp, 0o555)
             try:
-                with patch.dict(os.environ, {"CODEX_HOME": os.path.join(tmp, "nested")}, clear=False):
+                with patch.dict(
+                    os.environ, {"CODEX_HOME": os.path.join(tmp, "nested")}, clear=False
+                ):
                     self.assertEqual(
                         skill_dispatch.main(["--agent", "opencode", "--skill", "x:y"]),
                         0,
@@ -608,27 +793,36 @@ class PendingDecisionBoundaryTests(unittest.TestCase):
     def _answer(self):
         self._ask()
         answered = decisions_mod.answer(
-            self.DECISION_ID, "extend: continue the existing spec",
+            self.DECISION_ID,
+            "extend: continue the existing spec",
             queue_base=self.queue_base,
         )
         self.assertEqual(answered["status"], "answered")
 
     def _dispatch_args(self, agent, extra=()):
         arguments = [
-            "--agent", agent, "--skill", "worktrail-sdd-workflow",
-            "--args", "route:F spec:demo",
+            "--agent",
+            agent,
+            "--skill",
+            "worktrail-sdd-workflow",
+            "--args",
+            "route:F spec:demo",
             *extra,
         ]
         if agent == "codex":
-            arguments += ["--codex-home", os.path.join(self.tmp.name, "codex-home"),
-                          "--no-inherit-codex-auth"]
+            arguments += [
+                "--codex-home",
+                os.path.join(self.tmp.name, "codex-home"),
+                "--no-inherit-codex-auth",
+            ]
         return arguments
 
     def _run_main(self, agent, extra=(), run_mock=None):
         stdout, stderr = StringIO(), StringIO()
         with redirect_stdout(stdout), redirect_stderr(stderr):
-            with patch.object(skill_dispatch, "bootstrap_codex_skills",
-                              return_value=True):
+            with patch.object(
+                skill_dispatch, "bootstrap_codex_skills", return_value=True
+            ):
                 rc = skill_dispatch.main(self._dispatch_args(agent, extra))
         if run_mock is not None:
             return rc, stdout.getvalue(), stderr.getvalue(), run_mock
@@ -641,17 +835,21 @@ class PendingDecisionBoundaryTests(unittest.TestCase):
             with self.subTest(agent=agent):
                 out = StringIO()
                 with redirect_stdout(out), redirect_stderr(StringIO()):
-                    rc = skill_dispatch.main([
-                        "--present-decision", self.DECISION_ID,
-                    ])
+                    rc = skill_dispatch.main(
+                        [
+                            "--present-decision",
+                            self.DECISION_ID,
+                        ]
+                    )
                 self.assertEqual(rc, 0)
                 envelope = json.loads(out.getvalue())
                 self.assertEqual(envelope["schema"], "worktrail.pending-decision")
                 self.assertEqual(envelope["version"], 1)
                 self.assertEqual(envelope["decision_id"], self.DECISION_ID)
                 self.assertEqual(envelope["status"], "open")
-                self.assertEqual(envelope["provenance"]["source"],
-                                 "check_spec_collision")
+                self.assertEqual(
+                    envelope["provenance"]["source"], "check_spec_collision"
+                )
         run.assert_not_called()
 
     def test_present_decision_includes_the_answer_once_answered(self):
@@ -691,7 +889,8 @@ class PendingDecisionBoundaryTests(unittest.TestCase):
     def test_resume_decision_on_open_record_is_refused_before_spawn(self, run):
         self._ask()
         rc, stdout, stderr, run = self._run_main(
-            "claude", ["--resume-decision", self.DECISION_ID], run)
+            "claude", ["--resume-decision", self.DECISION_ID], run
+        )
         self.assertEqual(rc, 2)
         envelope = json.loads(stdout)
         self.assertEqual(envelope["status"], "open")
@@ -716,15 +915,16 @@ class PendingDecisionBoundaryTests(unittest.TestCase):
         )
         self.assertEqual(replacement["status"], "created")
         superseded = decisions_mod.supersede(
-            self.DECISION_ID, "dec-replacement-0001",
+            self.DECISION_ID,
+            "dec-replacement-0001",
             queue_base=self.queue_base,
         )
         self.assertEqual(superseded["status"], "superseded")
         rc, stdout, stderr, run = self._run_main(
-            "claude", ["--resume-decision", self.DECISION_ID], run)
+            "claude", ["--resume-decision", self.DECISION_ID], run
+        )
         self.assertEqual(rc, 2)
-        self.assertEqual(json.loads(stdout)["superseded_by"],
-                         "dec-replacement-0001")
+        self.assertEqual(json.loads(stdout)["superseded_by"], "dec-replacement-0001")
         self.assertIn("superseded", stderr)
         run.assert_not_called()
 
@@ -735,7 +935,8 @@ class PendingDecisionBoundaryTests(unittest.TestCase):
         stderr = StringIO()
         with redirect_stdout(StringIO()), redirect_stderr(stderr):
             rc = skill_dispatch.main(
-                self._dispatch_args("claude", ["--resume-decision", prefix]))
+                self._dispatch_args("claude", ["--resume-decision", prefix])
+            )
         self.assertEqual(rc, 2)
         self.assertIn("exactly", stderr.getvalue())
         run.assert_not_called()
@@ -746,7 +947,8 @@ class PendingDecisionBoundaryTests(unittest.TestCase):
         stderr = StringIO()
         with redirect_stdout(StringIO()), redirect_stderr(stderr):
             rc = skill_dispatch.main(
-                self._dispatch_args("claude", ["--resume-decision", "dec-unknown"]))
+                self._dispatch_args("claude", ["--resume-decision", "dec-unknown"])
+            )
         self.assertEqual(rc, 2)
         self.assertIn("dec-unknown", stderr.getvalue())
         run.assert_not_called()
@@ -759,7 +961,8 @@ class PendingDecisionBoundaryTests(unittest.TestCase):
         for agent in skill_dispatch.SUPPORTED_AGENTS:
             with self.subTest(agent=agent):
                 rc, _stdout, _stderr = self._run_main(
-                    agent, ["--resume-decision", self.DECISION_ID])
+                    agent, ["--resume-decision", self.DECISION_ID]
+                )
                 self.assertEqual(rc, 0)
                 argv = run.call_args.args[0]
                 prompt = next(arg for arg in argv if "worktrail-sdd-workflow" in arg)
@@ -772,12 +975,15 @@ class PendingDecisionBoundaryTests(unittest.TestCase):
             f"decision:{self.DECISION_ID}",
         )
         command = skill_dispatch.build_command(
-            "opencode", "worktrail-sdd-workflow",
+            "opencode",
+            "worktrail-sdd-workflow",
             skill_dispatch.append_decision_token("route:F", self.DECISION_ID),
         )
         self.assertTrue(command[-1].endswith(f"decision:{self.DECISION_ID}"))
-        self.assertIn("Invocation: /worktrail-sdd-workflow route:F "
-                      f"decision:{self.DECISION_ID}", command[-1])
+        self.assertIn(
+            f"Invocation: /worktrail-sdd-workflow route:F decision:{self.DECISION_ID}",
+            command[-1],
+        )
 
     @patch("worktrail.router.skill_dispatch.subprocess.run")
     def test_dry_run_with_valid_resume_prints_command_and_spawns_nothing(self, run):
@@ -785,20 +991,22 @@ class PendingDecisionBoundaryTests(unittest.TestCase):
         self._answer()
         out = StringIO()
         with redirect_stdout(out), redirect_stderr(StringIO()):
-            with patch.object(skill_dispatch, "bootstrap_codex_skills",
-                              return_value=True):
+            with patch.object(
+                skill_dispatch, "bootstrap_codex_skills", return_value=True
+            ):
                 rc = skill_dispatch.main(
-                    self._dispatch_args("codex", ["--resume-decision",
-                                                  self.DECISION_ID, "--dry-run"]))
+                    self._dispatch_args(
+                        "codex", ["--resume-decision", self.DECISION_ID, "--dry-run"]
+                    )
+                )
         self.assertEqual(rc, 0)
         self.assertIn(f"decision:{self.DECISION_ID}", out.getvalue())
         run.assert_not_called()
 
     def test_missing_agent_or_skill_is_rejected_unless_presenting(self):
         stderr = StringIO()
-        with redirect_stderr(stderr):
-            with self.assertRaises(SystemExit) as ctx:
-                skill_dispatch.main([])
+        with redirect_stderr(stderr), self.assertRaises(SystemExit) as ctx:
+            skill_dispatch.main([])
         self.assertEqual(ctx.exception.code, 2)
         out = StringIO()
         with redirect_stdout(out), redirect_stderr(StringIO()):
@@ -879,14 +1087,18 @@ class SelectDispatchCellTests(unittest.TestCase):
         self.cache_path = Path(self.tmp.name) / "agent-capacity.json"
 
     def test_resolves_front_door_role_tier_over_default_tier(self):
-        cell = skill_dispatch.select_dispatch_cell(ROUTING, capacity_path=self.cache_path)
+        cell = skill_dispatch.select_dispatch_cell(
+            ROUTING, capacity_path=self.cache_path
+        )
         self.assertEqual(cell.target, "claude-sub")
         self.assertEqual(cell.harness, "claude")
         self.assertEqual(cell.model, "claude-sonnet-5")
 
     def test_falls_back_to_default_tier_when_role_has_no_tier(self):
         routing = {**ROUTING, "roles": {}, "default_tier": "t2-build"}
-        cell = skill_dispatch.select_dispatch_cell(routing, capacity_path=self.cache_path)
+        cell = skill_dispatch.select_dispatch_cell(
+            routing, capacity_path=self.cache_path
+        )
         self.assertEqual(cell.target, "claude-sub")
 
     def test_explicit_tier_argument_wins_over_role_and_default(self):
@@ -898,7 +1110,9 @@ class SelectDispatchCellTests(unittest.TestCase):
             },
         }
         cell = skill_dispatch.select_dispatch_cell(
-            routing, tier="t1-deep", capacity_path=self.cache_path,
+            routing,
+            tier="t1-deep",
+            capacity_path=self.cache_path,
         )
         self.assertEqual(cell.target, "codex-sub")
         self.assertEqual(cell.model, "gpt-5-high")
@@ -906,26 +1120,38 @@ class SelectDispatchCellTests(unittest.TestCase):
     def test_walks_past_a_capacity_gated_cell_to_the_next_target(self):
         now = agent_capacity._now()
         agent_capacity.record(
-            "claude-sub", "claude-sonnet-5", outcome="unavailable",
-            failure_class="transport", retry_after=now + timedelta(minutes=5),
-            path=self.cache_path, now=now,
+            "claude-sub",
+            "claude-sonnet-5",
+            outcome="unavailable",
+            failure_class="transport",
+            retry_after=now + timedelta(minutes=5),
+            path=self.cache_path,
+            now=now,
         )
-        cell = skill_dispatch.select_dispatch_cell(ROUTING, capacity_path=self.cache_path)
+        cell = skill_dispatch.select_dispatch_cell(
+            ROUTING, capacity_path=self.cache_path
+        )
         self.assertEqual(cell.target, "codex-sub")
         self.assertEqual(cell.model, "gpt-5-codex")
 
     def test_records_skipped_cells_onto_the_run_record(self):
         now = agent_capacity._now()
         agent_capacity.record(
-            "claude-sub", "claude-sonnet-5", outcome="unavailable",
-            failure_class="transport", retry_after=now + timedelta(minutes=5),
-            path=self.cache_path, now=now,
+            "claude-sub",
+            "claude-sonnet-5",
+            outcome="unavailable",
+            failure_class="transport",
+            retry_after=now + timedelta(minutes=5),
+            path=self.cache_path,
+            now=now,
         )
         run_result = _start_run(self.tmp.name)
         run_path = run_result["path"]
 
         skill_dispatch.select_dispatch_cell(
-            ROUTING, run_path=run_path, capacity_path=self.cache_path,
+            ROUTING,
+            run_path=run_path,
+            capacity_path=self.cache_path,
         )
 
         record = _load_run_record(Path(run_path))
@@ -937,18 +1163,37 @@ class SelectDispatchCellTests(unittest.TestCase):
 
     def test_no_capacity_anywhere_raises_no_execution_target(self):
         now = agent_capacity._now()
-        for target, model in (("claude-sub", "claude-sonnet-5"), ("codex-sub", "gpt-5-codex")):
+        for target, model in (
+            ("claude-sub", "claude-sonnet-5"),
+            ("codex-sub", "gpt-5-codex"),
+        ):
             agent_capacity.record(
-                target, model, outcome="unavailable", failure_class="billing",
-                retry_after=now + timedelta(minutes=5), path=self.cache_path, now=now,
+                target,
+                model,
+                outcome="unavailable",
+                failure_class="billing",
+                retry_after=now + timedelta(minutes=5),
+                path=self.cache_path,
+                now=now,
             )
         with self.assertRaises(NoExecutionTarget):
             skill_dispatch.select_dispatch_cell(ROUTING, capacity_path=self.cache_path)
 
 
 def _start_run(dir_path):
-    argv = ["start", "--repo", "/tmp/fake-repo", "--request", "dispatch a cell",
-            "--route", "F", "--risk", "low", "--dir", dir_path]
+    argv = [
+        "start",
+        "--repo",
+        "/tmp/fake-repo",
+        "--request",
+        "dispatch a cell",
+        "--route",
+        "F",
+        "--risk",
+        "low",
+        "--dir",
+        dir_path,
+    ]
     out = StringIO()
     with redirect_stdout(out):
         rc = run_record.main(argv)
@@ -968,7 +1213,8 @@ class MainRoutingIntegrationTests(unittest.TestCase):
         # main() has no --capacity-cache flag, so isolate the per-test cache
         # the same way agent_capacity.cache_path() already resolves overrides.
         env_patcher = patch.dict(
-            os.environ, {"WORKTRAIL_AGENT_CAPACITY_CACHE": str(self.cache_path)},
+            os.environ,
+            {"WORKTRAIL_AGENT_CAPACITY_CACHE": str(self.cache_path)},
         )
         env_patcher.start()
         self.addCleanup(env_patcher.stop)
@@ -976,12 +1222,19 @@ class MainRoutingIntegrationTests(unittest.TestCase):
     def _dry_run(self, extra_args):
         stdout, stderr = StringIO(), StringIO()
         with redirect_stdout(stdout), redirect_stderr(stderr):
-            rc = skill_dispatch.main([
-                "--skill", "worktrail-sdd-workflow", "--args", "route:F spec:demo",
-                "--routing", json.dumps(ROUTING),
-                "--json", "--dry-run",
-                *extra_args,
-            ])
+            rc = skill_dispatch.main(
+                [
+                    "--skill",
+                    "worktrail-sdd-workflow",
+                    "--args",
+                    "route:F spec:demo",
+                    "--routing",
+                    json.dumps(ROUTING),
+                    "--json",
+                    "--dry-run",
+                    *extra_args,
+                ]
+            )
         return rc, stdout.getvalue(), stderr.getvalue()
 
     def test_routing_resolves_agent_and_model_ahead_of_build_command(self):
@@ -993,8 +1246,9 @@ class MainRoutingIntegrationTests(unittest.TestCase):
         self.assertEqual(command[command.index("--model") + 1], "claude-sonnet-5")
 
     def test_explicit_agent_is_ignored_when_routing_resolves_a_different_harness(self):
-        rc, out, err = self._dry_run(["--agent", "opencode", "--tier", "t2-build",
-                                       "--prefer", "codex-sub"])
+        rc, out, err = self._dry_run(
+            ["--agent", "opencode", "--tier", "t2-build", "--prefer", "codex-sub"]
+        )
         self.assertEqual(rc, 0, err)
         command = json.loads(out)
         self.assertEqual(command[0], "codex")
@@ -1002,19 +1256,32 @@ class MainRoutingIntegrationTests(unittest.TestCase):
     def test_invalid_routing_json_fails_closed(self):
         stdout, stderr = StringIO(), StringIO()
         with redirect_stdout(stdout), redirect_stderr(stderr):
-            rc = skill_dispatch.main([
-                "--skill", "worktrail-sdd-workflow", "--routing", "{not json",
-                "--dry-run",
-            ])
+            rc = skill_dispatch.main(
+                [
+                    "--skill",
+                    "worktrail-sdd-workflow",
+                    "--routing",
+                    "{not json",
+                    "--dry-run",
+                ]
+            )
         self.assertEqual(rc, 1)
         self.assertIn("--routing must be valid JSON", stderr.getvalue())
 
     def test_no_capacity_anywhere_blocks_dispatch_without_spawning(self):
         now = agent_capacity._now()
-        for target, model in (("claude-sub", "claude-sonnet-5"), ("codex-sub", "gpt-5-codex")):
+        for target, model in (
+            ("claude-sub", "claude-sonnet-5"),
+            ("codex-sub", "gpt-5-codex"),
+        ):
             agent_capacity.record(
-                target, model, outcome="unavailable", failure_class="billing",
-                retry_after=now + timedelta(minutes=5), path=self.cache_path, now=now,
+                target,
+                model,
+                outcome="unavailable",
+                failure_class="billing",
+                retry_after=now + timedelta(minutes=5),
+                path=self.cache_path,
+                now=now,
             )
         rc, out, err = self._dry_run([])
         self.assertEqual(rc, 2)
@@ -1030,4 +1297,3 @@ class MainRoutingIntegrationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

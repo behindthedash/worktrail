@@ -8,7 +8,6 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
-from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -75,8 +74,20 @@ class ComputeLevelsTests(unittest.TestCase):
 
     def test_cycle_raises_value_error(self):
         tasks = [
-            {"id": "A", "deps": ["B"], "files": [], "kind": "impl", "status": "pending"},
-            {"id": "B", "deps": ["A"], "files": [], "kind": "impl", "status": "pending"},
+            {
+                "id": "A",
+                "deps": ["B"],
+                "files": [],
+                "kind": "impl",
+                "status": "pending",
+            },
+            {
+                "id": "B",
+                "deps": ["A"],
+                "files": [],
+                "kind": "impl",
+                "status": "pending",
+            },
         ]
         with self.assertRaises(ValueError) as cm:
             coordinator.compute_levels(tasks)
@@ -114,8 +125,20 @@ class RunnableFrontierInflightTests(unittest.TestCase):
                 "kind": "impl",
                 "status": "implementing",
             },
-            {"id": "T2", "deps": [], "files": ["src/b.ts"], "kind": "impl", "status": "pending"},
-            {"id": "T3", "deps": [], "files": ["src/c.ts"], "kind": "impl", "status": "pending"},
+            {
+                "id": "T2",
+                "deps": [],
+                "files": ["src/b.ts"],
+                "kind": "impl",
+                "status": "pending",
+            },
+            {
+                "id": "T3",
+                "deps": [],
+                "files": ["src/c.ts"],
+                "kind": "impl",
+                "status": "pending",
+            },
         ]
         # max_workers=2: T1 in-flight + 1 pending = cap reached
         frontier = coordinator.runnable_frontier(tasks, max_workers=2)
@@ -227,12 +250,20 @@ class DisjointBatchesTests(unittest.TestCase):
         return [[t["id"] for t in b] for b in batches]
 
     def test_file_disjoint_tasks_share_a_batch(self):
-        tasks = [_task("A", files=["a.ts"]), _task("B", files=["b.ts"]), _task("C", files=["c.ts"])]
-        self.assertEqual(self._ids(coordinator.disjoint_batches(tasks, 3)), [["A", "B", "C"]])
+        tasks = [
+            _task("A", files=["a.ts"]),
+            _task("B", files=["b.ts"]),
+            _task("C", files=["c.ts"]),
+        ]
+        self.assertEqual(
+            self._ids(coordinator.disjoint_batches(tasks, 3)), [["A", "B", "C"]]
+        )
 
     def test_same_file_tasks_split_across_batches(self):
         tasks = [_task("A", files=["shared.ts"]), _task("B", files=["shared.ts"])]
-        self.assertEqual(self._ids(coordinator.disjoint_batches(tasks, 3)), [["A"], ["B"]])
+        self.assertEqual(
+            self._ids(coordinator.disjoint_batches(tasks, 3)), [["A"], ["B"]]
+        )
 
     def test_capped_at_max_workers(self):
         tasks = [_task(x, files=[f"{x}.ts"]) for x in ("A", "B", "C", "D")]
@@ -247,18 +278,24 @@ class DisjointBatchesTests(unittest.TestCase):
             _task("B", files=["b.ts", "hub.ts"]),
             _task("C", files=["c.ts"]),
         ]
-        self.assertEqual(self._ids(coordinator.disjoint_batches(tasks, 3)), [["A", "C"], ["B"]])
+        self.assertEqual(
+            self._ids(coordinator.disjoint_batches(tasks, 3)), [["A", "C"], ["B"]]
+        )
 
     def test_fileless_tasks_never_conflict(self):
         tasks = [_task("A", files=[]), _task("B", files=[])]
-        self.assertEqual(self._ids(coordinator.disjoint_batches(tasks, 3)), [["A", "B"]])
+        self.assertEqual(
+            self._ids(coordinator.disjoint_batches(tasks, 3)), [["A", "B"]]
+        )
 
     def test_empty_input(self):
         self.assertEqual(coordinator.disjoint_batches([], 3), [])
 
     def test_zero_max_workers_treated_as_one(self):
         tasks = [_task("A", files=["a.ts"]), _task("B", files=["b.ts"])]
-        self.assertEqual(self._ids(coordinator.disjoint_batches(tasks, 0)), [["A"], ["B"]])
+        self.assertEqual(
+            self._ids(coordinator.disjoint_batches(tasks, 0)), [["A"], ["B"]]
+        )
 
 
 if __name__ == "__main__":

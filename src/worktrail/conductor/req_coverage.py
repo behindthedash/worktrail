@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import List, Set
 
 _SECTION_HEADER_RE = re.compile(r"^## (.+?)\s*$", re.MULTILINE)
 _REQUIREMENT_HEADER_RE = re.compile(r"^### Requirement:\s*(.+?)\s*$", re.MULTILINE)
@@ -48,14 +47,14 @@ def _iter_sections(spec_text: str):
         yield m.group(1).strip(), spec_text[start:end]
 
 
-def declared_requirement_names(delta_spec_text: str) -> List[str]:
+def declared_requirement_names(delta_spec_text: str) -> list[str]:
     """Requirement names a delta spec declares, per D1.
 
     Only `## ADDED Requirements` / `## MODIFIED Requirements` count. A name
     that appears solely under `## REMOVED Requirements` claims no new task
     coverage and is excluded.
     """
-    names: List[str] = []
+    names: list[str] = []
     for title, body in _iter_sections(delta_spec_text):
         if title not in _DECLARING_SECTIONS:
             continue
@@ -63,7 +62,7 @@ def declared_requirement_names(delta_spec_text: str) -> List[str]:
     return names
 
 
-def existing_requirement_names(main_spec_text: str) -> Set[str]:
+def existing_requirement_names(main_spec_text: str) -> set[str]:
     """Requirement names already present in a merged `openspec/specs/**/spec.md`.
 
     The main-spec schema has no ADDED/MODIFIED/REMOVED sectioning -- just a
@@ -73,7 +72,7 @@ def existing_requirement_names(main_spec_text: str) -> Set[str]:
     return {m.group(1).strip() for m in _REQUIREMENT_HEADER_RE.finditer(main_spec_text)}
 
 
-def is_openspec_change_dir(spec_dir: "str | Path") -> bool:
+def is_openspec_change_dir(spec_dir: str | Path) -> bool:
     """D4's format guard: True only for an `openspec/changes/<id>/` layout.
 
     A devkit-format `docs/specs/<id>/` directory has a single `spec.md` file
@@ -85,7 +84,7 @@ def is_openspec_change_dir(spec_dir: "str | Path") -> bool:
     return (spec_dir / "tasks.md").is_file() or (spec_dir / "specs").is_dir()
 
 
-def find_uncovered_requirements(spec_dir: "str | Path", repo: "str | Path") -> List[str]:
+def find_uncovered_requirements(spec_dir: str | Path, repo: str | Path) -> list[str]:
     """Newly-declared requirements this change's `tasks.md` never mentions.
 
     `spec_dir` is the OpenSpec change directory (`openspec/changes/<id>/`);
@@ -110,7 +109,7 @@ def find_uncovered_requirements(spec_dir: "str | Path", repo: "str | Path") -> L
     if not specs_dir.is_dir():
         return []
 
-    uncovered: List[str] = []
+    uncovered: list[str] = []
     for delta_spec in sorted(specs_dir.rglob("spec.md")):
         declared = declared_requirement_names(delta_spec.read_text(encoding="utf-8"))
         if not declared:
@@ -127,8 +126,10 @@ def find_uncovered_requirements(spec_dir: "str | Path", repo: "str | Path") -> L
         for name in declared:
             if name in existing_names:
                 continue
-            if _normalize_whitespace(name).lower() not in tasks_text_lower \
-                    and name not in uncovered:
+            if (
+                _normalize_whitespace(name).lower() not in tasks_text_lower
+                and name not in uncovered
+            ):
                 uncovered.append(name)
 
     return uncovered

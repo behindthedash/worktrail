@@ -33,6 +33,7 @@ Usage:
   branch_selfcheck.py --repo /path/to/repo [--json]
   branch_selfcheck.py --repos-root ~/projects [--json]   # sweep every repo
 """
+
 from __future__ import annotations
 
 import argparse
@@ -40,7 +41,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .policy import load_policy
 from .policy_selfcheck import discover_repo_names
@@ -60,11 +61,14 @@ def _base_branch_for(repo: Path) -> str:
         return "dev"
 
 
-def _resolve_ref_sha(ref: str, cwd: Path) -> Optional[str]:
+def _resolve_ref_sha(ref: str, cwd: Path) -> str | None:
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--verify", ref],
-            cwd=str(cwd), capture_output=True, text=True, timeout=5,
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -82,9 +86,23 @@ def _has_merged_pr(branch: str, cwd: Path) -> bool:
     returns anything unparseable."""
     try:
         result = subprocess.run(
-            ["gh", "pr", "list", "--state", "merged", "--head", branch,
-             "--json", "number", "--limit", "1"],
-            cwd=str(cwd), capture_output=True, text=True, timeout=10,
+            [
+                "gh",
+                "pr",
+                "list",
+                "--state",
+                "merged",
+                "--head",
+                branch,
+                "--json",
+                "number",
+                "--limit",
+                "1",
+            ],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
@@ -111,14 +129,18 @@ def _has_merged_indirectly(branch: str, cwd: Path) -> bool:
     try:
         result = subprocess.run(
             ["git", "branch", "--format=%(refname:short)", "--contains", branch],
-            cwd=str(cwd), capture_output=True, text=True, timeout=10,
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
     if result.returncode != 0:
         return False
     containers = [
-        line.strip() for line in result.stdout.splitlines()
+        line.strip()
+        for line in result.stdout.splitlines()
         if line.strip() and line.strip() != branch
     ]
     for other in containers:
@@ -128,7 +150,8 @@ def _has_merged_indirectly(branch: str, cwd: Path) -> bool:
         try:
             ancestor = subprocess.run(
                 ["git", "merge-base", "--is-ancestor", other_sha, "HEAD"],
-                cwd=str(cwd), timeout=5,
+                cwd=str(cwd),
+                timeout=5,
             )
         except (OSError, subprocess.TimeoutExpired):
             continue
@@ -139,7 +162,7 @@ def _has_merged_indirectly(branch: str, cwd: Path) -> bool:
     return False
 
 
-def merge_method(branch: str, cwd: Path) -> Optional[str]:
+def merge_method(branch: str, cwd: Path) -> str | None:
     """The first classification tier that proves `branch` is fully merged
     into `cwd`'s current HEAD, or None if none of them do (fails closed).
 
@@ -160,7 +183,8 @@ def merge_method(branch: str, cwd: Path) -> Optional[str]:
     try:
         ancestor = subprocess.run(
             ["git", "merge-base", "--is-ancestor", branch_sha, "HEAD"],
-            cwd=str(cwd), timeout=5,
+            cwd=str(cwd),
+            timeout=5,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -170,7 +194,10 @@ def merge_method(branch: str, cwd: Path) -> Optional[str]:
     try:
         cherry = subprocess.run(
             ["git", "cherry", "HEAD", branch_sha],
-            cwd=str(cwd), capture_output=True, text=True, timeout=5,
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -188,11 +215,14 @@ def merge_method(branch: str, cwd: Path) -> Optional[str]:
     return None
 
 
-def _local_branches(repo: Path) -> List[str]:
+def _local_branches(repo: Path) -> list[str]:
     try:
         result = subprocess.run(
             ["git", "branch", "--format=%(refname:short)"],
-            cwd=str(repo), capture_output=True, text=True, timeout=10,
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
     except (OSError, subprocess.TimeoutExpired):
         return []
@@ -201,27 +231,30 @@ def _local_branches(repo: Path) -> List[str]:
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
-def _worktree_branches(repo: Path) -> Dict[str, Path]:
+def _worktree_branches(repo: Path) -> dict[str, Path]:
     """Map every branch checked out in one of `repo`'s worktrees (including
     the canonical checkout itself) to that worktree's path, parsed from
     `git worktree list --porcelain`."""
     try:
         result = subprocess.run(
             ["git", "worktree", "list", "--porcelain"],
-            cwd=str(repo), capture_output=True, text=True, timeout=10,
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
     except (OSError, subprocess.TimeoutExpired):
         return {}
     if result.returncode != 0:
         return {}
-    mapping: Dict[str, Path] = {}
-    current_path: Optional[Path] = None
+    mapping: dict[str, Path] = {}
+    current_path: Path | None = None
     for line in result.stdout.splitlines():
         if line.startswith("worktree "):
-            current_path = Path(line[len("worktree "):].strip())
+            current_path = Path(line[len("worktree ") :].strip())
         elif line.startswith("branch ") and current_path is not None:
-            ref = line[len("branch "):].strip()
-            branch = ref[len("refs/heads/"):] if ref.startswith("refs/heads/") else ref
+            ref = line[len("branch ") :].strip()
+            branch = ref.removeprefix("refs/heads/")
             mapping[branch] = current_path
     return mapping
 
@@ -230,7 +263,10 @@ def _is_worktree_dirty(worktree: Path) -> bool:
     try:
         result = subprocess.run(
             ["git", "status", "--porcelain"],
-            cwd=str(worktree), capture_output=True, text=True, timeout=10,
+            cwd=str(worktree),
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
     except (OSError, subprocess.TimeoutExpired):
         return True  # unresolvable -- fail closed, never prune
@@ -239,7 +275,7 @@ def _is_worktree_dirty(worktree: Path) -> bool:
     return bool(result.stdout.strip())
 
 
-def check_repo(repo: Path) -> Dict[str, Any]:
+def check_repo(repo: Path) -> dict[str, Any]:
     """Findings for one repo's local branches. Empty `prunable` = clean.
 
     A branch is `prunable` only when it is neither the repo's resolved base
@@ -249,7 +285,7 @@ def check_repo(repo: Path) -> Dict[str, Any]:
     see `prune_stale_branch` in `drain.py`), and `merge_method` proves it is
     fully merged into the repo's current HEAD."""
     repo = Path(repo)
-    result: Dict[str, Any] = {"repo": repo.name, "path": str(repo), "prunable": []}
+    result: dict[str, Any] = {"repo": repo.name, "path": str(repo), "prunable": []}
     if not (repo / ".git").exists():
         return result
     base = _base_branch_for(repo)
@@ -267,15 +303,17 @@ def check_repo(repo: Path) -> Dict[str, Any]:
         method = merge_method(branch, repo)
         if method is None:
             continue
-        result["prunable"].append({
-            "branch": branch,
-            "worktree_path": str(worktree) if worktree else None,
-            "method": method,
-        })
+        result["prunable"].append(
+            {
+                "branch": branch,
+                "worktree_path": str(worktree) if worktree else None,
+                "method": method,
+            }
+        )
     return result
 
 
-def sweep(repos_root: Path) -> List[Dict[str, Any]]:
+def sweep(repos_root: Path) -> list[dict[str, Any]]:
     """check_repo() for every repo under `repos_root` that has prunable branches."""
     names = discover_repo_names(repos_root)
     results = []
@@ -286,7 +324,7 @@ def sweep(repos_root: Path) -> List[Dict[str, Any]]:
     return results
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--repo", help="single repo to check")
     p.add_argument("--repos-root", help="sweep every repo under this directory")
@@ -310,7 +348,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(json.dumps({"results": results, "flagged": len(flagged)}, indent=2))
     else:
         if not flagged:
-            print(f"branch_selfcheck: {len(results)} repo(s) checked, no prunable branches")
+            print(
+                f"branch_selfcheck: {len(results)} repo(s) checked, no prunable branches"
+            )
         for r in flagged:
             print(f"{r['repo']}:")
             for f in r["prunable"]:

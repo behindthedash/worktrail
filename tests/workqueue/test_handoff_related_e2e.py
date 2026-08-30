@@ -18,7 +18,6 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Optional
 
 from worktrail.workqueue import work_queue as q
 
@@ -27,8 +26,8 @@ def _brief(
     focus: str,
     brief_id: str = "",
     extra: str = "",
-    blocked_by: Optional[list] = None,
-    related: Optional[list] = None,
+    blocked_by: list | None = None,
+    related: list | None = None,
     repo: str = "",
 ) -> str:
     """Generate a brief's frontmatter + body."""
@@ -90,8 +89,14 @@ class E2ETestBase(unittest.TestCase):
     def score(self, brief_path: Path) -> dict:
         """Run score_candidates.py as subprocess and return parsed JSON."""
         result = subprocess.run(
-            [sys.executable, "-m", "worktrail.workqueue.score_candidates",
-             str(brief_path), "--queue-dir", str(self.base)],
+            [
+                sys.executable,
+                "-m",
+                "worktrail.workqueue.score_candidates",
+                str(brief_path),
+                "--queue-dir",
+                str(self.base),
+            ],
             capture_output=True,
             text=True,
         )
@@ -138,7 +143,8 @@ class TestPrimaryFlowA(E2ETestBase):
         # Check if there are any candidates (auto_link or confirm)
         all_candidates = candidates["auto_link"] + candidates["confirm"]
         self.assertTrue(
-            len(all_candidates) > 0, "Expected at least one candidate (auto_link or confirm)"
+            len(all_candidates) > 0,
+            "Expected at least one candidate (auto_link or confirm)",
         )
 
         # Link the first candidate if available
@@ -295,7 +301,9 @@ class TestSlugSuffixResolve(E2ETestBase):
 
         # Verify brief moved to picked/
         self.assertTrue(
-            (self.picked / "20260604-113700-handoff-related-field-autodetect.md").exists()
+            (
+                self.picked / "20260604-113700-handoff-related-field-autodetect.md"
+            ).exists()
         )
 
 

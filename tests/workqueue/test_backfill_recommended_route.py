@@ -17,14 +17,20 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 from unittest.mock import patch
 
-from worktrail.workqueue import work_queue as q
 from worktrail.workqueue import backfill_recommended_route as br
+from worktrail.workqueue import work_queue as q
 
 
-def _write_brief(dirpath: Path, filename: str, *, focus: str = "", recommended_route: Optional[str] = None) -> Path:
+def _write_brief(
+    dirpath: Path,
+    filename: str,
+    *,
+    focus: str = "",
+    recommended_route: str | None = None,
+) -> Path:
     fm = [f"id: {filename[:-3]}", f'focus: "{focus}"', "status: queued"]
     if recommended_route:
         fm.append(f"recommended-route: {recommended_route}")
@@ -34,7 +40,9 @@ def _write_brief(dirpath: Path, filename: str, *, focus: str = "", recommended_r
     return path
 
 
-def _classify_result(route: str, confidence: str = "high", ambiguous=None) -> Dict[str, Any]:
+def _classify_result(
+    route: str, confidence: str = "high", ambiguous=None
+) -> dict[str, Any]:
     return {
         "route": route,
         "route_name": "stub",
@@ -59,7 +67,12 @@ class BuildPreviewTestCase(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_skips_already_stamped_brief(self):
-        _write_brief(self.queue_dir, "20260101-000001-a.md", focus="fix the thing", recommended_route="F")
+        _write_brief(
+            self.queue_dir,
+            "20260101-000001-a.md",
+            focus="fix the thing",
+            recommended_route="F",
+        )
         with patch.object(br, "classify_focus") as mock_classify:
             result = br.build_preview(self.queue_dir, Path("/fake/classify.py"))
         mock_classify.assert_not_called()
@@ -67,7 +80,9 @@ class BuildPreviewTestCase(unittest.TestCase):
         self.assertEqual(result["skipped"], [])
 
     def test_skips_brief_with_no_focus_text(self):
-        (self.queue_dir / "20260101-000002-b.md").write_text("---\nid: b\nstatus: queued\n---\n\nno focus section\n", encoding="utf-8")
+        (self.queue_dir / "20260101-000002-b.md").write_text(
+            "---\nid: b\nstatus: queued\n---\n\nno focus section\n", encoding="utf-8"
+        )
         result = br.build_preview(self.queue_dir, Path("/fake/classify.py"))
         self.assertEqual(result["proposals"], [])
         self.assertEqual(len(result["skipped"]), 1)
@@ -75,15 +90,23 @@ class BuildPreviewTestCase(unittest.TestCase):
 
     def test_skips_low_confidence(self):
         _write_brief(self.queue_dir, "20260101-000003-c.md", focus="do something vague")
-        with patch.object(br, "classify_focus", return_value=_classify_result("A", confidence="low")):
+        with patch.object(
+            br, "classify_focus", return_value=_classify_result("A", confidence="low")
+        ):
             result = br.build_preview(self.queue_dir, Path("/fake/classify.py"))
         self.assertEqual(result["proposals"], [])
         self.assertEqual(len(result["skipped"]), 1)
         self.assertIn("confidence='low'", result["skipped"][0]["reason"])
 
     def test_skips_ambiguous_even_at_high_confidence(self):
-        _write_brief(self.queue_dir, "20260101-000004-d.md", focus="fix or change the spec")
-        with patch.object(br, "classify_focus", return_value=_classify_result("F", confidence="high", ambiguous=["F", "G"])):
+        _write_brief(
+            self.queue_dir, "20260101-000004-d.md", focus="fix or change the spec"
+        )
+        with patch.object(
+            br,
+            "classify_focus",
+            return_value=_classify_result("F", confidence="high", ambiguous=["F", "G"]),
+        ):
             result = br.build_preview(self.queue_dir, Path("/fake/classify.py"))
         self.assertEqual(result["proposals"], [])
         self.assertEqual(len(result["skipped"]), 1)
@@ -97,8 +120,12 @@ class BuildPreviewTestCase(unittest.TestCase):
         self.assertIn("classify.py errored", result["skipped"][0]["reason"])
 
     def test_proposes_high_confidence_unambiguous(self):
-        _write_brief(self.queue_dir, "20260101-000006-f.md", focus="fix the failing test")
-        with patch.object(br, "classify_focus", return_value=_classify_result("F", confidence="high")):
+        _write_brief(
+            self.queue_dir, "20260101-000006-f.md", focus="fix the failing test"
+        )
+        with patch.object(
+            br, "classify_focus", return_value=_classify_result("F", confidence="high")
+        ):
             result = br.build_preview(self.queue_dir, Path("/fake/classify.py"))
         self.assertEqual(len(result["proposals"]), 1)
         self.assertEqual(result["proposals"][0]["id"], "20260101-000006-f")
@@ -106,8 +133,14 @@ class BuildPreviewTestCase(unittest.TestCase):
         self.assertEqual(result["skipped"], [])
 
     def test_proposes_medium_confidence_unambiguous(self):
-        _write_brief(self.queue_dir, "20260101-000007-g.md", focus="plan the new feature")
-        with patch.object(br, "classify_focus", return_value=_classify_result("C", confidence="medium")):
+        _write_brief(
+            self.queue_dir, "20260101-000007-g.md", focus="plan the new feature"
+        )
+        with patch.object(
+            br,
+            "classify_focus",
+            return_value=_classify_result("C", confidence="medium"),
+        ):
             result = br.build_preview(self.queue_dir, Path("/fake/classify.py"))
         self.assertEqual(len(result["proposals"]), 1)
 
@@ -126,15 +159,26 @@ class ExecuteApplyTestCase(unittest.TestCase):
         os.environ.pop("WORK_QUEUE_DIR", None)
         self._tmp.cleanup()
 
-    def _preview_for(self, path: Path, route: str = "F") -> Dict[str, Any]:
-        return {"proposals": [{
-            "id": path.stem, "path": str(path), "focus": "fix the thing",
-            "proposed_route": route, "route_name": "defect-repair",
-            "confidence": "high", "classify_reason": "stub",
-        }], "skipped": []}
+    def _preview_for(self, path: Path, route: str = "F") -> dict[str, Any]:
+        return {
+            "proposals": [
+                {
+                    "id": path.stem,
+                    "path": str(path),
+                    "focus": "fix the thing",
+                    "proposed_route": route,
+                    "route_name": "defect-repair",
+                    "confidence": "high",
+                    "classify_reason": "stub",
+                }
+            ],
+            "skipped": [],
+        }
 
     def test_decline_writes_nothing(self):
-        path = _write_brief(self.queue_dir, "20260101-000001-a.md", focus="fix the thing")
+        path = _write_brief(
+            self.queue_dir, "20260101-000001-a.md", focus="fix the thing"
+        )
         preview = self._preview_for(path)
         result = br.execute_apply(preview, self.queue_dir, confirm=False)
         self.assertEqual(result["stamped"], [])
@@ -142,7 +186,9 @@ class ExecuteApplyTestCase(unittest.TestCase):
         self.assertNotIn("recommended-route", path.read_text(encoding="utf-8"))
 
     def test_confirm_stamps_and_preserves_existing_fields(self):
-        path = _write_brief(self.queue_dir, "20260101-000001-a.md", focus="fix the thing")
+        path = _write_brief(
+            self.queue_dir, "20260101-000001-a.md", focus="fix the thing"
+        )
         preview = self._preview_for(path, route="F")
         result = br.execute_apply(preview, self.queue_dir, confirm=True)
         self.assertEqual(result["stamped"], ["20260101-000001-a"])
@@ -154,7 +200,9 @@ class ExecuteApplyTestCase(unittest.TestCase):
         self.assertEqual(fm["status"], "queued")
 
     def test_confirm_is_idempotent_does_not_clobber(self):
-        path = _write_brief(self.queue_dir, "20260101-000001-a.md", focus="fix the thing")
+        path = _write_brief(
+            self.queue_dir, "20260101-000001-a.md", focus="fix the thing"
+        )
         preview = self._preview_for(path, route="F")
         br.execute_apply(preview, self.queue_dir, confirm=True)
         # Re-run the SAME (now-stale) preview -- must not clobber the existing stamp.
@@ -166,7 +214,9 @@ class ExecuteApplyTestCase(unittest.TestCase):
         self.assertEqual(fm["recommended-route"], "F")
 
     def test_confirm_skips_brief_removed_since_preview(self):
-        path = _write_brief(self.queue_dir, "20260101-000001-a.md", focus="fix the thing")
+        path = _write_brief(
+            self.queue_dir, "20260101-000001-a.md", focus="fix the thing"
+        )
         preview = self._preview_for(path)
         path.unlink()  # simulate the brief being claimed/moved between preview and execute
         result = br.execute_apply(preview, self.queue_dir, confirm=True)

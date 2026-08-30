@@ -45,7 +45,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from ..router.gitnexus_preflight import check as gitnexus_check
 from ..router.gitnexus_preflight import prompt_note as gitnexus_prompt_note
@@ -73,7 +73,9 @@ GROUP_ROLES = (ROLE_RESOLVE, ROLE_CI_FIX, ROLE_ASSEMBLY_RESOLVE)
 # agent -- only a per-role override or the run default do -- so a review
 # verdict, PR-conflict resolution, or CI fix stays independent of whichever
 # agent/tier implemented the task. Consulted by agent_for()'s precedence.
-JUDGMENT_ROLES = frozenset({ROLE_REVIEW, ROLE_RESOLVE, ROLE_CI_FIX, ROLE_ASSEMBLY_RESOLVE})
+JUDGMENT_ROLES = frozenset(
+    {ROLE_REVIEW, ROLE_RESOLVE, ROLE_CI_FIX, ROLE_ASSEMBLY_RESOLVE}
+)
 
 # Locked decision 13.3: review uses a DIFFERENT agent type than the implementer.
 # DEFAULT_IMPLEMENT_AGENT is no longer hardcoded — it's resolved from the
@@ -90,7 +92,7 @@ MAX_REVIEW_RETRIES = 3
 # --------------------------------------------------------------------------- #
 # Agent selection
 # --------------------------------------------------------------------------- #
-def _entry(value: Any) -> Dict[str, Any]:
+def _entry(value: Any) -> dict[str, Any]:
     """Normalize one agent-resolution entry into
     `{"agent_cli", "agent_model", "effort"}`.
 
@@ -116,14 +118,14 @@ def _entry(value: Any) -> Dict[str, Any]:
 
 def agent_for(
     role: str,
-    task: Dict[str, Any],
+    task: dict[str, Any],
     reviewer_agent: str = DEFAULT_REVIEWER_AGENT,
     default_agent: str | None = None,
     *,
-    role_agent_map: Optional[Dict[str, Any]] = None,
-    tier_map: Optional[Dict[Tuple[Any, Any], Any]] = None,
-    purpose_tier_map: Optional[Dict[str, str]] = None,
-) -> Dict[str, Any]:
+    role_agent_map: dict[str, Any] | None = None,
+    tier_map: dict[tuple[Any, Any], Any] | None = None,
+    purpose_tier_map: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """Resolve `{"agent_cli", "agent_model", "effort"}` for one spawn -- the
     canonical per-spawn agent-resolution function (REQ-015/016/017). Pure,
     stdlib-only, deterministic (REQ-NR002): same inputs always produce the
@@ -183,7 +185,11 @@ def agent_for(
         if role == ROLE_REVIEW:
             # independent reviewer (13.3)
             return {"agent_cli": reviewer_agent, "agent_model": None, "effort": None}
-        return {"agent_cli": default_agent or "claude", "agent_model": None, "effort": None}
+        return {
+            "agent_cli": default_agent or "claude",
+            "agent_model": None,
+            "effort": None,
+        }
 
     # implement / fix / cleanup
     if task.get("agent"):
@@ -219,13 +225,13 @@ REVIEW_DEFAULT_TIER = "t1-deep"
 
 def tier_for(
     role: str,
-    task: Dict[str, Any],
+    task: dict[str, Any],
     *,
-    roles: Optional[Dict[str, Dict[str, Any]]] = None,
-    purposes: Optional[Dict[str, str]] = None,
-    default_tier: Optional[str] = None,
-    available_tiers: Optional[Any] = None,
-) -> Tuple[Optional[str], Optional[str], bool]:
+    roles: dict[str, dict[str, Any]] | None = None,
+    purposes: dict[str, str] | None = None,
+    default_tier: str | None = None,
+    available_tiers: Any | None = None,
+) -> tuple[str | None, str | None, bool]:
     """Resolve `(tier, prefer, independent)` for one spawn -- the tier-row
     name `select_cell()` walks, an optional target to prefer within it, and
     whether the implementer's own harness should be excluded from it
@@ -267,8 +273,16 @@ def tier_for(
 
     if role in JUDGMENT_ROLES:
         entry = roles.get(role)
-        if isinstance(entry, dict) and isinstance(entry.get("tier"), str) and entry["tier"]:
-            return entry["tier"], entry.get("prefer"), bool(entry.get("independent", False))
+        if (
+            isinstance(entry, dict)
+            and isinstance(entry.get("tier"), str)
+            and entry["tier"]
+        ):
+            return (
+                entry["tier"],
+                entry.get("prefer"),
+                bool(entry.get("independent", False)),
+            )
         if role == ROLE_REVIEW:
             if available_tiers is None or REVIEW_DEFAULT_TIER in available_tiers:
                 return REVIEW_DEFAULT_TIER, None, True
@@ -280,8 +294,11 @@ def tier_for(
     if purpose and purpose in purposes:
         return purposes[purpose], None, False
     complexity = task.get("complexity")
-    if isinstance(complexity, str) and complexity and (
-            available_tiers is None or complexity in available_tiers):
+    if (
+        isinstance(complexity, str)
+        and complexity
+        and (available_tiers is None or complexity in available_tiers)
+    ):
         return complexity, None, False
     return default_tier, None, False
 
@@ -361,7 +378,7 @@ _NO_BACKGROUND_TASK_RULES = (
 )
 
 
-def _spec_prefix(ctx: Dict[str, Any]) -> str:
+def _spec_prefix(ctx: dict[str, Any]) -> str:
     """Spec-root prefix for this run's task format (see build_worker_prompt)."""
     return ctx.get("spec_root_prefix") or "docs/specs/"
 
@@ -447,19 +464,23 @@ def _task_brief(ctx: dict, task_id: str) -> tuple:
     path = path_fmt.format(task_id=task_id)
     if not anchor:
         return path, "", ""
-    return path, (
-        f" — your brief is the `{anchor}` item ONLY; the rest of this file "
-        f"belongs to other workers, do not act on it"
-    ), anchor
+    return (
+        path,
+        (
+            f" — your brief is the `{anchor}` item ONLY; the rest of this file "
+            f"belongs to other workers, do not act on it"
+        ),
+        anchor,
+    )
 
 
 def build_worker_prompt(
     role: str,
-    task: Dict[str, Any],
-    ctx: Dict[str, Any],
-    extra_reads: List[str] | None = None,
-    by_id: Dict[str, Any] | None = None,
-    external_deps_by_ref: Dict[str, Any] | None = None,
+    task: dict[str, Any],
+    ctx: dict[str, Any],
+    extra_reads: list[str] | None = None,
+    by_id: dict[str, Any] | None = None,
+    external_deps_by_ref: dict[str, Any] | None = None,
 ) -> str:
     """Render the filled cold-worker brief. ctx: spec_id, spec_folder,
     worktree_path, branch, base_commit (review), reviewer_agent (optional),
@@ -639,7 +660,7 @@ def build_worker_prompt(
 # --------------------------------------------------------------------------- #
 # Group-level prompt building (post-PR verify workers: resolve | ci-fix)
 # --------------------------------------------------------------------------- #
-def build_group_prompt(role: str, group: Dict[str, Any], ctx: Dict[str, Any]) -> str:
+def build_group_prompt(role: str, group: dict[str, Any], ctx: dict[str, Any]) -> str:
     """Render the cold-worker brief for a GROUP-level verify worker.
 
     role  -- ROLE_RESOLVE (PR conflicts with base) or ROLE_CI_FIX (CI is red).
@@ -702,7 +723,8 @@ def build_group_prompt(role: str, group: Dict[str, Any], ctx: Dict[str, Any]) ->
         ]
     else:  # ROLE_CI_FIX
         action = [
-            f"CI is FAILING on the open PR for group `{name}` (branch `{gb}`, " f"tasks {tasks}).",
+            f"CI is FAILING on the open PR for group `{name}` (branch `{gb}`, "
+            f"tasks {tasks}).",
             f"Failing checks: {ctx.get('failing_checks', '(unknown)')}",
             "Failure log (tail):",
             "------------------------------------------------------------------",
@@ -740,7 +762,8 @@ def build_group_prompt(role: str, group: Dict[str, Any], ctx: Dict[str, Any]) ->
 
     return "\n".join(
         [
-            f"You are the {role.upper()} worker for group `{name}` of spec " f"{ctx['spec_id']}.",
+            f"You are the {role.upper()} worker for group `{name}` of spec "
+            f"{ctx['spec_id']}.",
             "",
             f"Worktree (operate ONLY here): {ctx['worktree_path']}",
             branch_line,
@@ -774,7 +797,7 @@ def build_group_prompt(role: str, group: Dict[str, Any], ctx: Dict[str, Any]) ->
 # --------------------------------------------------------------------------- #
 def build_stack_conflict_prompt(
     spec_id: str,
-    task: Dict[str, Any],
+    task: dict[str, Any],
     conflicting_branch: str,
     worktree_path: Any,
 ) -> str:
@@ -863,12 +886,12 @@ def _decision_helpers():
 def validate_resolved_decision_input(
     envelope: Any,
     *,
-    expected_source: Optional[str] = None,
-    expected_repo: Optional[str] = None,
-    expected_subject: Optional[str] = None,
-    max_age_seconds: Optional[float] = None,
-    now: Optional[dt.datetime] = None,
-) -> Dict[str, Any]:
+    expected_source: str | None = None,
+    expected_repo: str | None = None,
+    expected_subject: str | None = None,
+    max_age_seconds: float | None = None,
+    now: dt.datetime | None = None,
+) -> dict[str, Any]:
     """The dispatch-side gate: may this run act on this decision's answer?
 
     Accepts ONLY a fully readable `worktrail.pending-decision` envelope in
@@ -884,17 +907,20 @@ def validate_resolved_decision_input(
     if parse is None or validate is None:
         raise DecisionDispatchError(
             "decision-envelope primitives are unavailable; refusing to "
-            "dispatch on a pending-decision envelope (fail-closed)")
+            "dispatch on a pending-decision envelope (fail-closed)"
+        )
     if envelope is None:
         raise DecisionDispatchError(
             "no pending-decision envelope was supplied: dispatch requires a "
-            "resolved, provenance-validated decision to resume on")
+            "resolved, provenance-validated decision to resume on"
+        )
     try:
         parsed = parse(envelope)
-    except Exception as exc:  # noqa: BLE001 - refuse anything not fully readable
+    except Exception as exc:
         raise DecisionDispatchError(
             f"dispatch input is not a readable worktrail.pending-decision "
-            f"envelope: {exc}") from exc
+            f"envelope: {exc}"
+        ) from exc
     verdict = validate(
         parsed,
         expected_source=expected_source,
@@ -906,14 +932,15 @@ def validate_resolved_decision_input(
     if not verdict.get("valid"):
         raise DecisionDispatchError(
             f"refusing to dispatch on decision {parsed.get('decision_id')!r}: "
-            + "; ".join(verdict.get("reasons") or []))
+            + "; ".join(verdict.get("reasons") or [])
+        )
     return parsed
 
 
 # --------------------------------------------------------------------------- #
 # Report-back parsing
 # --------------------------------------------------------------------------- #
-def parse_report_back(text: str) -> Dict[str, Any]:
+def parse_report_back(text: str) -> dict[str, Any]:
     """Extract + validate the report-back JSON from a worker's final message."""
     fenced = re.findall(r"```json\s*(.*?)```", text, re.DOTALL)
     if fenced:
@@ -939,8 +966,11 @@ def parse_report_back(text: str) -> Dict[str, Any]:
 # Transition (the review/fix loop, at the state level)
 # --------------------------------------------------------------------------- #
 def transition(
-    role: str, report: Dict[str, Any], retry_count: int, max_retries: int = MAX_REVIEW_RETRIES
-) -> Tuple[str, int]:
+    role: str,
+    report: dict[str, Any],
+    retry_count: int,
+    max_retries: int = MAX_REVIEW_RETRIES,
+) -> tuple[str, int]:
     """Map a report-back to the task's next status. Returns (status, retry)."""
     # For review, route on review_status regardless of the status field. A review
     # worker that finds defects may return status:"failed" (treating it as a code-
@@ -969,11 +999,11 @@ def transition(
 
 
 def apply_report(
-    tasks: List[Dict[str, Any]],
-    report: Dict[str, Any],
+    tasks: list[dict[str, Any]],
+    report: dict[str, Any],
     role: str,
     max_retries: int = MAX_REVIEW_RETRIES,
-) -> Tuple[str, str]:
+) -> tuple[str, str]:
     """Find the report's task in coordinator state and apply the transition.
     Returns (old_status, new_status)."""
     task = next((t for t in tasks if t["id"] == report["task"]), None)
@@ -1057,7 +1087,9 @@ def _demo() -> None:
     for role, raw in samples:
         rep = parse_report_back(raw)
         old, new = apply_report(state, rep, role)
-        extra = f"  review_status={rep.get('review_status')}" if role == ROLE_REVIEW else ""
+        extra = (
+            f"  review_status={rep.get('review_status')}" if role == ROLE_REVIEW else ""
+        )
         print(
             f"  {role:9} report parsed -> {old:12} -> {new:10}"
             f"  (retry={state[0]['retry_count']}){extra}"
@@ -1072,7 +1104,7 @@ def _demo() -> None:
         apply_report(
             [dict(task)],
             parse_report_back(
-                '```json\n{"task":"TASK-002","step":"review",' '"status":"success"}\n```'
+                '```json\n{"task":"TASK-002","step":"review","status":"success"}\n```'
             ),
             ROLE_REVIEW,
         )

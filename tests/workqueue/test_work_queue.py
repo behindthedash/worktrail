@@ -15,7 +15,6 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Optional
 from unittest.mock import patch
 
 from worktrail.conductor import compile as runplan_compile
@@ -27,8 +26,8 @@ def _brief(
     focus: str,
     brief_id: str = "",
     extra: str = "",
-    blocked_by: Optional[list] = None,
-    related: Optional[list] = None,
+    blocked_by: list | None = None,
+    related: list | None = None,
 ) -> str:
     fm = [f"focus: {focus}", "status: queued"]
     if brief_id:
@@ -136,7 +135,10 @@ class TestList(QueueTestBase):
         """related + blocked-by dep in queue -> blocked: true; blocked-by drives it (AC-006)."""
         self.write("20260101-000000-dep.md", focus="the dep", brief_id="dep-id")
         self.write(
-            "20260101-000001-main.md", focus="needs dep", related=["some-id"], blocked_by=["dep-id"]
+            "20260101-000001-main.md",
+            focus="needs dep",
+            related=["some-id"],
+            blocked_by=["dep-id"],
         )
         briefs = {b["filename"]: b for b in q.list_queue()["briefs"]}
         self.assertTrue(briefs["20260101-000001-main.md"]["blocked"])
@@ -154,7 +156,10 @@ class TestList(QueueTestBase):
 
     def test_frontmatter_without_trailing_newline_still_parses(self):
         p = self.queue / "20260101-000000-a.md"
-        p.write_text("---\nfocus: some work\nstatus: queued\nrelated:\n  - id-a\n---", encoding="utf-8")
+        p.write_text(
+            "---\nfocus: some work\nstatus: queued\nrelated:\n  - id-a\n---",
+            encoding="utf-8",
+        )
         briefs = q.list_queue()["briefs"]
         self.assertEqual(briefs[0]["focus"], "some work")
         self.assertEqual(briefs[0]["related"], ["id-a"])
@@ -181,7 +186,9 @@ class TestResolve(QueueTestBase):
 
     def test_slug_suffix_single_match(self):
         """Slug without its date-time prefix resolves via stem suffix match."""
-        self.write("20260604-113700-handoff-related-field-autodetect.md", focus="autodetect")
+        self.write(
+            "20260604-113700-handoff-related-field-autodetect.md", focus="autodetect"
+        )
         res = q.resolve("handoff-related-field-autodetect", self.queue)
         self.assertEqual(res["status"], "match")
         self.assertIn("handoff-related-field-autodetect.md", res["candidates"][0])
@@ -213,7 +220,9 @@ class TestResolve(QueueTestBase):
             "auth-id-1",
         ):
             res = q.resolve(ident, self.queue)
-            self.assertEqual(res["status"], "match", f"regression: {ident!r} should still match")
+            self.assertEqual(
+                res["status"], "match", f"regression: {ident!r} should still match"
+            )
 
     def test_empty_identifier_no_crash(self):
         """Empty string identifier does not raise an exception."""
@@ -256,7 +265,9 @@ class TestResolve(QueueTestBase):
 
 class TestDependencyReferenceResolution(QueueTestBase):
     def test_queue_reference_is_active_and_preserves_raw_and_candidates(self):
-        dep = self.write("20260101-000000-dep.md", focus="the prereq", brief_id="dep-id")
+        dep = self.write(
+            "20260101-000000-dep.md", focus="the prereq", brief_id="dep-id"
+        )
 
         res = q.classify_dependency_reference("dep-id")
 
@@ -296,14 +307,20 @@ class TestDependencyReferenceResolution(QueueTestBase):
         self.assertEqual(res["candidates"], [])
 
     def test_ambiguous_reference_preserves_all_candidates(self):
-        first = self.write("20260604-100000-handoff-related-field-autodetect.md", focus="a")
-        second = self.write("20260604-110000-handoff-related-field-autodetect.md", focus="b")
+        first = self.write(
+            "20260604-100000-handoff-related-field-autodetect.md", focus="a"
+        )
+        second = self.write(
+            "20260604-110000-handoff-related-field-autodetect.md", focus="b"
+        )
 
         res = q.classify_dependency_reference("handoff-related-field-autodetect")
 
         self.assertEqual(res["state"], "ambiguous")
         self.assertFalse(res["satisfied"])
-        self.assertCountEqual(res["candidates"], [str(first.resolve()), str(second.resolve())])
+        self.assertCountEqual(
+            res["candidates"], [str(first.resolve()), str(second.resolve())]
+        )
 
     def test_malformed_reference_states_preserve_raw_value(self):
         cases = [
@@ -576,7 +593,9 @@ class TestDoneReleaseOwnership(QueueTestBase):
         claim() call) has nothing to compare against, so a supplied --by
         never blocks it."""
         self.write("20260531-141200-auth.md", focus="auth")
-        q.claim("20260531-141200-auth")  # no --by -> claimed-by is _agent_label()'s default
+        q.claim(
+            "20260531-141200-auth"
+        )  # no --by -> claimed-by is _agent_label()'s default
         fm_path = self.picked / "20260531-141200-auth.md"
         q._remove_fm_field(fm_path, "claimed-by")
         res = q.done("20260531-141200-auth", by="any-dispatch")
@@ -742,8 +761,12 @@ class TestDoneNote(QueueTestBase):
                 note="closed via CLI",
             )
 
-        cli_content = (self.picked / "20260531-141200-cli.md").read_text(encoding="utf-8")
-        direct_content = (self.picked / "20260531-141200-direct.md").read_text(encoding="utf-8")
+        cli_content = (self.picked / "20260531-141200-cli.md").read_text(
+            encoding="utf-8"
+        )
+        direct_content = (self.picked / "20260531-141200-direct.md").read_text(
+            encoding="utf-8"
+        )
         # filenames differ but are not embedded in either file's content, so a
         # byte-for-byte compare is valid once the clock is pinned identically.
         self.assertEqual(cli_content, direct_content)
@@ -785,7 +808,8 @@ class TestDoneCheckboxSync(QueueTestBase):
             fingerprint=fp,
             source=runplan.SOURCE_COMPILED,
             tasks=tuple(
-                runplan.TaskPlan(id=str(t["id"]), files=("src/export.py",)) for t in tasks
+                runplan.TaskPlan(id=str(t["id"]), files=("src/export.py",))
+                for t in tasks
             ),
         )
         runplan.store(runplan_compile.default_cache_dir(self.repo), plan)
@@ -800,7 +824,9 @@ class TestDoneCheckboxSync(QueueTestBase):
             "target-spec: add-export\n"
             f"target-task: {target_task}\n"
         )
-        path.write_text(f"---\n{fm}---\n\n## Focus\n\nimplement export\n", encoding="utf-8")
+        path.write_text(
+            f"---\n{fm}---\n\n## Focus\n\nimplement export\n", encoding="utf-8"
+        )
         return path
 
     def test_unticked_task_surfaces_warning_and_note_without_writing_tasks_md(self):
@@ -819,7 +845,9 @@ class TestDoneCheckboxSync(QueueTestBase):
         self.assertIn("1.1", body)
         self.assertIn("add-export", body)
         # the target spec's tasks.md is never written
-        self.assertEqual((change / "tasks.md").read_text(encoding="utf-8"), original_tasks_md)
+        self.assertEqual(
+            (change / "tasks.md").read_text(encoding="utf-8"), original_tasks_md
+        )
 
     def test_already_ticked_task_surfaces_no_warning(self):
         change = self._change("- [x] 1.1 Implement exporter\n")
@@ -883,7 +911,9 @@ class TestDoneClosureEvidenceGate(QueueTestBase):
         self.assertEqual(res["status"], "unverified_reverification_claim")
         self.assertIsNotNone(res["error"])
         fm = q._read_frontmatter(self.picked / "20260531-141200-auth.md")
-        self.assertEqual(fm["status"], "picked", "must not stamp done on a rejected note")
+        self.assertEqual(
+            fm["status"], "picked", "must not stamp done on a rejected note"
+        )
         body = (self.picked / "20260531-141200-auth.md").read_text(encoding="utf-8")
         self.assertNotIn("## Closure Note", body)
 
@@ -965,7 +995,9 @@ class TestConsolidationClosureEvidenceGate(QueueTestBase):
         self.assertIn("20260710-000000-a", res["error"])
         self.assertIn("20260711-000000-b", res["error"])
         fm = q._read_frontmatter(path)
-        self.assertEqual(fm["status"], "picked", "must not stamp done on a rejected closure")
+        self.assertEqual(
+            fm["status"], "picked", "must not stamp done on a rejected closure"
+        )
 
     def test_done_rejects_consolidation_brief_with_prose_only_note(self):
         self.picked.mkdir(parents=True, exist_ok=True)
@@ -1047,7 +1079,9 @@ class TestWriteVerification(QueueTestBase):
     consolidate_cluster.py bug that silently wrote empty/YAML-invalid
     briefs (see the linked root-cause brief)."""
 
-    _INVALID_YAML = '---\nid: broken\nfocus: "unterminated\nstatus: queued\n---\n\nbody\n'
+    _INVALID_YAML = (
+        '---\nid: broken\nfocus: "unterminated\nstatus: queued\n---\n\nbody\n'
+    )
     _MISSING_STATUS = "---\nid: broken\nfocus: no status field\n---\n\nbody\n"
 
     def test_claim_rejects_pre_broken_yaml_and_leaves_it_in_queue(self):
@@ -1265,7 +1299,8 @@ class TestNotYetDue(QueueTestBase):
 
     def test_future_date_is_not_yet_due(self):
         self.write(
-            "20260101-000000-a.md", focus="blocked upstream",
+            "20260101-000000-a.md",
+            focus="blocked upstream",
             extra="next-check-after: 2099-01-01",
         )
         briefs = q.list_queue()["briefs"]
@@ -1273,7 +1308,8 @@ class TestNotYetDue(QueueTestBase):
 
     def test_past_date_is_due(self):
         self.write(
-            "20260101-000000-a.md", focus="blocked upstream",
+            "20260101-000000-a.md",
+            focus="blocked upstream",
             extra="next-check-after: 2000-01-01",
         )
         briefs = q.list_queue()["briefs"]
@@ -1288,7 +1324,8 @@ class TestNotYetDue(QueueTestBase):
     def test_unparsable_date_is_lenient(self):
         """Malformed next-check-after is treated as due, not an error (AC-005)."""
         self.write(
-            "20260101-000000-a.md", focus="blocked upstream",
+            "20260101-000000-a.md",
+            focus="blocked upstream",
             extra="next-check-after: not-a-date",
         )
         briefs = q.list_queue()["briefs"]
@@ -1297,7 +1334,8 @@ class TestNotYetDue(QueueTestBase):
     def test_not_yet_due_independent_of_blocked(self):
         """A brief can be not-yet-due without being blocked, and vice versa."""
         self.write(
-            "20260101-000000-a.md", focus="blocked upstream",
+            "20260101-000000-a.md",
+            focus="blocked upstream",
             extra="next-check-after: 2099-01-01",
         )
         briefs = q.list_queue()["briefs"]
@@ -1332,7 +1370,9 @@ class TestRecentlyReleased(QueueTestBase):
             datetime.datetime.now().astimezone()
             - datetime.timedelta(minutes=q.RECENTLY_RELEASED_MINUTES + 5)
         ).isoformat(timespec="seconds")
-        self.write("20260531-141200-auth.md", focus="auth", extra=f"released-at: '{old}'")
+        self.write(
+            "20260531-141200-auth.md", focus="auth", extra=f"released-at: '{old}'"
+        )
         briefs = q.list_queue()["briefs"]
         self.assertFalse(briefs[0]["recently_released"])
         self.assertIsNone(briefs[0]["recently_released_by"])
@@ -1343,7 +1383,11 @@ class TestRecentlyReleased(QueueTestBase):
         self.assertFalse(briefs[0]["recently_released"])
 
     def test_unparsable_released_at_is_lenient(self):
-        self.write("20260531-141200-auth.md", focus="auth", extra="released-at: not-a-timestamp")
+        self.write(
+            "20260531-141200-auth.md",
+            focus="auth",
+            extra="released-at: not-a-timestamp",
+        )
         briefs = q.list_queue()["briefs"]
         self.assertFalse(briefs[0]["recently_released"])
 
@@ -1361,10 +1405,14 @@ class TestClaimBatch(QueueTestBase):
             by="agent-x",
         )
         self.assertEqual(res["status"], "claimed")
-        self.assertEqual([c["status"] for c in res["companions"]], ["claimed", "claimed"])
+        self.assertEqual(
+            [c["status"] for c in res["companions"]], ["claimed", "claimed"]
+        )
         fm = q._read_frontmatter(self.picked / "20260701-000001-primary.md")
         self.assertEqual(fm["status"], "picked")
-        self.assertEqual(fm["batch"], ["20260701-000002-comp-a", "20260701-000003-comp-b"])
+        self.assertEqual(
+            fm["batch"], ["20260701-000002-comp-a", "20260701-000003-comp-b"]
+        )
         for comp in ("20260701-000002-comp-a", "20260701-000003-comp-b"):
             cfm = q._read_frontmatter(self.picked / f"{comp}.md")
             self.assertEqual(cfm["status"], "picked")
@@ -1407,11 +1455,20 @@ class TestClaimBatch(QueueTestBase):
         self.write("20260701-000001-primary.md", focus="p")
         self.write("20260701-000002-comp.md", focus="c")
         self.assertEqual(
-            q.main(["claim-batch", "20260701-000001-primary", "20260701-000002-comp", "--json"]),
+            q.main(
+                [
+                    "claim-batch",
+                    "20260701-000001-primary",
+                    "20260701-000002-comp",
+                    "--json",
+                ]
+            ),
             0,
         )
         # primary already in picked/ -> exit 4, same contract as single claim
-        self.assertEqual(q.main(["claim-batch", "20260701-000001-primary", "--json"]), 4)
+        self.assertEqual(
+            q.main(["claim-batch", "20260701-000001-primary", "--json"]), 4
+        )
 
 
 class TestCli(QueueTestBase):
@@ -1441,21 +1498,27 @@ class TestBlockedBy(QueueTestBase):
 
     def test_list_blocked_when_dep_picked_but_not_done(self):
         self.picked.mkdir(parents=True, exist_ok=True)
-        (self.picked / "dep.md").write_text(_picked_brief("dep", status="picked"), encoding="utf-8")
+        (self.picked / "dep.md").write_text(
+            _picked_brief("dep", status="picked"), encoding="utf-8"
+        )
         self.write("20260101-000001-main.md", focus="needs dep", blocked_by=["dep"])
         briefs = q.list_queue()["briefs"]
         self.assertTrue(briefs[0]["blocked"])
 
     def test_list_not_blocked_when_dep_done(self):
         self.picked.mkdir(parents=True, exist_ok=True)
-        (self.picked / "dep.md").write_text(_picked_brief("dep", status="done"), encoding="utf-8")
+        (self.picked / "dep.md").write_text(
+            _picked_brief("dep", status="done"), encoding="utf-8"
+        )
         self.write("20260101-000001-main.md", focus="needs dep", blocked_by=["dep"])
         briefs = q.list_queue()["briefs"]
         self.assertFalse(briefs[0]["blocked"])
 
     def test_list_not_blocked_when_dep_not_found(self):
         """Lenient: a missing (stale) dep ID is treated as satisfied."""
-        self.write("20260101-000001-main.md", focus="needs dep", blocked_by=["stale-id-xyz"])
+        self.write(
+            "20260101-000001-main.md", focus="needs dep", blocked_by=["stale-id-xyz"]
+        )
         briefs = q.list_queue()["briefs"]
         self.assertFalse(briefs[0]["blocked"])
 
@@ -1464,11 +1527,18 @@ class TestBlockedBy(QueueTestBase):
         self.write("20260101-000001-main.md", focus="needs dep", blocked_by=["dep-id"])
         res = q.claim("20260101-000001-main")
         self.assertEqual(res["status"], "claimed")
-        self.assertTrue(any("blocked by dep-id (active dependency reference)" in w for w in res["warnings"]))
+        self.assertTrue(
+            any(
+                "blocked by dep-id (active dependency reference)" in w
+                for w in res["warnings"]
+            )
+        )
 
     def test_claim_no_warnings_when_dep_done(self):
         self.picked.mkdir(parents=True, exist_ok=True)
-        (self.picked / "dep.md").write_text(_picked_brief("dep", status="done"), encoding="utf-8")
+        (self.picked / "dep.md").write_text(
+            _picked_brief("dep", status="done"), encoding="utf-8"
+        )
         self.write("20260101-000001-main.md", focus="needs dep", blocked_by=["dep"])
         res = q.claim("20260101-000001-main")
         self.assertEqual(res["status"], "claimed")
@@ -1476,7 +1546,9 @@ class TestBlockedBy(QueueTestBase):
 
     def test_claim_no_warnings_when_dep_not_found(self):
         """Lenient: stale dep IDs do not produce warnings."""
-        self.write("20260101-000001-main.md", focus="needs dep", blocked_by=["stale-id-xyz"])
+        self.write(
+            "20260101-000001-main.md", focus="needs dep", blocked_by=["stale-id-xyz"]
+        )
         res = q.claim("20260101-000001-main")
         self.assertEqual(res["status"], "claimed")
         self.assertEqual(res["warnings"], [])
@@ -1505,7 +1577,12 @@ class TestBlockedBy(QueueTestBase):
         self.write(
             "20260101-000003-main.md",
             focus="needs dep",
-            blocked_by=["dep-id", "handoff-related-field-autodetect", "dep-id, other-dep", 42],
+            blocked_by=[
+                "dep-id",
+                "handoff-related-field-autodetect",
+                "dep-id, other-dep",
+                42,
+            ],
         )
         briefs = {b["filename"]: b for b in q.list_queue()["briefs"]}
         self.assertFalse(briefs["20260101-000000-dep.md"]["blocked"])
@@ -1518,11 +1595,20 @@ class TestBlockedBy(QueueTestBase):
         res = q.claim("20260101-000001-main")
 
         self.assertEqual(res["status"], "claimed")
-        self.assertTrue(any("blocked by dep-id (active dependency reference)" in w for w in res["warnings"]))
+        self.assertTrue(
+            any(
+                "blocked by dep-id (active dependency reference)" in w
+                for w in res["warnings"]
+            )
+        )
 
     def test_claim_warnings_include_ambiguous_dependency_diagnostics(self):
-        self.write("20260604-100000-handoff-related-field-autodetect.md", focus="ambiguous a")
-        self.write("20260604-110000-handoff-related-field-autodetect.md", focus="ambiguous b")
+        self.write(
+            "20260604-100000-handoff-related-field-autodetect.md", focus="ambiguous a"
+        )
+        self.write(
+            "20260604-110000-handoff-related-field-autodetect.md", focus="ambiguous b"
+        )
         self.write(
             "20260101-000001-main.md",
             focus="needs dep",
@@ -1532,11 +1618,17 @@ class TestBlockedBy(QueueTestBase):
         res = q.claim("20260101-000001-main")
 
         self.assertEqual(res["status"], "claimed")
-        self.assertTrue(any("ambiguous dependency reference" in w for w in res["warnings"]))
+        self.assertTrue(
+            any("ambiguous dependency reference" in w for w in res["warnings"])
+        )
 
     def test_claim_warnings_include_malformed_raw_value(self):
         self.write("20260101-000000-dep.md", focus="the prereq", brief_id="dep-id")
-        self.write("20260101-000001-main.md", focus="needs dep", blocked_by=["dep-id, other-dep"])
+        self.write(
+            "20260101-000001-main.md",
+            focus="needs dep",
+            blocked_by=["dep-id, other-dep"],
+        )
 
         res = q.claim("20260101-000001-main")
 
@@ -1549,7 +1641,9 @@ class TestBlockedBy(QueueTestBase):
         )
 
     def test_resolution_does_not_mutate_dependency_bytes(self):
-        dep = self.write("20260101-000000-dep.md", focus="the prereq", brief_id="dep-id")
+        dep = self.write(
+            "20260101-000000-dep.md", focus="the prereq", brief_id="dep-id"
+        )
         before = dep.read_bytes()
         self.write("20260101-000001-main.md", focus="needs dep", blocked_by=["dep-id"])
 
@@ -1571,7 +1665,10 @@ class TestBlockedBy(QueueTestBase):
         res = q.claim("20260101-000001-main")
         self.assertEqual(res["status"], "claimed")
         self.assertTrue(
-            any("blocked by dep-id, other-dep (malformed dependency reference" in w for w in res["warnings"])
+            any(
+                "blocked by dep-id, other-dep (malformed dependency reference" in w
+                for w in res["warnings"]
+            )
         )
 
 
@@ -1579,7 +1676,9 @@ class TestPremiseDriftWarning(QueueTestBase):
     """Tests for the claim-time premise-drift age warning."""
 
     def _created(self, days_ago: float) -> str:
-        when = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days_ago)
+        when = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
+            days=days_ago
+        )
         return when.isoformat()
 
     def test_claim_warns_when_brief_older_than_threshold(self):
@@ -1676,7 +1775,10 @@ class TestSetFmListField(QueueTestBase):
     def test_does_not_clobber_blocked_by(self):
         """Writing related list does not touch blocked-by entries."""
         p = self.write(
-            "20260101-000000-a.md", focus="some work", blocked_by=["dep-id"], related=["old-id"]
+            "20260101-000000-a.md",
+            focus="some work",
+            blocked_by=["dep-id"],
+            related=["old-id"],
         )
         q._set_fm_list_field(p, "related", ["new-id"])
         fm = q._read_frontmatter(p)
@@ -1714,7 +1816,9 @@ class TestLink(QueueTestBase):
 
     def test_no_clobber_existing_related(self):
         """Pre-existing related entries are preserved alongside the new link (AC-009)."""
-        self.write("20260101-000001-alpha.md", focus="alpha", extra="related:\n  - existing-id")
+        self.write(
+            "20260101-000001-alpha.md", focus="alpha", extra="related:\n  - existing-id"
+        )
         self.write("20260101-000002-beta.md", focus="beta")
         q.link("20260101-000001-alpha", "20260101-000002-beta")
         fm_a = q._read_frontmatter(self.queue / "20260101-000001-alpha.md")
@@ -1772,7 +1876,9 @@ class TestLink(QueueTestBase):
         self.write("20260101-000002-beta.md", focus="beta")
         out = io.StringIO()
         with patch("sys.stdout", out):
-            code = q.main(["link", "20260101-000001-alpha", "20260101-000002-beta", "--json"])
+            code = q.main(
+                ["link", "20260101-000001-alpha", "20260101-000002-beta", "--json"]
+            )
         self.assertEqual(code, 0)
         data = json.loads(out.getvalue())
         self.assertEqual(data["status"], "linked")

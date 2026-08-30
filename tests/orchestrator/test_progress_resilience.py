@@ -18,7 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import progress  # noqa: E402
+from worktrail.orchestrator import progress
 
 
 class AtomicWrite(unittest.TestCase):
@@ -68,7 +68,9 @@ class MultiActiveRender(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.journal = Path(self.tmp.name) / "run-008.json"
-        self.journal.write_text(json.dumps({"spec_id": "008", "run_id": "full-1", "entries": []}))
+        self.journal.write_text(
+            json.dumps({"spec_id": "008", "run_id": "full-1", "entries": []})
+        )
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -79,8 +81,18 @@ class MultiActiveRender(unittest.TestCase):
             run_id="full-1",
             spec_id="008",
             actives=[
-                {"task": "TASK-001", "role": "implement", "started_at": 1000.0, "pid": os.getpid()},
-                {"task": "TASK-002", "role": "implement", "started_at": 1000.0, "pid": os.getpid()},
+                {
+                    "task": "TASK-001",
+                    "role": "implement",
+                    "started_at": 1000.0,
+                    "pid": os.getpid(),
+                },
+                {
+                    "task": "TASK-002",
+                    "role": "implement",
+                    "started_at": 1000.0,
+                    "pid": os.getpid(),
+                },
             ],
         )
         tasks = [
@@ -99,8 +111,18 @@ class MultiActiveRender(unittest.TestCase):
             run_id="full-1",
             spec_id="008",
             actives=[
-                {"task": "TASK-001", "role": "implement", "started_at": 1000.0, "pid": os.getpid()},
-                {"task": "TASK-002", "role": "implement", "started_at": 1000.0, "pid": 999999999},
+                {
+                    "task": "TASK-001",
+                    "role": "implement",
+                    "started_at": 1000.0,
+                    "pid": os.getpid(),
+                },
+                {
+                    "task": "TASK-002",
+                    "role": "implement",
+                    "started_at": 1000.0,
+                    "pid": 999999999,
+                },
             ],
         )
         tasks = [
@@ -117,7 +139,14 @@ class MultiActiveRender(unittest.TestCase):
             self.journal,
             run_id="full-1",
             spec_id="008",
-            actives=[{"task": "T", "role": "implement", "started_at": 1.0, "pid": os.getpid()}],
+            actives=[
+                {
+                    "task": "T",
+                    "role": "implement",
+                    "started_at": 1.0,
+                    "pid": os.getpid(),
+                }
+            ],
         )
         progress.set_phase(self.journal, "integrate")
         hb = json.loads(progress.heartbeat_path(self.journal).read_text())

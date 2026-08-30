@@ -18,7 +18,6 @@ import argparse
 import re
 import sys
 from pathlib import Path
-from typing import List
 
 from .schema import (
     COMPLETION_AUDIT_SECTIONS,
@@ -57,7 +56,7 @@ def _unchecked_sections(body: str) -> list:
     return sections
 
 
-def audit_repo(repo: Path) -> List[Hit]:
+def audit_repo(repo: Path) -> list[Hit]:
     """Scan ``docs/specs/**/tasks/TASK-*.md`` under ``repo`` for status:completed drift.
 
     The recursive ``**`` covers both spec-owned tasks (docs/specs/<id>/tasks/)
@@ -66,7 +65,7 @@ def audit_repo(repo: Path) -> List[Hit]:
     hook. Point-in-time snapshots under reviews/ are a different naming shape
     (TASK-*-review.md, not inside a tasks/ dir) and are excluded by the glob.
     """
-    hits: List[Hit] = []
+    hits: list[Hit] = []
     for task_path in sorted(repo.glob("docs/specs/**/tasks/TASK-*.md")):
         frontmatter, error, body = read_task_file(task_path)
         if error or frontmatter is None:

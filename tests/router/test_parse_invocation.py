@@ -6,6 +6,7 @@ the point: the grammar lived only as prose, so a form could be documented and
 never parsed (`fix <request>`) or parsed and never documented, with no test able
 to notice either way.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -256,11 +257,35 @@ def test_every_result_carries_the_full_key_set():
     """Consumers read fields in shell; a conditionally-present key would force
     existence checks on every caller."""
     expected = {
-        "raw", "mode", "repo", "auto", "help_topic", "drain_max_items",
-        "drain_repo", "route", "intent", "spec", "brief_id", "brief_path",
-        "brief_status", "brief_candidates", "picker_index", "free_text", "reason",
+        "raw",
+        "mode",
+        "repo",
+        "auto",
+        "help_topic",
+        "drain_max_items",
+        "drain_repo",
+        "route",
+        "intent",
+        "spec",
+        "brief_id",
+        "brief_path",
+        "brief_status",
+        "brief_candidates",
+        "picker_index",
+        "free_text",
+        "reason",
     }
-    for raw in ["", "help", "drain 2", "auto", "route:D", "new x", "handoff:1", "3", "hello"]:
+    for raw in [
+        "",
+        "help",
+        "drain 2",
+        "auto",
+        "route:D",
+        "new x",
+        "handoff:1",
+        "3",
+        "hello",
+    ]:
         assert set(parse(raw).keys()) == expected, raw
 
 

@@ -39,7 +39,6 @@ Run: python3 scripts/test_routing_e2e.py
 from __future__ import annotations
 
 import inspect
-import io
 import json
 import os
 import socket
@@ -53,11 +52,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import agent_capacity  # noqa: E402
-from worktrail.orchestrator import dispatch  # noqa: E402
-from worktrail.orchestrator import live  # noqa: E402
-from worktrail.orchestrator import progress  # noqa: E402
-from worktrail.orchestrator import spawnlib  # noqa: E402
+from worktrail.orchestrator import dispatch, live, progress, spawnlib
 
 _HERE = Path(__file__).resolve().parent
 
@@ -71,10 +66,10 @@ from worktrail.router import dashboard
 from worktrail.router import policy as policy_mod
 from worktrail.router import tier_accuracy as tier_accuracy_mod
 
-
 # --------------------------------------------------------------------------- #
 # Shared fixtures
 # --------------------------------------------------------------------------- #
+
 
 def _git(repo: Path, *args: str) -> None:
     subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
@@ -122,8 +117,10 @@ def _fake_report(task_id: str, role: str, sha: str) -> spawnlib.SpawnResult:
     # real numbers to aggregate -- distinct per role so roles are distinguishable
     # in the rendered report too.
     usage = {
-        "input_tokens": 100, "cache_read_input_tokens": 0,
-        "cache_creation_input_tokens": 0, "output_tokens": 50,
+        "input_tokens": 100,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 50,
         "total_cost_usd": 0.01,
     }
     return spawnlib.SpawnResult(text=text, usage=usage)
@@ -142,10 +139,14 @@ class _LegacySpawn:
             f.write_text(f"{tid}\n")
             _git(Path(wt), "add", "-A")
             _git(Path(wt), "commit", "-q", "-m", f"feat({tid})")
-        sha = subprocess.run(
-            ["git", "-C", str(wt), "rev-parse", "HEAD"],
-            capture_output=True, text=True,
-        ).stdout.strip()[:8] or "00000000"
+        sha = (
+            subprocess.run(
+                ["git", "-C", str(wt), "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+            ).stdout.strip()[:8]
+            or "00000000"
+        )
         return _fake_report(tid, role, sha)
 
 
@@ -181,23 +182,35 @@ class E2EBackwardCompatTest(unittest.TestCase):
         # Isolate the machine-wide routing file: an operator-configured
         # routing.yaml under worktrail_home() must not leak into a test
         # asserting "no routing configured anywhere".
-        with tempfile.TemporaryDirectory() as tmp, \
-                mock.patch.dict(os.environ,
-                                {"GO_ROUTING_FILE": str(Path(tmp) / "no-such-routing.yaml")}):
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.dict(
+                os.environ, {"GO_ROUTING_FILE": str(Path(tmp) / "no-such-routing.yaml")}
+            ),
+        ):
             repo = _init_routing_repo(Path(tmp), tier_stamps=False)
             # No go-policy.yaml at all -- the "no routing anywhere" case.
             policy = policy_mod.load_policy(repo)
             self.assertIsNone(policy["routing"])
             resolved = policy_mod.resolve_routing(policy)
-            self.assertEqual(resolved, {
-                "targets": {}, "tiers": {}, "roles": {}, "purposes": {},
-                "default_tier": None, "drain": {},
-            })
+            self.assertEqual(
+                resolved,
+                {
+                    "targets": {},
+                    "tiers": {},
+                    "roles": {},
+                    "purposes": {},
+                    "default_tier": None,
+                    "drain": {},
+                },
+            )
             # dispatch.tier_for() must not raise on this empty shape either --
             # every role falls through to default_tier (None), never a KeyError.
             tier, prefer, independent = dispatch.tier_for(
-                dispatch.ROLE_IMPLEMENT, {"id": "TASK-001"},
-                roles=resolved["roles"], purposes=resolved["purposes"],
+                dispatch.ROLE_IMPLEMENT,
+                {"id": "TASK-001"},
+                roles=resolved["roles"],
+                purposes=resolved["purposes"],
                 default_tier=resolved["default_tier"],
             )
             self.assertIsNone(tier)
@@ -208,10 +221,14 @@ class E2EBackwardCompatTest(unittest.TestCase):
         """AC-016 [EXT]: `orchestrate.py check` must exit 0 (golden unchanged)."""
         result = subprocess.run(
             [sys.executable, "-m", "worktrail.orchestrator.orchestrate", "check"],
-            capture_output=True, text=True, cwd=str(_HERE), timeout=30,
+            capture_output=True,
+            text=True,
+            cwd=str(_HERE),
+            timeout=30,
         )
         self.assertEqual(
-            result.returncode, 0,
+            result.returncode,
+            0,
             f"Golden drift detected!\nstdout: {result.stdout}\nstderr: {result.stderr}",
         )
 
@@ -219,6 +236,7 @@ class E2EBackwardCompatTest(unittest.TestCase):
 # --------------------------------------------------------------------------- #
 # AC-021/AC-022: dashboard additive JSON, rendered text unchanged
 # --------------------------------------------------------------------------- #
+
 
 class E2EDashboardAdditiveJSONTest(unittest.TestCase):
     """AC-021: a category_items entry carries a planned-agent field.
@@ -244,8 +262,11 @@ class E2EDashboardAdditiveJSONTest(unittest.TestCase):
                 "  default_tier: t3-bulk\n"
             )
             spec = {
-                "id": "001", "stage": "ready-to-implement", "next_action": "orchestrator",
-                "route": "B", "risk": "medium",
+                "id": "001",
+                "stage": "ready-to-implement",
+                "next_action": "orchestrator",
+                "route": "B",
+                "risk": "medium",
             }
             rows = [{"repo": "repo-a", "path": str(repo), "active_specs": [spec]}]
 
@@ -254,17 +275,24 @@ class E2EDashboardAdditiveJSONTest(unittest.TestCase):
             # not a stub/None. Route/risk no longer select routing (retired by
             # the target/tier/role redesign), which is why this test's routing
             # config no longer keys on them either.
-            items = dashboard.build_category_items(rows, None, inflight=[], queue_briefs=[])
+            items = dashboard.build_category_items(
+                rows, None, inflight=[], queue_briefs=[]
+            )
             self.assertEqual(items["ready"][0]["planned-agent"], "codex-sub")
 
             # AC-022: the SAME repo_rows, rendered as text, is byte-identical
             # whether or not route/risk (hence planned-agent resolution) is
             # present on the spec dict -- render_dashboard never reads
             # planned-agent, so the printed dashboard cannot regress.
-            rows_unrouted = [{
-                "repo": "repo-a", "path": str(repo),
-                "active_specs": [{k: v for k, v in spec.items() if k not in ("route", "risk")}],
-            }]
+            rows_unrouted = [
+                {
+                    "repo": "repo-a",
+                    "path": str(repo),
+                    "active_specs": [
+                        {k: v for k, v in spec.items() if k not in ("route", "risk")}
+                    ],
+                }
+            ]
             rendered_routed = dashboard.render_dashboard(rows, None, [], [])
             rendered_unrouted = dashboard.render_dashboard(rows_unrouted, None, [], [])
             self.assertEqual(rendered_routed, rendered_unrouted)
@@ -286,6 +314,7 @@ class E2EDashboardAdditiveJSONTest(unittest.TestCase):
 # class also exercised against a real NoExecutionTarget is not yet
 # re-verified anywhere.
 
+
 class E2EPoolUsageDegradationTest(unittest.TestCase):
     def test_pre_spec_journal_no_agent_labels_usage_report_no_crash(self):
         """AC-029: a spawn with no `last_agent` at all (mirrors a pre-TASK-007
@@ -299,8 +328,12 @@ class E2EPoolUsageDegradationTest(unittest.TestCase):
             self.assertFalse(hasattr(spawn, "last_agent"))
 
             result = live.live_run_real(
-                repo, "docs/specs/023-x", max_workers=1,
-                out_cassette=journal_path, run_id="e2e-legacy", spawn=spawn,
+                repo,
+                "docs/specs/023-x",
+                max_workers=1,
+                out_cassette=journal_path,
+                run_id="e2e-legacy",
+                spawn=spawn,
             )
             self.assertEqual(result["done"], 3)
 
@@ -313,12 +346,15 @@ class E2EPoolUsageDegradationTest(unittest.TestCase):
 
             rendered = progress.render_usage(journal)
             self.assertIn("token usage", rendered)
-            self.assertNotIn("usage by pool:", rendered, "no agent labels -> no pool section")
+            self.assertNotIn(
+                "usage by pool:", rendered, "no agent labels -> no pool section"
+            )
 
 
 # --------------------------------------------------------------------------- #
 # AC-035: dispatch-time resolution is invariant to the Tier-Accuracy Report
 # --------------------------------------------------------------------------- #
+
 
 class E2ETierAccuracyDispatchInvarianceTest(unittest.TestCase):
     def test_resolve_routing_identical_regardless_of_tier_accuracy_report(self):
@@ -344,11 +380,13 @@ class E2ETierAccuracyDispatchInvarianceTest(unittest.TestCase):
             # aggregation (not a stub) and place it on disk.
             worktrees_root = repo.parent / f"{repo.name}-worktrees"
             report = tier_accuracy_mod.aggregate_tier_accuracy(
-                repo_root=repo, worktrees_root=worktrees_root)
+                repo_root=repo, worktrees_root=worktrees_root
+            )
             report_path = repo / ".tier-accuracy-report.json"
             report_path.write_text(json.dumps(report))
             self.assertEqual(
-                policy_mod.resolve_routing(policy, "B", "medium"), baseline,
+                policy_mod.resolve_routing(policy, "B", "medium"),
+                baseline,
                 "resolve_routing must be unaffected by a fresh report on disk",
             )
 
@@ -356,7 +394,8 @@ class E2ETierAccuracyDispatchInvarianceTest(unittest.TestCase):
             old = time.time() - 30 * 86400
             os.utime(report_path, (old, old))
             self.assertEqual(
-                policy_mod.resolve_routing(policy, "B", "medium"), baseline,
+                policy_mod.resolve_routing(policy, "B", "medium"),
+                baseline,
                 "resolve_routing must be unaffected by a stale report on disk",
             )
 
@@ -367,7 +406,8 @@ class E2ETierAccuracyDispatchInvarianceTest(unittest.TestCase):
         for mod in (policy_mod, dispatch, live, spawnlib):
             source = inspect.getsource(mod)
             self.assertNotIn(
-                "tier_accuracy", source,
+                "tier_accuracy",
+                source,
                 f"{mod.__name__} must never reference tier_accuracy (REQ-037)",
             )
 
@@ -375,6 +415,7 @@ class E2ETierAccuracyDispatchInvarianceTest(unittest.TestCase):
 # --------------------------------------------------------------------------- #
 # AC-036: the Tier-Accuracy aggregation is offline, end to end
 # --------------------------------------------------------------------------- #
+
 
 class E2ETierAccuracyOfflineTest(unittest.TestCase):
     def test_aggregation_matches_hand_computed_stats_with_network_blocked(self):
@@ -393,8 +434,16 @@ class E2ETierAccuracyOfflineTest(unittest.TestCase):
             )
             journal = {
                 "entries": [
-                    {"task": "TASK-001", "role": "review", "report": {"review_status": "PASSED"}},
-                    {"task": "TASK-002", "role": "review", "report": {"review_status": "FAILED"}},
+                    {
+                        "task": "TASK-001",
+                        "role": "review",
+                        "report": {"review_status": "PASSED"},
+                    },
+                    {
+                        "task": "TASK-002",
+                        "role": "review",
+                        "report": {"review_status": "FAILED"},
+                    },
                 ]
             }
             (worktrees / "run-e2e.json").write_text(json.dumps(journal))
@@ -406,12 +455,14 @@ class E2ETierAccuracyOfflineTest(unittest.TestCase):
             socket.socket = _blocked_socket
             try:
                 report = tier_accuracy_mod.aggregate_tier_accuracy(
-                    repo_root=repo, worktrees_root=worktrees)
+                    repo_root=repo, worktrees_root=worktrees
+                )
             finally:
                 socket.socket = original_socket
 
             pair = next(
-                p for p in report["pairs"]
+                p
+                for p in report["pairs"]
                 if p["complexity"] == "hard" and p["domain"] == "backend"
             )
             # Hand-computed: 1 PASSED + 1 FAILED review outcome -> 50% pass rate.
@@ -425,9 +476,17 @@ class E2ETierAccuracyOfflineTest(unittest.TestCase):
         ('The script performs no writes, no network calls, and no LLM
         invocations')."""
         source = inspect.getsource(tier_accuracy_mod)
-        for forbidden in ("subprocess", "socket", "urllib", "requests", "httpx", "http.client"):
+        for forbidden in (
+            "subprocess",
+            "socket",
+            "urllib",
+            "requests",
+            "httpx",
+            "http.client",
+        ):
             self.assertNotIn(
-                forbidden, source,
+                forbidden,
+                source,
                 f"tier_accuracy.py must not reference {forbidden!r} (AC-036)",
             )
 

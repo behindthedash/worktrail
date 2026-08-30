@@ -24,7 +24,7 @@ from worktrail.orchestrator import live
 
 
 class DefaultSmokeCmdResolutionTests(unittest.TestCase):
-    def _repo(self, policy_yaml: "str | None") -> str:
+    def _repo(self, policy_yaml: str | None) -> str:
         d = tempfile.mkdtemp(prefix="default-smoke-")
         if policy_yaml is not None:
             spec = Path(d) / ".worktrail"
@@ -70,7 +70,7 @@ class DefaultPostMergeSmokeCmdResolutionTests(unittest.TestCase):
     gate (worktrail PR #167 follow-up): post_merge_smoke_cmd wins,
     integrate_smoke_cmd is the fallback, neither set = gate skipped."""
 
-    def _repo(self, policy_yaml: "str | None") -> str:
+    def _repo(self, policy_yaml: str | None) -> str:
         d = tempfile.mkdtemp(prefix="default-post-merge-smoke-")
         if policy_yaml is not None:
             spec = Path(d) / ".worktrail"
@@ -80,8 +80,9 @@ class DefaultPostMergeSmokeCmdResolutionTests(unittest.TestCase):
 
     def test_resolves_post_merge_smoke_cmd_when_configured(self):
         repo = self._repo('post_merge_smoke_cmd: "pytest -q -k smoke"\n')
-        self.assertEqual(live._default_post_merge_smoke_cmd(Path(repo)),
-                         "pytest -q -k smoke")
+        self.assertEqual(
+            live._default_post_merge_smoke_cmd(Path(repo)), "pytest -q -k smoke"
+        )
 
     def test_falls_back_to_integrate_smoke_cmd(self):
         repo = self._repo('integrate_smoke_cmd: "make check"\n')
@@ -91,8 +92,9 @@ class DefaultPostMergeSmokeCmdResolutionTests(unittest.TestCase):
         repo = self._repo(
             'post_merge_smoke_cmd: "pytest -q -k smoke"\nintegrate_smoke_cmd: "make check"\n'
         )
-        self.assertEqual(live._default_post_merge_smoke_cmd(Path(repo)),
-                         "pytest -q -k smoke")
+        self.assertEqual(
+            live._default_post_merge_smoke_cmd(Path(repo)), "pytest -q -k smoke"
+        )
 
     def test_unconfigured_repo_resolves_none(self):
         repo = self._repo(None)
@@ -103,7 +105,7 @@ class FullRealCLIAutoResolveTests(unittest.TestCase):
     """`live.main()` wiring: --smoke-cmd omitted auto-resolves from policy;
     an explicit --smoke-cmd always wins."""
 
-    def _repo(self, policy_yaml: "str | None") -> str:
+    def _repo(self, policy_yaml: str | None) -> str:
         d = tempfile.mkdtemp(prefix="default-smoke-cli-")
         if policy_yaml is not None:
             spec = Path(d) / ".worktrail"
@@ -119,7 +121,13 @@ class FullRealCLIAutoResolveTests(unittest.TestCase):
             return {}
 
         argv = [
-            "full-real", "--repo", repo, "--spec", "docs/specs/001-foo", "--base", "main",
+            "full-real",
+            "--repo",
+            repo,
+            "--spec",
+            "docs/specs/001-foo",
+            "--base",
+            "main",
         ] + list(extra)
         with patch.object(live, "full_real", side_effect=fake_full_real):
             live.main(argv)

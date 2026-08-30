@@ -26,19 +26,23 @@ plugin.
 `dry_run=True` (the demo default) prints the git commands without executing --
 safe to run anywhere, including this sandbox.
 """
+
 from __future__ import annotations
 
 import argparse
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, List, Optional
 
 # stderr fragments that indicate a sandbox/permission block rather than a real
 # git error (mirrors the superpowers "sandbox fallback" note).
-_SANDBOX_HINTS = ("permission denied", "operation not permitted",
-                  "read-only file system")
+_SANDBOX_HINTS = (
+    "permission denied",
+    "operation not permitted",
+    "read-only file system",
+)
 
 
 class WorktreeError(RuntimeError):
@@ -70,7 +74,7 @@ def worktree_path(base: Path, spec_id: str, task_id: str) -> Path:
 
 
 def has_task_worktrees(
-    repo_root: "str | Path", spec_id: str, worktree_base: "str | Path | None" = None
+    repo_root: str | Path, spec_id: str, worktree_base: str | Path | None = None
 ) -> bool:
     """Whether any per-task worktree already exists on disk for this spec.
 
@@ -80,7 +84,9 @@ def has_task_worktrees(
     plan a live run's worktrees were already fanned out under -- see
     `conductor/compile.py`'s `force` handling.
     """
-    base = Path(worktree_base) if worktree_base else default_worktree_base(Path(repo_root))
+    base = (
+        Path(worktree_base) if worktree_base else default_worktree_base(Path(repo_root))
+    )
     if not base.is_dir():
         return False
     prefix = f"{spec_id}-"
@@ -94,19 +100,20 @@ def has_task_worktrees(
 class WorktreeManager:
     repo_root: Path
     spec_id: str
-    base_commit: str = "HEAD"          # fan-out point: spec+tasks already committed
-    worktree_base: Optional[Path] = None
+    base_commit: str = "HEAD"  # fan-out point: spec+tasks already committed
+    worktree_base: Path | None = None
     dry_run: bool = False
     # Optional injected effect runner (cmd list -> object with .returncode /
     # .stdout / .stderr). When set, the live verify path and tests reuse this
     # manager without shelling out directly; default falls back to subprocess.
-    runner: Optional[Callable[[List[str]], object]] = None
-    log: List[str] = field(default_factory=list)
+    runner: Callable[[list[str]], object] | None = None
+    log: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.repo_root = Path(self.repo_root).resolve()
         self.worktree_base = (
-            Path(self.worktree_base) if self.worktree_base
+            Path(self.worktree_base)
+            if self.worktree_base
             else default_worktree_base(self.repo_root)
         )
 
@@ -117,8 +124,11 @@ class WorktreeManager:
         if self.dry_run:
             print(f"DRY-RUN $ {printable}")
             return ""
-        proc = self.runner(cmd) if self.runner else subprocess.run(
-            cmd, capture_output=True, text=True)
+        proc = (
+            self.runner(cmd)
+            if self.runner
+            else subprocess.run(cmd, capture_output=True, text=True)
+        )
         if proc.returncode != 0:
             err = (proc.stderr or "").strip()
             if any(h in err.lower() for h in _SANDBOX_HINTS):
@@ -133,8 +143,14 @@ class WorktreeManager:
     def add(self, task_id: str) -> Path:
         """Create an isolated worktree+branch for a task off base_commit."""
         path = worktree_path(self.worktree_base, self.spec_id, task_id)
-        self._git("worktree", "add", "-b",
-                  task_branch(self.spec_id, task_id), str(path), self.base_commit)
+        self._git(
+            "worktree",
+            "add",
+            "-b",
+            task_branch(self.spec_id, task_id),
+            str(path),
+            self.base_commit,
+        )
         return path
 
     def remove(self, task_id: str, force: bool = True) -> None:
@@ -146,8 +162,7 @@ class WorktreeManager:
 
     def delete_branch(self, task_id: str, force: bool = True) -> None:
         """Delete a task's local branch (after its group merged green)."""
-        self._git("branch", "-D" if force else "-d",
-                  task_branch(self.spec_id, task_id))
+        self._git("branch", "-D" if force else "-d", task_branch(self.spec_id, task_id))
 
     def prune(self) -> None:
         self._git("worktree", "prune")
@@ -161,7 +176,7 @@ class WorktreeManager:
 # --------------------------------------------------------------------------- #
 def _demo() -> None:
     spec = "025-feature"
-    frontier = ["TASK-002", "TASK-003", "TASK-006"]   # one parallel batch
+    frontier = ["TASK-002", "TASK-003", "TASK-006"]  # one parallel batch
     wm = WorktreeManager(repo_root="/repos/app", spec_id=spec, dry_run=True)
 
     print("=" * 64)

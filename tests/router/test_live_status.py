@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Unit tests for the cross-repo live-activity view (stdlib unittest)."""
+
 from __future__ import annotations
 
 import tempfile
@@ -9,7 +10,9 @@ from pathlib import Path
 from worktrail.router import live_status as ls
 
 
-def _mkproc(proc_root: Path, pid: int, argv: list, ppid: int = 1, mtime: float = 1000.0) -> None:
+def _mkproc(
+    proc_root: Path, pid: int, argv: list, ppid: int = 1, mtime: float = 1000.0
+) -> None:
     d = proc_root / str(pid)
     d.mkdir(parents=True)
     (d / "cmdline").write_bytes(("\0".join(argv) + "\0").encode())
@@ -48,14 +51,44 @@ class TestListProcs(unittest.TestCase):
 class TestFindLiveRuns(unittest.TestCase):
     def test_finds_full_real_and_counts_worker_children(self):
         procs = [
-            {"pid": 100, "ppid": 1,
-             "argv": ["python3", ".../live.py", "full-real", "--repo", "/home/u/projects/app",
-                      "--spec", "docs/specs/007-x"],
-             "start_time": 1000.0},
-            {"pid": 101, "ppid": 100, "argv": ["claude", "-p", "..."], "start_time": 1005.0},
-            {"pid": 102, "ppid": 100, "argv": ["claude", "-p", "..."], "start_time": 1006.0},
-            {"pid": 103, "ppid": 999, "argv": ["claude", "-p", "unrelated"], "start_time": 1007.0},
-            {"pid": 104, "ppid": 1, "argv": ["bash", "-c", "echo hi"], "start_time": 1008.0},
+            {
+                "pid": 100,
+                "ppid": 1,
+                "argv": [
+                    "python3",
+                    ".../live.py",
+                    "full-real",
+                    "--repo",
+                    "/home/u/projects/app",
+                    "--spec",
+                    "docs/specs/007-x",
+                ],
+                "start_time": 1000.0,
+            },
+            {
+                "pid": 101,
+                "ppid": 100,
+                "argv": ["claude", "-p", "..."],
+                "start_time": 1005.0,
+            },
+            {
+                "pid": 102,
+                "ppid": 100,
+                "argv": ["claude", "-p", "..."],
+                "start_time": 1006.0,
+            },
+            {
+                "pid": 103,
+                "ppid": 999,
+                "argv": ["claude", "-p", "unrelated"],
+                "start_time": 1007.0,
+            },
+            {
+                "pid": 104,
+                "ppid": 1,
+                "argv": ["bash", "-c", "echo hi"],
+                "start_time": 1008.0,
+            },
         ]
         runs = ls.find_live_runs(procs)
         self.assertEqual(len(runs), 1)
@@ -65,7 +98,12 @@ class TestFindLiveRuns(unittest.TestCase):
 
     def test_non_full_real_live_py_invocation_ignored(self):
         procs = [
-            {"pid": 100, "ppid": 1, "argv": ["python3", ".../live.py", "smoke"], "start_time": 1.0}
+            {
+                "pid": 100,
+                "ppid": 1,
+                "argv": ["python3", ".../live.py", "smoke"],
+                "start_time": 1.0,
+            }
         ]
         self.assertEqual(ls.find_live_runs(procs), [])
 
@@ -109,9 +147,17 @@ class TestScanLocksAndCompute(unittest.TestCase):
     def test_compute_matched_run_not_orphaned(self):
         proc_root = self.root / "proc"
         _mkproc(
-            proc_root, 100,
-            ["python3", "live.py", "full-real", "--repo", str(self.repo),
-             "--spec", "docs/specs/007-x"],
+            proc_root,
+            100,
+            [
+                "python3",
+                "live.py",
+                "full-real",
+                "--repo",
+                str(self.repo),
+                "--spec",
+                "docs/specs/007-x",
+            ],
         )
         (self.worktrees / "run-x.lock").write_text("")
         result = ls.compute(self.repos, proc_root, lambda _p: True)
@@ -122,17 +168,28 @@ class TestScanLocksAndCompute(unittest.TestCase):
 
 class TestRender(unittest.TestCase):
     def test_no_activity(self):
-        self.assertEqual(ls.render({"runs": [], "held_locks": [], "orphaned_locks": []}),
-                          "No live orchestrator runs found.")
+        self.assertEqual(
+            ls.render({"runs": [], "held_locks": [], "orphaned_locks": []}),
+            "No live orchestrator runs found.",
+        )
 
     def test_renders_run_and_orphaned_lock(self):
         import time
 
         result = {
-            "runs": [{"pid": 100, "repo": "/home/u/projects/app", "spec": "docs/specs/007-x",
-                      "start_time": time.time() - 300, "active_workers": 2}],
+            "runs": [
+                {
+                    "pid": 100,
+                    "repo": "/home/u/projects/app",
+                    "spec": "docs/specs/007-x",
+                    "start_time": time.time() - 300,
+                    "active_workers": 2,
+                }
+            ],
             "held_locks": [],
-            "orphaned_locks": [{"repo": "/home/u/projects/other", "lock": "/x/run-y.lock"}],
+            "orphaned_locks": [
+                {"repo": "/home/u/projects/other", "lock": "/x/run-y.lock"}
+            ],
         }
         out = ls.render(result)
         self.assertIn("app", out)

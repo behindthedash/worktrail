@@ -77,7 +77,11 @@ class FindUnresolvedDriftBriefTest(unittest.TestCase):
     def test_not_found_when_different_repo(self) -> None:
         write(
             self.queue_base / "queue" / "e.md",
-            brief(repo="/home/user/projects/other-repo", drift_source="spec-sync-sweep", status="queued"),
+            brief(
+                repo="/home/user/projects/other-repo",
+                drift_source="spec-sync-sweep",
+                status="queued",
+            ),
         )
         result = find_unresolved_drift_brief(Path(self.repo), self.queue_base)
         self.assertIsNone(result)

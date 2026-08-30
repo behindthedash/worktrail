@@ -20,8 +20,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
-
+from typing import Any
 
 from worktrail.router import tier_accuracy as ta
 
@@ -52,9 +51,9 @@ def _entry(
     review_status: str | None = None,
     notes: str = "ok",
     terminal_status: str | None = None,
-    report_fields: Dict[str, Any] | None = None,
-) -> Dict[str, Any]:
-    report: Dict[str, Any] = {
+    report_fields: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    report: dict[str, Any] = {
         "status": status,
         "head_sha": f"{task.lower()}-{role}",
         "tests": "passed",
@@ -70,9 +69,11 @@ def _entry(
     return {"task": task, "role": role, "report": report}
 
 
-def _write_journal(path: Path, entries: List[Dict[str, Any]], *, run_id: str) -> None:
+def _write_journal(path: Path, entries: list[dict[str, Any]], *, run_id: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"run_id": run_id, "entries": entries}, indent=2, sort_keys=True))
+    path.write_text(
+        json.dumps({"run_id": run_id, "entries": entries}, indent=2, sort_keys=True)
+    )
 
 
 class TierAccuracyTestCase(unittest.TestCase):
@@ -120,21 +121,52 @@ class TierAccuracyAggregationTests(TierAccuracyTestCase):
         fix_signal = self._spec("005-fix-signal")
 
         self.task_bytes = {}
-        self.task_bytes["TASK-001"] = _write_task(trivial, "TASK-001", complexity="trivial", domain="backend").read_bytes()
-        self.task_bytes["TASK-002"] = _write_task(trivial, "TASK-002", complexity="trivial", domain="backend").read_bytes()
-        self.task_bytes["TASK-003"] = _write_task(standard, "TASK-003", complexity="standard", domain="docs").read_bytes()
-        self.task_bytes["TASK-004"] = _write_task(standard, "TASK-004", complexity="standard", domain="docs").read_bytes()
-        self.task_bytes["TASK-005"] = _write_task(hard, "TASK-005", complexity="hard", domain="backend").read_bytes()
-        self.task_bytes["TASK-006"] = _write_task(hard, "TASK-006", complexity="hard", domain="backend").read_bytes()
-        self.task_bytes["TASK-007"] = _write_task(zero, "TASK-007", complexity="standard", domain="scripts").read_bytes()
-        self.task_bytes["TASK-008"] = _write_task(fix_signal, "TASK-008", complexity="standard", domain="api").read_bytes()
+        self.task_bytes["TASK-001"] = _write_task(
+            trivial, "TASK-001", complexity="trivial", domain="backend"
+        ).read_bytes()
+        self.task_bytes["TASK-002"] = _write_task(
+            trivial, "TASK-002", complexity="trivial", domain="backend"
+        ).read_bytes()
+        self.task_bytes["TASK-003"] = _write_task(
+            standard, "TASK-003", complexity="standard", domain="docs"
+        ).read_bytes()
+        self.task_bytes["TASK-004"] = _write_task(
+            standard, "TASK-004", complexity="standard", domain="docs"
+        ).read_bytes()
+        self.task_bytes["TASK-005"] = _write_task(
+            hard, "TASK-005", complexity="hard", domain="backend"
+        ).read_bytes()
+        self.task_bytes["TASK-006"] = _write_task(
+            hard, "TASK-006", complexity="hard", domain="backend"
+        ).read_bytes()
+        self.task_bytes["TASK-007"] = _write_task(
+            zero, "TASK-007", complexity="standard", domain="scripts"
+        ).read_bytes()
+        self.task_bytes["TASK-008"] = _write_task(
+            fix_signal, "TASK-008", complexity="standard", domain="api"
+        ).read_bytes()
 
         _write_journal(
             self.worktrees_root / "run-001.json",
             [
-                _entry("TASK-001", "review", review_status="FAILED", notes="first review failed"),
-                _entry("TASK-001", "review", review_status="PASSED", notes="second review passed"),
-                _entry("TASK-001", "review", review_status="FAILED", notes="third review failed"),
+                _entry(
+                    "TASK-001",
+                    "review",
+                    review_status="FAILED",
+                    notes="first review failed",
+                ),
+                _entry(
+                    "TASK-001",
+                    "review",
+                    review_status="PASSED",
+                    notes="second review passed",
+                ),
+                _entry(
+                    "TASK-001",
+                    "review",
+                    review_status="FAILED",
+                    notes="third review failed",
+                ),
                 _entry(
                     "TASK-001",
                     "fix",
@@ -142,8 +174,18 @@ class TierAccuracyAggregationTests(TierAccuracyTestCase):
                     notes="salvaged from git (commit present; report-back unparseable)",
                     terminal_status="escalated",
                 ),
-                _entry("TASK-002", "review", review_status="FAILED", notes="first review failed"),
-                _entry("TASK-002", "review", review_status="PASSED", notes="second review passed"),
+                _entry(
+                    "TASK-002",
+                    "review",
+                    review_status="FAILED",
+                    notes="first review failed",
+                ),
+                _entry(
+                    "TASK-002",
+                    "review",
+                    review_status="PASSED",
+                    notes="second review passed",
+                ),
             ],
             run_id="run-001",
         )
@@ -179,7 +221,9 @@ class TierAccuracyAggregationTests(TierAccuracyTestCase):
 
     def test_fixture_stats_match_hand_computed_values(self):
         report = ta.aggregate_tier_accuracy(
-            repo_root=self.repo, specs_root=self.specs_root, worktrees_root=self.worktrees_root
+            repo_root=self.repo,
+            specs_root=self.specs_root,
+            worktrees_root=self.worktrees_root,
         )
         pairs = {(p["complexity"], p["domain"]): p for p in report["pairs"]}
 
@@ -212,7 +256,9 @@ class TierAccuracyAggregationTests(TierAccuracyTestCase):
 
     def test_zero_history_pair_is_reported_as_insufficient_data(self):
         report = ta.aggregate_tier_accuracy(
-            repo_root=self.repo, specs_root=self.specs_root, worktrees_root=self.worktrees_root
+            repo_root=self.repo,
+            specs_root=self.specs_root,
+            worktrees_root=self.worktrees_root,
         )
         pairs = {(p["complexity"], p["domain"]): p for p in report["pairs"]}
         zero = pairs[("standard", "scripts")]
@@ -223,7 +269,9 @@ class TierAccuracyAggregationTests(TierAccuracyTestCase):
 
     def test_divergent_trivial_pair_is_flagged_and_non_divergent_fixture_is_not(self):
         report = ta.aggregate_tier_accuracy(
-            repo_root=self.repo, specs_root=self.specs_root, worktrees_root=self.worktrees_root
+            repo_root=self.repo,
+            specs_root=self.specs_root,
+            worktrees_root=self.worktrees_root,
         )
         flags = report["misstamp_flags"]
         self.assertTrue(flags)
@@ -260,15 +308,22 @@ class TierAccuracyAggregationTests(TierAccuracyTestCase):
 
     def test_corrupt_journal_is_skipped_gracefully(self):
         report = ta.aggregate_tier_accuracy(
-            repo_root=self.repo, specs_root=self.specs_root, worktrees_root=self.worktrees_root
+            repo_root=self.repo,
+            specs_root=self.specs_root,
+            worktrees_root=self.worktrees_root,
         )
         self.assertEqual(report["skipped_journals"], 1)
         self.assertEqual(report["parsed_journals"], 3)
-        self.assertIn(("trivial", "backend"), {(p["complexity"], p["domain"]) for p in report["pairs"]})
+        self.assertIn(
+            ("trivial", "backend"),
+            {(p["complexity"], p["domain"]) for p in report["pairs"]},
+        )
 
     def test_fix_role_strike_signal_is_counted(self):
         report = ta.aggregate_tier_accuracy(
-            repo_root=self.repo, specs_root=self.specs_root, worktrees_root=self.worktrees_root
+            repo_root=self.repo,
+            specs_root=self.specs_root,
+            worktrees_root=self.worktrees_root,
         )
         pairs = {(p["complexity"], p["domain"]): p for p in report["pairs"]}
         signal = pairs[("standard", "api")]
@@ -288,7 +343,12 @@ class TierAccuracyAggregationTests(TierAccuracyTestCase):
 
 class TierAccuracyCliTests(TierAccuracyTestCase):
     def test_json_output_is_deterministic(self):
-        _write_task(self._spec("001-minimal"), "TASK-100", complexity="standard", domain="backend")
+        _write_task(
+            self._spec("001-minimal"),
+            "TASK-100",
+            complexity="standard",
+            domain="backend",
+        )
         _write_journal(
             self.worktrees_root / "run-100.json",
             [_entry("TASK-100", "review", review_status="PASSED")],

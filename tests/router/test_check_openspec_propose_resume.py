@@ -4,6 +4,7 @@
 Pure filesystem checks -- no live I/O boundary to mock, unlike
 test_check_resumable_state.py's `gh` lookup.
 """
+
 from __future__ import annotations
 
 import tempfile
@@ -32,7 +33,9 @@ class TestNoChangeDirectory(unittest.TestCase):
             self.assertFalse(res["exists"])
             self.assertFalse(res["resumable"])
             self.assertEqual(res["present"], [])
-            self.assertEqual(sorted(res["missing"]), ["design.md", "proposal.md", "tasks.md"])
+            self.assertEqual(
+                sorted(res["missing"]), ["design.md", "proposal.md", "tasks.md"]
+            )
 
 
 class TestEmptyChangeDirectory(unittest.TestCase):
@@ -78,7 +81,9 @@ class TestPartialArtifactsWithSpecsOnly(unittest.TestCase):
             change_dir = wt / "openspec" / "changes" / "specs-only"
             specs_dir = change_dir / "specs" / "some-capability"
             specs_dir.mkdir(parents=True)
-            (specs_dir / "spec.md").write_text("## ADDED Requirements\n", encoding="utf-8")
+            (specs_dir / "spec.md").write_text(
+                "## ADDED Requirements\n", encoding="utf-8"
+            )
             res = cor.check(wt, "specs-only")
             self.assertTrue(res["checked"])
             self.assertTrue(res["exists"])
@@ -99,7 +104,9 @@ class TestCompleteArtifacts(unittest.TestCase):
             (change_dir / "proposal.md").write_text("# Proposal\n", encoding="utf-8")
             (change_dir / "design.md").write_text("# Design\n", encoding="utf-8")
             (change_dir / "tasks.md").write_text("- [ ] task\n", encoding="utf-8")
-            (specs_dir / "spec.md").write_text("## ADDED Requirements\n", encoding="utf-8")
+            (specs_dir / "spec.md").write_text(
+                "## ADDED Requirements\n", encoding="utf-8"
+            )
             res = cor.check(wt, "complete-change")
             self.assertTrue(res["checked"])
             self.assertTrue(res["exists"])

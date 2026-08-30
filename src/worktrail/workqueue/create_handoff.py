@@ -9,18 +9,22 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any
 
-from ..router.classify import classify
-from ..router.policy import load_policy, resolve_routing
 from ..orchestrator.spawnlib import spawn_agent
+from ..router.classify import classify
 from ..router.cluster_detect import OVERLAP_THRESHOLD, _overlap_coefficient, _tokenize
-from ..shared.brief_frontmatter import is_canonical_style, serialize_frontmatter, validate_brief
-from . import score_candidates
-from . import work_queue
-from .work_queue import normalize_dependency_reference
+from ..router.policy import load_policy, resolve_routing
+from ..shared.brief_frontmatter import (
+    is_canonical_style,
+    serialize_frontmatter,
+    validate_brief,
+)
+from . import score_candidates, work_queue
 from .slug import fallback_slugify
+from .work_queue import normalize_dependency_reference
 
 # Wall-clock budget for the capture-time overlap scan's `gh pr list` call.
 # A hang here must never delay (or fail) a brief capture, so the call is
@@ -36,7 +40,7 @@ def _slugify(text: str) -> str:
     return fallback_slugify(text, default="handoff")
 
 
-def _semantic_slug_summary(focus: str, repo: Optional[str]) -> Optional[str]:
+def _semantic_slug_summary(focus: str, repo: str | None) -> str | None:
     """Best-effort concise summary from a provider-backed backend.
 
     Returns None when no usable backend is configured or when the spawn fails
@@ -76,11 +80,11 @@ def _semantic_slug_summary(focus: str, repo: Optional[str]) -> Optional[str]:
     return summary or None
 
 
-def _clean_lines(values: Optional[Iterable[str]]) -> list[str]:
+def _clean_lines(values: Iterable[str] | None) -> list[str]:
     return [value.strip() for value in (values or []) if value and value.strip()]
 
 
-def _validate_blocked_by(values: Optional[Iterable[str]]) -> list[str]:
+def _validate_blocked_by(values: Iterable[str] | None) -> list[str]:
     """Return trimmed dependency references, rejecting empty or comma-joined values."""
     cleaned: list[str] = []
     for raw in values or []:
@@ -93,11 +97,13 @@ def _validate_blocked_by(values: Optional[Iterable[str]]) -> list[str]:
                     "blocked-by accepts exactly one dependency reference per flag; "
                     "repeat --blocked-by for each prerequisite instead of comma-joining values"
                 ) from exc
-            raise ValueError("blocked-by values must be non-empty dependency references") from exc
+            raise ValueError(
+                "blocked-by values must be non-empty dependency references"
+            ) from exc
     return cleaned
 
 
-def _validate_target_task(value: Optional[str]) -> Optional[str]:
+def _validate_target_task(value: str | None) -> str | None:
     """Return a trimmed target-task reference, rejecting empty or comma-joined values."""
     if not value:
         return None
@@ -112,7 +118,7 @@ def _validate_target_task(value: Optional[str]) -> Optional[str]:
         raise ValueError("target-task must be a non-empty task reference") from exc
 
 
-def _normalize_repo(repo: Optional[str]) -> Optional[str]:
+def _normalize_repo(repo: str | None) -> str | None:
     """Resolve a `--repo` value to an absolute path at capture time.
 
     A bare or `owner/name` value (e.g. 'devops', 'behindthedash/devops') has
@@ -141,7 +147,7 @@ def _normalize_repo(repo: Optional[str]) -> Optional[str]:
 _FOCUS_REPO_PREFIX = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]*):\s")
 
 
-def _infer_repo_from_focus(focus: str) -> Optional[str]:
+def _infer_repo_from_focus(focus: str) -> str | None:
     """Infer the repo from a leading `<project>: ` focus prefix.
 
     Briefs captured outside a checkout (a workspace-rooted /go session) carry
@@ -169,7 +175,7 @@ def _subdirectory_names(base: Path) -> list[str]:
         return []
 
 
-def _open_pr_titles(remote: Optional[str]) -> list[str]:
+def _open_pr_titles(remote: str | None) -> list[str]:
     """Open PR titles for `remote`, via a short-timeout `gh pr list` call.
 
     Silently skipped when unavailable -- a null/empty remote, missing gh
@@ -217,8 +223,8 @@ def _open_pr_titles(remote: Optional[str]) -> list[str]:
 
 def _scan_durable_artifact_overlaps(
     focus: str,
-    repo_path: Optional[str],
-    remote: Optional[str],
+    repo_path: str | None,
+    remote: str | None,
 ) -> list[dict[str, Any]]:
     """Durable artifacts overlapping the focus at/above OVERLAP_THRESHOLD.
 
@@ -270,17 +276,21 @@ def _format_overlap_warning(warning: dict[str, Any]) -> str:
     )
 
 
-def _section(title: str, value: Optional[str]) -> str:
+def _section(title: str, value: str | None) -> str:
     value = (value or "").strip()
     return f"\n## {title}\n\n{value}\n" if value else ""
 
 
 def _list_section(title: str, values: Iterable[str]) -> str:
     lines = _clean_lines(values)
-    return f"\n## {title}\n\n" + "\n".join(f"- {line}" for line in lines) + "\n" if lines else ""
+    return (
+        f"\n## {title}\n\n" + "\n".join(f"- {line}" for line in lines) + "\n"
+        if lines
+        else ""
+    )
 
 
-def _route_for(focus: str, requested: Optional[str]) -> Optional[str]:
+def _route_for(focus: str, requested: str | None) -> str | None:
     if requested:
         route = requested.strip().upper()
         if route not in "ABCDEFGHIJ":
@@ -295,10 +305,10 @@ def _route_for(focus: str, requested: Optional[str]) -> Optional[str]:
 
 
 def _brief_body(
-    context: Optional[str],
-    approach: Optional[str],
-    artifacts: Optional[str],
-    questions: Optional[str],
+    context: str | None,
+    approach: str | None,
+    artifacts: str | None,
+    questions: str | None,
     skills: Iterable[str],
 ) -> str:
     return (
@@ -314,31 +324,37 @@ def _brief_body(
 def create_handoff(
     focus: str,
     *,
-    queue_base: Optional[Path] = None,
-    repo: Optional[str] = None,
-    remote: Optional[str] = None,
-    base_branch: Optional[str] = None,
-    suggested_skills: Optional[Iterable[str]] = None,
-    context: Optional[str] = None,
-    approach: Optional[str] = None,
-    artifacts: Optional[str] = None,
-    questions: Optional[str] = None,
-    recommended_route: Optional[str] = None,
-    implementation_intent: Optional[str] = None,
-    change_kind: Optional[str] = None,
-    target_spec: Optional[str] = None,
-    target_task: Optional[str] = None,
-    triage: Optional[str] = None,
-    blocked_by: Optional[Iterable[str]] = None,
-    watch: Optional[Iterable[str]] = None,
-    seeded_from: Optional[str] = None,
+    queue_base: Path | None = None,
+    repo: str | None = None,
+    remote: str | None = None,
+    base_branch: str | None = None,
+    suggested_skills: Iterable[str] | None = None,
+    context: str | None = None,
+    approach: str | None = None,
+    artifacts: str | None = None,
+    questions: str | None = None,
+    recommended_route: str | None = None,
+    implementation_intent: str | None = None,
+    change_kind: str | None = None,
+    target_spec: str | None = None,
+    target_task: str | None = None,
+    triage: str | None = None,
+    blocked_by: Iterable[str] | None = None,
+    watch: Iterable[str] | None = None,
+    seeded_from: str | None = None,
 ) -> dict[str, Any]:
     """Create one queued brief and auto-link high-confidence neighbours."""
     focus = focus.strip()
     if not focus:
         raise ValueError("focus must not be empty")
-    if implementation_intent and implementation_intent not in {"requested", "planning-only", "unknown"}:
-        raise ValueError("implementation-intent must be requested, planning-only, or unknown")
+    if implementation_intent and implementation_intent not in {
+        "requested",
+        "planning-only",
+        "unknown",
+    }:
+        raise ValueError(
+            "implementation-intent must be requested, planning-only, or unknown"
+        )
     if change_kind and change_kind not in {"new", "delta", "bugfix"}:
         raise ValueError("change-kind must be new, delta, or bugfix")
     if triage and triage not in work_queue.VALID_TRIAGE:
@@ -395,7 +411,9 @@ def create_handoff(
     # itself fails open, and any unexpected error is swallowed here too --
     # warnings are reported but never block or fail the capture.
     try:
-        overlap_hits = _scan_durable_artifact_overlaps(focus, resolved_repo, remote or None)
+        overlap_hits = _scan_durable_artifact_overlaps(
+            focus, resolved_repo, remote or None
+        )
     except Exception:
         overlap_hits = []
     overlap_warnings = overlap_hits[:_OVERLAP_WARNING_LIMIT]
@@ -413,7 +431,9 @@ def create_handoff(
         raise RuntimeError(f"created brief failed validation: {error}")
     if not is_canonical_style(content):
         path.unlink(missing_ok=True)
-        raise RuntimeError("created brief did not serialize to canonical frontmatter style")
+        raise RuntimeError(
+            "created brief did not serialize to canonical frontmatter style"
+        )
 
     previous_env = os.environ.get("WORK_QUEUE_DIR")
     os.environ["WORK_QUEUE_DIR"] = str(base)
@@ -440,7 +460,7 @@ def create_handoff(
             os.environ["WORK_QUEUE_DIR"] = previous_env
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Create a Worktrail handoff brief")
     parser.add_argument("--focus", required=True, help="the deferred work to capture")
     parser.add_argument("--queue-dir", help="queue base containing queue/ and picked/")
@@ -453,7 +473,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--artifacts")
     parser.add_argument("--questions")
     parser.add_argument("--recommended-route")
-    parser.add_argument("--implementation-intent", choices=("requested", "planning-only", "unknown"))
+    parser.add_argument(
+        "--implementation-intent", choices=("requested", "planning-only", "unknown")
+    )
     parser.add_argument("--change-kind", choices=("new", "delta", "bugfix"))
     parser.add_argument("--target-spec")
     parser.add_argument("--target-task")

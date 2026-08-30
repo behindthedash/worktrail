@@ -20,9 +20,11 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import integrate  # noqa: E402
-from worktrail.orchestrator import live  # noqa: E402
-from worktrail.orchestrator import verify  # noqa: E402
+from worktrail.orchestrator import (
+    integrate,
+    live,
+    verify,
+)
 
 
 def _init_repo(root: Path) -> Path:
@@ -53,10 +55,13 @@ def _init_repo(root: Path) -> Path:
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t"], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.name", "T"], check=True)
-    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True
+    )
     subprocess.run(
         ["git", "-C", str(repo), "commit", "-q", "-m", "init"],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     return repo
 
@@ -72,20 +77,41 @@ class FromVerifyPersistsQuarantineTest(unittest.TestCase):
 
             journal_path = live.journal_path_for(repo, "docs/specs/001-x")
             journal_path.parent.mkdir(parents=True, exist_ok=True)
-            journal_path.write_text(json.dumps({
-                "run_id": "full-test",
-                "spec_id": "001-x",
-                "entries": [],
-                "groups": {
-                    "base": {"pr_url": "http://pr/base", "head_branch": "full-test/base", "state": "OPEN"},
-                    "feature-1": {"pr_url": "http://pr/f1", "head_branch": "full-test/feature-1", "state": "OPEN"},
-                    "feature-2": {"pr_url": "http://pr/f2", "head_branch": "full-test/feature-2", "state": "OPEN"},
-                },
-                "integrate_complete": True,
-            }))
+            journal_path.write_text(
+                json.dumps(
+                    {
+                        "run_id": "full-test",
+                        "spec_id": "001-x",
+                        "entries": [],
+                        "groups": {
+                            "base": {
+                                "pr_url": "http://pr/base",
+                                "head_branch": "full-test/base",
+                                "state": "OPEN",
+                            },
+                            "feature-1": {
+                                "pr_url": "http://pr/f1",
+                                "head_branch": "full-test/feature-1",
+                                "state": "OPEN",
+                            },
+                            "feature-2": {
+                                "pr_url": "http://pr/f2",
+                                "head_branch": "full-test/feature-2",
+                                "state": "OPEN",
+                            },
+                        },
+                        "integrate_complete": True,
+                    }
+                )
+            )
 
-            def mock_vac(repo_, remote, base_, spec_id, groups, group_branch, delivered, **kw):
-                return {"merged": ["base", "feature-2"], "quarantined": {"feature-1": "CI failed after 3 retries"}}
+            def mock_vac(
+                repo_, remote, base_, spec_id, groups, group_branch, delivered, **kw
+            ):
+                return {
+                    "merged": ["base", "feature-2"],
+                    "quarantined": {"feature-1": "CI failed after 3 retries"},
+                }
 
             with unittest.mock.patch.object(verify, "verify_and_cleanup", mock_vac):
                 live._full_real_inner(

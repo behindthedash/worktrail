@@ -2,6 +2,7 @@
 """Tests for policy_drift_selfcheck.py.
 Run: PYTHONPATH=src python3 -m pytest tests/router/test_policy_drift_selfcheck.py -q
 """
+
 import shutil
 import subprocess
 import tempfile
@@ -9,7 +10,11 @@ import unittest
 from pathlib import Path
 
 from worktrail.router.policy_drift_selfcheck import (
-    check_repo, main, orphaned_test_paths, sweep, tracked_test_files,
+    check_repo,
+    main,
+    orphaned_test_paths,
+    sweep,
+    tracked_test_files,
 )
 
 _LINT_ONLY = '"([ -d node_modules ] || npm ci) && npm run lint && npm run build"'
@@ -17,12 +22,15 @@ _PYTEST = '"PYTHONPATH=src pytest -q"'
 
 
 def _policy(pre_pr_cmd: str, comments: str = "") -> str:
-    head = f"# go conductor policy.\n{comments}" if comments else "# go conductor policy.\n"
+    head = (
+        f"# go conductor policy.\n{comments}"
+        if comments
+        else "# go conductor policy.\n"
+    )
     return f"{head}pre_pr_cmd: {pre_pr_cmd}\nbase_branch: main\n"
 
 
-def _repo(root: Path, name: str, policy_text=None, files=None,
-          workflows=None) -> Path:
+def _repo(root: Path, name: str, policy_text=None, files=None, workflows=None) -> Path:
     """A real git repo — `git ls-files` is the module's file source of truth."""
     repo = root / name
     repo.mkdir(parents=True)
@@ -55,22 +63,32 @@ class TestOrphanedTests(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_tests_with_no_runner_anywhere_are_flagged(self):
-        repo = _repo(self.tmp, "behindthedash-like", _policy(_LINT_ONLY),
-                     files=["ci/scripts/test_release_notes.py"])
+        repo = _repo(
+            self.tmp,
+            "behindthedash-like",
+            _policy(_LINT_ONLY),
+            files=["ci/scripts/test_release_notes.py"],
+        )
         self.assertIn("orphaned-tests", _signals(repo))
-        self.assertEqual(orphaned_test_paths(repo),
-                         ["ci/scripts/test_release_notes.py"])
+        self.assertEqual(
+            orphaned_test_paths(repo), ["ci/scripts/test_release_notes.py"]
+        )
 
     def test_gate_running_tests_is_clean(self):
-        repo = _repo(self.tmp, "worktrail-like", _policy(_PYTEST),
-                     files=["tests/test_thing.py"])
+        repo = _repo(
+            self.tmp, "worktrail-like", _policy(_PYTEST), files=["tests/test_thing.py"]
+        )
         self.assertEqual(_signals(repo), set())
         self.assertEqual(orphaned_test_paths(repo), [])
 
     def test_ci_running_tests_is_clean_even_when_gate_does_not(self):
-        repo = _repo(self.tmp, "ci-only", _policy(_LINT_ONLY),
-                     files=["tests/test_thing.py"],
-                     workflows={"ci.yml": "jobs:\n  t:\n    steps:\n      - run: pytest -q\n"})
+        repo = _repo(
+            self.tmp,
+            "ci-only",
+            _policy(_LINT_ONLY),
+            files=["tests/test_thing.py"],
+            workflows={"ci.yml": "jobs:\n  t:\n    steps:\n      - run: pytest -q\n"},
+        )
         self.assertEqual(_signals(repo), set())
         self.assertEqual(orphaned_test_paths(repo), [])
 
@@ -86,29 +104,53 @@ class TestOrphanedTests(unittest.TestCase):
         self.assertEqual(orphaned_test_paths(repo), [])
 
     def test_npm_run_lint_is_not_mistaken_for_a_test_runner(self):
-        repo = _repo(self.tmp, "lint-only", _policy('"npm run lint"'),
-                     files=["a.test.ts"])
+        repo = _repo(
+            self.tmp, "lint-only", _policy('"npm run lint"'), files=["a.test.ts"]
+        )
         self.assertIn("orphaned-tests", _signals(repo))
 
     def test_npm_run_test_variants_count_as_a_runner(self):
-        for cmd in ('"npm test"', '"npm run test"', '"npm run test:unit"',
-                    '"pnpm test"', '"node --test src/x.test.mjs"'):
+        for cmd in (
+            '"npm test"',
+            '"npm run test"',
+            '"npm run test:unit"',
+            '"pnpm test"',
+            '"node --test src/x.test.mjs"',
+        ):
             with self.subTest(cmd=cmd):
-                repo = _repo(self.tmp / cmd.strip('"').replace(" ", "_").replace(":", "_"),
-                             "r", _policy(cmd), files=["a.test.ts"])
+                repo = _repo(
+                    self.tmp / cmd.strip('"').replace(" ", "_").replace(":", "_"),
+                    "r",
+                    _policy(cmd),
+                    files=["a.test.ts"],
+                )
                 self.assertEqual(orphaned_test_paths(repo), [], cmd)
 
     def test_vendored_test_files_are_ignored(self):
-        repo = _repo(self.tmp, "vendored", _policy(_LINT_ONLY),
-                     files=["vendor/pkg/test_x.py", "node_modules/p/a.test.js"])
+        repo = _repo(
+            self.tmp,
+            "vendored",
+            _policy(_LINT_ONLY),
+            files=["vendor/pkg/test_x.py", "node_modules/p/a.test.js"],
+        )
         self.assertEqual(tracked_test_files(repo), [])
         self.assertEqual(_signals(repo), set())
 
     def test_recognises_multiple_test_naming_conventions(self):
-        repo = _repo(self.tmp, "polyglot", _policy(_LINT_ONLY), files=[
-            "test_a.py", "b_test.py", "c.test.ts", "d.spec.tsx",
-            "e_test.go", "rules.test.ts", "test_f.mjs",
-        ])
+        repo = _repo(
+            self.tmp,
+            "polyglot",
+            _policy(_LINT_ONLY),
+            files=[
+                "test_a.py",
+                "b_test.py",
+                "c.test.ts",
+                "d.spec.tsx",
+                "e_test.go",
+                "rules.test.ts",
+                "test_f.mjs",
+            ],
+        )
         self.assertEqual(len(tracked_test_files(repo)), 7)
 
 
@@ -120,20 +162,27 @@ class TestStaleClaims(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_no_test_suite_claim_contradicted_by_test_files(self):
-        repo = _repo(self.tmp, "roost-like",
-                     _policy(_PYTEST, "# No test suite in this repo.\n"),
-                     files=["firestore.rules.test.ts"])
+        repo = _repo(
+            self.tmp,
+            "roost-like",
+            _policy(_PYTEST, "# No test suite in this repo.\n"),
+            files=["firestore.rules.test.ts"],
+        )
         self.assertIn("stale-claim-no-tests", _signals(repo))
 
     def test_no_ci_claim_contradicted_by_workflow_files(self):
-        repo = _repo(self.tmp, "kudera-like",
-                     _policy(_PYTEST, "# This repo has NO CI workflows.\n"),
-                     workflows={"ci.yml": "jobs: {}\n"})
+        repo = _repo(
+            self.tmp,
+            "kudera-like",
+            _policy(_PYTEST, "# This repo has NO CI workflows.\n"),
+            workflows={"ci.yml": "jobs: {}\n"},
+        )
         self.assertIn("stale-claim-no-ci", _signals(repo))
 
     def test_no_lint_claim_contradicted_by_eslint_config(self):
-        repo = _repo(self.tmp, "eslint-repo",
-                     _policy(_PYTEST, "# No linter in this repo.\n"))
+        repo = _repo(
+            self.tmp, "eslint-repo", _policy(_PYTEST, "# No linter in this repo.\n")
+        )
         (repo / ".eslintrc.json").write_text("{}\n")
         subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
         findings = {f["signal"]: f["detail"] for f in check_repo(repo)["findings"]}
@@ -141,22 +190,23 @@ class TestStaleClaims(unittest.TestCase):
         self.assertIn(".eslintrc.json", findings["stale-claim-no-lint"])
 
     def test_no_lint_claim_contradicted_by_package_json_script(self):
-        repo = _repo(self.tmp, "pkg-lint",
-                     _policy(_PYTEST, "# No lint config here.\n"))
+        repo = _repo(self.tmp, "pkg-lint", _policy(_PYTEST, "# No lint config here.\n"))
         (repo / "package.json").write_text('{"scripts": {"lint": "eslint ."}}\n')
         subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
         self.assertIn("stale-claim-no-lint", _signals(repo))
 
     def test_no_lint_claim_contradicted_by_pyproject_tool_table(self):
-        repo = _repo(self.tmp, "ruff-repo",
-                     _policy(_PYTEST, "# No linter configured.\n"))
+        repo = _repo(
+            self.tmp, "ruff-repo", _policy(_PYTEST, "# No linter configured.\n")
+        )
         (repo / "pyproject.toml").write_text("[tool.ruff]\nline-length = 100\n")
         subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
         self.assertIn("stale-claim-no-lint", _signals(repo))
 
     def test_no_lint_claim_matching_reality_is_clean(self):
-        repo = _repo(self.tmp, "truly-no-lint",
-                     _policy(_PYTEST, "# No linter in this repo.\n"))
+        repo = _repo(
+            self.tmp, "truly-no-lint", _policy(_PYTEST, "# No linter in this repo.\n")
+        )
         self.assertNotIn("stale-claim-no-lint", _signals(repo))
 
     def test_lint_config_present_without_a_claim_is_not_flagged(self):
@@ -166,16 +216,21 @@ class TestStaleClaims(unittest.TestCase):
         self.assertEqual(_signals(repo), set())
 
     def test_claims_matching_reality_are_clean(self):
-        repo = _repo(self.tmp, "honest",
-                     _policy(_PYTEST, "# No test suite in this repo. NO CI workflows.\n"))
+        repo = _repo(
+            self.tmp,
+            "honest",
+            _policy(_PYTEST, "# No test suite in this repo. NO CI workflows.\n"),
+        )
         self.assertEqual(_signals(repo), set())
 
     def test_claim_text_inside_a_command_is_not_treated_as_a_claim(self):
         # The phrase appears in the command value, not an authored comment.
-        repo = _repo(self.tmp, "command-text",
-                     '# go conductor policy.\n'
-                     'pre_pr_cmd: "echo no test suite && pytest -q"\n',
-                     files=["tests/test_a.py"])
+        repo = _repo(
+            self.tmp,
+            "command-text",
+            '# go conductor policy.\npre_pr_cmd: "echo no test suite && pytest -q"\n',
+            files=["tests/test_a.py"],
+        )
         self.assertNotIn("stale-claim-no-tests", _signals(repo))
 
 

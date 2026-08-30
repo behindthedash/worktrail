@@ -8,6 +8,7 @@ touched spec paths together (merged_docs_only_spec_pr); non-durable
 inputs miss; and missing, unreadable, malformed, or non-UTF-8 inputs
 degrade to zero hits with exit status 0 (Requirement: Fail-Open And
 Headless-Excluded)."""
+
 from __future__ import annotations
 
 import json
@@ -36,10 +37,21 @@ from worktrail.router.check_durable_artifact_capture_gate import (
 def _start_record(tmp: str) -> str:
     out = StringIO()
     with patch("sys.stdout", out):
-        rc = run_record.main([
-            "start", "--repo", "/tmp/fake-repo", "--request", "fix the thing",
-            "--route", "F", "--risk", "low", "--dir", tmp,
-        ])
+        rc = run_record.main(
+            [
+                "start",
+                "--repo",
+                "/tmp/fake-repo",
+                "--request",
+                "fix the thing",
+                "--route",
+                "F",
+                "--risk",
+                "low",
+                "--dir",
+                tmp,
+            ]
+        )
     assert rc == 0
     return json.loads(out.getvalue())["path"]
 
@@ -54,7 +66,11 @@ class IsDurableArtifactPathTests(unittest.TestCase):
         self.assertTrue(is_durable_artifact_path("/repo/docs/specs/x/spec.md"))
         self.assertTrue(is_durable_artifact_path("docs/specs/x/spec.md"))
         self.assertTrue(is_durable_artifact_path("openspec/changes/foo/tasks.md"))
-        self.assertTrue(is_durable_artifact_path("/home/u/repo/openspec/changes/foo/specs/one/spec.md"))
+        self.assertTrue(
+            is_durable_artifact_path(
+                "/home/u/repo/openspec/changes/foo/specs/one/spec.md"
+            )
+        )
         self.assertTrue(is_durable_artifact_path("C:\\repo\\docs\\specs\\a.md"))
 
     def test_match_is_case_insensitive(self):
@@ -79,31 +95,40 @@ class IsDurableArtifactPathTests(unittest.TestCase):
 
 class TouchedDurableArtifactsTests(unittest.TestCase):
     def test_collects_only_durable_paths_in_input_order(self):
-        artifacts = touched_durable_artifacts([
-            "src/widget.py",
-            "openspec/changes/add-gate/tasks.md",
-            "README.md",
-            "docs/specs/002-retry/spec.md",
-        ])
+        artifacts = touched_durable_artifacts(
+            [
+                "src/widget.py",
+                "openspec/changes/add-gate/tasks.md",
+                "README.md",
+                "docs/specs/002-retry/spec.md",
+            ]
+        )
 
-        self.assertEqual(artifacts, [
-            "openspec/changes/add-gate/tasks.md",
-            "docs/specs/002-retry/spec.md",
-        ])
+        self.assertEqual(
+            artifacts,
+            [
+                "openspec/changes/add-gate/tasks.md",
+                "docs/specs/002-retry/spec.md",
+            ],
+        )
 
     def test_duplicate_paths_collapsed(self):
-        artifacts = touched_durable_artifacts([
-            "/repo/docs/specs/x/spec.md",
-            "/repo/docs/specs/x/spec.md",
-        ])
+        artifacts = touched_durable_artifacts(
+            [
+                "/repo/docs/specs/x/spec.md",
+                "/repo/docs/specs/x/spec.md",
+            ]
+        )
 
         self.assertEqual(artifacts, ["/repo/docs/specs/x/spec.md"])
 
     def test_normalized_forms_collapse_to_one_artifact(self):
-        artifacts = touched_durable_artifacts([
-            "repo/docs/specs/x/spec.md",
-            "repo//docs/specs/x//spec.md",
-        ])
+        artifacts = touched_durable_artifacts(
+            [
+                "repo/docs/specs/x/spec.md",
+                "repo//docs/specs/x//spec.md",
+            ]
+        )
 
         self.assertEqual(len(artifacts), 1)
         self.assertEqual(artifacts[0], "repo/docs/specs/x/spec.md")
@@ -131,9 +156,12 @@ class FindPlannedRunRecordsTests(unittest.TestCase):
 
             planned = find_planned_run_records([path])
 
-            self.assertEqual(planned, [
-                {"run_record": path, "final_status": PLANNED_STATUS},
-            ])
+            self.assertEqual(
+                planned,
+                [
+                    {"run_record": path, "final_status": PLANNED_STATUS},
+                ],
+            )
 
     def test_non_planned_terminal_status_not_found(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -169,7 +197,8 @@ class FindPlannedRunRecordsTests(unittest.TestCase):
             )
 
             self.assertEqual(
-                find_planned_run_records([str(bad_key), str(bad_json)]), [],
+                find_planned_run_records([str(bad_key), str(bad_json)]),
+                [],
             )
 
     def test_non_utf8_file_degrades_to_zero(self):
@@ -203,18 +232,22 @@ class FindPlannedRunRecordsTests(unittest.TestCase):
 
 class MergeMarkersInTests(unittest.TestCase):
     def test_detects_both_markers_case_insensitively(self):
-        markers = merge_markers_in([
-            "GH PR MERGE --squash main",
-            "git merge feature/x",
-        ])
+        markers = merge_markers_in(
+            [
+                "GH PR MERGE --squash main",
+                "git merge feature/x",
+            ]
+        )
 
         self.assertEqual(markers, ["gh pr merge", "git merge"])
 
     def test_markers_deduped_across_commands(self):
-        markers = merge_markers_in([
-            "gh pr merge 12 --squash",
-            "gh pr merge 13 --merge",
-        ])
+        markers = merge_markers_in(
+            [
+                "gh pr merge 12 --squash",
+                "gh pr merge 13 --merge",
+            ]
+        )
 
         self.assertEqual(markers, ["gh pr merge"])
 
@@ -243,12 +276,18 @@ class FindHitsTests(unittest.TestCase):
                 ],
             )
             self.assertEqual(hits[0]["path"], "openspec/changes/add-gate/tasks.md")
-            self.assertEqual(hits[1], {
-                "kind": PLANNED_RUN_RECORD, "run_record": path,
-                "final_status": PLANNED_STATUS,
-            })
+            self.assertEqual(
+                hits[1],
+                {
+                    "kind": PLANNED_RUN_RECORD,
+                    "run_record": path,
+                    "final_status": PLANNED_STATUS,
+                },
+            )
             self.assertEqual(hits[2]["merge_markers"], ["gh pr merge"])
-            self.assertEqual(hits[2]["spec_paths"], ["openspec/changes/add-gate/tasks.md"])
+            self.assertEqual(
+                hits[2]["spec_paths"], ["openspec/changes/add-gate/tasks.md"]
+            )
 
     def test_merge_marker_without_spec_paths_is_no_hit(self):
         hits = find_hits(["src/widget.py"], [], ["git merge feature/x"])
@@ -301,11 +340,15 @@ class MainCliOutputTests(unittest.TestCase):
             out = StringIO()
 
             with patch("sys.stdout", out):
-                rc = main([
-                    "--touched-path", "docs/specs/x/spec.md",
-                    "--run-record", path,
-                    "--json",
-                ])
+                rc = main(
+                    [
+                        "--touched-path",
+                        "docs/specs/x/spec.md",
+                        "--run-record",
+                        path,
+                        "--json",
+                    ]
+                )
 
             self.assertEqual(rc, 0)
             payload = json.loads(out.getvalue())
@@ -330,10 +373,14 @@ class MainCliOutputTests(unittest.TestCase):
             out = StringIO()
 
             with patch("sys.stdout", out):
-                rc = main([
-                    "--touched-path", "openspec/changes/add-gate/tasks.md",
-                    "--run-record", path,
-                ])
+                rc = main(
+                    [
+                        "--touched-path",
+                        "openspec/changes/add-gate/tasks.md",
+                        "--run-record",
+                        path,
+                    ]
+                )
 
             self.assertEqual(rc, 0)
             text = out.getvalue()
@@ -348,10 +395,14 @@ class MainCliOutputTests(unittest.TestCase):
         out = StringIO()
 
         with patch("sys.stdout", out):
-            rc = main([
-                "--touched-path", "docs/specs/x/spec.md",
-                "--bash-command", "git merge feature/x",
-            ])
+            rc = main(
+                [
+                    "--touched-path",
+                    "docs/specs/x/spec.md",
+                    "--bash-command",
+                    "git merge feature/x",
+                ]
+            )
 
         self.assertEqual(rc, 0)
         text = out.getvalue()
@@ -376,10 +427,14 @@ class MainCliOutputTests(unittest.TestCase):
             try:
                 out = StringIO()
                 with patch("sys.stdout", out):
-                    rc = main([
-                        "--run-record", str(locked),
-                        "--bash-command", "echo hi",
-                    ])
+                    rc = main(
+                        [
+                            "--run-record",
+                            str(locked),
+                            "--bash-command",
+                            "echo hi",
+                        ]
+                    )
             finally:
                 locked.chmod(0o755)
 

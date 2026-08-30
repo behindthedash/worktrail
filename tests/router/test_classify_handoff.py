@@ -31,7 +31,12 @@ class TestClassifyHandoff(unittest.TestCase):
         self.tmp.cleanup()
 
     def brief(self, body: str, fm: str = "") -> Path:
-        text = "---\nfocus: Update handoff conductor routing\nstatus: picked\n" + fm + "---\n\n" + body
+        text = (
+            "---\nfocus: Update handoff conductor routing\nstatus: picked\n"
+            + fm
+            + "---\n\n"
+            + body
+        )
         return _write(self.root / "brief.md", text)
 
     def test_change_kind_bugfix_sets_route_f(self):
@@ -48,17 +53,25 @@ class TestClassifyHandoff(unittest.TestCase):
         )
         result = ch.classify_handoff(brief, self.specs)
         self.assertEqual(result["hint"], "G")
-        self.assertEqual(result["candidate_specs"][0]["spec_id"], "003-handoff-go-input")
+        self.assertEqual(
+            result["candidate_specs"][0]["spec_id"], "003-handoff-go-input"
+        )
         self.assertIn("target-spec", result["candidate_specs"][0]["signals"])
 
     def test_existing_spec_change_words_infer_delta(self):
-        brief = self.brief("Change the handoff queue integration to delegate through sdd-workflow.")
+        brief = self.brief(
+            "Change the handoff queue integration to delegate through sdd-workflow."
+        )
         result = ch.classify_handoff(brief, self.specs)
         self.assertEqual(result["hint"], "G")
-        self.assertEqual(result["candidate_specs"][0]["spec_id"], "003-handoff-go-input")
+        self.assertEqual(
+            result["candidate_specs"][0]["spec_id"], "003-handoff-go-input"
+        )
 
     def test_recommended_route_used_when_no_stronger_hint(self):
-        brief = self.brief("Investigate how handoff route selection behaves.", "recommended-route: I\n")
+        brief = self.brief(
+            "Investigate how handoff route selection behaves.", "recommended-route: I\n"
+        )
         result = ch.classify_handoff(brief, self.specs)
         self.assertEqual(result["hint"], "I")
         self.assertEqual(result["recommended_route"], "I")

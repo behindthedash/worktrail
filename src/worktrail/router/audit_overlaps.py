@@ -29,6 +29,7 @@ Output:
     "total_specs": N
   }
 """
+
 from __future__ import annotations
 
 import argparse
@@ -36,7 +37,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 from .overlap_check import scan as _scan_specs
 
@@ -44,26 +45,94 @@ from .overlap_check import scan as _scan_specs
 # pairs that share only stopwords after filtering).
 MIN_SCORE = 0.15
 
-_STOPWORDS: Set[str] = {
-    "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
-    "of", "with", "by", "from", "as", "is", "are", "was", "were", "be",
-    "been", "being", "have", "has", "had", "do", "does", "did", "will",
-    "would", "could", "should", "may", "might", "shall", "that", "this",
-    "it", "its", "their", "they", "we", "our", "can", "not", "no", "so",
-    "up", "out", "into", "than", "then", "when", "where", "which", "who",
-    "what", "how", "all", "each", "both", "more", "also", "user", "users",
-    "system", "feature", "allows", "enables", "provides", "support",
-    "supports", "new", "via", "per", "any",
+_STOPWORDS: set[str] = {
+    "a",
+    "an",
+    "the",
+    "and",
+    "or",
+    "but",
+    "in",
+    "on",
+    "at",
+    "to",
+    "for",
+    "of",
+    "with",
+    "by",
+    "from",
+    "as",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "been",
+    "being",
+    "have",
+    "has",
+    "had",
+    "do",
+    "does",
+    "did",
+    "will",
+    "would",
+    "could",
+    "should",
+    "may",
+    "might",
+    "shall",
+    "that",
+    "this",
+    "it",
+    "its",
+    "their",
+    "they",
+    "we",
+    "our",
+    "can",
+    "not",
+    "no",
+    "so",
+    "up",
+    "out",
+    "into",
+    "than",
+    "then",
+    "when",
+    "where",
+    "which",
+    "who",
+    "what",
+    "how",
+    "all",
+    "each",
+    "both",
+    "more",
+    "also",
+    "user",
+    "users",
+    "system",
+    "feature",
+    "allows",
+    "enables",
+    "provides",
+    "support",
+    "supports",
+    "new",
+    "via",
+    "per",
+    "any",
 }
 
 
-def _tokenise(text: str) -> Set[str]:
+def _tokenise(text: str) -> set[str]:
     """Lowercase word tokens with stop-word removal."""
     words = re.findall(r"[a-z]+", text.lower())
     return {w for w in words if w not in _STOPWORDS and len(w) > 2}
 
 
-def _jaccard(a: Set[str], b: Set[str]) -> float:
+def _jaccard(a: set[str], b: set[str]) -> float:
     if not a or not b:
         return 0.0
     return len(a & b) / len(a | b)
@@ -77,7 +146,7 @@ def _score_label(score: float) -> str:
     return "low"
 
 
-def _summary_text(spec: Dict[str, Any]) -> Optional[str]:
+def _summary_text(spec: dict[str, Any]) -> str | None:
     """Combine feature_summary + user_request_excerpt for a richer token set."""
     parts = []
     if spec.get("feature_summary"):
@@ -87,7 +156,7 @@ def _summary_text(spec: Dict[str, Any]) -> Optional[str]:
     return " ".join(parts) if parts else None
 
 
-def _strip_for_output(spec: Dict[str, Any]) -> Dict[str, Any]:
+def _strip_for_output(spec: dict[str, Any]) -> dict[str, Any]:
     """Return only the fields useful for the LLM comparison."""
     return {
         "spec_id": spec["spec_id"],
@@ -97,21 +166,23 @@ def _strip_for_output(spec: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def audit(specs_root: Path, min_score: float = MIN_SCORE) -> Dict[str, Any]:
+def audit(specs_root: Path, min_score: float = MIN_SCORE) -> dict[str, Any]:
     specs = _scan_specs(specs_root)
 
-    scored: List[Tuple[float, Dict[str, Any], Dict[str, Any]]] = []
-    unscored: List[Dict[str, str]] = []
+    scored: list[tuple[float, dict[str, Any], dict[str, Any]]] = []
+    unscored: list[dict[str, str]] = []
 
     # Pre-compute token sets; mark specs with no text as unscored
-    token_sets: Dict[str, Optional[Set[str]]] = {}
+    token_sets: dict[str, set[str] | None] = {}
     for spec in specs:
         text = _summary_text(spec)
         if text:
             token_sets[spec["spec_id"]] = _tokenise(text)
         else:
             token_sets[spec["spec_id"]] = None
-            unscored.append({"spec_id": spec["spec_id"], "reason": "no_feature_summary"})
+            unscored.append(
+                {"spec_id": spec["spec_id"], "reason": "no_feature_summary"}
+            )
 
     # Pairwise Jaccard
     spec_map = {s["spec_id"]: s for s in specs}
@@ -147,10 +218,15 @@ def audit(specs_root: Path, min_score: float = MIN_SCORE) -> Dict[str, Any]:
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Audit spec corpus for overlapping pairs")
-    p.add_argument("--root", default="docs/specs",
-                   help="specs root to scan (default: docs/specs)")
-    p.add_argument("--min-score", type=float, default=MIN_SCORE,
-                   help=f"minimum Jaccard score to include a pair (default: {MIN_SCORE})")
+    p.add_argument(
+        "--root", default="docs/specs", help="specs root to scan (default: docs/specs)"
+    )
+    p.add_argument(
+        "--min-score",
+        type=float,
+        default=MIN_SCORE,
+        help=f"minimum Jaccard score to include a pair (default: {MIN_SCORE})",
+    )
     args = p.parse_args(argv)
 
     result = audit(Path(args.root), min_score=args.min_score)

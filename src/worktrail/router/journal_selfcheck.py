@@ -46,17 +46,17 @@ triage; this module deliberately does not re-report those). No network calls.
 Usage:
   journal_selfcheck.py --repo /path/to/repo [--json]
 """
+
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-from .run_record import _load_lenient as _load_run_record_lenient
 from ..shared.homedir import env_setting, worktrail_home
+from .run_record import _load_lenient as _load_run_record_lenient
 
 
 def _runlock_held(lock_path: Path) -> bool:
@@ -87,8 +87,8 @@ def _runlock_held(lock_path: Path) -> bool:
 
 
 def _malformed_run_record_findings(
-    repo: Path, run_record_dir: Optional[Path]
-) -> List[Dict[str, Any]]:
+    repo: Path, run_record_dir: Path | None
+) -> list[dict[str, Any]]:
     """Findings for `run_record_dir/<repo-name>/*.yaml` files that fail
     run_record.py's own parser. Mirrors `load_recent_runs()`'s dir-resolution
     (env override, then `worktrail_home()/runs`) so both readers agree on where records
@@ -96,25 +96,29 @@ def _malformed_run_record_findings(
     """
     if run_record_dir is None:
         override = env_setting("WORKTRAIL_RUN_RECORD_DIR")
-        run_record_dir = Path(override).expanduser() if override else worktrail_home() / "runs"
+        run_record_dir = (
+            Path(override).expanduser() if override else worktrail_home() / "runs"
+        )
     run_dir = run_record_dir / repo.resolve().name
     if not run_dir.is_dir():
         return []
-    findings: List[Dict[str, Any]] = []
+    findings: list[dict[str, Any]] = []
     for record_file in sorted(run_dir.glob("*.yaml")):
         _record, warning = _load_run_record_lenient(record_file)
         if warning is None:
             continue
-        findings.append({
-            "kind": "malformed-run-record",
-            "spec_id": record_file.stem,
-            "journal": str(record_file),
-            "detail": warning,
-        })
+        findings.append(
+            {
+                "kind": "malformed-run-record",
+                "spec_id": record_file.stem,
+                "journal": str(record_file),
+                "detail": warning,
+            }
+        )
     return findings
 
 
-def check_repo(repo: Path, run_record_dir: Optional[Path] = None) -> Dict[str, Any]:
+def check_repo(repo: Path, run_record_dir: Path | None = None) -> dict[str, Any]:
     """Scan `<repo>-worktrees/run-*.json` for stranded-run invariant violations,
     plus `run_record_dir/<repo-name>/*.yaml` for malformed run records.
 
@@ -123,12 +127,14 @@ def check_repo(repo: Path, run_record_dir: Optional[Path] = None) -> Dict[str, A
     never flagged — "stranded" means nobody is driving it.
     """
     repo = Path(repo)
-    findings: List[Dict[str, Any]] = list(_malformed_run_record_findings(repo, run_record_dir))
+    findings: list[dict[str, Any]] = list(
+        _malformed_run_record_findings(repo, run_record_dir)
+    )
     wt_base = repo.parent / f"{repo.name}-worktrees"
     if not wt_base.is_dir():
         return {"findings": findings}
     for journal_file in sorted(wt_base.glob("run-*.json")):
-        spec_id = journal_file.stem[len("run-"):]
+        spec_id = journal_file.stem[len("run-") :]
         if _runlock_held(journal_file.with_suffix(".lock")):
             continue  # live run — not stranded by definition
         try:
@@ -154,7 +160,11 @@ def check_repo(repo: Path, run_record_dir: Optional[Path] = None) -> Dict[str, A
             )
             continue
         pending_tail = journal.get("pending_tail_tasks")
-        if journal.get("integrate_complete") and isinstance(pending_tail, list) and pending_tail:
+        if (
+            journal.get("integrate_complete")
+            and isinstance(pending_tail, list)
+            and pending_tail
+        ):
             findings.append(
                 {
                     "kind": "stranded-tail",
@@ -169,8 +179,8 @@ def check_repo(repo: Path, run_record_dir: Optional[Path] = None) -> Dict[str, A
             )
         unreconciled = journal.get("unreconciled_tail_evidence")
         if isinstance(unreconciled, list) and unreconciled:
-            manual_triage: List[str] = []
-            reconciling: List[str] = []
+            manual_triage: list[str] = []
+            reconciling: list[str] = []
             for u in unreconciled:
                 if isinstance(u, dict):
                     task_id = str(u.get("task", u))
@@ -178,7 +188,12 @@ def check_repo(repo: Path, run_record_dir: Optional[Path] = None) -> Dict[str, A
                     pr_url = u.get("reconcile_pr_url") or ""
                     superseded_by = u.get("reconcile_superseded_by") or ""
                 else:
-                    task_id, reconcile_state, pr_url, superseded_by = str(u), None, "", ""
+                    task_id, reconcile_state, pr_url, superseded_by = (
+                        str(u),
+                        None,
+                        "",
+                        "",
+                    )
                 if reconcile_state == "merged":
                     continue  # belt-and-suspenders: detect_ already stops reporting these
                 if reconcile_state in ("opened", "already-open"):
@@ -188,7 +203,9 @@ def check_repo(repo: Path, run_record_dir: Optional[Path] = None) -> Dict[str, A
                     # carries this task's commits (deps chain), so it reaches
                     # base once that PR merges rather than needing one of its own.
                     reconciling.append(
-                        f"{task_id} (superseded by {superseded_by})" if superseded_by else task_id
+                        f"{task_id} (superseded by {superseded_by})"
+                        if superseded_by
+                        else task_id
                     )
                 else:  # "quarantined", or missing/absent for pre-reconciliation journals
                     manual_triage.append(task_id)
@@ -219,11 +236,16 @@ def check_repo(repo: Path, run_record_dir: Optional[Path] = None) -> Dict[str, A
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="run-journal invariant detector")
     parser.add_argument("--repo", required=True)
-    parser.add_argument("--run-record-dir", default=None,
-                         help="defaults to $WORKTRAIL_RUN_RECORD_DIR or ~/.worktrail/runs")
+    parser.add_argument(
+        "--run-record-dir",
+        default=None,
+        help="defaults to $WORKTRAIL_RUN_RECORD_DIR or ~/.worktrail/runs",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
-    run_record_dir = Path(args.run_record_dir).expanduser() if args.run_record_dir else None
+    run_record_dir = (
+        Path(args.run_record_dir).expanduser() if args.run_record_dir else None
+    )
     result = check_repo(Path(args.repo), run_record_dir=run_record_dir)
     if args.json:
         print(json.dumps(result, indent=2))

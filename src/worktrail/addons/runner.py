@@ -128,11 +128,18 @@ def run_addons(worktree: Path, repo: Path, policy: dict) -> list[AddOnRunLog]:
                 raise AddOnFailure(name, detail) from e
             print(f"  WARN [addon:{name}] non-fatal failure, skipping: {detail}")
             logs.append(
-                AddOnRunLog(name=name, changed=False, committed=False, detail=detail, ok=False)
+                AddOnRunLog(
+                    name=name, changed=False, committed=False, detail=detail, ok=False
+                )
             )
             continue
         committed = _stage_and_commit(worktree, name, result)
         logs.append(
-            AddOnRunLog(name=name, changed=result.changed, committed=committed, detail=result.detail)
+            AddOnRunLog(
+                name=name,
+                changed=result.changed,
+                committed=committed,
+                detail=result.detail,
+            )
         )
     return logs

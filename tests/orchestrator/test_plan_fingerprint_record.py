@@ -53,7 +53,9 @@ class PlanFingerprintRecord(unittest.TestCase):
             with contextlib.redirect_stdout(buf):
                 live._record_plan_fingerprint(repo, spec_rel, _Plan("a" * 64))
                 live._record_plan_fingerprint(repo, spec_rel, _Plan("a" * 64))
-            self.assertEqual(self._journal(repo, spec_rel)["plan_fingerprints"], ["a" * 64])
+            self.assertEqual(
+                self._journal(repo, spec_rel)["plan_fingerprints"], ["a" * 64]
+            )
             self.assertNotIn("PLAN DRIFT", buf.getvalue())
 
     def test_second_distinct_fingerprint_is_reported_as_drift(self):
@@ -62,8 +64,12 @@ class PlanFingerprintRecord(unittest.TestCase):
             repo, spec_rel = Path(td), "openspec/changes/x"
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                live._record_plan_fingerprint(repo, spec_rel, _Plan("89f1bfcc" + "0" * 56))
-                live._record_plan_fingerprint(repo, spec_rel, _Plan("92111846" + "0" * 56))
+                live._record_plan_fingerprint(
+                    repo, spec_rel, _Plan("89f1bfcc" + "0" * 56)
+                )
+                live._record_plan_fingerprint(
+                    repo, spec_rel, _Plan("92111846" + "0" * 56)
+                )
             j = self._journal(repo, spec_rel)
             self.assertEqual(len(j["plan_fingerprints"]), 2)
             self.assertEqual(j["plan_fingerprint"], "92111846" + "0" * 56)
@@ -177,8 +183,11 @@ class PlanPinSurvivesJournalRewrite(unittest.TestCase):
     def test_rebuilt_journal_keeps_the_pin(self):
         with tempfile.TemporaryDirectory() as td:
             jp = Path(td) / "run-x.json"
-            jp.write_text(json.dumps({"plan_fingerprint": "a" * 64,
-                                      "plan_fingerprints": ["a" * 64]}))
+            jp.write_text(
+                json.dumps(
+                    {"plan_fingerprint": "a" * 64, "plan_fingerprints": ["a" * 64]}
+                )
+            )
             rebuilt = {"spec_id": "x", "entries": [], "run_id": "full-1"}
             live._preserve_plan_pin(jp, rebuilt)
             self.assertEqual(rebuilt["plan_fingerprint"], "a" * 64)
@@ -229,9 +238,15 @@ class PlanPinSurvivesJournalRewrite(unittest.TestCase):
         the rebuilding writer deliberately dropped (e.g. cleared group records)."""
         with tempfile.TemporaryDirectory() as td:
             jp = Path(td) / "run-x.json"
-            jp.write_text(json.dumps({"plan_fingerprint": "a" * 64,
-                                      "groups": {"stale": {}},
-                                      "integrate_complete": True}))
+            jp.write_text(
+                json.dumps(
+                    {
+                        "plan_fingerprint": "a" * 64,
+                        "groups": {"stale": {}},
+                        "integrate_complete": True,
+                    }
+                )
+            )
             rebuilt = {"spec_id": "x", "entries": []}
             live._preserve_plan_pin(jp, rebuilt)
             self.assertEqual(rebuilt["plan_fingerprint"], "a" * 64)

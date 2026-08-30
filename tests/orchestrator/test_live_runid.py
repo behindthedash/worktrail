@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Tests for stable run_id behavior (TASK-001 AC-001, AC-002, AC-014, REQ-019)."""
+
 import json
 import tempfile
 import unittest
@@ -19,8 +20,11 @@ class StableRunIdAcrossInvocations(unittest.TestCase):
             journal_path.write_text(json.dumps(journal))
 
             read_run_id = live.read_or_create_run_id(journal_path)
-            self.assertEqual(read_run_id, stored_run_id,
-                             "should read stored run_id, not generate new one")
+            self.assertEqual(
+                read_run_id,
+                stored_run_id,
+                "should read stored run_id, not generate new one",
+            )
 
 
 class FreshRunWritesRunId(unittest.TestCase):
@@ -33,13 +37,16 @@ class FreshRunWritesRunId(unittest.TestCase):
             run_id = live.read_or_create_run_id(journal_path)
 
             self.assertIsNotNone(run_id)
-            self.assertTrue(run_id.startswith("full-"),
-                            f"run_id should match pattern 'full-<digits>', got {run_id}")
+            self.assertTrue(
+                run_id.startswith("full-"),
+                f"run_id should match pattern 'full-<digits>', got {run_id}",
+            )
 
             # Verify it's written to disk
             journal = json.loads(journal_path.read_text())
-            self.assertEqual(journal.get("run_id"), run_id,
-                             "run_id should be persisted to journal")
+            self.assertEqual(
+                journal.get("run_id"), run_id, "run_id should be persisted to journal"
+            )
 
 
 class LegacyJournalInheritance(unittest.TestCase):
@@ -50,9 +57,7 @@ class LegacyJournalInheritance(unittest.TestCase):
             journal_path = Path(tmpdir) / "run-test.json"
             legacy_journal = {
                 "spec_id": "test-spec",
-                "entries": [
-                    {"task": "TASK-001", "role": "implement", "report": {}}
-                ]
+                "entries": [{"task": "TASK-001", "role": "implement", "report": {}}],
             }
             journal_path.write_text(json.dumps(legacy_journal))
 

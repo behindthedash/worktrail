@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Tests for policy_selfcheck.py. Run: python3 -m pytest test_policy_selfcheck.py -q"""
+
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,30 +18,30 @@ def _git_repo(root: Path, name: str, policy_text: str) -> Path:
 
 
 _DATALENA_POLICY = (
-    '# go conductor / parallel-orchestrator policy for datalena.\n'
+    "# go conductor / parallel-orchestrator policy for datalena.\n"
     'pre_pr_cmd: "PYTHONPATH=. ${DATALENA_VENV:-/home/briank/projects/datalena/.venv}/bin/python -m pytest tests/ -q"\n'
     'integrate_smoke_cmd: "PYTHONPATH=. ${DATALENA_VENV:-/home/briank/projects/datalena/.venv}/bin/python -m pytest tests/ -q"\n'
-    'base_branch: dev\n'
-    'automerge:\n'
-    '  enabled: false\n'
-    '  max_risk: low\n'
+    "base_branch: dev\n"
+    "automerge:\n"
+    "  enabled: false\n"
+    "  max_risk: low\n"
 )
 
 _CLEAN_POLICY = (
-    '# go conductor / parallel-orchestrator policy for aperi.\n'
+    "# go conductor / parallel-orchestrator policy for aperi.\n"
     'pre_pr_cmd: "uv run pytest"\n'
-    'base_branch: main\n'
-    'automerge:\n'
-    '  enabled: false\n'
-    '  max_risk: low\n'
+    "base_branch: main\n"
+    "automerge:\n"
+    "  enabled: false\n"
+    "  max_risk: low\n"
 )
 
 _SELF_REFERENTIAL_POLICY = (
-    '# /go per-repo policy for this repo.\n'
+    "# /go per-repo policy for this repo.\n"
     'pre_pr_cmd: "npm test"\n'
-    'automerge:\n'
-    '  enabled: false\n'
-    '  max_risk: low\n'
+    "automerge:\n"
+    "  enabled: false\n"
+    "  max_risk: low\n"
 )
 
 
@@ -101,7 +102,9 @@ class TestCheckRepo(unittest.TestCase):
         )
         (repo / "plugins" / "current" / "scripts").mkdir(parents=True)
         result = check_repo(repo, discover_repo_names(self.tmp))
-        self.assertNotIn("missing-command-path", {f["signal"] for f in result["findings"]})
+        self.assertNotIn(
+            "missing-command-path", {f["signal"] for f in result["findings"]}
+        )
 
 
 class TestSweep(unittest.TestCase):

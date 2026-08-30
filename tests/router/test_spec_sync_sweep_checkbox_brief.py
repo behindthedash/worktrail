@@ -15,7 +15,6 @@ from unittest import mock
 from worktrail.router.spec_sync_sweep_checkbox_brief import file_checkbox_drift_brief
 from worktrail.shared.brief_frontmatter import read_frontmatter, validate_brief
 
-
 MULTI_HITS = [
     {
         "path": "docs/specs/010-alpha/tasks/TASK-001.md",
@@ -54,7 +53,9 @@ class FileCheckboxDriftBriefTest(unittest.TestCase):
         self.queue_base = Path(self._tmp.name)
         self.repo = Path("/home/user/projects/some-repo")
 
-    def test_writes_exactly_one_file_for_multiple_hits_multiple_task_files(self) -> None:
+    def test_writes_exactly_one_file_for_multiple_hits_multiple_task_files(
+        self,
+    ) -> None:
         file_checkbox_drift_brief(self.repo, MULTI_HITS, self.queue_base)
         files = list((self.queue_base / "queue").glob("*.md"))
         self.assertEqual(len(files), 1)
@@ -141,11 +142,13 @@ class FileCheckboxDriftBriefTest(unittest.TestCase):
     def test_no_subprocess_or_git_invocation(self) -> None:
         # AC-CHG-008: no git operation (commit, branch, gh pr create) is ever
         # performed by the filer against any repo.
-        with mock.patch("subprocess.run") as run, mock.patch(
-            "subprocess.Popen"
-        ) as popen, mock.patch("subprocess.call") as call, mock.patch(
-            "subprocess.check_call"
-        ) as check_call, mock.patch("subprocess.check_output") as check_output:
+        with (
+            mock.patch("subprocess.run") as run,
+            mock.patch("subprocess.Popen") as popen,
+            mock.patch("subprocess.call") as call,
+            mock.patch("subprocess.check_call") as check_call,
+            mock.patch("subprocess.check_output") as check_output,
+        ):
             file_checkbox_drift_brief(self.repo, MULTI_HITS, self.queue_base)
             run.assert_not_called()
             popen.assert_not_called()

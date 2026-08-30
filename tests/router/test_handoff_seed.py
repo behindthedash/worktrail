@@ -13,7 +13,6 @@ import unittest
 from pathlib import Path
 
 # Allow running from the scripts/ directory or from the repo root
-
 from worktrail.router import handoff_seed as hs
 
 # ---------------------------------------------------------------------------
@@ -63,7 +62,9 @@ so expired vs. malformed vs. revoked tokens are indistinguishable in production.
 - `devkit.fix-debugging` -- systematic root-cause for the swallowed error.
 """
 
-_BRIEF_NULL_REPO = _BRIEF_FULL.replace("repo: /home/briank/projects/acme-api", "repo: null")
+_BRIEF_NULL_REPO = _BRIEF_FULL.replace(
+    "repo: /home/briank/projects/acme-api", "repo: null"
+)
 
 _BRIEF_NO_FOCUS = """\
 ---
@@ -102,7 +103,9 @@ def _write(path: Path, content: str = _BRIEF_FULL, mtime: float | None = None) -
 class TestBuildSeed(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
-        self.brief = Path(self._tmp.name) / "20260531-141200-auth-middleware-error-handling.md"
+        self.brief = (
+            Path(self._tmp.name) / "20260531-141200-auth-middleware-error-handling.md"
+        )
         _write(self.brief)
 
     def tearDown(self):
@@ -176,16 +179,24 @@ class TestBuildSeed(unittest.TestCase):
 
     def test_recommended_route_normalized(self):
         p = Path(self._tmp.name) / "route.md"
-        _write(p, content=_BRIEF_FULL.replace(
-            "status: queued", "status: queued\nrecommended-route: f"))
+        _write(
+            p,
+            content=_BRIEF_FULL.replace(
+                "status: queued", "status: queued\nrecommended-route: f"
+            ),
+        )
         self.assertEqual(hs.build_seed(p)["recommended_route"], "F")
 
     def test_recommended_route_invalid_or_absent_is_none(self):
         seed = hs.build_seed(self.brief)  # _BRIEF_FULL has no recommended-route
         self.assertIsNone(seed["recommended_route"])
         p = Path(self._tmp.name) / "bad-route.md"
-        _write(p, content=_BRIEF_FULL.replace(
-            "status: queued", "status: queued\nrecommended-route: Z"))
+        _write(
+            p,
+            content=_BRIEF_FULL.replace(
+                "status: queued", "status: queued\nrecommended-route: Z"
+            ),
+        )
         self.assertIsNone(hs.build_seed(p)["recommended_route"])
 
     def test_implementation_intent_defaults_to_unknown_and_normalizes(self):
@@ -224,7 +235,12 @@ class TestBuildSeed(unittest.TestCase):
 
     def test_invalid_change_kind_is_none(self):
         p = Path(self._tmp.name) / "bad-change-kind.md"
-        _write(p, content=_BRIEF_FULL.replace("status: queued", "status: queued\nchange-kind: rewrite"))
+        _write(
+            p,
+            content=_BRIEF_FULL.replace(
+                "status: queued", "status: queued\nchange-kind: rewrite"
+            ),
+        )
         self.assertIsNone(hs.build_seed(p)["change_kind"])
 
 
@@ -298,6 +314,7 @@ class TestCLIJsonFlag(unittest.TestCase):
             rc = hs.main(["--json", "seed", str(self.brief)])
         self.assertEqual(rc, 0)
         import json
+
         result = json.loads(buf.getvalue())
         self.assertIsNone(result["error"])
         self.assertIn("Surface the real failure reason", result["feature_idea"])
@@ -312,6 +329,7 @@ class TestCLIJsonFlag(unittest.TestCase):
             rc = hs.main(["seed", str(self.brief), "--json"])
         self.assertEqual(rc, 0)
         import json
+
         result = json.loads(buf.getvalue())
         self.assertIsNone(result["error"])
         self.assertIn("Surface the real failure reason", result["feature_idea"])

@@ -15,7 +15,9 @@ from worktrail.conductor import runplan
 from worktrail.conductor.runplan import RunPlan, TaskPlan
 
 
-def _task(tid, *, deps=(), files=(), kind="impl", title="", status="pending", path="tasks.md"):
+def _task(
+    tid, *, deps=(), files=(), kind="impl", title="", status="pending", path="tasks.md"
+):
     return {
         "id": tid,
         "title": title or f"task {tid}",
@@ -28,7 +30,9 @@ def _task(tid, *, deps=(), files=(), kind="impl", title="", status="pending", pa
 
 
 def _plan(*task_plans, spec_id="chg", fp="f" * 64, source=runplan.SOURCE_COMPILED):
-    return RunPlan(spec_id=spec_id, fingerprint=fp, source=source, tasks=tuple(task_plans))
+    return RunPlan(
+        spec_id=spec_id, fingerprint=fp, source=source, tasks=tuple(task_plans)
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -113,7 +117,9 @@ def test_cache_rejects_a_plan_written_by_another_plan_version(tmp_path):
 
 def test_cache_survives_a_corrupt_file(tmp_path):
     plan = _plan(TaskPlan(id="1.1"), fp="d" * 64)
-    runplan.cache_path(tmp_path, "chg", plan.fingerprint).parent.mkdir(parents=True, exist_ok=True)
+    runplan.cache_path(tmp_path, "chg", plan.fingerprint).parent.mkdir(
+        parents=True, exist_ok=True
+    )
     runplan.cache_path(tmp_path, "chg", plan.fingerprint).write_text("{not json")
     assert runplan.load_cached(tmp_path, "chg", plan.fingerprint) is None
 
@@ -274,7 +280,10 @@ def test_repair_that_would_create_a_cycle_rejects_the_whole_plan():
 # Post-compile ordering invariant (go-20260805-172326)
 # --------------------------------------------------------------------------- #
 def test_unordered_file_collisions_is_clean_when_a_direct_edge_orders_them():
-    tasks = [_task("2.1", files=["shared.py"]), _task("2.2", files=["shared.py"], deps=["2.1"])]
+    tasks = [
+        _task("2.1", files=["shared.py"]),
+        _task("2.2", files=["shared.py"], deps=["2.1"]),
+    ]
     assert runplan.unordered_file_collisions(tasks) == []
 
 
@@ -413,7 +422,10 @@ def test_purpose_fills_but_never_overrides():
 def test_apply_never_mutates_the_caller_list():
     tasks = [_task("1.1"), _task("1.2", deps=["1.1"])]
     before = [dict(t) for t in tasks]
-    runplan.apply_to_tasks(tasks, _plan(TaskPlan(id="1.1", files=("a.py",)), TaskPlan(id="1.2", files=("b.py",))))
+    runplan.apply_to_tasks(
+        tasks,
+        _plan(TaskPlan(id="1.1", files=("a.py",)), TaskPlan(id="1.2", files=("b.py",))),
+    )
     assert tasks == before
 
 

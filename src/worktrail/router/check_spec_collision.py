@@ -49,6 +49,7 @@ failure (unreadable spec file, sibling-module import failure, malformed
 frontmatter, git failure) degrades to `checked: false` / `confirmed: false`
 plus a non-null `warning`, never an exception, never a block.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -56,12 +57,13 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-# overlap_check is a sibling module -- reused for the candidate index rather
-# than re-implementing its extraction logic.
-from .overlap_check import scan as _scan
-from .overlap_check import task_candidates as _task_candidates
+from .dashboard import (
+    _git_tracked,
+    _load_tasks,
+    _task_files_are_shipped,
+)
 
 # dashboard.py is a sibling module -- its `_git_tracked`/
 # `_task_files_are_shipped` stale-bookkeeping helpers and `_load_tasks`
@@ -71,11 +73,12 @@ from .overlap_check import task_candidates as _task_candidates
 # for its `**Status**:` header.
 from .dashboard import (
     find_spec_file as _find_spec_file,
-    _git_tracked,
-    _task_files_are_shipped,
-    _load_tasks,
 )
 
+# overlap_check is a sibling module -- reused for the candidate index rather
+# than re-implementing its extraction logic.
+from .overlap_check import scan as _scan
+from .overlap_check import task_candidates as _task_candidates
 
 # --- header / prose probes ----------------------------------------------------
 
@@ -100,9 +103,10 @@ _DATE_PREFIX = re.compile(r"^\d{4}-\d{2}-\d{2}--")
 _AUX_SUFFIX = ("--tasks", "--review", "-review", "technical-plan")
 
 
-def _fallback_find_spec_file(spec_dir: Path) -> Optional[Path]:
+def _fallback_find_spec_file(spec_dir: Path) -> Path | None:
     cands = [
-        f for f in spec_dir.glob("*.md")
+        f
+        for f in spec_dir.glob("*.md")
         if not any(f.stem.lower().endswith(s) for s in _AUX_SUFFIX)
     ]
     if not cands:
@@ -111,12 +115,12 @@ def _fallback_find_spec_file(spec_dir: Path) -> Optional[Path]:
     return dated[-1] if dated else sorted(cands)[0]
 
 
-def _status_header(spec_text: str) -> Optional[str]:
+def _status_header(spec_text: str) -> str | None:
     m = _STATUS_RE.search(spec_text)
     return m.group(1).strip() if m else None
 
 
-def _non_file_artifact_note(spec_text: str) -> Optional[str]:
+def _non_file_artifact_note(spec_text: str) -> str | None:
     m = _ARTIFACT_CLAIM_RE.search(spec_text)
     if not m:
         return None
@@ -124,7 +128,7 @@ def _non_file_artifact_note(spec_text: str) -> Optional[str]:
     return val or None
 
 
-def _files_from_traceability_matrix(spec_dir: Path) -> List[str]:
+def _files_from_traceability_matrix(spec_dir: Path) -> list[str]:
     """Fallback file-path extraction for a pre-task-split spec (no tasks/
     dir): backtick-quoted, path-shaped tokens from traceability-matrix.md."""
     tm = spec_dir / "traceability-matrix.md"
@@ -134,12 +138,12 @@ def _files_from_traceability_matrix(spec_dir: Path) -> List[str]:
         text = tm.read_text(errors="ignore")
     except OSError:
         return []
-    return sorted({
-        m.group(1) for m in _TRACE_FILE_RE.finditer(text) if "/" in m.group(1)
-    })
+    return sorted(
+        {m.group(1) for m in _TRACE_FILE_RE.finditer(text) if "/" in m.group(1)}
+    )
 
 
-def _collect_task_files(spec_dir: Path) -> List[str]:
+def _collect_task_files(spec_dir: Path) -> list[str]:
     if _load_tasks is not None:
         try:
             tasks = _load_tasks(spec_dir)
@@ -195,9 +199,9 @@ def build_pending_decision(
     repo: Path,
     spec_id: str,
     *,
-    run_id: Optional[str] = None,
-    dispatch_mode: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
+    run_id: str | None = None,
+    dispatch_mode: str | None = None,
+) -> dict[str, Any] | None:
     """Build the versioned pending-decision envelope for a confirmed collision.
 
     Deterministic identity via `decisions.decision_identity()` keyed on
@@ -212,20 +216,27 @@ def build_pending_decision(
         identity, envelope = _decision_helpers()
         if identity is None or not spec_id or not str(spec_id).strip():
             return None
-        decision_id = identity(GUARD_SOURCE, repo_str, str(spec_id).strip(),
-                               DECISION_QUESTION)
+        decision_id = identity(
+            GUARD_SOURCE, repo_str, str(spec_id).strip(), DECISION_QUESTION
+        )
         return envelope(
-            decision_id=decision_id, question=DECISION_QUESTION,
-            options=list(DECISION_OPTIONS), source=GUARD_SOURCE,
-            repo=repo_str, subject=str(spec_id).strip(), brief=None,
-            run_id=run_id, dispatch_mode=dispatch_mode)
+            decision_id=decision_id,
+            question=DECISION_QUESTION,
+            options=list(DECISION_OPTIONS),
+            source=GUARD_SOURCE,
+            repo=repo_str,
+            subject=str(spec_id).strip(),
+            brief=None,
+            run_id=run_id,
+            dispatch_mode=dispatch_mode,
+        )
     except Exception:  # noqa: BLE001 - envelope is additive, never fatal
         return None
 
 
 def check(
-    repo: Path, root: str = "docs/specs", target: Optional[str] = None
-) -> Dict[str, object]:
+    repo: Path, root: str = "docs/specs", target: str | None = None
+) -> dict[str, object]:
     """Enumerate `docs/specs/` candidates for the calling agent to judge.
 
     Returns `{"checked": bool, "candidates": [{"spec_id", "stage", "title",
@@ -252,7 +263,7 @@ def check(
     way.
     """
     repo = Path(repo)
-    result: Dict[str, object] = {
+    result: dict[str, object] = {
         "checked": False,
         "candidates": [],
         "task_candidates": [],
@@ -261,7 +272,9 @@ def check(
     }
 
     if _scan is None:
-        result["warning"] = "overlap_check import failed; cannot enumerate spec candidates"
+        result["warning"] = (
+            "overlap_check import failed; cannot enumerate spec candidates"
+        )
         return result
 
     specs_root = repo / root
@@ -274,15 +287,17 @@ def check(
         result["warning"] = f"failed to scan {specs_root}: {exc!r}"
         return result
 
-    candidates: List[Dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
     for s in specs:
         try:
-            candidates.append({
-                "spec_id": s["spec_id"],
-                "stage": s.get("stage"),
-                "title": s.get("title"),
-                "feature_summary": s.get("feature_summary"),
-            })
+            candidates.append(
+                {
+                    "spec_id": s["spec_id"],
+                    "stage": s.get("stage"),
+                    "title": s.get("title"),
+                    "feature_summary": s.get("feature_summary"),
+                }
+            )
         except Exception:  # noqa: BLE001 - malformed candidate entry, skip it
             continue
 
@@ -295,7 +310,7 @@ def check(
     return result
 
 
-def _task_level_candidates(specs_root: Path, target: str) -> List[Dict[str, Any]]:
+def _task_level_candidates(specs_root: Path, target: str) -> list[dict[str, Any]]:
     """Task-level candidates for `target`, tagged with `spec_id` -- empty
     (never raising) unless `target` resolves to an OpenSpec change with a
     readable `tasks.md` (`overlap_check.task_candidates()` falls back to
@@ -322,10 +337,15 @@ def _task_level_candidates(specs_root: Path, target: str) -> List[Dict[str, Any]
 
 # --- verify(): artifact verification for a single judged candidate ------------
 
+
 def verify(
-    repo: Path, spec_id: str, root: str = "docs/specs", *,
-    run_id: Optional[str] = None, dispatch_mode: Optional[str] = None,
-) -> Dict[str, object]:
+    repo: Path,
+    spec_id: str,
+    root: str = "docs/specs",
+    *,
+    run_id: str | None = None,
+    dispatch_mode: str | None = None,
+) -> dict[str, object]:
     """Confirm (or refute) a candidate the calling agent has already judged
     a semantic match.
 
@@ -343,7 +363,7 @@ def verify(
     verify, git failure) degrades to `confirmed: false` plus a `warning`.
     """
     repo = Path(repo)
-    result: Dict[str, object] = {
+    result: dict[str, object] = {
         "spec_id": spec_id,
         "confirmed": False,
         "status": None,
@@ -383,7 +403,9 @@ def verify(
         return result
 
     if _git_tracked is None or _task_files_are_shipped is None:
-        result["warning"] = "dashboard git-tracking helpers unavailable; cannot verify artifacts"
+        result["warning"] = (
+            "dashboard git-tracking helpers unavailable; cannot verify artifacts"
+        )
         return result
 
     try:
@@ -392,7 +414,9 @@ def verify(
         result["warning"] = f"failed to collect task files: {exc!r}"
         return result
     if not files:
-        result["warning"] = "no task files found to verify (no tasks/ dir and no traceability-matrix.md paths)"
+        result["warning"] = (
+            "no task files found to verify (no tasks/ dir and no traceability-matrix.md paths)"
+        )
         return result
     result["files"] = files
 
@@ -406,26 +430,34 @@ def verify(
     result["confirmed"] = bool(shipped)
     if shipped:
         result["pending_decision"] = build_pending_decision(
-            repo, spec_id, run_id=run_id, dispatch_mode=dispatch_mode)
+            repo, spec_id, run_id=run_id, dispatch_mode=dispatch_mode
+        )
     else:
-        result["warning"] = "not all listed task files are git-tracked at the base branch"
+        result["warning"] = (
+            "not all listed task files are git-tracked at the base branch"
+        )
     return result
 
 
 # --- CLI ------------------------------------------------------------------------
+
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--repo", required=True)
     p.add_argument("--root", default="docs/specs")
     p.add_argument(
-        "--verify", metavar="SPEC_ID", default=None,
+        "--verify",
+        metavar="SPEC_ID",
+        default=None,
         help="verify a single already-judged candidate spec_id instead of scanning for candidates",
     )
     p.add_argument(
-        "--target", metavar="CHANGE_ID", default=None,
+        "--target",
+        metavar="CHANGE_ID",
+        default=None,
         help="explicit target OpenSpec change id; also populates task_candidates "
-             "with that change's open, unchecked tasks (ignored with --verify)",
+        "with that change's open, unchecked tasks (ignored with --verify)",
     )
     p.add_argument("--json", action="store_true")
     args = p.parse_args(argv)
@@ -443,10 +475,14 @@ def main(argv=None) -> int:
             print(f"CONFIRMED: {res['spec_id']} is a shipped collision")
             decision = res.get("pending_decision")
             if decision:
-                print(f"  -> pending decision {decision['decision_id']}: "
-                      "surface this envelope to the operator")
+                print(
+                    f"  -> pending decision {decision['decision_id']}: "
+                    "surface this envelope to the operator"
+                )
         else:
-            print(f"not confirmed: {res.get('warning') or 'no evidence of a shipped collision'}")
+            print(
+                f"not confirmed: {res.get('warning') or 'no evidence of a shipped collision'}"
+            )
     else:
         if res["checked"]:
             candidates = res["candidates"]
@@ -455,7 +491,9 @@ def main(argv=None) -> int:
                 print(f"  - {c['spec_id']}: {c['title']}")
             task_candidates = res["task_candidates"]
             if task_candidates:
-                print(f"  {len(task_candidates)} open task-level candidate(s) in {args.target}:")
+                print(
+                    f"  {len(task_candidates)} open task-level candidate(s) in {args.target}:"
+                )
                 for t in task_candidates:
                     print(f"    - {t['task_id']}: {t['task_text']}")
         else:

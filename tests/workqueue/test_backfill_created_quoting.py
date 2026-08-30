@@ -18,11 +18,11 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 from unittest import mock
 
-from worktrail.workqueue import work_queue as q
 from worktrail.workqueue import backfill_created_quoting as bc
+from worktrail.workqueue import work_queue as q
 
 
 def _write_raw(dirpath: Path, filename: str, content: str) -> Path:
@@ -51,11 +51,7 @@ QUOTED_BRIEF = (
 )
 
 NO_CREATED_BRIEF = (
-    "---\n"
-    "id: 20260101-000003-c\n"
-    "focus: no created field\n"
-    "status: queued\n"
-    "---\n\n"
+    "---\nid: 20260101-000003-c\nfocus: no created field\nstatus: queued\n---\n\n"
 )
 
 
@@ -80,7 +76,9 @@ class BuildPreviewTestCase(unittest.TestCase):
         result = bc.build_preview(self.tmp_path)
         self.assertEqual(len(result["proposals"]), 1)
         self.assertEqual(result["proposals"][0]["id"], "20260101-000001-a")
-        self.assertEqual(result["proposals"][0]["created_raw"], "2026-01-01T00:00:01-07:00")
+        self.assertEqual(
+            result["proposals"][0]["created_raw"], "2026-01-01T00:00:01-07:00"
+        )
         self.assertEqual(result["skipped"], [])
 
     def test_skips_already_quoted_created(self):
@@ -119,8 +117,13 @@ class ExecuteApplyTestCase(unittest.TestCase):
         os.environ.pop("WORK_QUEUE_DIR", None)
         self._tmp.cleanup()
 
-    def _preview_for(self, path: Path, created_raw: str) -> Dict[str, Any]:
-        return {"proposals": [{"id": path.stem, "path": str(path), "created_raw": created_raw}], "skipped": []}
+    def _preview_for(self, path: Path, created_raw: str) -> dict[str, Any]:
+        return {
+            "proposals": [
+                {"id": path.stem, "path": str(path), "created_raw": created_raw}
+            ],
+            "skipped": [],
+        }
 
     def test_decline_writes_nothing(self):
         path = _write_raw(self.queue_dir, "20260101-000001-a.md", UNQUOTED_BRIEF)
@@ -141,7 +144,10 @@ class ExecuteApplyTestCase(unittest.TestCase):
         self.assertIn("created: '2026-01-01T00:00:01-07:00'", new_content)
         # Everything outside the created: line is byte-for-byte unchanged.
         self.assertEqual(
-            new_content.replace("created: '2026-01-01T00:00:01-07:00'", "created: 2026-01-01T00:00:01-07:00"),
+            new_content.replace(
+                "created: '2026-01-01T00:00:01-07:00'",
+                "created: 2026-01-01T00:00:01-07:00",
+            ),
             UNQUOTED_BRIEF,
         )
 
@@ -205,14 +211,24 @@ class MainCliTestCase(unittest.TestCase):
         # A full-corpus preview routinely exceeds the shell argv size limit,
         # so `execute` must accept it via stdin instead of only `--preview`.
         path = _write_raw(self.queue_dir, "20260101-000001-a.md", UNQUOTED_BRIEF)
-        preview_json = json.dumps({
-            "proposals": [{"id": path.stem, "path": str(path), "created_raw": "2026-01-01T00:00:01-07:00"}],
-            "skipped": [],
-        })
+        preview_json = json.dumps(
+            {
+                "proposals": [
+                    {
+                        "id": path.stem,
+                        "path": str(path),
+                        "created_raw": "2026-01-01T00:00:01-07:00",
+                    }
+                ],
+                "skipped": [],
+            }
+        )
         with mock.patch("sys.stdin", io.StringIO(preview_json)):
             rc = bc.main(["execute", "--queue-dir", str(self.tmp_path), "--confirm"])
         self.assertEqual(rc, 0)
-        self.assertIn("created: '2026-01-01T00:00:01-07:00'", path.read_text(encoding="utf-8"))
+        self.assertIn(
+            "created: '2026-01-01T00:00:01-07:00'", path.read_text(encoding="utf-8")
+        )
 
 
 if __name__ == "__main__":

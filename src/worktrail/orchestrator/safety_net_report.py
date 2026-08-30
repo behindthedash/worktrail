@@ -24,8 +24,9 @@ import argparse
 import json
 import sys
 from collections import Counter
+from collections.abc import Iterable, Iterator
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator
+from typing import Any
 
 
 def journal_paths(repo: Path) -> Iterator[Path]:
@@ -37,14 +38,14 @@ def journal_paths(repo: Path) -> Iterator[Path]:
     yield from sorted(wt_base.glob("run-*.json"))
 
 
-def _load(path: Path) -> Dict[str, Any]:
+def _load(path: Path) -> dict[str, Any]:
     try:
         return json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
         return {}
 
 
-def events_in_journal(journal: Dict[str, Any]) -> Iterator[Dict[str, Any]]:
+def events_in_journal(journal: dict[str, Any]) -> Iterator[dict[str, Any]]:
     """Every safety-net event in one journal: `dependency_file_drift` markers
     live inline in `entries` (see live.py's `reconcile_from_journal`);
     group-level events (e.g. `automerge_preflight_fallback`) live in the
@@ -55,7 +56,7 @@ def events_in_journal(journal: Dict[str, Any]) -> Iterator[Dict[str, Any]]:
     yield from journal.get("safety_net_events", []) or []
 
 
-def scan(repo: Path) -> Dict[str, Any]:
+def scan(repo: Path) -> dict[str, Any]:
     """Aggregate every safety-net event across all of *repo*'s run journals.
 
     Returns a JSON-safe summary: total fire count per event type, and a
@@ -100,23 +101,29 @@ def scan(repo: Path) -> Dict[str, Any]:
         "dependency_file_drift_by_dep_id": dict(drift_by_dep),
         "automerge_preflight_fallback_by_outcome": dict(preflight_by_outcome),
         "worktree_drift_repaired_by_task": dict(worktree_drift_repaired_by_task),
-        "checklist_conflict_resolved_by_task": dict(checklist_conflict_resolved_by_task),
+        "checklist_conflict_resolved_by_task": dict(
+            checklist_conflict_resolved_by_task
+        ),
     }
 
 
-def render(summary: Dict[str, Any], repo: Path) -> str:
+def render(summary: dict[str, Any], repo: Path) -> str:
     lines = [f"safety-net report: {repo}", f"runs scanned: {summary['runs_scanned']}"]
     if not summary["by_event"]:
         lines.append("no safety-net events recorded in any scanned run journal")
         return "\n".join(lines)
-    lines.append(f"runs with at least one event: {summary['runs_with_safety_net_events']}")
+    lines.append(
+        f"runs with at least one event: {summary['runs_with_safety_net_events']}"
+    )
     lines.append("")
     lines.append("fires by event type:")
     for kind, count in sorted(summary["by_event"].items(), key=lambda kv: -kv[1]):
         lines.append(f"  {kind}: {count}")
     if summary["dependency_file_drift_by_dep_id"]:
         lines.append("")
-        lines.append("dependency_file_drift by dep_id (frontmatter that keeps drifting):")
+        lines.append(
+            "dependency_file_drift by dep_id (frontmatter that keeps drifting):"
+        )
         for dep_id, count in sorted(
             summary["dependency_file_drift_by_dep_id"].items(), key=lambda kv: -kv[1]
         ):
@@ -125,7 +132,8 @@ def render(summary: Dict[str, Any], repo: Path) -> str:
         lines.append("")
         lines.append("automerge_preflight_fallback by outcome:")
         for outcome, count in sorted(
-            summary["automerge_preflight_fallback_by_outcome"].items(), key=lambda kv: -kv[1]
+            summary["automerge_preflight_fallback_by_outcome"].items(),
+            key=lambda kv: -kv[1],
         ):
             lines.append(f"  {outcome}: {count}")
     if summary["worktree_drift_repaired_by_task"]:
@@ -139,16 +147,23 @@ def render(summary: Dict[str, Any], repo: Path) -> str:
         lines.append("")
         lines.append("checklist_conflict_resolved by task:")
         for task, count in sorted(
-            summary["checklist_conflict_resolved_by_task"].items(), key=lambda kv: -kv[1]
+            summary["checklist_conflict_resolved_by_task"].items(),
+            key=lambda kv: -kv[1],
         ):
             lines.append(f"  {task}: {count}")
     return "\n".join(lines)
 
 
 def main(argv: Iterable[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="orchestrator safety-net observability report")
-    parser.add_argument("--repo", type=str, required=True, help="repo root (not the -worktrees dir)")
-    parser.add_argument("--json", action="store_true", help="emit JSON instead of a summary")
+    parser = argparse.ArgumentParser(
+        description="orchestrator safety-net observability report"
+    )
+    parser.add_argument(
+        "--repo", type=str, required=True, help="repo root (not the -worktrees dir)"
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="emit JSON instead of a summary"
+    )
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     repo = Path(args.repo).expanduser()

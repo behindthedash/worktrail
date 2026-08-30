@@ -39,7 +39,9 @@ class OrchestrateCliTests(unittest.TestCase):
             golden_path = os.path.join(t, "out.golden.txt")
             buf = io.StringIO()
             with redirect_stdout(buf):
-                rc = orchestrate.main(["run", "--file", str(_FIXTURE), "--write-golden", golden_path])
+                rc = orchestrate.main(
+                    ["run", "--file", str(_FIXTURE), "--write-golden", golden_path]
+                )
             self.assertEqual(rc, 0)
             self.assertTrue(Path(golden_path).exists())
             content = Path(golden_path).read_text()
@@ -48,7 +50,9 @@ class OrchestrateCliTests(unittest.TestCase):
     def test_record_writes_cassette(self):
         with tempfile.TemporaryDirectory() as t:
             out_path = os.path.join(t, "cassette.json")
-            rc = orchestrate.main(["record", "--file", str(_FIXTURE), "--out", out_path])
+            rc = orchestrate.main(
+                ["record", "--file", str(_FIXTURE), "--out", out_path]
+            )
             self.assertEqual(rc, 0)
             data = json.loads(Path(out_path).read_text())
             self.assertIn("entries", data)
@@ -59,19 +63,25 @@ class OrchestrateCliTests(unittest.TestCase):
             self.skipTest("golden fixture not present")
         buf = io.StringIO()
         with redirect_stdout(buf):
-            rc = orchestrate.main(["check", "--file", str(_FIXTURE), "--golden", str(_GOLDEN)])
+            rc = orchestrate.main(
+                ["check", "--file", str(_FIXTURE), "--golden", str(_GOLDEN)]
+            )
         self.assertEqual(rc, 0)
         self.assertIn("GOLDEN OK", buf.getvalue())
 
     def test_check_missing_golden_returns_2(self):
-        rc = orchestrate.main(["check", "--file", str(_FIXTURE), "--golden", "/nonexistent/golden.txt"])
+        rc = orchestrate.main(
+            ["check", "--file", str(_FIXTURE), "--golden", "/nonexistent/golden.txt"]
+        )
         self.assertEqual(rc, 2)
 
     def test_check_drift_returns_1(self):
         with tempfile.TemporaryDirectory() as t:
             drift_golden = os.path.join(t, "drift.txt")
             Path(drift_golden).write_text("wrong content that won't match\n")
-            rc = orchestrate.main(["check", "--file", str(_FIXTURE), "--golden", drift_golden])
+            rc = orchestrate.main(
+                ["check", "--file", str(_FIXTURE), "--golden", drift_golden]
+            )
             self.assertEqual(rc, 1)
 
 
@@ -87,8 +97,16 @@ class ReplaySpawnTests(unittest.TestCase):
 
     def test_replays_in_order(self):
         entries = [
-            {"task": "TASK-001", "role": "implement", "report": {"status": "success", "head_sha": "abc"}},
-            {"task": "TASK-001", "role": "review", "report": {"status": "success", "review_status": "PASSED"}},
+            {
+                "task": "TASK-001",
+                "role": "implement",
+                "report": {"status": "success", "head_sha": "abc"},
+            },
+            {
+                "task": "TASK-001",
+                "role": "review",
+                "report": {"status": "success", "review_status": "PASSED"},
+            },
         ]
         spawn = orchestrate.ReplaySpawn(self._make_cassette(entries))
         out1 = spawn(orchestrate.dispatch.ROLE_IMPLEMENT, {"id": "TASK-001"})
@@ -99,7 +117,13 @@ class ReplaySpawnTests(unittest.TestCase):
 
 class BuildCassetteTests(unittest.TestCase):
     def test_build_with_cassette_filters_tasks(self):
-        entries = [{"task": "TASK-001", "role": "implement", "report": {"status": "success", "head_sha": "a"}}]
+        entries = [
+            {
+                "task": "TASK-001",
+                "role": "implement",
+                "report": {"status": "success", "head_sha": "a"},
+            }
+        ]
         cassette_data = {"spec_id": "toy", "entries": entries}
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(cassette_data, f)
@@ -109,7 +133,9 @@ class BuildCassetteTests(unittest.TestCase):
             ids = {t["id"] for t in tasks}
             self.assertIn("TASK-001", ids)
             # Tasks not in cassette are filtered out
-            self.assertTrue(len(tasks) <= 1 or all(t["id"] == "TASK-001" for t in tasks) or True)
+            self.assertTrue(
+                len(tasks) <= 1 or all(t["id"] == "TASK-001" for t in tasks) or True
+            )
         finally:
             os.unlink(cass_path)
 

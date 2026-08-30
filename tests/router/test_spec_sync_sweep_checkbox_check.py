@@ -27,7 +27,9 @@ from worktrail.router.spec_sync_sweep_checkbox_check import (
 def _write_task(tasks_dir: Path, name: str, status: str, body: str) -> Path:
     tasks_dir.mkdir(parents=True, exist_ok=True)
     path = tasks_dir / name
-    path.write_text(f"---\nid: {name.removesuffix('.md')}\nstatus: {status}\n---\n{body}")
+    path.write_text(
+        f"---\nid: {name.removesuffix('.md')}\nstatus: {status}\n---\n{body}"
+    )
     return path
 
 
@@ -46,7 +48,9 @@ class CheckRepoCheckboxDriftTests(unittest.TestCase):
             "## Acceptance Criteria\n- [x] done thing\n- [x] also done\n",
         )
         result = check_repo_checkbox_drift(self.repo)
-        self.assertEqual(result, {"repo": str(self.repo), "findings": [], "error": None})
+        self.assertEqual(
+            result, {"repo": str(self.repo), "findings": [], "error": None}
+        )
 
     def test_single_drift_task_returns_one_finding_with_correct_fields(self):
         _write_task(
@@ -77,7 +81,11 @@ class CheckRepoCheckboxDriftTests(unittest.TestCase):
             "## Acceptance Criteria\n- [ ] undone thing\n",
         )
         _write_task(
-            self.specs_root / "001-example" / "changes" / "2026-07-01--fixture" / "tasks",
+            self.specs_root
+            / "001-example"
+            / "changes"
+            / "2026-07-01--fixture"
+            / "tasks",
             "TASK-CHG-001.md",
             "completed",
             "## Definition of Done (DoD)\n- [ ] left unchecked\n",
@@ -126,13 +134,19 @@ class CheckRepoCheckboxDriftTests(unittest.TestCase):
 
     def test_no_task_files_is_not_an_error(self):
         self.specs_root.mkdir(parents=True)
-        (self.specs_root / "README.md").write_text("not a task file\n", encoding="utf-8")
+        (self.specs_root / "README.md").write_text(
+            "not a task file\n", encoding="utf-8"
+        )
         result = check_repo_checkbox_drift(self.repo)
-        self.assertEqual(result, {"repo": str(self.repo), "findings": [], "error": None})
+        self.assertEqual(
+            result, {"repo": str(self.repo), "findings": [], "error": None}
+        )
 
     def test_missing_docs_specs_dir_is_not_an_error(self):
         result = check_repo_checkbox_drift(self.repo)
-        self.assertEqual(result, {"repo": str(self.repo), "findings": [], "error": None})
+        self.assertEqual(
+            result, {"repo": str(self.repo), "findings": [], "error": None}
+        )
 
     def test_h1_level_checkboxes_with_no_subheadings_not_flagged(self):
         # devops TASK-001/TASK-002 shape: fully-checked checklist directly
@@ -145,7 +159,9 @@ class CheckRepoCheckboxDriftTests(unittest.TestCase):
             "# TASK-001\n\n- [x] step one\n- [x] step two\n",
         )
         result = check_repo_checkbox_drift(self.repo)
-        self.assertEqual(result, {"repo": str(self.repo), "findings": [], "error": None})
+        self.assertEqual(
+            result, {"repo": str(self.repo), "findings": [], "error": None}
+        )
 
     def test_checklist_outside_body_entirely_not_flagged(self):
         # mailbox-service TASK-002/003/004 shape: the checklist lives in
@@ -159,7 +175,9 @@ class CheckRepoCheckboxDriftTests(unittest.TestCase):
             "# TASK-001\n\nSee frontmatter `success-criteria:` for the checklist.\n",
         )
         result = check_repo_checkbox_drift(self.repo)
-        self.assertEqual(result, {"repo": str(self.repo), "findings": [], "error": None})
+        self.assertEqual(
+            result, {"repo": str(self.repo), "findings": [], "error": None}
+        )
 
     def test_never_mutates_checked_repo(self):
         _write_task(
@@ -204,7 +222,11 @@ class CheckRepoCheckboxDriftIntegrationTests(unittest.TestCase):
             "## Acceptance Criteria\n- [x] done thing\n- [ ] undone thing\n",
         )
         _write_task(
-            self.specs_root / "001-example" / "changes" / "2026-07-01--fixture" / "tasks",
+            self.specs_root
+            / "001-example"
+            / "changes"
+            / "2026-07-01--fixture"
+            / "tasks",
             "TASK-CHG-001.md",
             "completed",
             "## Definition of Done (DoD)\n- [ ] left unchecked\n",

@@ -66,6 +66,7 @@ Public shape:
 # check_brief_predicate.py
 PREDICATE_RECHECKS = {"checkbox-drift-sweep": _recheck_checkbox_drift}
 
+
 def recheck(repo: Path, frontmatter: Dict[str, Any]) -> Dict[str, object]:
     """Never raises. Returns:
     {"attempted": bool, "drift_source": str|None, "outcome": "no-predicate"|

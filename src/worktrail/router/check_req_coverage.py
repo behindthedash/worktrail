@@ -181,7 +181,9 @@ def _git_show(repo: Path, ref: str, relpath: str) -> str | None:
     """Contents of `relpath` at `ref`, or None if it did not exist there."""
     result = subprocess.run(
         ["git", "show", f"{ref}:{relpath}"],
-        cwd=str(repo), capture_output=True, text=True,
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
     )
     if result.returncode != 0:
         return None
@@ -200,7 +202,9 @@ def check_spec_coverage(repo: Path, spec_relpath: str, base_ref: str) -> list[st
         full_path.read_text(encoding="utf-8", errors="replace")
     )
     base_text = _git_show(repo, base_ref, spec_relpath)
-    declared_base = discover_declared_identifiers(base_text) if base_text is not None else set()
+    declared_base = (
+        discover_declared_identifiers(base_text) if base_text is not None else set()
+    )
     newly_declared = declared_now - declared_base
 
     covered = collect_task_references(full_path.parent)
@@ -213,7 +217,9 @@ def check_spec_coverage(repo: Path, spec_relpath: str, base_ref: str) -> list[st
     ]
 
 
-def check_changed_specs(repo: Path, changed_paths: list[str], base_ref: str) -> list[str]:
+def check_changed_specs(
+    repo: Path, changed_paths: list[str], base_ref: str
+) -> list[str]:
     """Return failure messages across every changed spec document under
     docs/specs/*/, enforcing only identifiers newly declared relative to
     base_ref. The spec document's filename is resolved per spec directory
@@ -264,7 +270,9 @@ def _resolve_base_ref(repo: Path, configured: str | None) -> str | None:
     for ref in candidates:
         result = subprocess.run(
             ["git", "rev-parse", "--verify", "--quiet", ref],
-            cwd=str(repo), capture_output=True, text=True,
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
         )
         if result.returncode == 0:
             return ref
@@ -274,13 +282,17 @@ def _resolve_base_ref(repo: Path, configured: str | None) -> str | None:
 def _changed_paths_via_git(repo: Path, base_ref: str) -> list[str]:
     merge_base = subprocess.run(
         ["git", "merge-base", "HEAD", base_ref],
-        cwd=str(repo), capture_output=True, text=True,
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
     )
     if merge_base.returncode != 0:
         return []
     diff = subprocess.run(
         ["git", "diff", "--name-only", merge_base.stdout.strip(), "HEAD"],
-        cwd=str(repo), capture_output=True, text=True,
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
     )
     if diff.returncode != 0:
         return []
@@ -291,13 +303,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     parser.add_argument("--repo", default=".", help="worktree root (default: cwd)")
     parser.add_argument(
-        "--base-branch", default=None,
+        "--base-branch",
+        default=None,
         help="base branch to diff against (default: try origin/main, origin/master, main, master)",
     )
     parser.add_argument(
-        "--audit", action="store_true",
+        "--audit",
+        action="store_true",
         help="repo-wide enumeration of every uncovered identifier, including pre-existing "
-             "gaps; opt-in only, never part of the blocking gate",
+        "gaps; opt-in only, never part of the blocking gate",
     )
     args = parser.parse_args()
 

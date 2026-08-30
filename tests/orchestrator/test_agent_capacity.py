@@ -3,8 +3,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
-from worktrail.orchestrator import agent_capacity
-from worktrail.orchestrator import spawnlib
+from worktrail.orchestrator import agent_capacity, spawnlib
 from worktrail.runtime.selection import NoExecutionTarget
 
 
@@ -24,10 +23,16 @@ def _preflight_routing():
         "tiers": {
             "t2-build": {
                 "claude": {"model": "sonnet", "effort": None},
-                "opencode": {"model": "opencode/deepseek-v4-flash-free", "effort": None},
+                "opencode": {
+                    "model": "opencode/deepseek-v4-flash-free",
+                    "effort": None,
+                },
             },
         },
-        "roles": {}, "purposes": {}, "default_tier": "t2-build", "drain": {},
+        "roles": {},
+        "purposes": {},
+        "default_tier": "t2-build",
+        "drain": {},
     }
 
 
@@ -79,7 +84,10 @@ def test_save_is_atomic_and_json(tmp_path):
     path = tmp_path / "capacity.json"
     agent_capacity.record("codex", "gpt", outcome="available", path=path)
 
-    assert json.loads(path.read_text(encoding="utf-8"))["providers"]["codex:gpt"]["status"] == "available"
+    assert (
+        json.loads(path.read_text(encoding="utf-8"))["providers"]["codex:gpt"]["status"]
+        == "available"
+    )
     assert list(tmp_path.glob(".capacity.json.*")) == []
 
 
@@ -92,16 +100,22 @@ def test_usage_limit_wording_classifies_as_billing():
     # usage-cap wording used to fall through to the generic "transport" class
     # (30s cooldown) instead of the multi-hour/day reset a real account-level
     # cap needs.
-    stdout = ("ERROR: You've hit your usage limit. Upgrade to Pro "
-              "(https://chatgpt.com/explore/pro), visit "
-              "https://chatgpt.com/codex/settings/usage to purchase more "
-              "credits or try again at Aug 8th, 2026 2:17 AM.")
+    stdout = (
+        "ERROR: You've hit your usage limit. Upgrade to Pro "
+        "(https://chatgpt.com/explore/pro), visit "
+        "https://chatgpt.com/codex/settings/usage to purchase more "
+        "credits or try again at Aug 8th, 2026 2:17 AM."
+    )
     assert agent_capacity.classify_failure(1, stdout, "") == "billing"
 
 
 def test_session_limit_wording_also_classifies_as_billing():
-    assert agent_capacity.classify_failure(
-        1, "", "You've hit your session limit. Your limit resets at 3:00pm.") == "billing"
+    assert (
+        agent_capacity.classify_failure(
+            1, "", "You've hit your session limit. Your limit resets at 3:00pm."
+        )
+        == "billing"
+    )
 
 
 def test_weekly_limit_wording_also_classifies_as_billing():
@@ -109,15 +123,21 @@ def test_weekly_limit_wording_also_classifies_as_billing():
     # own weekly-cap wording used to fall through to "transport", so two
     # consecutive weekly-limit hits tripped the circuit breaker as plain
     # failures instead of gating the provider as a capacity issue.
-    assert agent_capacity.classify_failure(
-        1, "You've hit your weekly limit · resets 2pm (America/Los_Angeles)", "") == "billing"
+    assert (
+        agent_capacity.classify_failure(
+            1, "You've hit your weekly limit · resets 2pm (America/Los_Angeles)", ""
+        )
+        == "billing"
+    )
 
 
 def test_parse_explicit_reset_extracts_codex_notice():
-    stdout = ("ERROR: You've hit your usage limit. Upgrade to Pro "
-              "(https://chatgpt.com/explore/pro), visit "
-              "https://chatgpt.com/codex/settings/usage to purchase more "
-              "credits or try again at Aug 8th, 2026 2:17 AM.")
+    stdout = (
+        "ERROR: You've hit your usage limit. Upgrade to Pro "
+        "(https://chatgpt.com/explore/pro), visit "
+        "https://chatgpt.com/codex/settings/usage to purchase more "
+        "credits or try again at Aug 8th, 2026 2:17 AM."
+    )
     reset = agent_capacity.parse_explicit_reset(stdout)
     assert reset is not None
     assert (reset.year, reset.month, reset.day) == (2026, 8, 8)
@@ -126,8 +146,7 @@ def test_parse_explicit_reset_extracts_codex_notice():
 
 
 def test_parse_explicit_reset_accepts_full_month_name_no_ordinal():
-    reset = agent_capacity.parse_explicit_reset(
-        "try again at August 8, 2026 2:17AM.")
+    reset = agent_capacity.parse_explicit_reset("try again at August 8, 2026 2:17AM.")
     assert reset is not None and (reset.year, reset.month, reset.day) == (2026, 8, 8)
 
 
@@ -137,7 +156,10 @@ def test_parse_explicit_reset_returns_none_without_a_timestamp():
 
 
 def test_model_not_found_wording_classifies_as_model_unavailable():
-    assert agent_capacity.classify_failure(1, "", "Error: model not found") == "model_unavailable"
+    assert (
+        agent_capacity.classify_failure(1, "", "Error: model not found")
+        == "model_unavailable"
+    )
 
 
 def test_model_unavailable_default_cooldown_is_one_day():
@@ -151,14 +173,18 @@ def test_opencode_generic_error_event_classifies_as_transport():
     # limit -- no distinguishable rate-limit signal was observed, so per the
     # no-guessing rule this must fall through to the existing generic "transport"
     # class (short retry/backoff) rather than a fabricated "rate_limit" class.
-    stdout = json.dumps({
-        "type": "error",
-        "error": {
-            "name": "UnknownError",
-            "data": {"message": "Unexpected server error. Check server logs for details.",
-                      "ref": "err_55ac1dc1"},
-        },
-    })
+    stdout = json.dumps(
+        {
+            "type": "error",
+            "error": {
+                "name": "UnknownError",
+                "data": {
+                    "message": "Unexpected server error. Check server logs for details.",
+                    "ref": "err_55ac1dc1",
+                },
+            },
+        }
+    )
     assert agent_capacity.classify_failure(0, stdout, "") == "transport"
 
 
@@ -166,10 +192,15 @@ def test_opencode_error_event_is_recognized_as_infra_failure():
     # Cross-module regression for the actual bug: exit 0 + non-empty stdout used
     # to be treated as a clean success (agent_capacity.record(outcome="available"))
     # even though the provider itself failed.
-    stdout = json.dumps({
-        "type": "error",
-        "error": {"name": "UnknownError", "data": {"message": "Unexpected server error."}},
-    })
+    stdout = json.dumps(
+        {
+            "type": "error",
+            "error": {
+                "name": "UnknownError",
+                "data": {"message": "Unexpected server error."},
+            },
+        }
+    )
     assert spawnlib.is_infra_failure(0, stdout) is True
 
 
@@ -181,40 +212,58 @@ def test_gate_snapshot_reports_retry_class_and_all_gated(tmp_path):
         ("opencode", "safe/model", "auth"),
     ):
         agent_capacity.record(
-            agent, model, outcome="unavailable", failure_class=failure_class,
-            retry_after=now + timedelta(minutes=5), path=path, now=now,
+            agent,
+            model,
+            outcome="unavailable",
+            failure_class=failure_class,
+            retry_after=now + timedelta(minutes=5),
+            path=path,
+            now=now,
         )
 
     snapshot = agent_capacity.gate_snapshot(
-        [agent_capacity.provider_key("claude", "sonnet"),
-         agent_capacity.provider_key("opencode", "safe/model")],
-        path=path, now=now,
+        [
+            agent_capacity.provider_key("claude", "sonnet"),
+            agent_capacity.provider_key("opencode", "safe/model"),
+        ],
+        path=path,
+        now=now,
     )
 
     assert snapshot["all_gated"] is True
     assert snapshot["retry_after"] == "2026-07-20T20:05:00+00:00"
-    assert [item["failure_class"] for item in snapshot["gated"]] == ["transport", "auth"]
+    assert [item["failure_class"] for item in snapshot["gated"]] == [
+        "transport",
+        "auth",
+    ]
 
 
 def test_gate_snapshot_reports_model_unavailable_failure_class(tmp_path):
     path = tmp_path / "capacity.json"
     now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
     agent_capacity.record(
-        "claude-heavy", "retired-model", outcome="unavailable",
+        "claude-heavy",
+        "retired-model",
+        outcome="unavailable",
         failure_class="model_unavailable",
-        retry_after=now + timedelta(hours=1), path=path, now=now,
+        retry_after=now + timedelta(hours=1),
+        path=path,
+        now=now,
     )
 
     snapshot = agent_capacity.gate_snapshot(
         [agent_capacity.provider_key("claude-heavy", "retired-model")],
-        path=path, now=now,
+        path=path,
+        now=now,
     )
 
-    assert snapshot["gated"] == [{
-        "provider": "claude-heavy:retired-model",
-        "failure_class": "model_unavailable",
-        "retry_after": "2026-07-20T21:00:00+00:00",
-    }]
+    assert snapshot["gated"] == [
+        {
+            "provider": "claude-heavy:retired-model",
+            "failure_class": "model_unavailable",
+            "retry_after": "2026-07-20T21:00:00+00:00",
+        }
+    ]
 
 
 def test_record_and_check_key_on_target_names(tmp_path):
@@ -224,8 +273,13 @@ def test_record_and_check_key_on_target_names(tmp_path):
     path = tmp_path / "capacity.json"
     now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
     agent_capacity.record(
-        "claude-heavy", "sonnet", outcome="unavailable", failure_class="transport",
-        retry_after=now + timedelta(minutes=5), path=path, now=now,
+        "claude-heavy",
+        "sonnet",
+        outcome="unavailable",
+        failure_class="transport",
+        retry_after=now + timedelta(minutes=5),
+        path=path,
+        now=now,
     )
 
     agent_capacity.check("claude-light", "sonnet", path=path, now=now)
@@ -234,7 +288,9 @@ def test_record_and_check_key_on_target_names(tmp_path):
     except agent_capacity.ProviderUnavailable:
         pass
     else:
-        raise AssertionError("gated target was not distinguished from a differently named target")
+        raise AssertionError(
+            "gated target was not distinguished from a differently named target"
+        )
 
 
 def test_gate_snapshot_ignores_stale_configured_providers_key(tmp_path):
@@ -245,8 +301,13 @@ def test_gate_snapshot_ignores_stale_configured_providers_key(tmp_path):
     path = tmp_path / "capacity.json"
     now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
     agent_capacity.record(
-        "claude", "sonnet", outcome="unavailable", failure_class="transport",
-        retry_after=now + timedelta(minutes=5), path=path, now=now,
+        "claude",
+        "sonnet",
+        outcome="unavailable",
+        failure_class="transport",
+        retry_after=now + timedelta(minutes=5),
+        path=path,
+        now=now,
     )
     data = json.loads(path.read_text())
     # A stale key naming a DIFFERENT provider -- if gate_snapshot ever fell
@@ -256,7 +317,9 @@ def test_gate_snapshot_ignores_stale_configured_providers_key(tmp_path):
     path.write_text(json.dumps(data))
 
     snapshot = agent_capacity.gate_snapshot(
-        [agent_capacity.provider_key("claude", "sonnet")], path=path, now=now,
+        [agent_capacity.provider_key("claude", "sonnet")],
+        path=path,
+        now=now,
     )
 
     assert snapshot["configured"] == ["claude:sonnet"]
@@ -267,22 +330,35 @@ def test_preflight_uses_fallback_when_primary_is_gated(tmp_path, monkeypatch):
     path = tmp_path / "capacity.json"
     now = datetime.now(timezone.utc)
     agent_capacity.record(
-        "claude", "sonnet", outcome="unavailable", failure_class="transport",
-        retry_after=now + timedelta(minutes=1), path=path, now=now,
+        "claude",
+        "sonnet",
+        outcome="unavailable",
+        failure_class="transport",
+        retry_after=now + timedelta(minutes=1),
+        path=path,
+        now=now,
     )
     monkeypatch.setenv("GO_AGENT_CAPACITY_CACHE", str(path))
-    monkeypatch.setattr(spawnlib, "resolve_routing", lambda *a, **kw: _preflight_routing())
+    monkeypatch.setattr(
+        spawnlib, "resolve_routing", lambda *a, **kw: _preflight_routing()
+    )
     monkeypatch.setattr(
         spawnlib.subprocess,
         "run",
-        lambda *args, **kwargs: type("Proc", (), {
-            "returncode": 0,
-            "stdout": '{"type":"result","result":"ok","usage":{}}\n',
-            "stderr": "",
-        })(),
+        lambda *args, **kwargs: type(
+            "Proc",
+            (),
+            {
+                "returncode": 0,
+                "stdout": '{"type":"result","result":"ok","usage":{}}\n',
+                "stderr": "",
+            },
+        )(),
     )
 
-    result = spawnlib.spawn_agent("prompt", tmp_path, tier="t2-build", sleep=lambda *_: None)
+    result = spawnlib.spawn_agent(
+        "prompt", tmp_path, tier="t2-build", sleep=lambda *_: None
+    )
 
     assert result.text == "ok"
 
@@ -298,8 +374,14 @@ def test_status_lists_all_recorded_providers(tmp_path):
     path = tmp_path / "capacity.json"
     now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
     agent_capacity.record(
-        "claude", "sonnet", outcome="unavailable", failure_class="transport",
-        retry_after=now + timedelta(minutes=5), path=path, now=now)
+        "claude",
+        "sonnet",
+        outcome="unavailable",
+        failure_class="transport",
+        retry_after=now + timedelta(minutes=5),
+        path=path,
+        now=now,
+    )
     agent_capacity.record("opencode", "model", outcome="available", path=path, now=now)
     cap = agent_capacity.cmd_status(path=path, now=now)
     assert cap == 0
@@ -310,12 +392,23 @@ def test_clear_refuses_unknown_key(tmp_path):
     path.write_text('{"version":1,"providers":{},"configured_providers":[]}')
     rc = agent_capacity.cmd_clear("unknown:key", "billing resolved", path=path)
     assert rc == 1
-    assert json.loads(path.read_text()) == {"version": 1, "providers": {}, "configured_providers": []}
+    assert json.loads(path.read_text()) == {
+        "version": 1,
+        "providers": {},
+        "configured_providers": [],
+    }
 
 
 def test_clear_refuses_empty_reason(tmp_path):
     path = tmp_path / "capacity.json"
-    agent_capacity.record("claude", "sonnet", outcome="unavailable", failure_class="transport", retry_after=agent_capacity._now() + timedelta(minutes=5), path=path)
+    agent_capacity.record(
+        "claude",
+        "sonnet",
+        outcome="unavailable",
+        failure_class="transport",
+        retry_after=agent_capacity._now() + timedelta(minutes=5),
+        path=path,
+    )
     content_before = path.read_text()
     rc = agent_capacity.cmd_clear("claude:sonnet", "", path=path)
     assert rc == 1
@@ -324,7 +417,14 @@ def test_clear_refuses_empty_reason(tmp_path):
 
 def test_clear_refuses_blank_reason(tmp_path):
     path = tmp_path / "capacity.json"
-    agent_capacity.record("claude", "sonnet", outcome="unavailable", failure_class="transport", retry_after=agent_capacity._now() + timedelta(minutes=5), path=path)
+    agent_capacity.record(
+        "claude",
+        "sonnet",
+        outcome="unavailable",
+        failure_class="transport",
+        retry_after=agent_capacity._now() + timedelta(minutes=5),
+        path=path,
+    )
     content_before = path.read_text()
     rc = agent_capacity.cmd_clear("claude:sonnet", "   ", path=path)
     assert rc == 1
@@ -334,9 +434,27 @@ def test_clear_refuses_blank_reason(tmp_path):
 def test_clear_targeted_removes_exactly_one_provider(tmp_path):
     path = tmp_path / "capacity.json"
     now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
-    agent_capacity.record("claude", "sonnet", outcome="unavailable", failure_class="transport", retry_after=now + timedelta(minutes=5), path=path, now=now)
-    agent_capacity.record("opencode", "model", outcome="unavailable", failure_class="auth", retry_after=now + timedelta(minutes=5), path=path, now=now)
-    rc = agent_capacity.cmd_clear("claude:sonnet", "transport resolved", path=path, now=now)
+    agent_capacity.record(
+        "claude",
+        "sonnet",
+        outcome="unavailable",
+        failure_class="transport",
+        retry_after=now + timedelta(minutes=5),
+        path=path,
+        now=now,
+    )
+    agent_capacity.record(
+        "opencode",
+        "model",
+        outcome="unavailable",
+        failure_class="auth",
+        retry_after=now + timedelta(minutes=5),
+        path=path,
+        now=now,
+    )
+    rc = agent_capacity.cmd_clear(
+        "claude:sonnet", "transport resolved", path=path, now=now
+    )
     assert rc == 0
     data = json.loads(path.read_text())
     assert "claude:sonnet" not in data["providers"]
@@ -346,8 +464,24 @@ def test_clear_targeted_removes_exactly_one_provider(tmp_path):
 def test_clear_all_removes_all_gates(tmp_path):
     path = tmp_path / "capacity.json"
     now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
-    agent_capacity.record("claude", "sonnet", outcome="unavailable", failure_class="transport", retry_after=now + timedelta(minutes=5), path=path, now=now)
-    agent_capacity.record("opencode", "model", outcome="unavailable", failure_class="auth", retry_after=now + timedelta(minutes=5), path=path, now=now)
+    agent_capacity.record(
+        "claude",
+        "sonnet",
+        outcome="unavailable",
+        failure_class="transport",
+        retry_after=now + timedelta(minutes=5),
+        path=path,
+        now=now,
+    )
+    agent_capacity.record(
+        "opencode",
+        "model",
+        outcome="unavailable",
+        failure_class="auth",
+        retry_after=now + timedelta(minutes=5),
+        path=path,
+        now=now,
+    )
     rc = agent_capacity.cmd_clear("--all", "all resolved", path=path, now=now)
     assert rc == 0
     data = json.loads(path.read_text())
@@ -356,7 +490,14 @@ def test_clear_all_removes_all_gates(tmp_path):
 
 def test_clear_rejects_all_without_explicit_flag(tmp_path):
     path = tmp_path / "capacity.json"
-    agent_capacity.record("claude", "sonnet", outcome="unavailable", failure_class="transport", retry_after=agent_capacity._now() + timedelta(minutes=5), path=path)
+    agent_capacity.record(
+        "claude",
+        "sonnet",
+        outcome="unavailable",
+        failure_class="transport",
+        retry_after=agent_capacity._now() + timedelta(minutes=5),
+        path=path,
+    )
     content_before = path.read_text()
     rc = agent_capacity.cmd_clear("--all", "resolved", path=path)
     assert rc == 0  # --all is explicit scope
@@ -365,7 +506,15 @@ def test_clear_rejects_all_without_explicit_flag(tmp_path):
 def test_clear_writes_audit_entry(tmp_path):
     path = tmp_path / "capacity.json"
     now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
-    agent_capacity.record("claude", "sonnet", outcome="unavailable", failure_class="transport", retry_after=now + timedelta(minutes=5), path=path, now=now)
+    agent_capacity.record(
+        "claude",
+        "sonnet",
+        outcome="unavailable",
+        failure_class="transport",
+        retry_after=now + timedelta(minutes=5),
+        path=path,
+        now=now,
+    )
     rc = agent_capacity.cmd_clear("claude:sonnet", "billing fixed", path=path, now=now)
     assert rc == 0
     data = json.loads(path.read_text())
@@ -381,8 +530,24 @@ def test_clear_writes_audit_entry(tmp_path):
 def test_clear_all_writes_audit_entry(tmp_path):
     path = tmp_path / "capacity.json"
     now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
-    agent_capacity.record("claude", "sonnet", outcome="unavailable", failure_class="transport", retry_after=now + timedelta(minutes=5), path=path, now=now)
-    agent_capacity.record("opencode", "model", outcome="unavailable", failure_class="auth", retry_after=now + timedelta(minutes=5), path=path, now=now)
+    agent_capacity.record(
+        "claude",
+        "sonnet",
+        outcome="unavailable",
+        failure_class="transport",
+        retry_after=now + timedelta(minutes=5),
+        path=path,
+        now=now,
+    )
+    agent_capacity.record(
+        "opencode",
+        "model",
+        outcome="unavailable",
+        failure_class="auth",
+        retry_after=now + timedelta(minutes=5),
+        path=path,
+        now=now,
+    )
     rc = agent_capacity.cmd_clear("--all", "all fixed", path=path, now=now)
     assert rc == 0
     data = json.loads(path.read_text())
@@ -395,7 +560,15 @@ def test_audit_bounds_at_max_entries(tmp_path):
     path.write_text('{"version":1,"providers":{},"configured_providers":[]}')
     now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
     for i in range(agent_capacity.MAX_AUDIT_ENTRIES + 10):
-        agent_capacity.record("claude", "sonnet", outcome="unavailable", failure_class="transport", retry_after=now + timedelta(minutes=5), path=path, now=now)
+        agent_capacity.record(
+            "claude",
+            "sonnet",
+            outcome="unavailable",
+            failure_class="transport",
+            retry_after=now + timedelta(minutes=5),
+            path=path,
+            now=now,
+        )
         agent_capacity.cmd_clear("claude:sonnet", f"fix {i}", path=path, now=now)
     data = json.loads(path.read_text())
     assert len(data["audit"]) == agent_capacity.MAX_AUDIT_ENTRIES
@@ -419,8 +592,18 @@ def test_main_status_via_cli(tmp_path):
 def test_main_clear_targeted_via_cli(tmp_path):
     path = tmp_path / "capacity.json"
     now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
-    agent_capacity.record("claude", "sonnet", outcome="unavailable", failure_class="transport", retry_after=now + timedelta(minutes=5), path=path, now=now)
-    rc = agent_capacity.main(["--cache", str(path), "clear", "claude:sonnet", "--reason", "fixed"])
+    agent_capacity.record(
+        "claude",
+        "sonnet",
+        outcome="unavailable",
+        failure_class="transport",
+        retry_after=now + timedelta(minutes=5),
+        path=path,
+        now=now,
+    )
+    rc = agent_capacity.main(
+        ["--cache", str(path), "clear", "claude:sonnet", "--reason", "fixed"]
+    )
     assert rc == 0
     data = json.loads(path.read_text())
     assert "claude:sonnet" not in data["providers"]
@@ -430,8 +613,18 @@ def test_main_clear_targeted_via_cli(tmp_path):
 def test_main_clear_all_via_cli(tmp_path):
     path = tmp_path / "capacity.json"
     now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
-    agent_capacity.record("claude", "sonnet", outcome="unavailable", failure_class="transport", retry_after=now + timedelta(minutes=5), path=path, now=now)
-    rc = agent_capacity.main(["--cache", str(path), "clear", "--all", "--reason", "all fixed"])
+    agent_capacity.record(
+        "claude",
+        "sonnet",
+        outcome="unavailable",
+        failure_class="transport",
+        retry_after=now + timedelta(minutes=5),
+        path=path,
+        now=now,
+    )
+    rc = agent_capacity.main(
+        ["--cache", str(path), "clear", "--all", "--reason", "all fixed"]
+    )
     assert rc == 0
     data = json.loads(path.read_text())
     assert data["providers"] == {}
@@ -440,7 +633,9 @@ def test_main_clear_all_via_cli(tmp_path):
 def test_main_clear_unknown_key_returns_nonzero(tmp_path):
     path = tmp_path / "capacity.json"
     path.write_text('{"version":1,"providers":{},"configured_providers":[]}')
-    rc = agent_capacity.main(["--cache", str(path), "clear", "unknown", "--reason", "fix"])
+    rc = agent_capacity.main(
+        ["--cache", str(path), "clear", "unknown", "--reason", "fix"]
+    )
     assert rc == 1
 
 
@@ -502,11 +697,20 @@ def test_concurrent_record_calls_both_survive(tmp_path, monkeypatch):
         tmp_path,
         monkeypatch,
         lambda: agent_capacity.record(
-            "claude", "sonnet", outcome="unavailable", failure_class="billing",
-            retry_after=now + timedelta(hours=1), path=path, now=now,
+            "claude",
+            "sonnet",
+            outcome="unavailable",
+            failure_class="billing",
+            retry_after=now + timedelta(hours=1),
+            path=path,
+            now=now,
         ),
         lambda: agent_capacity.record(
-            "codex", "gpt", outcome="available", path=path, now=now,
+            "codex",
+            "gpt",
+            outcome="available",
+            path=path,
+            now=now,
         ),
     )
 
@@ -522,15 +726,25 @@ def test_concurrent_record_and_clear_both_survive(tmp_path, monkeypatch):
     path = tmp_path / "capacity.json"
     now = datetime(2026, 8, 12, 20, 0, tzinfo=timezone.utc)
     agent_capacity.record(
-        "codex", "gpt", outcome="unavailable", failure_class="transport",
-        retry_after=now + timedelta(minutes=5), path=path, now=now,
+        "codex",
+        "gpt",
+        outcome="unavailable",
+        failure_class="transport",
+        retry_after=now + timedelta(minutes=5),
+        path=path,
+        now=now,
     )
     _run_racing_writers(
         tmp_path,
         monkeypatch,
         lambda: agent_capacity.record(
-            "claude", "sonnet", outcome="unavailable", failure_class="billing",
-            retry_after=now + timedelta(hours=1), path=path, now=now,
+            "claude",
+            "sonnet",
+            outcome="unavailable",
+            failure_class="billing",
+            retry_after=now + timedelta(hours=1),
+            path=path,
+            now=now,
         ),
         lambda: agent_capacity.cmd_clear("codex:gpt", "resolved", path=path, now=now),
     )
@@ -551,8 +765,12 @@ def test_concurrent_record_capacity_gate_calls_both_survive(tmp_path, monkeypatc
     _run_racing_writers(
         tmp_path,
         monkeypatch,
-        lambda: drain.record_capacity_gate(path, "claude", "billing", now + timedelta(hours=1)),
-        lambda: drain.record_capacity_gate(path, "codex", "transport", now + timedelta(minutes=5)),
+        lambda: drain.record_capacity_gate(
+            path, "claude", "billing", now + timedelta(hours=1)
+        ),
+        lambda: drain.record_capacity_gate(
+            path, "codex", "transport", now + timedelta(minutes=5)
+        ),
     )
 
     providers = json.loads(path.read_text(encoding="utf-8"))["providers"]
@@ -565,15 +783,27 @@ def test_concurrent_record_capacity_gate_calls_both_survive(tmp_path, monkeypatc
 def test_preflight_reports_all_providers_gated_without_spawning(tmp_path, monkeypatch):
     path = tmp_path / "capacity.json"
     now = datetime.now(timezone.utc)
-    for target, model in (("claude", "sonnet"), ("opencode", "opencode/deepseek-v4-flash-free")):
+    for target, model in (
+        ("claude", "sonnet"),
+        ("opencode", "opencode/deepseek-v4-flash-free"),
+    ):
         agent_capacity.record(
-            target, model, outcome="unavailable", failure_class="transport",
-            retry_after=now + timedelta(minutes=1), path=path, now=now,
+            target,
+            model,
+            outcome="unavailable",
+            failure_class="transport",
+            retry_after=now + timedelta(minutes=1),
+            path=path,
+            now=now,
         )
     monkeypatch.setenv("GO_AGENT_CAPACITY_CACHE", str(path))
-    monkeypatch.setattr(spawnlib, "resolve_routing", lambda *a, **kw: _preflight_routing())
+    monkeypatch.setattr(
+        spawnlib, "resolve_routing", lambda *a, **kw: _preflight_routing()
+    )
     called = []
-    monkeypatch.setattr(spawnlib.subprocess, "run", lambda *args, **kwargs: called.append(args))
+    monkeypatch.setattr(
+        spawnlib.subprocess, "run", lambda *args, **kwargs: called.append(args)
+    )
 
     try:
         spawnlib.spawn_agent("prompt", tmp_path, tier="t2-build", sleep=lambda *_: None)

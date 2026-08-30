@@ -52,8 +52,9 @@ from __future__ import annotations
 
 import re
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any
 
 from .policy import VALID_AGENT_CLIS, load_policy
 
@@ -97,14 +98,14 @@ def _overlap_coefficient(a: set, b: set) -> float:
     return len(a & b) / min(len(a), len(b))
 
 
-def _normalize_repo(val: Any) -> Optional[str]:
+def _normalize_repo(val: Any) -> str | None:
     """Return None for absent/null repos so they never match each other."""
     if val is None or val in ("null", "~", ""):
         return None
     return str(val)
 
 
-def _coerce_id_list(val: Any) -> List[str]:
+def _coerce_id_list(val: Any) -> list[str]:
     """Normalize a frontmatter list field that may come back as a list or a
     single bare string, depending on the injected parser's handling."""
     if isinstance(val, list):
@@ -128,8 +129,8 @@ def _id_matches(identifier: str, stem: str) -> bool:
 
 
 def _extract_signal(
-    path: Path, parse_frontmatter: Callable[[str], Dict[str, Any]]
-) -> Optional[Dict[str, Any]]:
+    path: Path, parse_frontmatter: Callable[[str], dict[str, Any]]
+) -> dict[str, Any] | None:
     """Extract a Cluster Signal from a queued brief.
 
     Returns a dict with `repo`, `target_spec`, `target_task`, `related`,
@@ -161,7 +162,7 @@ def _extract_signal(
     }
 
 
-def _is_blocked_by_pair(sig_a: Dict[str, Any], sig_b: Dict[str, Any]) -> bool:
+def _is_blocked_by_pair(sig_a: dict[str, Any], sig_b: dict[str, Any]) -> bool:
     """True if either signal's blocked-by list points at the other's stem."""
     for dep in sig_a["blocked_by"]:
         if _id_matches(dep, sig_b["stem"]):
@@ -173,8 +174,8 @@ def _is_blocked_by_pair(sig_a: Dict[str, Any], sig_b: Dict[str, Any]) -> bool:
 
 
 def _signal_matches(
-    sig_a: Dict[str, Any], sig_b: Dict[str, Any]
-) -> List[Tuple[str, Optional[float]]]:
+    sig_a: dict[str, Any], sig_b: dict[str, Any]
+) -> list[tuple[str, float | None]]:
     """Compute Signal Matches between two Cluster Signals.
 
     Returns a list of (signal_type, score) tuples: score is None for
@@ -191,7 +192,7 @@ def _signal_matches(
     if _is_blocked_by_pair(sig_a, sig_b):
         return []
 
-    matches: List[Tuple[str, Optional[float]]] = []
+    matches: list[tuple[str, float | None]] = []
 
     if sig_a["slug"] and sig_a["slug"] == sig_b["slug"]:
         matches.append(("duplicate-slug", None))
@@ -207,7 +208,10 @@ def _signal_matches(
     if not same_repo:
         return matches
 
-    if sig_a["target_spec"] is not None and sig_a["target_spec"] == sig_b["target_spec"]:
+    if (
+        sig_a["target_spec"] is not None
+        and sig_a["target_spec"] == sig_b["target_spec"]
+    ):
         matches.append(("same-target-spec", None))
 
     related = any(_id_matches(rid, sig_b["stem"]) for rid in sig_a["related"]) or any(
@@ -223,13 +227,13 @@ def _signal_matches(
     return matches
 
 
-_Edge = Tuple[str, str, List[Tuple[str, Optional[float]]]]
+_Edge = tuple[str, str, list[tuple[str, float | None]]]
 
 
 def _target_task_edges(
-    signals: List[Dict[str, Any]],
-    task_candidates_fn: Optional[Callable[[str, str], List[Dict[str, Any]]]],
-) -> List[_Edge]:
+    signals: list[dict[str, Any]],
+    task_candidates_fn: Callable[[str, str], list[dict[str, Any]]] | None,
+) -> list[_Edge]:
     """Compute brief-vs-task `target-task-match` edges (Dashboard Advisory
     Surfaces Brief-vs-Task Matches).
 
@@ -264,8 +268,8 @@ def _target_task_edges(
     if task_candidates_fn is None:
         return []
 
-    edges: List[_Edge] = []
-    cache: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+    edges: list[_Edge] = []
+    cache: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for sig in signals:
         repo = sig["repo"]
         target = sig["target_spec"]
@@ -305,7 +309,7 @@ def _target_task_edges(
 # must never stall compute_clusters()'s dashboard-render path, so a timeout
 # is treated the same as every other fail-open outcome below: a None verdict.
 _VERIFY_TIMEOUT_SECONDS = 10
-_AGENT_VERIFY_CMD: Dict[str, Callable[[str], List[str]]] = {
+_AGENT_VERIFY_CMD: dict[str, Callable[[str], list[str]]] = {
     "claude": lambda prompt: ["claude", "-p", prompt],
     "codex": lambda prompt: ["codex", "exec", "-s", "read-only", prompt],
     "opencode": lambda prompt: ["opencode", "run", prompt],
@@ -314,7 +318,7 @@ _AGENT_VERIFY_CMD: Dict[str, Callable[[str], List[str]]] = {
 _VERDICT_RE = re.compile(r"^\s*(yes|no)\b", re.IGNORECASE)
 
 
-def _resolve_verification_agent_cli(repo_root: Optional[Path]) -> Optional[str]:
+def _resolve_verification_agent_cli(repo_root: Path | None) -> str | None:
     """Resolve the headless agent CLI for the LLM verification gate.
 
     Mirrors dashboard.py's `_planned_agent_for_item()`: `router/policy.py`'s
@@ -347,7 +351,7 @@ def _verification_prompt(focus_a: str, focus_b: str) -> str:
     )
 
 
-def _parse_verification_verdict(output: str) -> Optional[bool]:
+def _parse_verification_verdict(output: str) -> bool | None:
     """Parse a yes/no verdict from the verification call's stdout.
 
     Returns True/False for the first non-empty line starting with YES/NO
@@ -367,9 +371,9 @@ def _verify_same_work(
     focus_a: str,
     focus_b: str,
     *,
-    repo_root: Optional[Path] = None,
-    agent_cli: Optional[str] = None,
-) -> Optional[bool]:
+    repo_root: Path | None = None,
+    agent_cli: str | None = None,
+) -> bool | None:
     """LLM verification gate: ask the configured headless agent CLI whether
     two briefs' focus text describes the same underlying work.
 
@@ -400,7 +404,7 @@ def _verify_same_work(
     return _parse_verification_verdict(proc.stdout)
 
 
-def _llm_gate_score(sig_a: Dict[str, Any], sig_b: Dict[str, Any]) -> Optional[float]:
+def _llm_gate_score(sig_a: dict[str, Any], sig_b: dict[str, Any]) -> float | None:
     """Return the focus-overlap coefficient if this pair falls in the LLM
     verification gate's band (design.md D3): both `repo` null, not
     blocked-by-excluded, and overlap in `[LLM_GATE_FLOOR,
@@ -421,12 +425,12 @@ def _llm_gate_score(sig_a: Dict[str, Any], sig_b: Dict[str, Any]) -> Optional[fl
 
 
 def _llm_gate_clusters(
-    signals: List[Dict[str, Any]],
-    components: List[Dict[str, Any]],
+    signals: list[dict[str, Any]],
+    components: list[dict[str, Any]],
     *,
-    repo_root: Optional[Path],
-    agent_cli: Optional[str],
-) -> List[Dict[str, Any]]:
+    repo_root: Path | None,
+    agent_cli: str | None,
+) -> list[dict[str, Any]]:
     """Run the LLM verification gate over every size-2, null-vs-null
     candidate pair in the gate band and return surfaced-shape cluster dicts
     for the ones the LLM confirms describe the same underlying work
@@ -441,7 +445,7 @@ def _llm_gate_clusters(
     overlap.
     """
     clustered_members = {member for comp in components for member in comp["members"]}
-    gate_clusters: List[Dict[str, Any]] = []
+    gate_clusters: list[dict[str, Any]] = []
     for i in range(len(signals)):
         for j in range(i + 1, len(signals)):
             sig_a, sig_b = signals[i], signals[j]
@@ -452,17 +456,24 @@ def _llm_gate_clusters(
                 continue  # already surfaced via a component, or belongs elsewhere
 
             verdict = _verify_same_work(
-                sig_a["focus_text"], sig_b["focus_text"], repo_root=repo_root, agent_cli=agent_cli
+                sig_a["focus_text"],
+                sig_b["focus_text"],
+                repo_root=repo_root,
+                agent_cli=agent_cli,
             )
             if not verdict:
                 continue
             gate_clusters.append(
-                {"members": sorted((stem_a, stem_b)), "signals": ["focus-overlap"], "size": 2}
+                {
+                    "members": sorted((stem_a, stem_b)),
+                    "signals": ["focus-overlap"],
+                    "size": 2,
+                }
             )
     return gate_clusters
 
 
-def _connected_components(edges: List[_Edge]) -> List[Dict[str, Any]]:
+def _connected_components(edges: list[_Edge]) -> list[dict[str, Any]]:
     """Assemble Signal Match edges into connected components via union-find.
 
     Any edge with a non-empty matches list connects its two ids into the same
@@ -476,7 +487,7 @@ def _connected_components(edges: List[_Edge]) -> List[Dict[str, Any]]:
     ids), `signals` (sorted, de-duplicated labels of every edge within the
     component), and `size`.
     """
-    parent: Dict[str, str] = {}
+    parent: dict[str, str] = {}
 
     def find(x: str) -> str:
         parent.setdefault(x, x)
@@ -494,8 +505,8 @@ def _connected_components(edges: List[_Edge]) -> List[Dict[str, Any]]:
     for id_a, id_b, _matches in active_edges:
         union(id_a, id_b)
 
-    members_by_root: Dict[str, set] = {}
-    signals_by_root: Dict[str, set] = {}
+    members_by_root: dict[str, set] = {}
+    signals_by_root: dict[str, set] = {}
     for id_a, id_b, matches in active_edges:
         root = find(id_a)
         members_by_root.setdefault(root, set()).update((id_a, id_b))
@@ -514,12 +525,12 @@ def _connected_components(edges: List[_Edge]) -> List[Dict[str, Any]]:
 
 
 def _assemble_clusters(
-    edges: List[_Edge],
+    edges: list[_Edge],
     *,
-    signals: Optional[List[Dict[str, Any]]] = None,
-    repo_root: Optional[Path] = None,
-    agent_cli: Optional[str] = None,
-) -> List[Dict[str, Any]]:
+    signals: list[dict[str, Any]] | None = None,
+    repo_root: Path | None = None,
+    agent_cli: str | None = None,
+) -> list[dict[str, Any]]:
     """Assemble Signal Match edges into surfaced clusters via
     connected-component assembly (`_connected_components`); every assembled
     component is surfaced. An empty `edges` list yields an empty cluster
@@ -549,12 +560,12 @@ def _assemble_clusters(
 
 def _compute_clusters_inner(
     queue_dir: Path,
-    parse_frontmatter: Callable[[str], Dict[str, Any]],
+    parse_frontmatter: Callable[[str], dict[str, Any]],
     *,
-    repo_root: Optional[Path],
-    agent_cli: Optional[str],
-    task_candidates_fn: Optional[Callable[[str, str], List[Dict[str, Any]]]],
-) -> List[Dict[str, Any]]:
+    repo_root: Path | None,
+    agent_cli: str | None,
+    task_candidates_fn: Callable[[str, str], list[dict[str, Any]]] | None,
+) -> list[dict[str, Any]]:
     """Unguarded body of `compute_clusters` (see there for the public
     contract). Split out so the broad exception handler wraps the whole
     computation, not just this function's own logic."""
@@ -568,7 +579,7 @@ def _compute_clusters_inner(
         if sig is not None:
             signals.append(sig)
 
-    edges: List[_Edge] = []
+    edges: list[_Edge] = []
     for i in range(len(signals)):
         for j in range(i + 1, len(signals)):
             sig_a, sig_b = signals[i], signals[j]
@@ -576,17 +587,19 @@ def _compute_clusters_inner(
             edges.append((sig_a["stem"], sig_b["stem"], matches))
     edges.extend(_target_task_edges(signals, task_candidates_fn))
 
-    return _assemble_clusters(edges, signals=signals, repo_root=repo_root, agent_cli=agent_cli)
+    return _assemble_clusters(
+        edges, signals=signals, repo_root=repo_root, agent_cli=agent_cli
+    )
 
 
 def compute_clusters(
     queue_dir: Path,
-    parse_frontmatter: Callable[[str], Dict[str, Any]],
+    parse_frontmatter: Callable[[str], dict[str, Any]],
     *,
-    repo_root: Optional[Path] = None,
-    agent_cli: Optional[str] = None,
-    task_candidates_fn: Optional[Callable[[str, str], List[Dict[str, Any]]]] = None,
-) -> List[Dict[str, Any]]:
+    repo_root: Path | None = None,
+    agent_cli: str | None = None,
+    task_candidates_fn: Callable[[str, str], list[dict[str, Any]]] | None = None,
+) -> list[dict[str, Any]]:
     """Public entry point: scan `queue_dir` for queued briefs, extract Cluster
     Signals (skipping any brief whose frontmatter can't be read or parsed),
     compute pairwise Signal Matches, and assemble/filter them into the

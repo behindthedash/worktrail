@@ -26,9 +26,8 @@ from __future__ import annotations
 
 import datetime
 import re
-import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 import yaml
 
@@ -48,7 +47,7 @@ def _brief_id(repo: Path) -> str:
     return f"{timestamp}-checkbox-drift-{_slug(repo)}"
 
 
-def _render(repo: Path, hits: List[Dict[str, Any]], brief_id: str) -> str:
+def _render(repo: Path, hits: list[dict[str, Any]], brief_id: str) -> str:
     created = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
     focus = (
         f"Checkbox-completion drift detected in {_slug(repo)} "
@@ -98,7 +97,7 @@ def _render(repo: Path, hits: List[Dict[str, Any]], brief_id: str) -> str:
 
 
 def file_checkbox_drift_brief(
-    repo: Path, hits: List[Dict[str, Any]], queue_base: Path
+    repo: Path, hits: list[dict[str, Any]], queue_base: Path
 ) -> Path:
     """Write exactly one Checkbox Drift Brief for `repo` into `queue_base/queue/`.
 

@@ -6,6 +6,7 @@ than mocking subprocess -- the logic under test *is* the git plumbing
 (status, cherry, ls-remote, rev-list), so a fake would just re-assert the
 mock.
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -17,7 +18,9 @@ from worktrail.router import sweep_stale_worktrees as ssw
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, check=True)
+    return subprocess.run(
+        ["git", *args], cwd=str(cwd), capture_output=True, text=True, check=True
+    )
 
 
 def _init_bare_remote(tmp: Path) -> Path:
@@ -29,8 +32,12 @@ def _init_bare_remote(tmp: Path) -> Path:
 
 def _init_canonical(tmp: Path, remote: Path) -> Path:
     canonical = tmp / "myrepo"
-    subprocess.run(["git", "clone", "-q", str(remote), str(canonical)],
-                    capture_output=True, text=True, check=True)
+    subprocess.run(
+        ["git", "clone", "-q", str(remote), str(canonical)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
     _git(canonical, "config", "user.email", "test@example.com")
     _git(canonical, "config", "user.name", "Test")
     (canonical / "README.md").write_text("base\n", encoding="utf-8")

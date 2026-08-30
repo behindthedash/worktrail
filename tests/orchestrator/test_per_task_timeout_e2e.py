@@ -29,8 +29,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from worktrail.orchestrator import live
-from worktrail.orchestrator import spawnlib  # noqa: E402
+from worktrail.orchestrator import (
+    live,
+    spawnlib,
+)
 from worktrail.orchestrator import verify as verify_module
 
 # ---------------------------------------------------------------------------
@@ -49,7 +51,9 @@ def _init_repo(root: Path, tasks_fm: dict) -> Path:
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t"], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.name", "T"], check=True)
-    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True
+    )
     subprocess.run(
         ["git", "-C", str(repo), "commit", "-q", "-m", "init"],
         check=True,
@@ -92,7 +96,9 @@ class TimingSpawn:
         self.recorded: dict = {}  # task_id -> effective_timeout
         self._lock = threading.Lock()
 
-    def __call__(self, role: str, task: dict, wt: Path) -> "worktrail.orchestrator.spawnlib.SpawnResult":
+    def __call__(
+        self, role: str, task: dict, wt: Path
+    ) -> "worktrail.orchestrator.spawnlib.SpawnResult":
         effective = task.get("timeout") or self.run_level_timeout
         with self._lock:
             self.recorded[task["id"]] = effective
@@ -101,7 +107,9 @@ class TimingSpawn:
             f = wt / "src" / f"{task['id'].lower()}.txt"
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_text(f"{task['id']}\n")
-            subprocess.run(["git", "-C", str(wt), "add", "-A"], check=True, capture_output=True)
+            subprocess.run(
+                ["git", "-C", str(wt), "add", "-A"], check=True, capture_output=True
+            )
             subprocess.run(
                 ["git", "-C", str(wt), "commit", "-q", "-m", f"feat({task['id']})"],
                 check=True,
@@ -127,7 +135,11 @@ class TimingSpawn:
 
 
 def _run(
-    repo: Path, tmp: str, spawn: TimingSpawn, run_level_timeout: int = 1800, max_workers: int = 3
+    repo: Path,
+    tmp: str,
+    spawn: TimingSpawn,
+    run_level_timeout: int = 1800,
+    max_workers: int = 3,
 ) -> dict:
     """Run live_run_real with the given fake spawn; return its result."""
     return live.live_run_real(
@@ -276,9 +288,13 @@ class MalformedTimeoutFallbackTest(unittest.TestCase):
             try:
                 res = _run(repo, tmp, spawn, run_level_timeout=1800, max_workers=2)
             except Exception as exc:
-                self.fail(f"AC-10: malformed timeout must not crash the fan-out; got {exc!r}")
+                self.fail(
+                    f"AC-10: malformed timeout must not crash the fan-out; got {exc!r}"
+                )
 
-            self.assertEqual(res["done"], 2, "both tasks must complete despite malformed timeout")
+            self.assertEqual(
+                res["done"], 2, "both tasks must complete despite malformed timeout"
+            )
             self.assertEqual(
                 spawn.recorded.get("TASK-001"),
                 1800,
@@ -304,7 +320,9 @@ class VerifyStageUnaffectedTest(unittest.TestCase):
         """AC-12: verify._make_live_spawn has timeout defaulting to 1800."""
         sig = inspect.signature(verify_module._make_live_spawn)
         self.assertIn(
-            "timeout", sig.parameters, "worktrail.orchestrator.verify._make_live_spawn must have a 'timeout' parameter"
+            "timeout",
+            sig.parameters,
+            "worktrail.orchestrator.verify._make_live_spawn must have a 'timeout' parameter",
         )
         actual_default = sig.parameters["timeout"].default
         self.assertEqual(

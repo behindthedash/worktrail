@@ -20,10 +20,10 @@ from __future__ import annotations
 import io
 import json
 import unittest
-from contextlib import redirect_stdout, redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from worktrail.router import classifier_coverage as cc
 
@@ -38,8 +38,8 @@ def _write_brief(
     directory: Path,
     brief_id: str,
     *,
-    focus: Optional[str] = FOCUS_DEFECT,
-    recommended: Optional[str] = "F",
+    focus: str | None = FOCUS_DEFECT,
+    recommended: str | None = "F",
     created: str = "2026-07-01T10:00:00-07:00",
     focus_in_body: bool = False,
 ) -> Path:
@@ -74,7 +74,7 @@ def _write_run(
 ) -> Path:
     directory = runs_root / repo
     directory.mkdir(parents=True, exist_ok=True)
-    record: Dict[str, Any] = {
+    record: dict[str, Any] = {
         "run_id": run_id,
         "selected_route": route,
         "handoffs_consumed": consumed,
@@ -95,8 +95,8 @@ class ClassifierCoverageTestCase(unittest.TestCase):
         (self.queue_root / "picked").mkdir(parents=True)
         self.runs_root.mkdir()
 
-    def audit(self, **kwargs: Any) -> Dict[str, Any]:
-        params: Dict[str, Any] = {
+    def audit(self, **kwargs: Any) -> dict[str, Any]:
+        params: dict[str, Any] = {
             "queue_root": self.queue_root,
             "runs_root": self.runs_root,
             "limit": 0,
@@ -104,7 +104,9 @@ class ClassifierCoverageTestCase(unittest.TestCase):
         params.update(kwargs)
         return cc.audit_coverage(**params)
 
-    def cluster(self, report: Dict[str, Any], expected: str, predicted: str) -> Dict[str, Any]:
+    def cluster(
+        self, report: dict[str, Any], expected: str, predicted: str
+    ) -> dict[str, Any]:
         for cluster in report["clusters"]:
             if cluster["expected"] == expected and cluster["predicted"] == predicted:
                 return cluster
@@ -143,8 +145,12 @@ class TestExpectedRouteResolution(ClassifierCoverageTestCase):
 
     def test_newest_run_wins_when_several_consumed_the_same_brief(self) -> None:
         _write_brief(self.queue_root / "picked", "b-1", recommended="F")
-        _write_run(self.runs_root, "repo", "go-20260101-000000", route="I", consumed=["b-1"])
-        _write_run(self.runs_root, "repo", "go-20260901-000000", route="J", consumed=["b-1"])
+        _write_run(
+            self.runs_root, "repo", "go-20260101-000000", route="I", consumed=["b-1"]
+        )
+        _write_run(
+            self.runs_root, "repo", "go-20260901-000000", route="J", consumed=["b-1"]
+        )
 
         self.assertEqual(cc.load_actual_routes(self.runs_root), {"b-1": "J"})
 
@@ -197,7 +203,9 @@ class TestExpectedRouteResolution(ClassifierCoverageTestCase):
 class TestDisagreementClusters(ClassifierCoverageTestCase):
     def test_known_disagreement_lands_in_the_right_cluster(self) -> None:
         """A defect-worded brief recorded as J is a real F/J disagreement."""
-        _write_brief(self.queue_root / "queue", "b-1", focus=FOCUS_DEFECT, recommended="J")
+        _write_brief(
+            self.queue_root / "queue", "b-1", focus=FOCUS_DEFECT, recommended="J"
+        )
 
         report = self.audit()
         cluster = self.cluster(report, "J", "F")
@@ -208,7 +216,9 @@ class TestDisagreementClusters(ClassifierCoverageTestCase):
         self.assertEqual(cluster["no_signal_count"], 0)
 
     def test_agreeing_briefs_produce_no_cluster(self) -> None:
-        _write_brief(self.queue_root / "queue", "b-1", focus=FOCUS_WORKFLOW, recommended="J")
+        _write_brief(
+            self.queue_root / "queue", "b-1", focus=FOCUS_WORKFLOW, recommended="J"
+        )
 
         report = self.audit()
 
@@ -218,9 +228,14 @@ class TestDisagreementClusters(ClassifierCoverageTestCase):
     def test_clusters_sort_by_count_then_route_pair(self) -> None:
         for index in range(3):
             _write_brief(
-                self.queue_root / "queue", f"many-{index}", focus=FOCUS_DEFECT, recommended="J"
+                self.queue_root / "queue",
+                f"many-{index}",
+                focus=FOCUS_DEFECT,
+                recommended="J",
             )
-        _write_brief(self.queue_root / "queue", "one", focus=FOCUS_DEFECT, recommended="I")
+        _write_brief(
+            self.queue_root / "queue", "one", focus=FOCUS_DEFECT, recommended="I"
+        )
 
         report = self.audit()
 
@@ -230,8 +245,12 @@ class TestDisagreementClusters(ClassifierCoverageTestCase):
         )
 
     def test_from_actual_route_count_tracks_the_stronger_evidence(self) -> None:
-        _write_brief(self.queue_root / "picked", "b-1", focus=FOCUS_DEFECT, recommended="J")
-        _write_brief(self.queue_root / "picked", "b-2", focus=FOCUS_DEFECT, recommended="J")
+        _write_brief(
+            self.queue_root / "picked", "b-1", focus=FOCUS_DEFECT, recommended="J"
+        )
+        _write_brief(
+            self.queue_root / "picked", "b-2", focus=FOCUS_DEFECT, recommended="J"
+        )
         _write_run(self.runs_root, "repo", "go-1", route="J", consumed=["b-1"])
 
         cluster = self.cluster(self.audit(), "J", "F")
@@ -255,7 +274,9 @@ class TestNoSignalSplit(ClassifierCoverageTestCase):
         self.assertEqual(report["no_signal"]["sample_briefs"], ["quiet"])
 
     def test_signalled_brief_is_not_counted_as_no_signal(self) -> None:
-        _write_brief(self.queue_root / "queue", "loud", focus=FOCUS_DEFECT, recommended="J")
+        _write_brief(
+            self.queue_root / "queue", "loud", focus=FOCUS_DEFECT, recommended="J"
+        )
 
         report = self.audit()
 
@@ -306,7 +327,9 @@ class TestNoSignalSplit(ClassifierCoverageTestCase):
 
 class TestActionableFlag(ClassifierCoverageTestCase):
     def test_single_high_confidence_disagreement_is_below_threshold(self) -> None:
-        _write_brief(self.queue_root / "queue", "b-1", focus=FOCUS_WORKFLOW, recommended="C")
+        _write_brief(
+            self.queue_root / "queue", "b-1", focus=FOCUS_WORKFLOW, recommended="C"
+        )
 
         cluster = self.cluster(self.audit(), "C", "J")
 
@@ -316,7 +339,10 @@ class TestActionableFlag(ClassifierCoverageTestCase):
     def test_threshold_many_high_confidence_disagreements_are_actionable(self) -> None:
         for index in range(cc.MIN_ACTIONABLE_CONFIDENT):
             _write_brief(
-                self.queue_root / "queue", f"b-{index}", focus=FOCUS_WORKFLOW, recommended="C"
+                self.queue_root / "queue",
+                f"b-{index}",
+                focus=FOCUS_WORKFLOW,
+                recommended="C",
             )
 
         cluster = self.cluster(self.audit(), "C", "J")
@@ -406,10 +432,7 @@ class TestReadOnlyAndDeterminism(ClassifierCoverageTestCase):
     def test_audit_writes_nothing(self) -> None:
         brief = _write_brief(self.queue_root / "queue", "b-1")
         run = _write_run(self.runs_root, "repo", "go-1", route="J", consumed=["b-1"])
-        before = {
-            path: path.read_bytes()
-            for path in (brief, run)
-        }
+        before = {path: path.read_bytes() for path in (brief, run)}
         listing_before = sorted(p.name for p in (self.queue_root / "queue").iterdir())
 
         self.audit()
@@ -417,12 +440,17 @@ class TestReadOnlyAndDeterminism(ClassifierCoverageTestCase):
         for path, content in before.items():
             self.assertEqual(path.read_bytes(), content)
         self.assertEqual(
-            sorted(p.name for p in (self.queue_root / "queue").iterdir()), listing_before
+            sorted(p.name for p in (self.queue_root / "queue").iterdir()),
+            listing_before,
         )
 
     def test_repeated_runs_are_byte_identical(self) -> None:
-        _write_brief(self.queue_root / "queue", "b-1", focus=FOCUS_DEFECT, recommended="J")
-        _write_brief(self.queue_root / "queue", "b-2", focus=FOCUS_NO_SIGNAL, recommended="F")
+        _write_brief(
+            self.queue_root / "queue", "b-1", focus=FOCUS_DEFECT, recommended="J"
+        )
+        _write_brief(
+            self.queue_root / "queue", "b-2", focus=FOCUS_NO_SIGNAL, recommended="F"
+        )
 
         first = cc.render_report(self.audit())
         second = cc.render_report(self.audit())
@@ -453,7 +481,7 @@ class TestRendering(ClassifierCoverageTestCase):
 
 
 class TestCli(ClassifierCoverageTestCase):
-    def run_cli(self, argv: List[str]) -> tuple:
+    def run_cli(self, argv: list[str]) -> tuple:
         out, err = io.StringIO(), io.StringIO()
         with redirect_stdout(out), redirect_stderr(err):
             code = cc.main(argv)
@@ -463,14 +491,27 @@ class TestCli(ClassifierCoverageTestCase):
         _write_brief(self.queue_root / "queue", "b-1")
 
         code, out, _ = self.run_cli(
-            ["--queue-dir", str(self.queue_root), "--runs-dir", str(self.runs_root), "--json"]
+            [
+                "--queue-dir",
+                str(self.queue_root),
+                "--runs-dir",
+                str(self.runs_root),
+                "--json",
+            ]
         )
 
         self.assertEqual(code, 0)
         payload = json.loads(out)
         self.assertEqual(
             sorted(payload),
-            ["agreement", "by_expected_route", "clusters", "corpus", "no_signal", "replay"],
+            [
+                "agreement",
+                "by_expected_route",
+                "clusters",
+                "corpus",
+                "no_signal",
+                "replay",
+            ],
         )
 
     def test_text_output_is_the_default(self) -> None:
@@ -495,8 +536,10 @@ class TestCli(ClassifierCoverageTestCase):
 
         code, out, _ = self.run_cli(
             [
-                "--queue-dir", str(self.queue_root),
-                "--runs-dir", str(self.root / "no-runs"),
+                "--queue-dir",
+                str(self.queue_root),
+                "--runs-dir",
+                str(self.root / "no-runs"),
                 "--json",
             ]
         )
@@ -525,9 +568,12 @@ class TestCli(ClassifierCoverageTestCase):
 
         code, out, _ = self.run_cli(
             [
-                "--queue-dir", str(self.queue_root),
-                "--runs-dir", str(self.runs_root),
-                "--resumable-state", "false",
+                "--queue-dir",
+                str(self.queue_root),
+                "--runs-dir",
+                str(self.runs_root),
+                "--resumable-state",
+                "false",
                 "--json",
             ]
         )

@@ -34,12 +34,13 @@ coordinate/wait/proceed call. It is absent (`None`) whenever nothing is
 actively claimed and degrades to `None` when the decision primitives are
 unavailable; filing it via `ask(decision_id=...)` stays the caller's job.
 """
+
 from __future__ import annotations
 
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from ..shared.brief_frontmatter import read_frontmatter
 from ..shared.homedir import worktrail_home
@@ -91,7 +92,7 @@ def _decision_helpers():
     return decision_identity, pending_decision_envelope
 
 
-def _claimed_subject(frontmatter: Dict[str, Any], path: Path) -> str:
+def _claimed_subject(frontmatter: dict[str, Any], path: Path) -> str:
     """The claimed brief's stable subject for decision identity: its
     frontmatter `id:` when present (the canonical work-queue id), else the
     file stem -- both spellings name the same brief."""
@@ -99,7 +100,7 @@ def _claimed_subject(frontmatter: Dict[str, Any], path: Path) -> str:
     return subject or path.stem
 
 
-def _claimed_repo(frontmatter: Dict[str, Any], active: List[Dict[str, Any]]) -> str:
+def _claimed_repo(frontmatter: dict[str, Any], active: list[dict[str, Any]]) -> str:
     """The repo-side anchor for decision identity: the claimed brief's own
     `repo:` field when present, else the first active claim's repo, else the
     literal ``unspecified`` -- `decision_identity()` refuses blank repos, and
@@ -119,9 +120,9 @@ def build_pending_decision(
     subject: str,
     repo: str,
     *,
-    run_id: Optional[str] = None,
-    dispatch_mode: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
+    run_id: str | None = None,
+    dispatch_mode: str | None = None,
+) -> dict[str, Any] | None:
     """Build the versioned pending-decision envelope for actively claimed
     related briefs.
 
@@ -142,15 +143,21 @@ def build_pending_decision(
             return None
         decision_id = identity(GUARD_SOURCE, repo, subject, DECISION_QUESTION)
         return envelope(
-            decision_id=decision_id, question=DECISION_QUESTION,
-            options=list(DECISION_OPTIONS), source=GUARD_SOURCE,
-            repo=repo, subject=subject, brief=None,
-            run_id=run_id, dispatch_mode=dispatch_mode)
+            decision_id=decision_id,
+            question=DECISION_QUESTION,
+            options=list(DECISION_OPTIONS),
+            source=GUARD_SOURCE,
+            repo=repo,
+            subject=subject,
+            brief=None,
+            run_id=run_id,
+            dispatch_mode=dispatch_mode,
+        )
     except Exception:  # noqa: BLE001 - envelope is additive, never fatal
         return None
 
 
-def _focus_summary(path: Path, frontmatter: Dict[str, Any]) -> str:
+def _focus_summary(path: Path, frontmatter: dict[str, Any]) -> str:
     """Best-effort truncated focus text for `path`: frontmatter `focus:`
     first, falling back to the first line under a `## Focus` body heading
     (the same two sources `work_queue.py`'s `_focus_of` reads), truncated to
@@ -169,7 +176,7 @@ def _focus_summary(path: Path, frontmatter: Dict[str, Any]) -> str:
     return focus
 
 
-def _stringify(value: Any) -> Optional[str]:
+def _stringify(value: Any) -> str | None:
     """`None`-preserving `str()` -- a `date`/`datetime` gets `.isoformat()`
     for a stable, JSON-safe representation instead of the type-dependent
     `str()` spelling."""
@@ -181,7 +188,9 @@ def _stringify(value: Any) -> Optional[str]:
     return str(value)
 
 
-def _resolve_active_match(related_id: str, picked_dir: Path, queue_dir: Path) -> Optional[Dict[str, Any]]:
+def _resolve_active_match(
+    related_id: str, picked_dir: Path, queue_dir: Path
+) -> dict[str, Any] | None:
     """Resolve `related_id` against `picked_dir` then `queue_dir`, using
     `work_queue.resolve()`'s own resolution rules. Returns an active-match
     dict only when `related_id` resolves to exactly one file in `picked_dir`
@@ -215,7 +224,7 @@ def _resolve_active_match(related_id: str, picked_dir: Path, queue_dir: Path) ->
     }
 
 
-def _find_run_record(related_id: str, repo: Any, runs_dir: Path) -> Optional[str]:
+def _find_run_record(related_id: str, repo: Any, runs_dir: Path) -> str | None:
     """Scan `runs_dir/<repo-name>/*.yaml` for a run record whose raw content
     references `related_id`, returning its path as a string, or `None` if
     `repo` is missing/unusable, the directory doesn't exist, or nothing
@@ -235,7 +244,9 @@ def _find_run_record(related_id: str, repo: Any, runs_dir: Path) -> Optional[str
     return None
 
 
-def _enrich_with_run_record(entry: Dict[str, Any], agent_label: str, runs_dir: Path) -> None:
+def _enrich_with_run_record(
+    entry: dict[str, Any], agent_label: str, runs_dir: Path
+) -> None:
     """Best-effort: when `entry`'s `claimed-by` is this machine's own
     `agent_label`, attach a `run_record` path if a local GO run record under
     `runs_dir/<repo-name>/` references the related brief's id. Mutates
@@ -258,12 +269,12 @@ def check(
     claimed_brief_path: Path,
     picked_dir: Path,
     queue_dir: Path,
-    agent_label: Optional[str] = None,
-    runs_dir: Optional[Path] = None,
+    agent_label: str | None = None,
+    runs_dir: Path | None = None,
     *,
-    run_id: Optional[str] = None,
-    dispatch_mode: Optional[str] = None,
-) -> Dict[str, Any]:
+    run_id: str | None = None,
+    dispatch_mode: str | None = None,
+) -> dict[str, Any]:
     """Do any of `claimed_brief_path`'s `related:` ids name a brief that is
     actively claimed (in `picked_dir`, `status: picked`) right now?
 
@@ -286,8 +297,11 @@ def check(
     (`run_record.py`'s own default), joined per-match with the matched
     brief's `repo:` field to scan `runs_dir/<repo-name>/*.yaml`.
     """
-    result: Dict[str, Any] = {
-        "checked": False, "active": [], "warning": None, "pending_decision": None,
+    result: dict[str, Any] = {
+        "checked": False,
+        "active": [],
+        "warning": None,
+        "pending_decision": None,
     }
 
     claimed_brief_path = Path(claimed_brief_path)
@@ -300,7 +314,9 @@ def check(
     try:
         claimed_brief_path.stat()
     except OSError as exc:
-        result["warning"] = f"could not read claimed brief {claimed_brief_path}: {exc!r}"
+        result["warning"] = (
+            f"could not read claimed brief {claimed_brief_path}: {exc!r}"
+        )
         return result
 
     frontmatter = read_frontmatter(claimed_brief_path)
@@ -321,9 +337,13 @@ def check(
         resolved_agent_label = agent_label or _wq_agent_label()
     except Exception:  # noqa: BLE001 - enrichment gating only, never fatal
         resolved_agent_label = agent_label
-    resolved_runs_dir = Path(runs_dir).expanduser() if runs_dir is not None else worktrail_home() / "runs"
-    active: List[Dict[str, Any]] = []
-    warnings: List[str] = []
+    resolved_runs_dir = (
+        Path(runs_dir).expanduser()
+        if runs_dir is not None
+        else worktrail_home() / "runs"
+    )
+    active: list[dict[str, Any]] = []
+    warnings: list[str] = []
 
     for raw_id in related:
         related_id = str(raw_id).strip()
@@ -346,15 +366,19 @@ def check(
         result["pending_decision"] = build_pending_decision(
             _claimed_subject(frontmatter, claimed_brief_path),
             _claimed_repo(frontmatter, active),
-            run_id=run_id, dispatch_mode=dispatch_mode)
+            run_id=run_id,
+            dispatch_mode=dispatch_mode,
+        )
     return result
 
 
-def _format_human(res: Dict[str, Any]) -> str:
+def _format_human(res: dict[str, Any]) -> str:
     if not res["checked"]:
         return f"unknown: {res.get('warning') or 'related-brief claims could not be checked'}"
 
-    active: List[Dict[str, Any]] = list(res["active"]) if isinstance(res["active"], list) else []
+    active: list[dict[str, Any]] = (
+        list(res["active"]) if isinstance(res["active"], list) else []
+    )
     if not active:
         line = "no collision: none of this brief's related ids are actively claimed"
         if res.get("warning"):
@@ -371,7 +395,9 @@ def _format_human(res: Dict[str, Any]) -> str:
             lines.append(f"    focus: {m['focus']}")
         if m.get("run_record"):
             lines.append(f"    run_record: {m['run_record']}")
-    lines.append("  -> surface these to the operator; never block dispatch on this signal alone")
+    lines.append(
+        "  -> surface these to the operator; never block dispatch on this signal alone"
+    )
     decision = res.get("pending_decision")
     if decision:
         lines.append(
@@ -389,11 +415,13 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--brief", required=True, help="path to the claimed brief .md file")
     p.add_argument(
-        "--picked-dir", default=None,
+        "--picked-dir",
+        default=None,
         help="work-queue picked directory (default: work_queue.base_dir()/picked)",
     )
     p.add_argument(
-        "--queue-dir", default=None,
+        "--queue-dir",
+        default=None,
         help="work-queue directory (default: work_queue.base_dir()/queue)",
     )
     p.add_argument("--json", action="store_true")

@@ -77,7 +77,9 @@ files:
 
 def init_git_repo(root: Path) -> None:
     subprocess.run(["git", "init", "-q"], cwd=root, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"], cwd=root, check=True
+    )
     subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
 
 
@@ -157,7 +159,9 @@ class CheckSpecSyncTests(unittest.TestCase):
         self.task_summary({"TASK-001": "pending", "TASK-002": "pending"})
         self.parent_spec("Ready for Implementation")
         failures = check_spec(self.spec_dir)
-        self.assertEqual(len(failures), 3)  # 2 task-row mismatches + 1 parent-status mismatch
+        self.assertEqual(
+            len(failures), 3
+        )  # 2 task-row mismatches + 1 parent-status mismatch
         self.assertTrue(any("TASK-001" in f and "pending" in f for f in failures))
         self.assertTrue(any("TASK-002" in f and "pending" in f for f in failures))
         self.assertTrue(any("Ready for Implementation" in f for f in failures))
@@ -322,7 +326,12 @@ class CheckSpecSyncTests(unittest.TestCase):
         # disallow-list approach -- not an allow-list -- is what keeps these
         # passing; a naive allow-list of {Implemented, Backfill} would
         # regress them into false positives fleet-wide.
-        for status in ("Shipped", "Complete", "Completed", "Implemented (PRs #1450, #1451)"):
+        for status in (
+            "Shipped",
+            "Complete",
+            "Completed",
+            "Implemented (PRs #1450, #1451)",
+        ):
             with self.subTest(status=status):
                 make_task(self.spec_dir, "TASK-001", "completed")
                 self.task_summary({"TASK-001": "completed"})
@@ -343,7 +352,9 @@ class FixSpecTests(unittest.TestCase):
         return self.spec_dir / "2026-01-01--fixture.md"
 
     def parent_spec(self, status: str, colon_inside_bold: bool = False) -> None:
-        status_line = f"**Status:** {status}" if colon_inside_bold else f"**Status**: {status}"
+        status_line = (
+            f"**Status:** {status}" if colon_inside_bold else f"**Status**: {status}"
+        )
         write(
             self.parent_spec_path(),
             f"""# Functional Specification: Fixture
@@ -453,7 +464,9 @@ class CheckSpecSyncFilesTrackedTests(unittest.TestCase):
         tracked = self.repo / "src" / "real.py"
         write(tracked, "# real\n")
         git_commit_all(self.repo)
-        make_task_with_files(self.spec_dir, "TASK-001", "completed", files=["src/real.py"])
+        make_task_with_files(
+            self.spec_dir, "TASK-001", "completed", files=["src/real.py"]
+        )
         self.assertEqual(check_spec(self.spec_dir, repo=self.repo), [])
 
     def test_flags_untracked_file(self):
@@ -485,7 +498,9 @@ class CheckSpecSyncFilesTrackedTests(unittest.TestCase):
         git_commit_all(self.repo)
         (self.repo / "untracked_dir").mkdir()
         (self.repo / "untracked_dir" / "scratch.sql").write_text("-- scratch\n")
-        make_task_with_files(self.spec_dir, "TASK-001", "completed", files=["untracked_dir/"])
+        make_task_with_files(
+            self.spec_dir, "TASK-001", "completed", files=["untracked_dir/"]
+        )
         failures = check_spec(self.spec_dir, repo=self.repo)
         self.assertEqual(len(failures), 1)
         self.assertIn("untracked_dir/", failures[0])

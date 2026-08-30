@@ -7,6 +7,7 @@ semantics; and resume reconciliation.
 
 Run: python3 scripts/test_skip_completed.py
 """
+
 import os
 import sys
 import unittest
@@ -15,9 +16,11 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import coordinator  # noqa: E402
-from worktrail.orchestrator import live  # noqa: E402
-from worktrail.orchestrator import orchestrate  # noqa: E402
+from worktrail.orchestrator import (
+    coordinator,
+    live,
+    orchestrate,
+)
 
 
 def _task(tid, *, status="pending", deps=None):
@@ -64,7 +67,9 @@ class MixedCompletedPending(unittest.TestCase):
             _task("TASK-002"),
             _task("TASK-003", status="completed"),
         ]
-        frontier_ids = [t["id"] for t in coordinator.runnable_frontier(tasks, max_workers=4)]
+        frontier_ids = [
+            t["id"] for t in coordinator.runnable_frontier(tasks, max_workers=4)
+        ]
         self.assertIn("TASK-001", frontier_ids)
         self.assertIn("TASK-002", frontier_ids)
         self.assertNotIn("TASK-003", frontier_ids)
@@ -87,7 +92,9 @@ class MixedCompletedPending(unittest.TestCase):
             _task("TASK-001", status="completed"),
             _task("TASK-002", deps=["TASK-001"]),
         ]
-        frontier_ids = [t["id"] for t in coordinator.runnable_frontier(tasks, max_workers=4)]
+        frontier_ids = [
+            t["id"] for t in coordinator.runnable_frontier(tasks, max_workers=4)
+        ]
         self.assertNotIn("TASK-001", frontier_ids)
         self.assertIn("TASK-002", frontier_ids)
 
@@ -121,7 +128,9 @@ class OnlyScoping(unittest.TestCase):
         for t in tasks:
             if t["id"] not in only:
                 t["status"] = "done"
-        frontier_ids = [t["id"] for t in coordinator.runnable_frontier(tasks, max_workers=4)]
+        frontier_ids = [
+            t["id"] for t in coordinator.runnable_frontier(tasks, max_workers=4)
+        ]
         self.assertIn("TASK-003", frontier_ids)
 
 
@@ -137,7 +146,9 @@ class DependencySatisfaction(unittest.TestCase):
             _task("TASK-001", status="completed"),
             _task("TASK-002", deps=["TASK-001"]),
         ]
-        frontier_ids = [t["id"] for t in coordinator.runnable_frontier(tasks, max_workers=4)]
+        frontier_ids = [
+            t["id"] for t in coordinator.runnable_frontier(tasks, max_workers=4)
+        ]
         self.assertIn("TASK-002", frontier_ids)
 
     def test_c_completed_dependency_start_ref_is_head(self):
@@ -148,7 +159,9 @@ class DependencySatisfaction(unittest.TestCase):
             "TASK-002": task,
         }
         # completed dep has no materialized branch → _branch_exists returns False
-        with unittest.mock.patch("worktrail.orchestrator.live._branch_exists", return_value=False):
+        with unittest.mock.patch(
+            "worktrail.orchestrator.live._branch_exists", return_value=False
+        ):
             start_ref, merges = live.dependency_start_ref(
                 Path("/fake-repo"), "spec-008", task, by_id
             )
@@ -165,8 +178,10 @@ class DependencySatisfaction(unittest.TestCase):
         for t in tasks:
             if t.get("status") not in coordinator.DONE:
                 t["status"] = "pending"
-        frontier_ids = [t["id"] for t in coordinator.runnable_frontier(tasks, max_workers=4)]
-        self.assertIn("TASK-001", frontier_ids)   # root is now runnable
+        frontier_ids = [
+            t["id"] for t in coordinator.runnable_frontier(tasks, max_workers=4)
+        ]
+        self.assertIn("TASK-001", frontier_ids)  # root is now runnable
         self.assertNotIn("TASK-002", frontier_ids)  # dep must resolve first
 
 
@@ -278,7 +293,9 @@ class DoneSetMembership(unittest.TestCase):
 
     def test_done_status_excluded_from_frontier(self):
         tasks = [_task("TASK-001"), _task("TASK-002", status="done")]
-        frontier_ids = [t["id"] for t in coordinator.runnable_frontier(tasks, max_workers=4)]
+        frontier_ids = [
+            t["id"] for t in coordinator.runnable_frontier(tasks, max_workers=4)
+        ]
         self.assertIn("TASK-001", frontier_ids)
         self.assertNotIn("TASK-002", frontier_ids)
 

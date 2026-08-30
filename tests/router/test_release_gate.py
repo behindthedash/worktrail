@@ -17,8 +17,9 @@ def _mk_repo(tmp_path: Path) -> Path:
     return repo
 
 
-def _write_run(tmp_path: Path, name: str, status: "str | None",
-               interventions: int = 0) -> Path:
+def _write_run(
+    tmp_path: Path, name: str, status: str | None, interventions: int = 0
+) -> Path:
     d = tmp_path / "runs" / "myapp"
     d.mkdir(parents=True, exist_ok=True)
     rec = {"run_id": name, "final_status": status, "interventions": []}

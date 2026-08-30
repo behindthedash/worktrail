@@ -33,8 +33,10 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import spawnlib  # noqa: E402
-from worktrail.orchestrator import live  # noqa: E402
+from worktrail.orchestrator import (
+    live,
+    spawnlib,
+)
 
 
 def _init_repo(root: Path) -> Path:
@@ -64,15 +66,20 @@ def _init_repo(root: Path) -> Path:
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t"], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.name", "T"], check=True)
-    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True
+    )
     subprocess.run(
         ["git", "-C", str(repo), "commit", "-q", "-m", "init"],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     return repo
 
 
-def _fake_report(task_id: str, role: str, sha: str = "deadbeef") -> spawnlib.SpawnResult:
+def _fake_report(
+    task_id: str, role: str, sha: str = "deadbeef"
+) -> spawnlib.SpawnResult:
     rs = '"PASSED"' if role == "review" else "null"
     text = (
         f'```json\n{{"task":"{task_id}","step":"{role}",'
@@ -102,15 +109,22 @@ class FakeSpawn:
             f = Path(wt) / "src" / f"{tid.lower()}.txt"
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_text(f"{tid}\n")
-            subprocess.run(["git", "-C", str(wt), "add", "-A"], check=True, capture_output=True)
+            subprocess.run(
+                ["git", "-C", str(wt), "add", "-A"], check=True, capture_output=True
+            )
             subprocess.run(
                 ["git", "-C", str(wt), "commit", "-q", "-m", f"feat({tid})"],
-                check=True, capture_output=True,
+                check=True,
+                capture_output=True,
             )
-        sha = subprocess.run(
-            ["git", "-C", str(wt), "rev-parse", "HEAD"],
-            capture_output=True, text=True,
-        ).stdout.strip()[:8] or "00000000"
+        sha = (
+            subprocess.run(
+                ["git", "-C", str(wt), "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+            ).stdout.strip()[:8]
+            or "00000000"
+        )
         delay = self.sleep_after.get(tid)
         if delay:
             time.sleep(delay)
@@ -120,13 +134,25 @@ class FakeSpawn:
 def _make_integrate_one(events=None):
     events = events if events is not None else []
 
-    def integrate_one(g, repo, spec_id, tasks, remote, run_id, base,
-                      journal_path, status, group_branch, quarantined, **kwargs):
+    def integrate_one(
+        g,
+        repo,
+        spec_id,
+        tasks,
+        remote,
+        run_id,
+        base,
+        journal_path,
+        status,
+        group_branch,
+        quarantined,
+        **kwargs,
+    ):
         name = g["name"]
         events.append(name)
         deliverable = [t for t in g["tasks"] if status.get(t) in ("done", "completed")]
         if not deliverable:
-            quarantined[name] = "no deliverable tasks in {}".format(name)
+            quarantined[name] = f"no deliverable tasks in {name}"
             return None
         group_branch[name] = f"full-test/{name}"
         record_group = kwargs.get("_record_group")
@@ -141,15 +167,33 @@ class FakeVerifier:
     def __init__(self):
         self.calls = []
 
-    def verify_one(self, group, group_branch, delivered, merged, quarantined, lock,
-                   self_merged=None, armed=None, post_merge_regressed=None):
+    def verify_one(
+        self,
+        group,
+        group_branch,
+        delivered,
+        merged,
+        quarantined,
+        lock,
+        self_merged=None,
+        armed=None,
+        post_merge_regressed=None,
+    ):
         with lock:
             self.calls.append(group["name"])
             merged.append(group["name"])
 
 
-def _run(repo, journal_path, spawn, integrate_one, verifier, run_budget=None, resume=False,
-         only=None):
+def _run(
+    repo,
+    journal_path,
+    spawn,
+    integrate_one,
+    verifier,
+    run_budget=None,
+    resume=False,
+    only=None,
+):
     kwargs = dict(
         repo=repo,
         spec_rel="docs/specs/001-x",
@@ -194,14 +238,20 @@ class PartialGroupBudgetExhaustionTest(unittest.TestCase):
             spawn = FakeSpawn(sleep_after={"TASK-002": 1.0})
 
             result = _run(
-                repo, journal_path, spawn, integrate_one, FakeVerifier(),
+                repo,
+                journal_path,
+                spawn,
+                integrate_one,
+                FakeVerifier(),
                 run_budget=0.5,
             )
 
             # TASK-002 must have been driven (real commit made) -- prove it's not
             # a "zero progress" quarantine.
             task002_calls = [c for c in spawn.calls if c[0] == "TASK-002"]
-            self.assertTrue(task002_calls, "TASK-002 should have been dispatched and completed")
+            self.assertTrue(
+                task002_calls, "TASK-002 should have been dispatched and completed"
+            )
             self.assertFalse(
                 any(c[0] == "TASK-003" for c in spawn.calls),
                 "TASK-003 should NOT have been dispatched -- budget must expire before its tick",
@@ -215,10 +265,12 @@ class PartialGroupBudgetExhaustionTest(unittest.TestCase):
             # The journal's group record must carry quarantine_reason
             # budget_exhausted (this is the exact signal the bug report names).
             import json
+
             journal = json.loads(Path(journal_path).read_text())
             self.assertEqual(journal["groups"]["feature-1"]["state"], "QUARANTINED")
             self.assertEqual(
-                journal["groups"]["feature-1"].get("quarantine_reason"), "budget_exhausted"
+                journal["groups"]["feature-1"].get("quarantine_reason"),
+                "budget_exhausted",
             )
 
 
@@ -239,7 +291,11 @@ class ResumeAfterPartialGroupQuarantineTest(unittest.TestCase):
             integrate_one1, events1 = _make_integrate_one()
             spawn1 = FakeSpawn()
             phase1 = _run(
-                repo, journal_path, spawn1, integrate_one1, FakeVerifier(),
+                repo,
+                journal_path,
+                spawn1,
+                integrate_one1,
+                FakeVerifier(),
                 run_budget=0.001,
             )
             self.assertIn("feature-1", phase1["quarantined"])
@@ -253,21 +309,29 @@ class ResumeAfterPartialGroupQuarantineTest(unittest.TestCase):
             spawn2 = FakeSpawn()
             verifier2 = FakeVerifier()
             phase2 = _run(
-                repo, journal_path, spawn2, integrate_one2, verifier2,
-                run_budget=0, resume=True,
+                repo,
+                journal_path,
+                spawn2,
+                integrate_one2,
+                verifier2,
+                run_budget=0,
+                resume=True,
             )
 
             self.assertIn(
-                "TASK-003", {c[0] for c in spawn2.calls},
+                "TASK-003",
+                {c[0] for c in spawn2.calls},
                 "resume should dispatch TASK-003 (still pending after phase 1)",
             )
             self.assertIn(
-                "feature-1", events2,
+                "feature-1",
+                events2,
                 "resume should re-attempt integrate_one for the quarantined group "
                 "once all its tasks are terminal",
             )
             self.assertNotIn(
-                "feature-1", phase2["quarantined"],
+                "feature-1",
+                phase2["quarantined"],
                 f"feature-1 should integrate cleanly on resume; quarantined={phase2['quarantined']}",
             )
             self.assertIn("feature-1", verifier2.calls)
@@ -295,7 +359,9 @@ class ResumeWithOnlyExcludingPendingSiblingTest(unittest.TestCase):
     silently faked -- the operator must include it or wait for it to finish
     first."""
 
-    def test_only_excluding_never_run_sibling_raises_instead_of_silently_dropping_it(self):
+    def test_only_excluding_never_run_sibling_raises_instead_of_silently_dropping_it(
+        self,
+    ):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             repo = _init_repo(Path(tmp))
             journal_path = str(Path(tmp) / "pipeline-journal.json")
@@ -303,7 +369,11 @@ class ResumeWithOnlyExcludingPendingSiblingTest(unittest.TestCase):
             integrate_one1, _ = _make_integrate_one()
             spawn1 = FakeSpawn(sleep_after={"TASK-002": 1.0})
             phase1 = _run(
-                repo, journal_path, spawn1, integrate_one1, FakeVerifier(),
+                repo,
+                journal_path,
+                spawn1,
+                integrate_one1,
+                FakeVerifier(),
                 run_budget=0.5,
             )
             self.assertIn("feature-1", phase1["quarantined"])
@@ -316,8 +386,14 @@ class ResumeWithOnlyExcludingPendingSiblingTest(unittest.TestCase):
             spawn2 = FakeSpawn()
             with self.assertRaises(RuntimeError) as ctx:
                 _run(
-                    repo, journal_path, spawn2, integrate_one2, FakeVerifier(),
-                    run_budget=0, resume=True, only=["TASK-002"],
+                    repo,
+                    journal_path,
+                    spawn2,
+                    integrate_one2,
+                    FakeVerifier(),
+                    run_budget=0,
+                    resume=True,
+                    only=["TASK-002"],
                 )
             self.assertIn("TASK-003", str(ctx.exception))
             self.assertIn("feature-1", str(ctx.exception))
@@ -339,7 +415,11 @@ class ResumeWithOnlyExcludingPendingSiblingTest(unittest.TestCase):
             # Phase 1: unlimited budget -- everything completes and integrates.
             integrate_one1, _ = _make_integrate_one()
             phase1 = _run(
-                repo, journal_path, FakeSpawn(), integrate_one1, FakeVerifier(),
+                repo,
+                journal_path,
+                FakeSpawn(),
+                integrate_one1,
+                FakeVerifier(),
                 run_budget=0,
             )
             self.assertEqual(phase1["quarantined"], {})
@@ -349,8 +429,14 @@ class ResumeWithOnlyExcludingPendingSiblingTest(unittest.TestCase):
             # proceed normally (not raise).
             integrate_one2, events2 = _make_integrate_one()
             phase2 = _run(
-                repo, journal_path, FakeSpawn(), integrate_one2, FakeVerifier(),
-                run_budget=0, resume=True, only=["TASK-002"],
+                repo,
+                journal_path,
+                FakeSpawn(),
+                integrate_one2,
+                FakeVerifier(),
+                run_budget=0,
+                resume=True,
+                only=["TASK-002"],
             )
             self.assertEqual(phase2["quarantined"], {})
 

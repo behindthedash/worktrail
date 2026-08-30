@@ -2,8 +2,8 @@
 """End-to-end verification for spec 012-task-frontmatter: files: and kind: frontmatter."""
 
 import os
-import sys
 import tempfile
+
 import pytest
 
 from worktrail.taskformats.devkit.schema import validate_task
@@ -12,7 +12,9 @@ from worktrail.taskformats.devkit.schema import validate_task
 def _make_task(frontmatter: dict, body: str) -> str:
     import yaml
 
-    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, encoding="utf-8")
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".md", delete=False, encoding="utf-8"
+    )
     tmp.write("---\n")
     tmp.write(yaml.dump(frontmatter, sort_keys=False))
     tmp.write("---\n")
@@ -39,7 +41,8 @@ def _validate_task_metadata(tasks: list) -> None:
     ]
     if missing:
         raise RuntimeError(
-            "implementation task(s) missing required frontmatter files: " + ", ".join(missing)
+            "implementation task(s) missing required frontmatter files: "
+            + ", ".join(missing)
         )
 
 
@@ -175,10 +178,20 @@ class TestAC6MetadataGateBatch:
 
     def test_all_ac_tasks_pass_gate(self):
         tasks = [
-            {**_REQUIRED_BASE, "id": "TASK-AC1", "kind": "impl", "files": ["plugins/foo.py"]},
+            {
+                **_REQUIRED_BASE,
+                "id": "TASK-AC1",
+                "kind": "impl",
+                "files": ["plugins/foo.py"],
+            },
             {**_REQUIRED_BASE, "id": "TASK-AC2", "kind": "e2e", "files": []},
             {**_REQUIRED_BASE, "id": "TASK-AC3", "kind": "cleanup", "files": []},
-            {**_REQUIRED_BASE, "id": "TASK-AC4", "kind": "docs", "files": ["docs/foo.md"]},
+            {
+                **_REQUIRED_BASE,
+                "id": "TASK-AC4",
+                "kind": "docs",
+                "files": ["docs/foo.md"],
+            },
         ]
         _validate_task_metadata(tasks)  # must not raise
 

@@ -11,7 +11,6 @@ Run: python3 scripts/test_precheck_e2e.py
 """
 
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -144,7 +143,9 @@ class TestPrecheckE2EInfo(unittest.TestCase):
             tasks_dir = repo / spec_rel / "tasks"
             tasks_dir.mkdir(parents=True)
 
-            _make_task_file(tasks_dir, "TASK-001", files=["src/present.py", "src/absent.py"])
+            _make_task_file(
+                tasks_dir, "TASK-001", files=["src/present.py", "src/absent.py"]
+            )
             _make_files(repo, ["src/present.py"])
 
             result = _run_precheck(repo, spec_rel)
@@ -165,7 +166,9 @@ class TestPrecheckE2EKindFilter(unittest.TestCase):
             tasks_dir.mkdir(parents=True)
 
             _make_task_file(tasks_dir, "TASK-001", kind="e2e", files=["src/exists.py"])
-            _make_task_file(tasks_dir, "TASK-002", kind="cleanup", files=["src/exists.py"])
+            _make_task_file(
+                tasks_dir, "TASK-002", kind="cleanup", files=["src/exists.py"]
+            )
             _make_files(repo, ["src/exists.py"])
 
             result = _run_precheck(repo, spec_rel)
@@ -180,7 +183,9 @@ class TestPrecheckE2EKindFilter(unittest.TestCase):
             tasks_dir = repo / spec_rel / "tasks"
             tasks_dir.mkdir(parents=True)
 
-            _make_task_file(tasks_dir, "TASK-001", kind="cleanup", files=["src/exists.py"])
+            _make_task_file(
+                tasks_dir, "TASK-001", kind="cleanup", files=["src/exists.py"]
+            )
             _make_files(repo, ["src/exists.py"])
 
             result = _run_precheck(repo, spec_rel)
@@ -199,7 +204,9 @@ class TestPrecheckE2EAllCompleted(unittest.TestCase):
             tasks_dir = repo / spec_rel / "tasks"
             tasks_dir.mkdir(parents=True)
 
-            _make_task_file(tasks_dir, "TASK-001", status="completed", files=["src/done.py"])
+            _make_task_file(
+                tasks_dir, "TASK-001", status="completed", files=["src/done.py"]
+            )
             _make_files(repo, ["src/done.py"])
 
             result = _run_precheck(repo, spec_rel)

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Tests for automerge_selfcheck.py. Run: python3 -m pytest test_automerge_selfcheck.py -q"""
+
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,8 +8,9 @@ from pathlib import Path
 from worktrail.router.automerge_selfcheck import check_repo, check_workflow_file, sweep
 
 
-def _git_repo(root: Path, name: str, workflow_text: str,
-              workflow_name: str = "auto-merge.yml") -> Path:
+def _git_repo(
+    root: Path, name: str, workflow_text: str, workflow_name: str = "auto-merge.yml"
+) -> Path:
     repo = root / name
     (repo / ".git").mkdir(parents=True)
     workflows = repo / ".github" / "workflows"
@@ -98,7 +100,9 @@ class TestCheckWorkflowFile(unittest.TestCase):
     def test_unconditional_merge_step_is_flagged(self):
         result = check_workflow_file(self._write(_UNCONDITIONAL))
         self.assertTrue(result["has_automerge"])
-        self.assertEqual([f["signal"] for f in result["findings"]], ["unconditional-automerge"])
+        self.assertEqual(
+            [f["signal"] for f in result["findings"]], ["unconditional-automerge"]
+        )
 
     def test_gated_merge_step_is_clean(self):
         result = check_workflow_file(self._write(_GATED))
@@ -107,7 +111,9 @@ class TestCheckWorkflowFile(unittest.TestCase):
 
     def test_referenced_but_unwired_label_is_flagged_distinctly(self):
         result = check_workflow_file(self._write(_UNGUARDED_BUT_REFERENCED))
-        self.assertEqual([f["signal"] for f in result["findings"]], ["unguarded-merge-step"])
+        self.assertEqual(
+            [f["signal"] for f in result["findings"]], ["unguarded-merge-step"]
+        )
 
     def test_workflow_without_automerge_step_has_no_findings(self):
         result = check_workflow_file(self._write(_NO_AUTOMERGE_STEP))
@@ -134,7 +140,9 @@ class TestCheckRepo(unittest.TestCase):
         repo = _git_repo(self.tmp, "devops", _UNCONDITIONAL)
         result = check_repo(repo)
         self.assertTrue(result["has_automerge"])
-        self.assertEqual([f["signal"] for f in result["findings"]], ["unconditional-automerge"])
+        self.assertEqual(
+            [f["signal"] for f in result["findings"]], ["unconditional-automerge"]
+        )
 
     def test_gated_repo_is_clean(self):
         repo = _git_repo(self.tmp, "worktrail", _GATED)

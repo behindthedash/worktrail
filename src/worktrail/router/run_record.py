@@ -171,6 +171,7 @@ finish PATH --status completed_pr_open [--pr URL] [--merge-result ...]
             `false` conflict when found: "same_dispatch", "stale", or
             `liveness`'s own no_heartbeat/unparsable_updated_at reason.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -186,10 +187,10 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-from . import invocation_context
 from ..shared.homedir import worktrail_home
+from . import invocation_context
 
 ALLOWED_AGENTS = ("claude", "codex", "opencode")
 
@@ -226,8 +227,16 @@ IMPLEMENTATION_COMPLETION_STATES = (
 
 # Run-level phase states (v2-design §2.3); informational, stamped via `set status`.
 PHASES = (
-    "intake", "classified", "state_restored", "policy_loaded", "route_selected",
-    "executing", "validating", "pr_open", "merge_gate", "done",
+    "intake",
+    "classified",
+    "state_restored",
+    "policy_loaded",
+    "route_selected",
+    "executing",
+    "validating",
+    "pr_open",
+    "merge_gate",
+    "done",
 )
 
 # Pending-user-decision lifecycle events: the run-record side of the versioned
@@ -243,7 +252,8 @@ DECISION_EVENTS = ("asked", "presented", "answered", "consumed", "superseded")
 
 SECRET_PAT = re.compile(
     r"(api[-_ ]?key|secret|token|password|authorization:\s*bearer)\s*[:=]\s*\S+",
-    re.IGNORECASE)
+    re.IGNORECASE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -263,16 +273,18 @@ def _quote(value: str) -> str:
         raise SystemExit("refusing to record what looks like a credential")
     # A string that spells a bool literal must round-trip as a string, so the
     # bare form below is unambiguously a real boolean on the way back in.
-    if (value.lower() in _BOOL_LITERALS
-            or re.search(r"[:#\n\"']", value)
-            or value != value.strip()
-            or value == ""):
+    if (
+        value.lower() in _BOOL_LITERALS
+        or re.search(r"[:#\n\"']", value)
+        or value != value.strip()
+        or value == ""
+    ):
         return json.dumps(value.replace("\n", " "))
     return value
 
 
-def _render(record: Dict[str, Any]) -> str:
-    lines: List[str] = []
+def _render(record: dict[str, Any]) -> str:
+    lines: list[str] = []
     for key, value in record.items():
         if isinstance(value, list):
             lines.append(f"{key}:")
@@ -307,7 +319,7 @@ class RunRecordFormatError(ValueError):
     """The on-disk record was mutated outside run_record.py's own renderer."""
 
 
-def _load_lenient(path: Path) -> tuple[Dict[str, Any] | None, str | None]:
+def _load_lenient(path: Path) -> tuple[dict[str, Any] | None, str | None]:
     """`_load()` without the raise -- for directory-wide scans where one bad
     file must never abort every other record's read. Returns `(record, None)`
     on success or `(None, warning)` on a malformed file; the caller decides
@@ -319,8 +331,8 @@ def _load_lenient(path: Path) -> tuple[Dict[str, Any] | None, str | None]:
         return None, str(exc)
 
 
-def _load(path: Path) -> Dict[str, Any]:
-    record: Dict[str, Any] = {}
+def _load(path: Path) -> dict[str, Any]:
+    record: dict[str, Any] = {}
     current: str | None = None
     try:
         for line in path.read_text(encoding="utf-8").splitlines():
@@ -328,7 +340,9 @@ def _load(path: Path) -> Dict[str, Any]:
                 continue
             if line.startswith("  - ") and current:
                 item = line[4:].strip()
-                record[current].append(json.loads(item) if item.startswith('"') else item)
+                record[current].append(
+                    json.loads(item) if item.startswith('"') else item
+                )
                 continue
             key, _, value = line.partition(":")
             key, value = key.strip(), value.strip()
@@ -352,7 +366,9 @@ def _load(path: Path) -> Dict[str, Any]:
                 else:
                     record[key] = value
     except (json.JSONDecodeError, AttributeError) as exc:
-        raise RunRecordFormatError(f"{path} {_HAND_EDIT_HINT} (parse error: {exc})") from exc
+        raise RunRecordFormatError(
+            f"{path} {_HAND_EDIT_HINT} (parse error: {exc})"
+        ) from exc
     bad_keys = [k for k in record if not _FIELD_KEY_RE.match(k)]
     if bad_keys:
         raise RunRecordFormatError(
@@ -361,7 +377,7 @@ def _load(path: Path) -> Dict[str, Any]:
     return record
 
 
-def _save(path: Path, record: Dict[str, Any]) -> None:
+def _save(path: Path, record: dict[str, Any]) -> None:
     # `updated_at` is a heartbeat, not just an audit timestamp: every mutation
     # of a live run record goes through this one function, so stamping it
     # here (rather than in each of the ~8 call sites) guarantees no mutating
@@ -377,7 +393,7 @@ def _save(path: Path, record: Dict[str, Any]) -> None:
     tmp.replace(path)  # atomic — a crashed write never corrupts the record
 
 
-def _parse_json_object(raw: str, label: str) -> Dict[str, Any]:
+def _parse_json_object(raw: str, label: str) -> dict[str, Any]:
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -397,18 +413,25 @@ def cmd_start(args: argparse.Namespace) -> int:
     agent = (args.agent or "").strip().lower()
     if agent and agent not in ALLOWED_AGENTS:
         raise SystemExit(
-            f"invalid agent '{args.agent}'; allowed: {', '.join(ALLOWED_AGENTS)}")
+            f"invalid agent '{args.agent}'; allowed: {', '.join(ALLOWED_AGENTS)}"
+        )
     routing_decision = None
     if args.routing_decision is not None:
-        routing_decision = _parse_json_object(args.routing_decision, "--routing-decision")
-    gates = [g for g in (args.gates or "").split(",") if g] if args.gates is not None else None
+        routing_decision = _parse_json_object(
+            args.routing_decision, "--routing-decision"
+        )
+    gates = (
+        [g for g in (args.gates or "").split(",") if g]
+        if args.gates is not None
+        else None
+    )
     # Two starts in the same second must not overwrite the first audit record.
     serial = 1
     while path.exists():
         serial += 1
         run_id = f"go-{time.strftime('%Y%m%d-%H%M%S')}-{serial}"
         path = out_dir / f"{run_id}.yaml"
-    record: Dict[str, Any] = {
+    record: dict[str, Any] = {
         "run_id": run_id,
         "started_at": _now(),
         "completed_at": None,
@@ -422,14 +445,23 @@ def cmd_start(args: argparse.Namespace) -> int:
         "risk_level": args.risk,
         **({"gates": gates} if gates is not None else {}),
         "agent": agent if agent else None,
-        **({"native_skill_available": args.native_skill_available == "true"}
-           if args.native_skill_available is not None else {}),
-        **({"dispatch_mode": args.dispatch_mode}
-           if args.dispatch_mode is not None else {}),
-        **({"dispatch_id": args.dispatch_id}
-           if args.dispatch_id is not None else {}),
+        **(
+            {"native_skill_available": args.native_skill_available == "true"}
+            if args.native_skill_available is not None
+            else {}
+        ),
+        **(
+            {"dispatch_mode": args.dispatch_mode}
+            if args.dispatch_mode is not None
+            else {}
+        ),
+        **({"dispatch_id": args.dispatch_id} if args.dispatch_id is not None else {}),
         "status": "route_selected",
-        **({"routing_decision": routing_decision} if routing_decision is not None else {}),
+        **(
+            {"routing_decision": routing_decision}
+            if routing_decision is not None
+            else {}
+        ),
         "epic": None,
         "feature": None,
         "specification": None,
@@ -483,14 +515,14 @@ def cmd_append(args: argparse.Namespace) -> int:
 
 
 INTERVENTION_CATEGORIES = (
-    "grounding",            # corrected a greenfield-on-brownfield assumption / found existing code
-    "integration_repair",   # fixed a cross-task bug that per-task review missed
-    "ci_repair",            # repaired red CI on a PR
-    "conflict_resolution",   # hand-resolved a merge/integration conflict
-    "env_setup",            # built/repaired a verification environment to run tests
-    "quota_wait",           # blocked on model/account rate or session limit
-    "capacity_gate",        # all configured headless providers are unavailable
-    "orchestrator_defect",   # worked around a bug in the orchestrator itself
+    "grounding",  # corrected a greenfield-on-brownfield assumption / found existing code
+    "integration_repair",  # fixed a cross-task bug that per-task review missed
+    "ci_repair",  # repaired red CI on a PR
+    "conflict_resolution",  # hand-resolved a merge/integration conflict
+    "env_setup",  # built/repaired a verification environment to run tests
+    "quota_wait",  # blocked on model/account rate or session limit
+    "capacity_gate",  # all configured headless providers are unavailable
+    "orchestrator_defect",  # worked around a bug in the orchestrator itself
     "other",
 )
 
@@ -505,7 +537,8 @@ def cmd_intervention(args: argparse.Namespace) -> int:
     if args.category not in INTERVENTION_CATEGORIES:
         raise SystemExit(
             f"'{args.category}' is not an allowed category.\nAllowed: "
-            + ", ".join(INTERVENTION_CATEGORIES))
+            + ", ".join(INTERVENTION_CATEGORIES)
+        )
     path = Path(args.path)
     record = _load(path)
     entry = (
@@ -542,7 +575,9 @@ def cmd_capacity_gate(args: argparse.Namespace) -> int:
         "failure_class": failure_class,
         "retry_after": retry_after,
         "recorded_at": _now(),
-        "note": (args.note or "all configured headless providers are unavailable")[:300],
+        "note": (args.note or "all configured headless providers are unavailable")[
+            :300
+        ],
     }
     record["status"] = "executing"
     _save(path, record)
@@ -565,9 +600,7 @@ def cmd_scope_review(args: argparse.Namespace) -> int:
             raise SystemExit(f"scope-review {args.status} requires --reason")
     path = Path(args.path)
     record = _load(path)
-    record.setdefault("scope_review", []).append(
-        f"{args.status} | {item} | {detail}"
-    )
+    record.setdefault("scope_review", []).append(f"{args.status} | {item} | {detail}")
     _save(path, record)
     print(json.dumps({"status": args.status, "item": item}))
     return 0
@@ -583,14 +616,15 @@ def _decision_entry_matches(entry: Any, event: str, decision_id: str) -> bool:
     if not isinstance(entry, str):
         return False
     m = _DECISION_ENTRY_RE.search(entry)
-    return bool(m) and m.group("event") == event \
-        and m.group("id") == decision_id
+    return bool(m) and m.group("event") == event and m.group("id") == decision_id
 
 
 def record_decision_event(
-    run_path: str | Path, event: str, decision_id: str,
-    note: Optional[str] = None,
-) -> Dict[str, Any]:
+    run_path: str | Path,
+    event: str,
+    decision_id: str,
+    note: str | None = None,
+) -> dict[str, Any]:
     """Stamp one pending-decision lifecycle hop onto a run record.
 
     Entries land in the record's `pending_decisions` list as
@@ -603,7 +637,8 @@ def record_decision_event(
     if event not in DECISION_EVENTS:
         raise SystemExit(
             f"'{event}' is not an allowed decision event.\nAllowed: "
-            + ", ".join(DECISION_EVENTS))
+            + ", ".join(DECISION_EVENTS)
+        )
     if not decision_id or not decision_id.strip():
         raise SystemExit("--decision-id is required and must be non-empty")
     decision_id = decision_id.strip()
@@ -616,24 +651,32 @@ def record_decision_event(
         raise SystemExit("field 'pending_decisions' is scalar; cannot append")
     for entry in entries:
         if _decision_entry_matches(entry, event, decision_id):
-            return {"status": "already-recorded", "event": event,
-                    "decision_id": decision_id, "entry": entry}
-    new_entry = (f"{_now()} [{event}] {decision_id}"
-                 + (f" — {note.strip()}" if note and note.strip() else ""))
+            return {
+                "status": "already-recorded",
+                "event": event,
+                "decision_id": decision_id,
+                "entry": entry,
+            }
+    new_entry = f"{_now()} [{event}] {decision_id}" + (
+        f" — {note.strip()}" if note and note.strip() else ""
+    )
     entries.append(new_entry)
     _save(path, record)
-    return {"status": "recorded", "event": event, "decision_id": decision_id,
-            "entry": new_entry}
+    return {
+        "status": "recorded",
+        "event": event,
+        "decision_id": decision_id,
+        "entry": new_entry,
+    }
 
 
 def cmd_decision(args: argparse.Namespace) -> int:
-    result = record_decision_event(args.path, args.event, args.decision_id,
-                                   args.note)
+    result = record_decision_event(args.path, args.event, args.decision_id, args.note)
     print(json.dumps(result))
     return 0
 
 
-def _scope_review_worktree_empty_diff(record: Dict[str, Any]) -> Optional[str]:
+def _scope_review_worktree_empty_diff(record: dict[str, Any]) -> str | None:
     """Best-effort cross-check: a `scope-review ... --status complete` entry is a
     self-reported string (`--evidence`), never verified against the tree it claims
     to describe -- the same self-report-without-verification gap
@@ -662,7 +705,8 @@ def _scope_review_worktree_empty_diff(record: Dict[str, Any]) -> Optional[str]:
     try:
         status = subprocess.run(
             ["git", "-C", str(wt_path), "status", "--porcelain"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         diff = subprocess.run(
             ["git", "-C", str(wt_path), "diff", "--quiet", base_commit],
@@ -686,7 +730,9 @@ def _scope_review_worktree_empty_diff(record: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _enforce_scope_completeness_gate(record: Dict[str, Any], path: Path, status: str) -> None:
+def _enforce_scope_completeness_gate(
+    record: dict[str, Any], path: Path, status: str
+) -> None:
     """Code-enforced backstop closing the orchestrator group-PR gate-parity gap
     (docs/specs/research/go-orchestrator-gate-parity-audit.md): `pre_pr_gate.py`'s
     `scope_review_failures()` only runs when `--run` is passed, and neither of
@@ -713,11 +759,14 @@ def _enforce_scope_completeness_gate(record: Dict[str, Any], path: Path, status:
             f"scope_completeness_gate: cannot finish with '{status}' -- "
             f"{detail}. Complete in-scope work before finishing, or record a "
             "different-purpose or user-approved exclusion "
-            f"(run_record.py scope-review {path} --item \"...\" --status "
-            "out-of-scope --reason \"different purpose: ...\").")
+            f'(run_record.py scope-review {path} --item "..." --status '
+            'out-of-scope --reason "different purpose: ...").'
+        )
 
 
-def _enforce_review_thread_gate(record: Dict[str, Any], path: Path, pr_url: str, status: str) -> None:
+def _enforce_review_thread_gate(
+    record: dict[str, Any], path: Path, pr_url: str, status: str
+) -> None:
     """Code-enforced backstop for `check_review_threads.py`'s own gate.
 
     That module documents `blocking: true` as "meant to stop finish() the
@@ -732,8 +781,8 @@ def _enforce_review_thread_gate(record: Dict[str, Any], path: Path, pr_url: str,
     own prior invocation is the primary gate and this is only the backstop
     for an agent that skipped it.
     """
-    from .pr_labels import _owner_repo_number
     from .check_review_threads import check as check_review_threads
+    from .pr_labels import _owner_repo_number
 
     repo = str(record.get("repository") or path.parent)
     try:
@@ -742,33 +791,51 @@ def _enforce_review_thread_gate(record: Dict[str, Any], path: Path, pr_url: str,
             return
         owner, name, number = parsed
         result = check_review_threads(
-            Path(repo), int(number), run_record_path=path, owner=owner, name=name)
+            Path(repo), int(number), run_record_path=path, owner=owner, name=name
+        )
     except Exception as exc:  # noqa: BLE001 - fail-open, see docstring
-        print(f"warning: run_record: review-thread gate check failed for "
-              f"{pr_url}: {exc}", file=sys.stderr)
+        print(
+            f"warning: run_record: review-thread gate check failed for {pr_url}: {exc}",
+            file=sys.stderr,
+        )
         return
     if result.get("checked") and result.get("blocking"):
         unaddressed = result.get("unaddressed") or []
-        detail = "; ".join(
-            f"{t.get('path')}:{t.get('line')}" for t in unaddressed) or "see PR"
+        detail = (
+            "; ".join(f"{t.get('path')}:{t.get('line')}" for t in unaddressed)
+            or "see PR"
+        )
         raise SystemExit(
             f"review_thread_gate: {pr_url} has {len(unaddressed)} unresolved "
             f"review thread(s) with no corresponding commit or run-record "
             f"decision ({detail}). Resolve or record a decision "
-            f"(run_record.py append {path} decisions \"...\") before finishing "
-            f"with '{status}'.")
+            f'(run_record.py append {path} decisions "...") before finishing '
+            f"with '{status}'."
+        )
 
 
-def _query_merge_state(repo: str, owner: str, name: str, number: str,
-                        runner=subprocess.run) -> Optional[Dict[str, Any]]:
+def _query_merge_state(
+    repo: str, owner: str, name: str, number: str, runner=subprocess.run
+) -> dict[str, Any] | None:
     """`gh pr view --json state,mergeStateStatus` for the finish-time merge-state
     backstop below. Returns None on any failure (gh missing, timeout, non-zero
     exit, unparseable JSON) -- the caller treats that as no signal."""
     try:
         result = runner(
-            ["gh", "pr", "view", str(number), "--repo", f"{owner}/{name}",
-             "--json", "state,mergeStateStatus"],
-            cwd=repo, capture_output=True, text=True, timeout=30,
+            [
+                "gh",
+                "pr",
+                "view",
+                str(number),
+                "--repo",
+                f"{owner}/{name}",
+                "--json",
+                "state,mergeStateStatus",
+            ],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -780,7 +847,9 @@ def _query_merge_state(repo: str, owner: str, name: str, number: str,
         return None
 
 
-def _enforce_merge_state_gate(record: Dict[str, Any], path: Path, pr_url: str, status: str) -> None:
+def _enforce_merge_state_gate(
+    record: dict[str, Any], path: Path, pr_url: str, status: str
+) -> None:
     """Code-enforced backstop for `ci-watch-loop.md`'s merge-state guard.
 
     That section documents `mergeStateStatus: BLOCKED` as a hard stop --
@@ -812,8 +881,10 @@ def _enforce_merge_state_gate(record: Dict[str, Any], path: Path, pr_url: str, s
         owner, name, number = parsed
         data = _query_merge_state(repo, owner, name, number)
     except Exception as exc:  # noqa: BLE001 - fail-open, see docstring
-        print(f"warning: run_record: merge-state gate check failed for "
-              f"{pr_url}: {exc}", file=sys.stderr)
+        print(
+            f"warning: run_record: merge-state gate check failed for {pr_url}: {exc}",
+            file=sys.stderr,
+        )
         return
     if data is None:
         return
@@ -826,14 +897,16 @@ def _enforce_merge_state_gate(record: Dict[str, Any], path: Path, pr_url: str, s
             "ci-watch-loop.md's merge-state guard (rerun any stray "
             "CANCELLED check alongside a SUCCESS run of the same context, "
             "then the review-thread gate if still BLOCKED after 2 rounds) "
-            f"before finishing with '{status}'.")
+            f"before finishing with '{status}'."
+        )
 
 
 def cmd_finish(args: argparse.Namespace) -> int:
     if args.status not in COMPLETION_STATES:
         raise SystemExit(
             f"'{args.status}' is not an allowed completion state.\nAllowed: "
-            + ", ".join(COMPLETION_STATES))
+            + ", ".join(COMPLETION_STATES)
+        )
     path = Path(args.path)
     record = _load(path)
     stored_pr = record.get("pull_request")
@@ -847,19 +920,25 @@ def cmd_finish(args: argparse.Namespace) -> int:
         # subprocess.SubprocessError)` this function already documents for a
         # gh/network failure. Sanitize once here instead of guarding each
         # consumer separately.
-        print(f"warning: run_record: ignoring malformed non-string "
-              f"pull_request on {path}: {stored_pr!r}", file=sys.stderr)
+        print(
+            f"warning: run_record: ignoring malformed non-string "
+            f"pull_request on {path}: {stored_pr!r}",
+            file=sys.stderr,
+        )
         record["pull_request"] = None
-    if (record.get("selected_route") == "A"
-            and args.status in IMPLEMENTATION_COMPLETION_STATES
-            and not record.get("decisions")):
+    if (
+        record.get("selected_route") == "A"
+        and args.status in IMPLEMENTATION_COMPLETION_STATES
+        and not record.get("decisions")
+    ):
         raise SystemExit(
             "no_implementation_without_approval: Route A cannot finish with "
             f"'{args.status}' without a recorded decision. Route A's own "
             "completions are investigation_complete or "
             "planned_ready_for_implementation; proceeding to implementation "
             "requires an explicit decision entry first "
-            f"(run_record.py append {path} decisions \"...\").")
+            f'(run_record.py append {path} decisions "...").'
+        )
     if args.status in IMPLEMENTATION_COMPLETION_STATES:
         _enforce_scope_completeness_gate(record, path, args.status)
     pending_pr_url = args.pr or record.get("pull_request")
@@ -883,15 +962,21 @@ def cmd_finish(args: argparse.Namespace) -> int:
         # Imported locally: pr_labels.py imports `_load` from this module, so
         # a module-level import here would be circular.
         from .pr_labels import ensure_pr_risk_label
+
         try:
-            ensure_pr_risk_label(record.get("repository"), pr_url, record.get("risk_level"))
+            ensure_pr_risk_label(
+                record.get("repository"), pr_url, record.get("risk_level")
+            )
         except (OSError, subprocess.SubprocessError) as exc:
             # Best-effort, same posture as the remote-claim delete below: a
             # failure here (missing `gh`, bad cwd, network) must never affect
             # `finish`'s exit code or JSON output -- reconcile_pr_labels.py's
             # periodic sweep is the safety net for a correction that fails here.
-            print(f"warning: run_record: pr risk-label correction failed for "
-                  f"{pr_url}: {exc}", file=sys.stderr)
+            print(
+                f"warning: run_record: pr risk-label correction failed for "
+                f"{pr_url}: {exc}",
+                file=sys.stderr,
+            )
     specification = record.get("specification")
     if specification:
         # Release this run's claim (if any) so a later legitimate claim on
@@ -922,7 +1007,7 @@ def _extract_path_candidate(entry: str) -> str:
     return entry.strip().split()[0] if entry.strip() else ""
 
 
-def _is_stale(record: Dict[str, Any], repo_dir: Path, base_branch: str) -> bool:
+def _is_stale(record: dict[str, Any], repo_dir: Path, base_branch: str) -> bool:
     """Whether `record`'s worktree is gone and its files already landed on `base_branch`.
 
     Never inferred from `files_changed` alone — a record with no `worktree`
@@ -942,7 +1027,14 @@ def _is_stale(record: Dict[str, Any], repo_dir: Path, base_branch: str) -> bool:
         if not candidate:
             return False
         result = subprocess.run(
-            ["git", "-C", str(repo_dir), "cat-file", "-e", f"{base_branch}:{candidate}"],
+            [
+                "git",
+                "-C",
+                str(repo_dir),
+                "cat-file",
+                "-e",
+                f"{base_branch}:{candidate}",
+            ],
             capture_output=True,
         )
         if result.returncode != 0:
@@ -952,7 +1044,7 @@ def _is_stale(record: Dict[str, Any], repo_dir: Path, base_branch: str) -> bool:
 
 def _active_conflicts(
     repo_dir: Path, repo_root: Path, specification: str, exclude: Path | None
-) -> Dict[str, List[Any]]:
+) -> dict[str, list[Any]]:
     """Other non-terminal run records under `repo_dir` targeting `specification`,
     partitioned into `{"live": [...], "stale": [...], "warnings": [...]}` via
     `_is_stale()`.
@@ -969,9 +1061,9 @@ def _active_conflicts(
     file must never silently disable it for every other run. Skipped files are
     reported in `warnings`, never dropped without a trace.
     """
-    live: List[Dict[str, Any]] = []
-    stale: List[Dict[str, Any]] = []
-    warnings: List[str] = []
+    live: list[dict[str, Any]] = []
+    stale: list[dict[str, Any]] = []
+    warnings: list[str] = []
     if repo_dir.is_dir():
         for path in sorted(repo_dir.glob("*.yaml")):
             if exclude and path.resolve() == exclude:
@@ -1022,20 +1114,28 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
     """
     run_path = Path(args.run)
     record = _load(run_path)
-    repo_root = Path(record["repository"]) if record.get("repository") else run_path.parent
+    repo_root = (
+        Path(record["repository"]) if record.get("repository") else run_path.parent
+    )
     base_branch = record.get("base_branch")
     if not base_branch or not _is_stale(record, repo_root, base_branch):
-        print(json.dumps({
-            "status": "not_stale",
-            "run_id": record.get("run_id"),
-            "path": str(run_path),
-        }))
+        print(
+            json.dumps(
+                {
+                    "status": "not_stale",
+                    "run_id": record.get("run_id"),
+                    "path": str(run_path),
+                }
+            )
+        )
         return 0
     merge_result = args.note or (
         f"auto-reconciled: staleness reconciler closed run {record.get('run_id')}"
     )
     finish_args = argparse.Namespace(
-        path=str(run_path), status="completed_and_merged", pr=None,
+        path=str(run_path),
+        status="completed_and_merged",
+        pr=None,
         merge_result=merge_result,
     )
     return cmd_finish(finish_args)
@@ -1047,8 +1147,8 @@ _DEFAULT_LIVENESS_TTL_SECONDS = 1200  # 20 minutes -- matches the harness's own
 
 
 def _run_liveness(
-    record: Dict[str, Any], ttl_seconds: int, caller_dispatch_id: Optional[str] = None
-) -> Dict[str, Any]:
+    record: dict[str, Any], ttl_seconds: int, caller_dispatch_id: str | None = None
+) -> dict[str, Any]:
     """Heartbeat freshness + dispatch-identity match for one run record.
 
     A terminal record (`final_status` set) is always reported not-fresh and
@@ -1113,7 +1213,7 @@ def cmd_liveness(args: argparse.Namespace) -> int:
     return 0
 
 
-def _resolve_worktree_owner(repo_dir: Path, worktree: str) -> Optional[Dict[str, Any]]:
+def _resolve_worktree_owner(repo_dir: Path, worktree: str) -> dict[str, Any] | None:
     """Non-terminal run record (if any) under `repo_dir` whose `worktree`
     field exactly matches `worktree`. Shared scan/tolerance/tie-break logic
     behind both `find-by-worktree` and `worktree-conflict` -- see the
@@ -1123,24 +1223,28 @@ def _resolve_worktree_owner(repo_dir: Path, worktree: str) -> Optional[Dict[str,
     candidate's `path`, `run_id`, and full `record` dict (needed by
     `worktree-conflict` for its `liveness` check).
     """
-    candidates: List[Dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
     if repo_dir.is_dir():
         for path in sorted(repo_dir.glob("*.yaml")):
             record, warning = _load_lenient(path)
             if warning is not None:
-                print(f"warning: run_record: skipping malformed record {path}: "
-                      f"{warning}", file=sys.stderr)
+                print(
+                    f"warning: run_record: skipping malformed record {path}: {warning}",
+                    file=sys.stderr,
+                )
                 continue
             if record.get("final_status") is not None:
                 continue
             if record.get("worktree") != worktree:
                 continue
-            candidates.append({
-                "path": str(path),
-                "run_id": record.get("run_id"),
-                "started_ts": _record_started_ts(record, path),
-                "record": record,
-            })
+            candidates.append(
+                {
+                    "path": str(path),
+                    "run_id": record.get("run_id"),
+                    "started_ts": _record_started_ts(record, path),
+                    "record": record,
+                }
+            )
     if not candidates:
         return None
     candidates.sort(key=lambda c: c["started_ts"], reverse=True)
@@ -1175,27 +1279,44 @@ def cmd_worktree_conflict(args: argparse.Namespace) -> int:
     repo_dir = Path(args.dir).expanduser() / repo.name
     owner = _resolve_worktree_owner(repo_dir, args.worktree)
     if owner is None:
-        print(json.dumps({
-            "conflict": False, "found": False, "run_id": None, "path": None,
-            "fresh": None, "same_dispatch": None, "age_seconds": None,
-            "reason": "not_tracked",
-        }))
+        print(
+            json.dumps(
+                {
+                    "conflict": False,
+                    "found": False,
+                    "run_id": None,
+                    "path": None,
+                    "fresh": None,
+                    "same_dispatch": None,
+                    "age_seconds": None,
+                    "reason": "not_tracked",
+                }
+            )
+        )
         return 0
     liveness = _run_liveness(owner["record"], args.ttl_seconds, args.dispatch_id)
     conflict = liveness["fresh"] and not liveness["same_dispatch"]
     reason = None
     if not conflict:
-        reason = "same_dispatch" if liveness["same_dispatch"] else (liveness["reason"] or "stale")
-    print(json.dumps({
-        "conflict": conflict,
-        "found": True,
-        "run_id": owner["run_id"],
-        "path": owner["path"],
-        "fresh": liveness["fresh"],
-        "same_dispatch": liveness["same_dispatch"],
-        "age_seconds": liveness["age_seconds"],
-        "reason": reason,
-    }))
+        reason = (
+            "same_dispatch"
+            if liveness["same_dispatch"]
+            else (liveness["reason"] or "stale")
+        )
+    print(
+        json.dumps(
+            {
+                "conflict": conflict,
+                "found": True,
+                "run_id": owner["run_id"],
+                "path": owner["path"],
+                "fresh": liveness["fresh"],
+                "same_dispatch": liveness["same_dispatch"],
+                "age_seconds": liveness["age_seconds"],
+                "reason": reason,
+            }
+        )
+    )
     return 0
 
 
@@ -1228,11 +1349,15 @@ class RemoteClaimError(Exception):
         self.reason = reason
 
 
-def _run_remote_git(repo_dir: Path, args: List[str]) -> "subprocess.CompletedProcess[str]":
+def _run_remote_git(
+    repo_dir: Path, args: list[str]
+) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
             ["git", "-C", str(repo_dir), *args],
-            capture_output=True, text=True, timeout=_REMOTE_GIT_TIMEOUT,
+            capture_output=True,
+            text=True,
+            timeout=_REMOTE_GIT_TIMEOUT,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RemoteClaimError("git_error", f"git {' '.join(args)}: {exc}") from exc
@@ -1258,15 +1383,19 @@ def _push_remote_claim(
     rejection, a post-push verify mismatch (guards against a remote that
     silently drops the custom ref namespace), or any git/network error.
     """
-    payload = json.dumps({
-        "run_id": run_id,
-        "claimed_at": _now(),
-        "hostname": socket.gethostname(),
-        "ttl_seconds": ttl_seconds,
-    })
+    payload = json.dumps(
+        {
+            "run_id": run_id,
+            "claimed_at": _now(),
+            "hostname": socket.gethostname(),
+            "ttl_seconds": ttl_seconds,
+        }
+    )
     commit = _run_remote_git(repo_dir, ["commit-tree", _EMPTY_TREE_SHA, "-m", payload])
     if commit.returncode != 0:
-        raise RemoteClaimError("git_error", f"commit-tree failed: {commit.stderr.strip()}")
+        raise RemoteClaimError(
+            "git_error", f"commit-tree failed: {commit.stderr.strip()}"
+        )
     sha = commit.stdout.strip()
 
     lease = f"--force-with-lease={ref}:{expect_sha or ''}"
@@ -1276,7 +1405,9 @@ def _push_remote_claim(
 
     verify = _run_remote_git(repo_dir, ["ls-remote", "origin", ref])
     if verify.returncode != 0:
-        raise RemoteClaimError("git_error", f"ls-remote failed: {verify.stderr.strip()}")
+        raise RemoteClaimError(
+            "git_error", f"ls-remote failed: {verify.stderr.strip()}"
+        )
     remote_sha = verify.stdout.split()[0] if verify.stdout.strip() else None
     if remote_sha != sha:
         raise RemoteClaimError(
@@ -1286,7 +1417,7 @@ def _push_remote_claim(
     return sha
 
 
-def _read_remote_claim(repo_dir: Path, ref: str) -> Dict[str, Any] | None:
+def _read_remote_claim(repo_dir: Path, ref: str) -> dict[str, Any] | None:
     """Read the current cross-machine claim on `ref`, if any.
 
     `git ls-remote origin <ref>` alone tells us whether a claim exists and at
@@ -1319,7 +1450,9 @@ def _read_remote_claim(repo_dir: Path, ref: str) -> Dict[str, Any] | None:
     try:
         payload = json.loads(log.stdout.strip())
     except json.JSONDecodeError as exc:
-        raise RemoteClaimError("git_error", f"claim payload parse failed: {exc}") from exc
+        raise RemoteClaimError(
+            "git_error", f"claim payload parse failed: {exc}"
+        ) from exc
 
     payload["sha"] = sha
     return payload
@@ -1340,11 +1473,13 @@ def _delete_remote_claim(repo_dir: Path, ref: str) -> None:
         return
     if result.returncode != 0:
         logger.warning(
-            "remote claim delete failed for %s: %s", ref, (result.stderr or result.stdout).strip()
+            "remote claim delete failed for %s: %s",
+            ref,
+            (result.stderr or result.stdout).strip(),
         )
 
 
-def _remote_claim_is_fresh(claim: Dict[str, Any]) -> bool:
+def _remote_claim_is_fresh(claim: dict[str, Any]) -> bool:
     """Whether a remote claim payload is still within its own advertised TTL.
 
     Staleness is measured against the claim's own `ttl_seconds` field (the
@@ -1361,12 +1496,17 @@ def _remote_claim_is_fresh(claim: Dict[str, Any]) -> bool:
     claimed_at = claim.get("claimed_at")
     ttl_seconds = claim.get("ttl_seconds")
     if not isinstance(claimed_at, str) or not isinstance(ttl_seconds, (int, float)):
-        logger.warning("remote claim has missing/invalid claimed_at or ttl_seconds, treating as stale: %r", claim)
+        logger.warning(
+            "remote claim has missing/invalid claimed_at or ttl_seconds, treating as stale: %r",
+            claim,
+        )
         return False
     try:
         claimed = datetime.strptime(claimed_at, "%Y-%m-%dT%H:%M:%S%z")
     except ValueError:
-        logger.warning("remote claim has unparsable claimed_at, treating as stale: %r", claimed_at)
+        logger.warning(
+            "remote claim has unparsable claimed_at, treating as stale: %r", claimed_at
+        )
         return False
     age = (datetime.now(claimed.tzinfo) - claimed).total_seconds()
     return age <= ttl_seconds
@@ -1376,14 +1516,14 @@ def _lock_path(run_path: Path, specification: str) -> Path:
     return run_path.parent / ".claims" / f"{_claim_slug(specification)}.lock"
 
 
-def _load_lock(lock_path: Path) -> Dict[str, Any]:
+def _load_lock(lock_path: Path) -> dict[str, Any]:
     try:
         return json.loads(lock_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
 
 
-def _lock_is_stale(owner: Dict[str, Any]) -> bool:
+def _lock_is_stale(owner: dict[str, Any]) -> bool:
     """A lock is stale if its owning run record is gone or already terminal."""
     owner_path = owner.get("path")
     if not owner_path:
@@ -1446,10 +1586,12 @@ def cmd_claim(args: argparse.Namespace) -> int:
         project_repo_dir = Path(record.get("repository") or repo_dir)
         ref = _claim_ref(args.specification)
 
-        def _remote_already_claimed(claim: Dict[str, Any] | None, exc: RemoteClaimError | None) -> int:
+        def _remote_already_claimed(
+            claim: dict[str, Any] | None, exc: RemoteClaimError | None
+        ) -> int:
             os.close(fd)
             lock_path.unlink(missing_ok=True)
-            out: Dict[str, Any] = {"status": "already-claimed", "scope": "remote"}
+            out: dict[str, Any] = {"status": "already-claimed", "scope": "remote"}
             if claim:
                 out.update(claim)
             if exc is not None:
@@ -1468,7 +1610,10 @@ def cmd_claim(args: argparse.Namespace) -> int:
 
         try:
             _push_remote_claim(
-                project_repo_dir, ref, record.get("run_id"), args.remote_ttl_seconds,
+                project_repo_dir,
+                ref,
+                record.get("run_id"),
+                args.remote_ttl_seconds,
                 expect_sha=remote_claim.get("sha") if remote_claim else None,
             )
         except RemoteClaimError as exc:
@@ -1487,7 +1632,9 @@ def cmd_claim(args: argparse.Namespace) -> int:
     # STALE one (crashed run, worktree gone, files already merged) is not a
     # real contender, per _active_conflicts()'s own live/stale partition.
     repo_root = Path(record.get("repository") or repo_dir)
-    conflicts = _active_conflicts(repo_dir, repo_root, args.specification, run_path.resolve())
+    conflicts = _active_conflicts(
+        repo_dir, repo_root, args.specification, run_path.resolve()
+    )
     live_conflicts = conflicts.get("live") or []
     scan_warnings = conflicts.get("warnings") or []
     if live_conflicts:
@@ -1495,13 +1642,18 @@ def cmd_claim(args: argparse.Namespace) -> int:
         lock_path.unlink(missing_ok=True)
         if remote_project_repo_dir is not None and remote_ref is not None:
             _delete_remote_claim(remote_project_repo_dir, remote_ref)
-        print(json.dumps({
-            "status": "conflict", "conflicts": live_conflicts,
-            **({"warnings": scan_warnings} if scan_warnings else {}),
-        }))
+        print(
+            json.dumps(
+                {
+                    "status": "conflict",
+                    "conflicts": live_conflicts,
+                    **({"warnings": scan_warnings} if scan_warnings else {}),
+                }
+            )
+        )
         return 1
 
-    lock_payload: Dict[str, Any] = {
+    lock_payload: dict[str, Any] = {
         "run_id": record.get("run_id"),
         "path": str(run_path),
         "claimed_at": _now(),
@@ -1512,14 +1664,19 @@ def cmd_claim(args: argparse.Namespace) -> int:
         f.write(json.dumps(lock_payload))
     record["specification"] = args.specification
     _save(run_path, record)
-    print(json.dumps({
-        "status": "claimed", "specification": args.specification,
-        **({"warnings": scan_warnings} if scan_warnings else {}),
-    }))
+    print(
+        json.dumps(
+            {
+                "status": "claimed",
+                "specification": args.specification,
+                **({"warnings": scan_warnings} if scan_warnings else {}),
+            }
+        )
+    )
     return 0
 
 
-def _record_started_ts(record: Dict[str, Any], path: Path) -> float:
+def _record_started_ts(record: dict[str, Any], path: Path) -> float:
     """Best-effort start timestamp for retention sorting: parse `started_at`,
     falling back to the file's mtime for a record written before this field
     existed or by a tool that didn't set it.
@@ -1535,9 +1692,9 @@ def _record_started_ts(record: Dict[str, Any], path: Path) -> float:
 
 def _prune_repo_dir(
     repo_dir: Path, keep_count: int, keep_days: int, dry_run: bool
-) -> Dict[str, Any]:
-    entries: List[Dict[str, Any]] = []
-    warnings: List[str] = []
+) -> dict[str, Any]:
+    entries: list[dict[str, Any]] = []
+    warnings: list[str] = []
     for path in sorted(repo_dir.glob("*.yaml")):
         record, warning = _load_lenient(path)
         if warning is not None:
@@ -1546,13 +1703,15 @@ def _prune_repo_dir(
             # the file as an audit artifact -- pruning it would contradict that.
             warnings.append(warning)
             continue
-        entries.append({
-            "path": path,
-            "started_ts": _record_started_ts(record, path),
-            # A run with no final_status yet is still in progress -- retention
-            # must never delete the audit trail of active work.
-            "active": record.get("final_status") is None,
-        })
+        entries.append(
+            {
+                "path": path,
+                "started_ts": _record_started_ts(record, path),
+                # A run with no final_status yet is still in progress -- retention
+                # must never delete the audit trail of active work.
+                "active": record.get("final_status") is None,
+            }
+        )
     entries.sort(key=lambda e: e["started_ts"], reverse=True)
 
     keep: set = {e["path"] for e in entries[:keep_count]}
@@ -1595,11 +1754,11 @@ def cmd_prune(args: argparse.Namespace) -> int:
 
 
 def _sweep_orphans_repo_dir(
-    repo_dir: Path, status: str, ttl_seconds: int, note: Optional[str], dry_run: bool
-) -> Dict[str, Any]:
-    closed: List[str] = []
-    skipped_live: List[str] = []
-    warnings: List[str] = []
+    repo_dir: Path, status: str, ttl_seconds: int, note: str | None, dry_run: bool
+) -> dict[str, Any]:
+    closed: list[str] = []
+    skipped_live: list[str] = []
+    warnings: list[str] = []
     for path in sorted(repo_dir.glob("*.yaml")):
         record, warning = _load_lenient(path)
         if warning is not None:
@@ -1620,7 +1779,10 @@ def _sweep_orphans_repo_dir(
             f"(liveness reason={liveness_reason}, age_seconds={liveness['age_seconds']})"
         )
         finish_args = argparse.Namespace(
-            path=str(path), status=status, pr=None, merge_result=merge_result,
+            path=str(path),
+            status=status,
+            pr=None,
+            merge_result=merge_result,
         )
         # cmd_finish() prints its own confirmation line; this sweep reports
         # one summary object per repo dir instead, so that print is captured
@@ -1639,7 +1801,8 @@ def cmd_sweep_orphans(args: argparse.Namespace) -> int:
     if args.status not in COMPLETION_STATES:
         raise SystemExit(
             f"'{args.status}' is not an allowed completion state.\nAllowed: "
-            + ", ".join(COMPLETION_STATES))
+            + ", ".join(COMPLETION_STATES)
+        )
     base = Path(args.dir).expanduser() if args.dir else worktrail_home() / "runs"
     if not base.is_dir():
         print(json.dumps({"repos": []}))
@@ -1649,7 +1812,9 @@ def cmd_sweep_orphans(args: argparse.Namespace) -> int:
     else:
         repo_dirs = [d for d in sorted(base.iterdir()) if d.is_dir()]
     results = [
-        _sweep_orphans_repo_dir(repo_dir, args.status, args.ttl_seconds, args.note, args.dry_run)
+        _sweep_orphans_repo_dir(
+            repo_dir, args.status, args.ttl_seconds, args.note, args.dry_run
+        )
         for repo_dir in repo_dirs
         if repo_dir.is_dir()
     ]
@@ -1665,8 +1830,9 @@ def main(argv=None) -> int:
     s.add_argument("--repo", required=True)
     s.add_argument("--request", default="")
     s.add_argument("--route", required=True, choices=list("ABCDEFGHIJ"))
-    s.add_argument("--risk", required=True,
-                   choices=["low", "medium", "high", "critical"])
+    s.add_argument(
+        "--risk", required=True, choices=["low", "medium", "high", "critical"]
+    )
     s.add_argument("--reason", default=None)
     s.add_argument("--agent", default=None)
     s.add_argument(
@@ -1674,7 +1840,7 @@ def main(argv=None) -> int:
         default=None,
         choices=["true", "false"],
         help="resolved native-Skill host capability (invocation_context.py); "
-             "omit to record no field at all (predates capability persistence)",
+        "omit to record no field at all (predates capability persistence)",
     )
     s.add_argument(
         "--dispatch-mode",
@@ -1686,10 +1852,10 @@ def main(argv=None) -> int:
         "--dispatch-id",
         default=None,
         help="stable identity for this /go invocation (invocation_context.py's "
-             "dispatch_id); the Active-run-resume evidence test compares it against "
-             "a later invocation's own dispatch_id to tell a genuine same-session "
-             "continuation apart from a different, possibly concurrent, dispatch "
-             "evaluating the same run record. Omit to record no field at all.",
+        "dispatch_id); the Active-run-resume evidence test compares it against "
+        "a later invocation's own dispatch_id to tell a genuine same-session "
+        "continuation apart from a different, possibly concurrent, dispatch "
+        "evaluating the same run record. Omit to record no field at all.",
     )
     s.add_argument(
         "--routing-decision",
@@ -1700,12 +1866,15 @@ def main(argv=None) -> int:
         "--gates",
         default=None,
         help="comma-joined classify.py 'gates' array (e.g. never_automerge,require_human_approval); "
-             "omit to record no gates field at all (predates gates persistence), pass \"\" to record an explicit empty list",
+        'omit to record no gates field at all (predates gates persistence), pass "" to record an explicit empty list',
     )
     s.add_argument("--base-branch", default=None)
     s.add_argument("--base-commit", default=None)
-    s.add_argument("--dir", default=None,
-                    help="run records directory (default worktrail_home()/runs)")
+    s.add_argument(
+        "--dir",
+        default=None,
+        help="run records directory (default worktrail_home()/runs)",
+    )
     s.set_defaults(func=cmd_start)
 
     s = sub.add_parser("set")
@@ -1739,8 +1908,9 @@ def main(argv=None) -> int:
     s = sub.add_parser("scope-review")
     s.add_argument("path")
     s.add_argument("--item", required=True)
-    s.add_argument("--status", required=True,
-                   choices=["complete", "out-of-scope", "blocked"])
+    s.add_argument(
+        "--status", required=True, choices=["complete", "out-of-scope", "blocked"]
+    )
     detail = s.add_mutually_exclusive_group(required=True)
     detail.add_argument("--evidence")
     detail.add_argument("--reason")
@@ -1748,16 +1918,26 @@ def main(argv=None) -> int:
 
     s = sub.add_parser("decision")
     s.add_argument("path")
-    s.add_argument("--event", required=True, choices=list(DECISION_EVENTS),
-                   help="lifecycle hop to stamp: asked (guard filed the "
-                        "envelope), presented (attended host showed it), "
-                        "answered (human replied), consumed (resuming run "
-                        "applied it), superseded (replaced by a newer decision)")
-    s.add_argument("--decision-id", required=True, dest="decision_id",
-                   help="the pending decision's id (workqueue/decisions.py)")
-    s.add_argument("--note", default=None,
-                   help="optional detail, e.g. the answer digest or the "
-                        "superseding decision id")
+    s.add_argument(
+        "--event",
+        required=True,
+        choices=list(DECISION_EVENTS),
+        help="lifecycle hop to stamp: asked (guard filed the "
+        "envelope), presented (attended host showed it), "
+        "answered (human replied), consumed (resuming run "
+        "applied it), superseded (replaced by a newer decision)",
+    )
+    s.add_argument(
+        "--decision-id",
+        required=True,
+        dest="decision_id",
+        help="the pending decision's id (workqueue/decisions.py)",
+    )
+    s.add_argument(
+        "--note",
+        default=None,
+        help="optional detail, e.g. the answer digest or the superseding decision id",
+    )
     s.set_defaults(func=cmd_decision)
 
     s = sub.add_parser("finish")
@@ -1787,55 +1967,109 @@ def main(argv=None) -> int:
     s.set_defaults(func=cmd_reconcile)
 
     s = sub.add_parser("prune")
-    s.add_argument("--dir", default=None,
-                    help="run records directory (default worktrail_home()/runs)")
-    s.add_argument("--repo", default=None,
-                    help="only prune this repo's run records (matched by repo directory name); omit to prune every repo")
-    s.add_argument("--keep-count", type=int, default=50,
-                    help="always keep the N most recent run records per repo")
-    s.add_argument("--keep-days", type=int, default=30,
-                    help="always keep run records started within the last N days")
-    s.add_argument("--dry-run", action="store_true",
-                    help="report what would be pruned without deleting")
+    s.add_argument(
+        "--dir",
+        default=None,
+        help="run records directory (default worktrail_home()/runs)",
+    )
+    s.add_argument(
+        "--repo",
+        default=None,
+        help="only prune this repo's run records (matched by repo directory name); omit to prune every repo",
+    )
+    s.add_argument(
+        "--keep-count",
+        type=int,
+        default=50,
+        help="always keep the N most recent run records per repo",
+    )
+    s.add_argument(
+        "--keep-days",
+        type=int,
+        default=30,
+        help="always keep run records started within the last N days",
+    )
+    s.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="report what would be pruned without deleting",
+    )
     s.set_defaults(func=cmd_prune)
 
     s = sub.add_parser("sweep-orphans")
-    s.add_argument("--dir", default=None,
-                    help="run records directory (default worktrail_home()/runs)")
-    s.add_argument("--repo", default=None,
-                    help="only sweep this repo's run records (matched by repo directory name); omit to sweep every repo")
-    s.add_argument("--status", required=True,
-                    help="completion state to close each stale record with (one of the ten COMPLETION_STATES)")
-    s.add_argument("--ttl-seconds", type=int, default=_DEFAULT_LIVENESS_TTL_SECONDS,
-                    help="liveness heartbeat freshness window in seconds (default 1200)")
-    s.add_argument("--note", default=None,
-                    help="--merge-result text for each closed record (default: an auto-reconciled note naming the liveness reason)")
-    s.add_argument("--dry-run", action="store_true",
-                    help="report what would be closed without writing")
+    s.add_argument(
+        "--dir",
+        default=None,
+        help="run records directory (default worktrail_home()/runs)",
+    )
+    s.add_argument(
+        "--repo",
+        default=None,
+        help="only sweep this repo's run records (matched by repo directory name); omit to sweep every repo",
+    )
+    s.add_argument(
+        "--status",
+        required=True,
+        help="completion state to close each stale record with (one of the ten COMPLETION_STATES)",
+    )
+    s.add_argument(
+        "--ttl-seconds",
+        type=int,
+        default=_DEFAULT_LIVENESS_TTL_SECONDS,
+        help="liveness heartbeat freshness window in seconds (default 1200)",
+    )
+    s.add_argument(
+        "--note",
+        default=None,
+        help="--merge-result text for each closed record (default: an auto-reconciled note naming the liveness reason)",
+    )
+    s.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="report what would be closed without writing",
+    )
     s.set_defaults(func=cmd_sweep_orphans)
 
     s = sub.add_parser("liveness")
     s.add_argument("run")
-    s.add_argument("--ttl-seconds", type=int, default=_DEFAULT_LIVENESS_TTL_SECONDS,
-                    help="heartbeat freshness window in seconds (default 1200)")
-    s.add_argument("--dispatch-id", default=None,
-                    help="this invocation's own dispatch_id, to check same_dispatch")
+    s.add_argument(
+        "--ttl-seconds",
+        type=int,
+        default=_DEFAULT_LIVENESS_TTL_SECONDS,
+        help="heartbeat freshness window in seconds (default 1200)",
+    )
+    s.add_argument(
+        "--dispatch-id",
+        default=None,
+        help="this invocation's own dispatch_id, to check same_dispatch",
+    )
     s.set_defaults(func=cmd_liveness)
 
     s = sub.add_parser("find-by-worktree")
     s.add_argument("--dir", required=True, help="run records directory")
     s.add_argument("--repo", required=True)
-    s.add_argument("--worktree", required=True, help="worktree path to look up (exact match)")
+    s.add_argument(
+        "--worktree", required=True, help="worktree path to look up (exact match)"
+    )
     s.set_defaults(func=cmd_find_by_worktree)
 
     s = sub.add_parser("worktree-conflict")
     s.add_argument("--dir", required=True, help="run records directory")
     s.add_argument("--repo", required=True)
-    s.add_argument("--worktree", required=True, help="worktree path to look up (exact match)")
-    s.add_argument("--ttl-seconds", type=int, default=_DEFAULT_LIVENESS_TTL_SECONDS,
-                    help="heartbeat freshness window in seconds (default 1200)")
-    s.add_argument("--dispatch-id", default=None,
-                    help="caller's own dispatch id -- an owning record matching this is never a conflict")
+    s.add_argument(
+        "--worktree", required=True, help="worktree path to look up (exact match)"
+    )
+    s.add_argument(
+        "--ttl-seconds",
+        type=int,
+        default=_DEFAULT_LIVENESS_TTL_SECONDS,
+        help="heartbeat freshness window in seconds (default 1200)",
+    )
+    s.add_argument(
+        "--dispatch-id",
+        default=None,
+        help="caller's own dispatch id -- an owning record matching this is never a conflict",
+    )
     s.set_defaults(func=cmd_worktree_conflict)
 
     args = p.parse_args(argv)

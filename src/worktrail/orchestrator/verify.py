@@ -47,6 +47,7 @@ auto-retargeting a child PR to its base when the parent PR merges -- are taken
 from GitHub's documented behavior. Parsing is kept defensive and mergeability is
 re-checked per group so a retargeted child PR is reconciled by the resolve loop.
 """
+
 from __future__ import annotations
 
 import json
@@ -55,14 +56,13 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any
 
-from . import dispatch
-from . import spawnlib
-from . import worktree
 from ..taskformats import resolve as taskformats
+from . import dispatch, spawnlib, worktree
 
 
 class _LazyAutomergePreflight:
@@ -116,8 +116,15 @@ check_review_threads = _LazyCheckReviewThreads()
 # Check classification (GraphQL statusCheckRollup). CheckRun carries status +
 # conclusion; legacy StatusContext carries state.
 _PENDING_CHECK_STATUS = {"QUEUED", "IN_PROGRESS", "PENDING", "WAITING", "REQUESTED"}
-_FAIL_CONCLUSIONS = {"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED",
-                     "STARTUP_FAILURE", "STALE", "ERROR"}
+_FAIL_CONCLUSIONS = {
+    "FAILURE",
+    "TIMED_OUT",
+    "CANCELLED",
+    "ACTION_REQUIRED",
+    "STARTUP_FAILURE",
+    "STALE",
+    "ERROR",
+}
 _PENDING_CONTEXT_STATE = {"PENDING", "EXPECTED"}
 _FAIL_CONTEXT_STATE = {"FAILURE", "ERROR"}
 
@@ -178,7 +185,7 @@ FORBIDDEN_WORKER_PATH_PREFIXES = (
 )
 
 
-def forbidden_prefixes_for(spec_path: "str | None" = None) -> tuple:
+def forbidden_prefixes_for(spec_path: str | None = None) -> tuple:
     """Deny-list prefixes for the format this run is driving.
 
     A guard naming the wrong spec root is not a weaker guard, it is no guard:
@@ -194,13 +201,13 @@ def forbidden_prefixes_for(spec_path: "str | None" = None) -> tuple:
 # --------------------------------------------------------------------------- #
 # Default (live) effect runners -- replaced by fakes in tests
 # --------------------------------------------------------------------------- #
-def _real_run(cmd: List[str]) -> subprocess.CompletedProcess:
+def _real_run(cmd: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True)
 
 
-def _make_live_spawn(model: str = DEFAULT_MODEL,
-                     timeout: int = 1800,
-                     agent: str = "claude") -> Callable[[str, Path], str]:
+def _make_live_spawn(
+    model: str = DEFAULT_MODEL, timeout: int = 1800, agent: str = "claude"
+) -> Callable[[str, Path], str]:
     """A spawn that drives a headless agent worker in the worktree, with
     bounded retry on a transient (non-zero/empty) spawn failure (spawnlib).
 
@@ -219,12 +226,19 @@ def _make_live_spawn(model: str = DEFAULT_MODEL,
     run through Bash, which the task-level lean set already includes, so a
     narrower --tools list would only add risk without saving anything here.
     """
+
     def spawn(prompt: str, worktree_path: Path) -> str:
         extra_args = ["--setting-sources", "project,local"] if agent == "claude" else []
         return spawnlib.spawn_agent(
-            prompt, worktree_path, tier=DEFAULT_TIER, prefer=agent, timeout=timeout,
+            prompt,
+            worktree_path,
+            tier=DEFAULT_TIER,
+            prefer=agent,
+            timeout=timeout,
             extra_args=extra_args,
-            log=lambda m: print(m, file=sys.stderr)).text
+            log=lambda m: print(m, file=sys.stderr),
+        ).text
+
     return spawn
 
 
@@ -236,7 +250,7 @@ def _make_live_spawn(model: str = DEFAULT_MODEL,
 _INFORMATIONAL_NAME_MARKERS = ("informational", "non-blocking", "optional")
 
 
-def _is_informational(check: Dict[str, Any], name: str) -> bool:
+def _is_informational(check: dict[str, Any], name: str) -> bool:
     if check.get("isRequired") is False:
         return True
     low = name.lower()
@@ -244,9 +258,9 @@ def _is_informational(check: Dict[str, Any], name: str) -> bool:
 
 
 def classify_checks(
-    rollup: Optional[List[Dict[str, Any]]],
-    required: Optional[Iterable[str]] = None,
-) -> Tuple[bool, List[str]]:
+    rollup: list[dict[str, Any]] | None,
+    required: Iterable[str] | None = None,
+) -> tuple[bool, list[str]]:
     """Return (any_pending, [failing check names]) for a statusCheckRollup list.
 
     A null/empty rollup with no `required` names means no required checks ->
@@ -257,14 +271,14 @@ def classify_checks(
     wait on" just because the rollup is currently empty or partial.
     """
     pending = False
-    failing: List[str] = []
+    failing: list[str] = []
     seen: set = set()
     for c in rollup or []:
         name = c.get("name") or c.get("context") or "(check)"
         seen.add(name)
-        if _is_informational(c, name):                  # never gates a merge
+        if _is_informational(c, name):  # never gates a merge
             continue
-        if "conclusion" in c or "status" in c:          # CheckRun
+        if "conclusion" in c or "status" in c:  # CheckRun
             status = (c.get("status") or "").upper()
             conclusion = (c.get("conclusion") or "").upper()
             if status in _PENDING_CHECK_STATUS:
@@ -272,7 +286,7 @@ def classify_checks(
                 continue
             if conclusion in _FAIL_CONCLUSIONS:
                 failing.append(name)
-        else:                                            # StatusContext (legacy)
+        else:  # StatusContext (legacy)
             state = (c.get("state") or "").upper()
             if state in _PENDING_CONTEXT_STATE:
                 pending = True
@@ -287,26 +301,32 @@ def classify_checks(
 # Verifier
 # --------------------------------------------------------------------------- #
 class Verifier:
-    def __init__(self, repo: Path, remote: str, base: str, spec_id: str, *,
-                 run: Optional[Callable[[List[str]], Any]] = None,
-                 spawn: Optional[Callable[[str, Path], str]] = None,
-                 ci_fix_spawn: Optional[Callable[[str, Path], str]] = None,
-                 log: Callable[[str], None] = print,
-                 sleep: Callable[[float], None] = time.sleep,
-                 worktree_base: Optional[Path] = None,
-                 max_strikes: int = dispatch.MAX_REVIEW_RETRIES,
-                 poll_interval: float = 10.0,
-                 poll_interval_max: float = 60.0,
-                 max_polls: int = 360,
-                 git_lock: Optional[threading.Lock] = None,
-                 merge_method: Optional[str] = None,
-                 spec_rel: Optional[str] = None,
-                 declared_files: Optional[Dict[str, List[str]]] = None,
-                 post_merge_smoke_cmd: Optional[str] = None,
-                 post_merge_smoke: Optional[
-                     Callable[[str, Path], Tuple[bool, str]]] = None,
-                 merge_lock: Optional[threading.Lock] = None,
-                 cumulative_regression: Optional[Dict[str, str]] = None) -> None:
+    def __init__(
+        self,
+        repo: Path,
+        remote: str,
+        base: str,
+        spec_id: str,
+        *,
+        run: Callable[[list[str]], Any] | None = None,
+        spawn: Callable[[str, Path], str] | None = None,
+        ci_fix_spawn: Callable[[str, Path], str] | None = None,
+        log: Callable[[str], None] = print,
+        sleep: Callable[[float], None] = time.sleep,
+        worktree_base: Path | None = None,
+        max_strikes: int = dispatch.MAX_REVIEW_RETRIES,
+        poll_interval: float = 10.0,
+        poll_interval_max: float = 60.0,
+        max_polls: int = 360,
+        git_lock: threading.Lock | None = None,
+        merge_method: str | None = None,
+        spec_rel: str | None = None,
+        declared_files: dict[str, list[str]] | None = None,
+        post_merge_smoke_cmd: str | None = None,
+        post_merge_smoke: Callable[[str, Path], tuple[bool, str]] | None = None,
+        merge_lock: threading.Lock | None = None,
+        cumulative_regression: dict[str, str] | None = None,
+    ) -> None:
         self.repo = Path(repo).resolve()
         self.remote = remote
         self.base = base
@@ -323,12 +343,16 @@ class Verifier:
         self.spawn = spawn or _make_live_spawn()
         # ci-fix workers use a shorter timeout and default to sonnet. When a test
         # injects `spawn`, reuse it so tests remain role-agnostic.
-        self._ci_fix_spawn = (ci_fix_spawn or spawn
-                              or _make_live_spawn(DEFAULT_MODEL, CI_FIX_TIMEOUT))
+        self._ci_fix_spawn = (
+            ci_fix_spawn or spawn or _make_live_spawn(DEFAULT_MODEL, CI_FIX_TIMEOUT)
+        )
         self.log = log
         self.sleep = sleep
-        self.worktree_base = (Path(worktree_base) if worktree_base
-                              else worktree.default_worktree_base(self.repo))
+        self.worktree_base = (
+            Path(worktree_base)
+            if worktree_base
+            else worktree.default_worktree_base(self.repo)
+        )
         self.max_strikes = max_strikes
         self.poll_interval = poll_interval
         self.poll_interval_max = poll_interval_max
@@ -339,12 +363,15 @@ class Verifier:
         # group in a run shares the same base branch, so there is nothing to
         # gain from re-querying per group or per poll.
         self._required_check_names_fetched = False
-        self._required_check_names_cache: Optional[List[str]] = None
+        self._required_check_names_cache: list[str] | None = None
         # WorktreeManager routed through the SAME injected runner, so live runs
         # use worktree.remove()/prune() and tests stay hermetic.
         self.wm = worktree.WorktreeManager(
-            repo_root=self.repo, spec_id=spec_id,
-            worktree_base=self.worktree_base, runner=self._wm_runner)
+            repo_root=self.repo,
+            spec_id=spec_id,
+            worktree_base=self.worktree_base,
+            runner=self._wm_runner,
+        )
         # Serialises the shared-.git mutations (worktree add/remove, branch -D,
         # prune) when independent group PRs are verified concurrently (#15); the
         # long CI waits + gh calls run in parallel outside it.
@@ -357,23 +384,23 @@ class Verifier:
         # needs a branch-aware method _detect_merge_method()'s repo-wide query
         # cannot express (e.g. squash for dev-target PRs, merge for stg/prd
         # promotions on a repo that allows both).
-        self._merge_method: Optional[str] = merge_method
+        self._merge_method: str | None = merge_method
         # Structural backstop for dispatch.py's second Hard rule ("do NOT run
         # `gh pr merge`, enable auto-merge, or take any merge action yourself"):
         # group name -> violation detail, populated by `_detect_self_merge`.
         # `run_all`'s wave loop treats a populated entry as terminal (like
         # `quarantined`) rather than folding it into the ordinary strike-failure
         # reason -- a landed merge can't be undone by another strike or retry.
-        self._self_merge_violations: Dict[str, str] = {}
+        self._self_merge_violations: dict[str, str] = {}
         # Group name -> structured evidence that a post-spawn auto-merge explains
         # an otherwise suspicious mid-turn MERGED flip.
-        self._automerge_evidence: Dict[str, Dict[str, str]] = {}
+        self._automerge_evidence: dict[str, dict[str, str]] = {}
         # Group name -> structured record of a required-checks preflight READ
         # failure (transient `gh api` hiccup) falling back to `gh pr merge --auto`
         # instead of quarantining. Populated by `auto_merge`; distinct keys per
         # group written from independent verify-wave threads, same safety as
         # `_automerge_evidence` above.
-        self._preflight_fallbacks: Dict[str, Dict[str, Any]] = {}
+        self._preflight_fallbacks: dict[str, dict[str, Any]] = {}
         # Cumulative post-merge gate (worktrail-go-policy.yaml's post_merge_smoke_cmd, falling
         # back to integrate_smoke_cmd -- see policy.resolve_post_merge_smoke_cmd()).
         # None = gate disabled, identical to pre-existing behavior. See auto_merge's
@@ -403,14 +430,15 @@ class Verifier:
         # a dict rather than a single slot because two groups racing past the
         # check in the same instant (before either observes the other's entry)
         # can both legitimately regress independently; both must be visible.
-        self._cumulative_regression: Dict[str, str] = (
-            cumulative_regression if cumulative_regression is not None else {})
+        self._cumulative_regression: dict[str, str] = (
+            cumulative_regression if cumulative_regression is not None else {}
+        )
         # Lazily created, reused across every post-merge smoke check in this run
         # (one worktree, reset to the fetched base HEAD before each check) rather
         # than a throwaway-per-check worktree -- there is at most one smoke run
         # in flight at a time (serialized on `_merge_lock`), so reuse is safe and
         # avoids repeated `git worktree add`/`remove` churn on the shared registry.
-        self._post_merge_worktree_path: Optional[Path] = None
+        self._post_merge_worktree_path: Path | None = None
 
     # -- low-level helpers ------------------------------------------------- #
     def _git(self, *args: str):
@@ -421,7 +449,7 @@ class Verifier:
         `self.repo` (the shared post-merge smoke worktree)."""
         return self.run(["git", "-C", str(path), *args])
 
-    def _wm_runner(self, cmd: List[str]):
+    def _wm_runner(self, cmd: list[str]):
         return self.run(cmd)
 
     def _gh(self, *args: str):
@@ -430,7 +458,7 @@ class Verifier:
             cmd += ["--repo", self.gh_repo]
         return self.run(cmd)
 
-    def _preflight_runner(self, cmd: List[str], **_: Any):
+    def _preflight_runner(self, cmd: list[str], **_: Any):
         """Adapt the injected verifier runner to automerge_preflight's API.
 
         `gh api` has no `--repo`/`-R` flag; automerge_preflight's endpoints
@@ -441,14 +469,19 @@ class Verifier:
             cmd = ["git", "-C", str(self.repo), *cmd[1:]]
         return self.run(cmd)
 
-    def _derive_gh_repo(self) -> Optional[str]:
+    def _derive_gh_repo(self) -> str | None:
         p = self._git("remote", "get-url", self.remote)
         url = (getattr(p, "stdout", "") or "").strip()
         if "github.com" in url:
-            return url.rstrip("/").removesuffix(".git").split("github.com", 1)[-1].lstrip(":/")
+            return (
+                url.rstrip("/")
+                .removesuffix(".git")
+                .split("github.com", 1)[-1]
+                .lstrip(":/")
+            )
         return None
 
-    def _required_check_names(self) -> Optional[List[str]]:
+    def _required_check_names(self) -> list[str] | None:
         """Required status check context names for `self.base`, memoized.
 
         `_block_on_checks` cross-checks the live `statusCheckRollup` against
@@ -465,11 +498,12 @@ class Verifier:
         self._required_check_names_fetched = True
         if self.gh_repo is None:
             return None
-        names: Optional[List[str]] = None
+        names: list[str] | None = None
         for attempt in range(3):
             try:
                 names = automerge_preflight.required_status_check_contexts(
-                    self.gh_repo, self.base, runner=self._preflight_runner)
+                    self.gh_repo, self.base, runner=self._preflight_runner
+                )
             except ImportError:
                 names = None
                 break
@@ -490,11 +524,21 @@ class Verifier:
         if self.gh_repo is None:
             # No GitHub remote -> can't query; assume merge (original behavior)
             return "merge"
-        p = self.run(["gh", "repo", "view", self.gh_repo, "--json",
-                      "squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed"])
+        p = self.run(
+            [
+                "gh",
+                "repo",
+                "view",
+                self.gh_repo,
+                "--json",
+                "squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed",
+            ]
+        )
         if getattr(p, "returncode", 1) != 0:
-            self.log(f"    could not query repo merge settings: "
-                     f"{(getattr(p, 'stderr', '') or '')[:200]}")
+            self.log(
+                f"    could not query repo merge settings: "
+                f"{(getattr(p, 'stderr', '') or '')[:200]}"
+            )
             return "squash"  # safe fallback
         try:
             data = json.loads(getattr(p, "stdout", "") or "{}")
@@ -510,7 +554,7 @@ class Verifier:
         return "squash"
 
     # -- PR status --------------------------------------------------------- #
-    def pr_status(self, gb: str) -> Optional[Dict[str, Any]]:
+    def pr_status(self, gb: str) -> dict[str, Any] | None:
         """`gh pr view <branch> --json ...` -> dict, or None if unavailable.
 
         Retries a failed `gh pr view` (GH_RETRIES) before returning None: a
@@ -519,9 +563,14 @@ class Verifier:
         """
         last_err = ""
         for attempt in range(1, GH_RETRIES + 1):
-            p = self._gh("pr", "view", gb, "--json",
-                         "number,state,mergeable,mergeStateStatus,"
-                         "statusCheckRollup,headRefOid,autoMergeRequest,mergedBy")
+            p = self._gh(
+                "pr",
+                "view",
+                gb,
+                "--json",
+                "number,state,mergeable,mergeStateStatus,"
+                "statusCheckRollup,headRefOid,autoMergeRequest,mergedBy",
+            )
             if getattr(p, "returncode", 1) == 0:
                 try:
                     return json.loads(getattr(p, "stdout", "") or "{}")
@@ -530,35 +579,56 @@ class Verifier:
             last_err = (getattr(p, "stderr", "") or "").strip()
             if attempt < GH_RETRIES:
                 self.sleep(min(10.0, 2.0 * attempt))
-        self.log(f"    pr view failed for {gb} after {GH_RETRIES} attempts: {last_err[:200]}")
+        self.log(
+            f"    pr view failed for {gb} after {GH_RETRIES} attempts: {last_err[:200]}"
+        )
         return None
 
-    def failed_logs(self, gb: str, head_sha: str = "") -> Tuple[str, str]:
+    def failed_logs(self, gb: str, head_sha: str = "") -> tuple[str, str]:
         """Best-effort (failing-check names, failing-run log tail) for ci-fix."""
         st = self.pr_status(gb) or {}
         _, failing = classify_checks(st.get("statusCheckRollup"))
         names = ", ".join(failing) or "(unknown)"
-        p = self._gh("run", "list", "--branch", gb, "--limit", "10",
-                     "--json", "databaseId,conclusion,headSha")
+        p = self._gh(
+            "run",
+            "list",
+            "--branch",
+            gb,
+            "--limit",
+            "10",
+            "--json",
+            "databaseId,conclusion,headSha",
+        )
         log = ""
         try:
             runs = json.loads(getattr(p, "stdout", "") or "[]")
         except json.JSONDecodeError:
             runs = []
-        target = next((r for r in runs
-                       if (r.get("conclusion") or "").upper() in _FAIL_CONCLUSIONS
-                       and (not head_sha or r.get("headSha") == head_sha)), None)
+        target = next(
+            (
+                r
+                for r in runs
+                if (r.get("conclusion") or "").upper() in _FAIL_CONCLUSIONS
+                and (not head_sha or r.get("headSha") == head_sha)
+            ),
+            None,
+        )
         if target is None:
-            target = next((r for r in runs
-                           if (r.get("conclusion") or "").upper() in _FAIL_CONCLUSIONS),
-                          None)
+            target = next(
+                (
+                    r
+                    for r in runs
+                    if (r.get("conclusion") or "").upper() in _FAIL_CONCLUSIONS
+                ),
+                None,
+            )
         if target and target.get("databaseId") is not None:
             lp = self._gh("run", "view", str(target["databaseId"]), "--log-failed")
             log = getattr(lp, "stdout", "") or ""
         return names, log
 
     # -- worker dispatch --------------------------------------------------- #
-    def _group_worktree(self, group: Dict[str, Any], gb: str) -> Optional[Path]:
+    def _group_worktree(self, group: dict[str, Any], gb: str) -> Path | None:
         """Lazily create a worktree checked out on the group branch."""
         path = self.worktree_base / f"{self.spec_id}-verify-{group['name']}"
         if path.exists():
@@ -569,12 +639,14 @@ class Verifier:
             self.worktree_base.mkdir(parents=True, exist_ok=True)
             p = self._git("worktree", "add", str(path), gb)
         if getattr(p, "returncode", 1) != 0:
-            self.log(f"    could not create verify worktree for {group['name']}: "
-                     f"{(getattr(p, 'stderr', '') or '').strip()[:200]}")
+            self.log(
+                f"    could not create verify worktree for {group['name']}: "
+                f"{(getattr(p, 'stderr', '') or '').strip()[:200]}"
+            )
             return None
         return path
 
-    def _post_merge_worktree(self) -> Optional[Path]:
+    def _post_merge_worktree(self) -> Path | None:
         """Lazily create a detached worktree tracking `base`, reused for every
         cumulative post-merge smoke check this Verifier instance runs -- reset
         to the freshly fetched `remote/base` HEAD before each check rather than
@@ -605,19 +677,29 @@ class Verifier:
             self.worktree_base.mkdir(parents=True, exist_ok=True)
             fetch = self._git("fetch", "-q", self.remote, self.base)
             if getattr(fetch, "returncode", 1) != 0:
-                self.log(f"    post-merge smoke: could not fetch {self.remote}/{self.base}: "
-                         f"{(getattr(fetch, 'stderr', '') or '').strip()[:200]}")
+                self.log(
+                    f"    post-merge smoke: could not fetch {self.remote}/{self.base}: "
+                    f"{(getattr(fetch, 'stderr', '') or '').strip()[:200]}"
+                )
                 return None
-            p = self._git("worktree", "add", "-f", "--detach", str(path),
-                          f"{self.remote}/{self.base}")
+            p = self._git(
+                "worktree",
+                "add",
+                "-f",
+                "--detach",
+                str(path),
+                f"{self.remote}/{self.base}",
+            )
             if getattr(p, "returncode", 1) != 0:
-                self.log(f"    post-merge smoke: could not create worktree: "
-                         f"{(getattr(p, 'stderr', '') or '').strip()[:200]}")
+                self.log(
+                    f"    post-merge smoke: could not create worktree: "
+                    f"{(getattr(p, 'stderr', '') or '').strip()[:200]}"
+                )
                 return None
             self._post_merge_worktree_path = path
         return path
 
-    def _default_post_merge_smoke(self, name: str, wt: Path) -> Tuple[bool, str]:
+    def _default_post_merge_smoke(self, name: str, wt: Path) -> tuple[bool, str]:
         """Run `post_merge_smoke_cmd` in `wt` (already reset to the fetched base
         HEAD by the caller). Real subprocess -- mirrors integrate.py's
         `_run_integration_smoke`; fail-closed on timeout/spawn error (never treat
@@ -628,7 +710,11 @@ class Verifier:
         self.log(f"  POST-MERGE SMOKE [{name:9}] against updated base: {cmd}")
         try:
             r = subprocess.run(
-                cmd, shell=True, cwd=str(wt), capture_output=True, text=True,
+                cmd,
+                shell=True,
+                cwd=str(wt),
+                capture_output=True,
+                text=True,
                 timeout=POST_MERGE_SMOKE_TIMEOUT,
             )
         except subprocess.TimeoutExpired:
@@ -640,7 +726,7 @@ class Verifier:
         tail = ((r.stderr or "") + (r.stdout or "")).strip()[-300:]
         return False, f"exit {r.returncode}: {tail}"
 
-    def _run_post_merge_smoke(self, name: str) -> Tuple[bool, str]:
+    def _run_post_merge_smoke(self, name: str) -> tuple[bool, str]:
         """Fetch + hard-reset the shared post-merge worktree to the ACTUAL
         updated base HEAD and run the configured smoke command there.
 
@@ -655,24 +741,34 @@ class Verifier:
         with self._git_lock:
             fetch = self._git("fetch", "-q", self.remote, self.base)
             if getattr(fetch, "returncode", 1) != 0:
-                return False, (f"could not fetch {self.remote}/{self.base}: "
-                               f"{(getattr(fetch, 'stderr', '') or '').strip()[:200]}")
+                return False, (
+                    f"could not fetch {self.remote}/{self.base}: "
+                    f"{(getattr(fetch, 'stderr', '') or '').strip()[:200]}"
+                )
             reset = self._git_in(wt, "reset", "--hard", f"{self.remote}/{self.base}")
             if getattr(reset, "returncode", 1) != 0:
-                return False, (f"could not reset post-merge worktree to "
-                               f"{self.remote}/{self.base}: "
-                               f"{(getattr(reset, 'stderr', '') or '').strip()[:200]}")
+                return False, (
+                    f"could not reset post-merge worktree to "
+                    f"{self.remote}/{self.base}: "
+                    f"{(getattr(reset, 'stderr', '') or '').strip()[:200]}"
+                )
         return self._post_merge_smoke(name, wt)
 
-    def _spawn_group_worker(self, role: str, group: Dict[str, Any], gb: str,
-                            extra: Dict[str, Any]) -> bool:
+    def _spawn_group_worker(
+        self, role: str, group: dict[str, Any], gb: str, extra: dict[str, Any]
+    ) -> bool:
         """Build the brief, spawn the worker, return True if it reported success."""
         wt = self._group_worktree(group, gb)
         if wt is None:
             return False
-        ctx = {"spec_id": self.spec_id, "group_branch": gb,
-               "base_branch": self.base, "remote": self.remote,
-               "worktree_path": str(wt), **extra}
+        ctx = {
+            "spec_id": self.spec_id,
+            "group_branch": gb,
+            "base_branch": self.base,
+            "remote": self.remote,
+            "worktree_path": str(wt),
+            **extra,
+        }
         prompt = dispatch.build_group_prompt(role, group, ctx)
         spawn_fn = self._ci_fix_spawn if role == dispatch.ROLE_CI_FIX else self.spawn
         # Captured BEFORE the worker runs: `gb` is shared between this repo and the
@@ -698,13 +794,20 @@ class Verifier:
             return False
         forbidden = self._forbidden_paths_touched(pre_sha, gb, group)
         if forbidden:
-            self.log(f"    {role} worker touched forbidden path(s) despite "
-                     f"status=success — treating as strike failure: {forbidden}")
+            self.log(
+                f"    {role} worker touched forbidden path(s) despite "
+                f"status=success — treating as strike failure: {forbidden}"
+            )
             return False
         return True
 
-    def _detect_self_merge(self, role: str, group: Dict[str, Any], gb: str,
-                           pre_status: Optional[Dict[str, Any]]) -> bool:
+    def _detect_self_merge(
+        self,
+        role: str,
+        group: dict[str, Any],
+        gb: str,
+        pre_status: dict[str, Any] | None,
+    ) -> bool:
         """Structural backstop for dispatch.py's Hard rule: 'do NOT run `gh pr
         merge`, enable auto-merge, or take any merge action yourself.'
 
@@ -734,11 +837,9 @@ class Verifier:
         post_status = self.pr_status(gb)
         if post_status is None or (post_status.get("state") or "").upper() != "MERGED":
             return False
-        post_auto = ((post_status.get("autoMergeRequest") or {})
-                     .get("enabledBy") or {})
+        post_auto = (post_status.get("autoMergeRequest") or {}).get("enabledBy") or {}
         merged_by = post_status.get("mergedBy") or {}
-        if (post_auto.get("login")
-                and post_auto.get("login") == merged_by.get("login")):
+        if post_auto.get("login") and post_auto.get("login") == merged_by.get("login"):
             self._automerge_evidence[group["name"]] = {
                 "enabledBy": post_auto.get("login"),
                 "mergedBy": merged_by.get("login"),
@@ -749,16 +850,18 @@ class Verifier:
                 f"mergedBy={merged_by.get('login')}"
             )
             return False  # post-spawn auto-merge signal explains the merge
-        detail = (f"{role} worker merged {gb} directly (state flipped to MERGED "
-                 "mid-turn with no prior autoMergeRequest) -- violates the "
-                 "'never merge yourself' Hard rule")
+        detail = (
+            f"{role} worker merged {gb} directly (state flipped to MERGED "
+            "mid-turn with no prior autoMergeRequest) -- violates the "
+            "'never merge yourself' Hard rule"
+        )
         self.log(f"    !! SELF-MERGE VIOLATION [{group['name']}]: {detail}")
         self._self_merge_violations[group["name"]] = detail
         return True
 
     def _forbidden_paths_touched(
-        self, pre_sha: str, gb: str, group: Optional[Dict[str, Any]] = None
-    ) -> List[str]:
+        self, pre_sha: str, gb: str, group: dict[str, Any] | None = None
+    ) -> list[str]:
         """Deny-list check on what the worker actually changed (not what it says
         it changed): files under FORBIDDEN_WORKER_PATH_PREFIXES touched between
         the worker's pre-run HEAD and its post-run HEAD on `gb`.
@@ -796,7 +899,9 @@ class Verifier:
             return []
         touched = (getattr(p, "stdout", "") or "").splitlines()
         spec_root = forbidden_prefixes_for(self.spec_rel)[1]
-        others = tuple(x for x in forbidden_prefixes_for(self.spec_rel) if x != spec_root)
+        others = tuple(
+            x for x in forbidden_prefixes_for(self.spec_rel) if x != spec_root
+        )
         declared = set((self.declared_files or {}).get((group or {}).get("name"), ()))
         if declared:
             undeclared = sorted(set(touched) - declared)
@@ -817,7 +922,7 @@ class Verifier:
     # waiting" from an ordinary still-pending-checks poll or a genuine timeout.
     _CONFLICTING_MID_CI_WAIT = "__conflicting_mid_ci_wait__"
 
-    def ensure_mergeable(self, group: Dict[str, Any], gb: str) -> Tuple[bool, str]:
+    def ensure_mergeable(self, group: dict[str, Any], gb: str) -> tuple[bool, str]:
         """Drive the resolve loop until the PR is mergeable or strikes run out."""
         for strike in range(self.max_strikes):
             st = self.pr_status(gb)
@@ -825,9 +930,11 @@ class Verifier:
                 return False, "PR not found / gh unavailable"
             mergeable = (st.get("mergeable") or "").upper()
             if mergeable == "CONFLICTING":
-                self.log(f"    [{group['name']}] CONFLICTING with {self.base} "
-                         f"-- spawning resolve worker (strike {strike + 1}/"
-                         f"{self.max_strikes})")
+                self.log(
+                    f"    [{group['name']}] CONFLICTING with {self.base} "
+                    f"-- spawning resolve worker (strike {strike + 1}/"
+                    f"{self.max_strikes})"
+                )
                 if not self._spawn_group_worker(dispatch.ROLE_RESOLVE, group, gb, {}):
                     return False, "resolve worker failed"
                 continue
@@ -836,7 +943,7 @@ class Verifier:
             return True, ""
         return False, "still CONFLICTING after resolve attempts"
 
-    def wait_and_fix_ci(self, group: Dict[str, Any], gb: str) -> Tuple[bool, str]:
+    def wait_and_fix_ci(self, group: dict[str, Any], gb: str) -> tuple[bool, str]:
         """Block on CI; on red, run the ci-fix loop (bounded by strikes)."""
         for strike in range(self.max_strikes + 1):
             ok, failing = self._block_on_checks(group, gb)
@@ -849,31 +956,42 @@ class Verifier:
                 # mechanism ensure_mergeable uses for this identical signal.
                 if strike >= self.max_strikes:
                     return False, "still CONFLICTING mid-CI-wait after resolve attempts"
-                self.log(f"    [{group['name']}] became CONFLICTING with {self.base} "
-                         f"mid-CI-wait -- spawning resolve worker (strike {strike + 1}/"
-                         f"{self.max_strikes})")
+                self.log(
+                    f"    [{group['name']}] became CONFLICTING with {self.base} "
+                    f"mid-CI-wait -- spawning resolve worker (strike {strike + 1}/"
+                    f"{self.max_strikes})"
+                )
                 if not self._spawn_group_worker(dispatch.ROLE_RESOLVE, group, gb, {}):
                     return False, "resolve worker failed"
                 continue
             if failing is None:
                 return False, "CI did not complete within budget"
             if strike >= self.max_strikes:
-                return False, f"CI still failing after {self.max_strikes} fix " \
-                              f"attempts: {', '.join(failing)}"
-            self.log(f"    [{group['name']}] CI red ({', '.join(failing)}) "
-                     f"-- spawning ci-fix worker (strike {strike + 1}/"
-                     f"{self.max_strikes})")
+                return (
+                    False,
+                    f"CI still failing after {self.max_strikes} fix "
+                    f"attempts: {', '.join(failing)}",
+                )
+            self.log(
+                f"    [{group['name']}] CI red ({', '.join(failing)}) "
+                f"-- spawning ci-fix worker (strike {strike + 1}/"
+                f"{self.max_strikes})"
+            )
             st = self.pr_status(gb) or {}
             names, log = self.failed_logs(gb, st.get("headRefOid", ""))
             ok_fix = self._spawn_group_worker(
-                dispatch.ROLE_CI_FIX, group, gb,
-                {"failing_checks": names, "failure_log": log})
+                dispatch.ROLE_CI_FIX,
+                group,
+                gb,
+                {"failing_checks": names, "failure_log": log},
+            )
             if not ok_fix:
                 return False, "ci-fix worker failed"
         return False, "CI fix loop exhausted"
 
-    def _block_on_checks(self, group: Dict[str, Any], gb: str
-                         ) -> Tuple[bool, Optional[List[str]]]:
+    def _block_on_checks(
+        self, group: dict[str, Any], gb: str
+    ) -> tuple[bool, list[str] | None]:
         """Poll until checks finish. Returns (green?, failing|None-if-timed-out).
 
         Adaptive backoff: poll fast early (catch a quick CI without waiting a full
@@ -888,25 +1006,31 @@ class Verifier:
             mergeable = (st.get("mergeable") or "").upper()
             if mergeable == "CONFLICTING":
                 return False, [self._CONFLICTING_MID_CI_WAIT]
-            pending, failing = classify_checks(st.get("statusCheckRollup"), required=required)
+            pending, failing = classify_checks(
+                st.get("statusCheckRollup"), required=required
+            )
             if not pending:
                 if failing:
                     return False, failing
                 self.log(f"    [{group['name']}] CI green")
                 return True, None
-            self.log(f"    [{group['name']}] waiting on CI: pending checks remain, "
-                     f"{len(failing)} failing so far (poll {poll + 1})")
-            self.sleep(min(self.poll_interval_max, self.poll_interval * (1.4 ** poll)))
-        return False, None                               # budget exhausted
+            self.log(
+                f"    [{group['name']}] waiting on CI: pending checks remain, "
+                f"{len(failing)} failing so far (poll {poll + 1})"
+            )
+            self.sleep(min(self.poll_interval_max, self.poll_interval * (1.4**poll)))
+        return False, None  # budget exhausted
 
-    def _review_threads_runner(self, cmd: List[str], **_ignored: Any):
+    def _review_threads_runner(self, cmd: list[str], **_ignored: Any):
         """Adapts `self.run(cmd)`'s single-arg convention to the `runner(cmd,
         capture_output=, text=, timeout=)` shape `check_review_threads.py`
         calls -- letting the same injected fake `run` used everywhere else in
         this class (and its tests) drive the review-thread gate too."""
         return self.run(cmd)
 
-    def resolve_review_threads(self, group: Dict[str, Any], gb: str) -> Tuple[bool, str]:
+    def resolve_review_threads(
+        self, group: dict[str, Any], gb: str
+    ) -> tuple[bool, str]:
         """After CI is green, close the review-thread gap the headless
         orchestrator path never had.
 
@@ -939,7 +1063,10 @@ class Verifier:
             return True, ""
         owner, _, name = self.gh_repo.partition("/")
         result = check_review_threads.check(
-            self.repo, int(pr_number), owner=owner, name=name,
+            self.repo,
+            int(pr_number),
+            owner=owner,
+            name=name,
             runner=self._review_threads_runner,
         )
         if not result["checked"]:
@@ -947,19 +1074,24 @@ class Verifier:
             # contract: an unanswerable question ("gh" hiccup, bad GraphQL
             # response) is "no signal", never "blocked".
             if result.get("warning"):
-                self.log(f"    [{group['name']}] review-thread check unavailable: "
-                         f"{result['warning']}")
+                self.log(
+                    f"    [{group['name']}] review-thread check unavailable: "
+                    f"{result['warning']}"
+                )
             return True, ""
         if result["resolved_now"]:
-            self.log(f"    [{group['name']}] auto-resolved "
-                     f"{len(result['resolved_now'])} addressed review thread(s)")
+            self.log(
+                f"    [{group['name']}] auto-resolved "
+                f"{len(result['resolved_now'])} addressed review thread(s)"
+            )
         if result["blocking"]:
-            spots = ", ".join(f"{t.get('path')}:{t.get('line')}"
-                              for t in result["unaddressed"])
+            spots = ", ".join(
+                f"{t.get('path')}:{t.get('line')}" for t in result["unaddressed"]
+            )
             return False, f"unresolved review thread(s) not yet addressed: {spots}"
         return True, ""
 
-    def retarget_to_base(self, group: Dict[str, Any], gb: str) -> None:
+    def retarget_to_base(self, group: dict[str, Any], gb: str) -> None:
         """Re-point a dependent group's PR at the real base branch.
 
         A feature group is opened against its parent group's branch (stacked). The
@@ -988,14 +1120,25 @@ class Verifier:
         if number is not None and self.gh_repo:
             # `gh api` has no `--repo` flag (unlike `gh pr`), so this bypasses
             # `_gh()` and embeds owner/repo directly in the endpoint path.
-            p = self.run(["gh", "api", f"repos/{self.gh_repo}/pulls/{number}",
-                          "-X", "PATCH", "-f", f"base={self.base}"])
+            p = self.run(
+                [
+                    "gh",
+                    "api",
+                    f"repos/{self.gh_repo}/pulls/{number}",
+                    "-X",
+                    "PATCH",
+                    "-f",
+                    f"base={self.base}",
+                ]
+            )
         else:
             p = self._gh("pr", "edit", gb, "--base", self.base)
         if getattr(p, "returncode", 1) == 0:
             self.log(f"    [{group['name']}] retargeted {gb} base -> {self.base}")
 
-    def _wait_for_external_merge(self, group: Dict[str, Any], gb: str) -> Tuple[bool, str]:
+    def _wait_for_external_merge(
+        self, group: dict[str, Any], gb: str
+    ) -> tuple[bool, str]:
         """Poll `gb`'s PR status until an externally-armed auto-merge completes.
 
         Same adaptive backoff as `_block_on_checks` (fast early, growing toward
@@ -1006,14 +1149,17 @@ class Verifier:
         for poll in range(self.max_polls):
             st = self.pr_status(gb)
             if st is None:
-                return False, "PR not found / gh unavailable while deferring to external auto-merge"
+                return (
+                    False,
+                    "PR not found / gh unavailable while deferring to external auto-merge",
+                )
             if (st.get("state") or "").upper() == "MERGED":
                 self.log(f"    [{group['name']}] {gb} merged externally")
                 return True, ""
-            self.sleep(min(self.poll_interval_max, self.poll_interval * (1.4 ** poll)))
+            self.sleep(min(self.poll_interval_max, self.poll_interval * (1.4**poll)))
         return False, "external auto-merge did not complete within poll budget"
 
-    def _recheck_merged_before_quarantine(self, group: Dict[str, Any], gb: str) -> bool:
+    def _recheck_merged_before_quarantine(self, group: dict[str, Any], gb: str) -> bool:
         """Last-chance, passive recheck of `gb`'s live PR state before `verify_one`
         finalizes an ordinary QUARANTINED verdict.
 
@@ -1033,18 +1179,23 @@ class Verifier:
         if st is None:
             return False
         if (st.get("state") or "").upper() == "MERGED":
-            self.log(f"    [{group['name']}] {gb} already MERGED on final "
-                     "recheck -- not quarantining")
+            self.log(
+                f"    [{group['name']}] {gb} already MERGED on final "
+                "recheck -- not quarantining"
+            )
             return True
         if st.get("autoMergeRequest"):
-            self.log(f"    [{group['name']}] {gb} has auto-merge armed -- "
-                     "giving it one last bounded wait before quarantining")
+            self.log(
+                f"    [{group['name']}] {gb} has auto-merge armed -- "
+                "giving it one last bounded wait before quarantining"
+            )
             ok, _ = self._wait_for_external_merge(group, gb)
             return ok
         return False
 
-    def _retry_auto_merge_methods(self, gb: str, exclude: Optional[str]
-                                  ) -> Tuple[bool, Optional[str], str]:
+    def _retry_auto_merge_methods(
+        self, gb: str, exclude: str | None
+    ) -> tuple[bool, str | None, str]:
         """Retry `gh pr merge <gb> --auto --<method> --delete-branch` for each
         method besides `exclude`, in preference order (squash, rebase, merge).
 
@@ -1059,13 +1210,15 @@ class Verifier:
         for fallback in ("squash", "rebase", "merge"):
             if fallback == exclude:
                 continue
-            p = self._gh("pr", "merge", gb, "--auto", f"--{fallback}", "--delete-branch")
+            p = self._gh(
+                "pr", "merge", gb, "--auto", f"--{fallback}", "--delete-branch"
+            )
             if getattr(p, "returncode", 1) == 0:
                 return True, fallback, ""
             last_err = (getattr(p, "stderr", "") or "").strip()
         return False, None, last_err
 
-    def _automerge_label_block_reason(self, gb: str) -> Optional[str]:
+    def _automerge_label_block_reason(self, gb: str) -> str | None:
         """Fail-closed `go:no-automerge` label check, run once at the top of
         `auto_merge()` before ANY of its internal `gh pr merge` arming paths.
 
@@ -1095,12 +1248,16 @@ class Verifier:
             data = json.loads(getattr(p, "stdout", "") or "{}")
         except json.JSONDecodeError:
             return f"could not parse PR label data for {gb}; failing closed -- not arming auto-merge"
-        labels = {(lbl.get("name") or "") for lbl in (data.get("labels") or []) if isinstance(lbl, dict)}
+        labels = {
+            (lbl.get("name") or "")
+            for lbl in (data.get("labels") or [])
+            if isinstance(lbl, dict)
+        }
         if _NO_AUTOMERGE_LABEL in labels:
             return f"human gate: {gb} carries '{_NO_AUTOMERGE_LABEL}' -- skipping auto-merge"
         return None
 
-    def auto_merge(self, group: Dict[str, Any], gb: str) -> Tuple[bool, str]:
+    def auto_merge(self, group: dict[str, Any], gb: str) -> tuple[bool, str]:
         st = self.pr_status(gb)
         if st and (st.get("state") or "").upper() == "MERGED":
             self.log(f"    [{group['name']}] {gb} already merged")
@@ -1119,17 +1276,26 @@ class Verifier:
         # dev-target PR the repo's own workflow would have squashed).
         if st and st.get("autoMergeRequest"):
             armed_by = ((st.get("autoMergeRequest") or {}).get("enabledBy") or {}).get(
-                "login", "unknown")
-            self.log(f"    [{group['name']}] {gb} auto-merge already armed by "
-                     f"{armed_by} -- deferring instead of racing")
+                "login", "unknown"
+            )
+            self.log(
+                f"    [{group['name']}] {gb} auto-merge already armed by "
+                f"{armed_by} -- deferring instead of racing"
+            )
             return self._wait_for_external_merge(group, gb)
         try:
             eligible, reason = automerge_preflight.required_checks_gate(
                 self.repo, self.base, runner=self._preflight_runner
             )
-            is_query_error = (not eligible) and automerge_preflight.is_preflight_query_error(reason)
+            is_query_error = (
+                not eligible
+            ) and automerge_preflight.is_preflight_query_error(reason)
         except ImportError:
-            eligible, reason, is_query_error = False, "automerge_preflight module unavailable", True
+            eligible, reason, is_query_error = (
+                False,
+                "automerge_preflight module unavailable",
+                True,
+            )
         # Detect allowed merge method once per run (cached in self._merge_method)
         if self._merge_method is None:
             self._merge_method = self._detect_merge_method()
@@ -1147,7 +1313,9 @@ class Verifier:
                     f"({reason}); falling back to `gh pr merge --auto` -- GitHub "
                     "still enforces protection at merge time"
                 )
-                p = self._gh("pr", "merge", gb, "--auto", method_flag, "--delete-branch")
+                p = self._gh(
+                    "pr", "merge", gb, "--auto", method_flag, "--delete-branch"
+                )
                 if getattr(p, "returncode", 1) == 0:
                     self.log(
                         f"    [{group['name']}] {gb} queued for auto-merge "
@@ -1155,7 +1323,9 @@ class Verifier:
                         "still enforce required checks before merging)"
                     )
                     self._preflight_fallbacks[group["name"]] = {
-                        "pr": gb, "reason": reason, "outcome": "queued",
+                        "pr": gb,
+                        "reason": reason,
+                        "outcome": "queued",
                         "at": round(time.time(), 3),
                     }
                     return True, "queued"
@@ -1169,8 +1339,9 @@ class Verifier:
                 # fallback below.
                 if any(sig in err.lower() for sig in _AUTO_MERGE_METHOD_SIGNALS):
                     original_method = self._merge_method
-                    ok_retry, working_method, retry_err = self._retry_auto_merge_methods(
-                        gb, original_method)
+                    ok_retry, working_method, retry_err = (
+                        self._retry_auto_merge_methods(gb, original_method)
+                    )
                     if ok_retry:
                         self._merge_method = working_method
                         self.log(
@@ -1179,22 +1350,33 @@ class Verifier:
                             f"and {original_method} rejected by enablePullRequestAutoMerge)"
                         )
                         self._preflight_fallbacks[group["name"]] = {
-                            "pr": gb, "reason": reason, "outcome": "queued",
-                            "method": working_method, "at": round(time.time(), 3),
+                            "pr": gb,
+                            "reason": reason,
+                            "outcome": "queued",
+                            "method": working_method,
+                            "at": round(time.time(), 3),
                         }
                         return True, "queued"
                     err = retry_err or err
-                self.log(f"    [{group['name']}] auto-merge fallback also failed: {err}")
+                self.log(
+                    f"    [{group['name']}] auto-merge fallback also failed: {err}"
+                )
                 self._preflight_fallbacks[group["name"]] = {
-                    "pr": gb, "reason": reason, "outcome": "fallback_failed",
-                    "fallback_error": err, "at": round(time.time(), 3),
+                    "pr": gb,
+                    "reason": reason,
+                    "outcome": "fallback_failed",
+                    "fallback_error": err,
+                    "at": round(time.time(), 3),
                 }
                 return False, (
                     f"required-checks preflight query failed and the `gh pr merge --auto` "
                     f"fallback also failed: {err}"
                 )
             self.log(f"    [{group['name']}] direct auto-merge blocked: {reason}")
-            return False, f"required-checks preflight blocked direct auto-merge: {reason}"
+            return (
+                False,
+                f"required-checks preflight blocked direct auto-merge: {reason}",
+            )
         p = self._gh("pr", "merge", gb, method_flag, "--delete-branch")
         if getattr(p, "returncode", 1) == 0:
             self.log(f"    [{group['name']}] auto-merged {gb} ({self._merge_method})")
@@ -1223,7 +1405,8 @@ class Verifier:
             if any(sig in err2.lower() for sig in _AUTO_MERGE_METHOD_SIGNALS):
                 original_method = self._merge_method
                 ok_retry, working_method, _ = self._retry_auto_merge_methods(
-                    gb, original_method)
+                    gb, original_method
+                )
                 if ok_retry:
                     self._merge_method = working_method  # cache for subsequent groups
                     self.log(
@@ -1235,7 +1418,9 @@ class Verifier:
             return False, f"auto-merge failed: {err2[:200]}"
         return False, f"auto-merge failed: {err[:200]}"
 
-    def _merge_with_cumulative_gate(self, group: Dict[str, Any], gb: str) -> Tuple[bool, str]:
+    def _merge_with_cumulative_gate(
+        self, group: dict[str, Any], gb: str
+    ) -> tuple[bool, str]:
         """`auto_merge()`, plus the cumulative post-merge gate around a CONFIRMED
         merge (PR #167 root-cause class: independent FEATURE groups within a wave
         verify -- mergeability + CI wait -- CONCURRENTLY, so a semantic dependency
@@ -1262,8 +1447,10 @@ class Verifier:
         with self._merge_lock:
             if self._cumulative_regression:
                 bad_name, detail = next(iter(self._cumulative_regression.items()))
-                return False, (f"blocked: cumulative post-merge regression in group "
-                               f"'{bad_name}' -- {detail}")
+                return False, (
+                    f"blocked: cumulative post-merge regression in group "
+                    f"'{bad_name}' -- {detail}"
+                )
             ok, reason = self.auto_merge(group, gb)
             if not ok or reason == "queued" or not self.post_merge_smoke_cmd:
                 return ok, reason
@@ -1278,9 +1465,13 @@ class Verifier:
             )
             return False, f"post-merge cumulative smoke failed: {detail}"
 
-    def cleanup_group(self, group: Dict[str, Any], gb: str,
-                      delivered: Optional[Dict[str, List[str]]] = None,
-                      skip_remote_branch_delete: bool = False) -> None:
+    def cleanup_group(
+        self,
+        group: dict[str, Any],
+        gb: str,
+        delivered: dict[str, list[str]] | None = None,
+        skip_remote_branch_delete: bool = False,
+    ) -> None:
         """Tear down the merged group's task worktrees + branches (gated).
 
         Only DELIVERED tasks are torn down. When a group was split (a failed task
@@ -1336,13 +1527,18 @@ class Verifier:
     _POST_MERGE_SMOKE_PREFIX = "post-merge cumulative smoke failed:"
     _CUMULATIVE_BLOCKED_PREFIX = "blocked: cumulative post-merge regression"
 
-    def verify_one(self, group: Dict[str, Any], group_branch: str,
-                   delivered: Optional[Dict[str, List[str]]],
-                   merged: List[str], quarantined: Dict[str, str],
-                   lock: threading.Lock,
-                   self_merged: Optional[Dict[str, str]] = None,
-                   armed: Optional[Dict[str, str]] = None,
-                   post_merge_regressed: Optional[Dict[str, str]] = None) -> None:
+    def verify_one(
+        self,
+        group: dict[str, Any],
+        group_branch: str,
+        delivered: dict[str, list[str]] | None,
+        merged: list[str],
+        quarantined: dict[str, str],
+        lock: threading.Lock,
+        self_merged: dict[str, str] | None = None,
+        armed: dict[str, str] | None = None,
+        post_merge_regressed: dict[str, str] | None = None,
+    ) -> None:
         """Verify exactly one group's PR: retarget (if dependent) →
         ensure_mergeable → wait_and_fix_ci → resolve_review_threads →
         auto_merge (cumulative-gated) → gated cleanup (delivered tasks only).
@@ -1394,7 +1590,9 @@ class Verifier:
             blocked = dict(self._cumulative_regression)
         if blocked:
             bad_name, detail = next(iter(blocked.items()))
-            reason = f"{self._CUMULATIVE_BLOCKED_PREFIX} in group '{bad_name}' -- {detail}"
+            reason = (
+                f"{self._CUMULATIVE_BLOCKED_PREFIX} in group '{bad_name}' -- {detail}"
+            )
             with lock:
                 quarantined[name] = reason
             self.log(f"  SKIP [{name}] -- {reason} (worktree kept)")
@@ -1411,12 +1609,17 @@ class Verifier:
         if not ok:
             violation = self._self_merge_violations.get(name)
             is_regression = reason.startswith(self._POST_MERGE_SMOKE_PREFIX)
-            if (not is_regression and not violation
-                    and self._recheck_merged_before_quarantine(group, group_branch)):
+            if (
+                not is_regression
+                and not violation
+                and self._recheck_merged_before_quarantine(group, group_branch)
+            ):
                 with lock:
                     merged.append(name)
-                self.log(f"  MERGED [{name}] -- confirmed on final live recheck "
-                         f"(would otherwise have quarantined: {reason})")
+                self.log(
+                    f"  MERGED [{name}] -- confirmed on final live recheck "
+                    f"(would otherwise have quarantined: {reason})"
+                )
                 self.cleanup_group(group, group_branch, delivered)
                 return
             with lock:
@@ -1429,7 +1632,9 @@ class Verifier:
             if is_regression and post_merge_regressed is not None:
                 self.log(f"  POST-MERGE REGRESSED [{name}] -- merged, then {reason}")
             elif violation and self_merged is not None:
-                self.log(f"  SELF-MERGE VIOLATION [{name}] -- {violation} (worktree kept)")
+                self.log(
+                    f"  SELF-MERGE VIOLATION [{name}] -- {violation} (worktree kept)"
+                )
             else:
                 self.log(f"  QUARANTINE [{name}] -- {reason} (worktree kept)")
             return
@@ -1441,23 +1646,30 @@ class Verifier:
         # When auto_merge queued via --auto, GitHub handles remote branch deletion
         # when it fires (--delete-branch was passed). Skip our own remote delete or
         # we close the PR before it merges.
-        self.cleanup_group(group, group_branch, delivered,
-                           skip_remote_branch_delete=(reason == "queued"))
+        self.cleanup_group(
+            group,
+            group_branch,
+            delivered,
+            skip_remote_branch_delete=(reason == "queued"),
+        )
 
     # -- top-level loop ---------------------------------------------------- #
-    def run_all(self, groups: List[Dict[str, Any]],
-                group_branch: Dict[str, str],
-                delivered: Optional[Dict[str, List[str]]] = None) -> Dict[str, Any]:
+    def run_all(
+        self,
+        groups: list[dict[str, Any]],
+        group_branch: dict[str, str],
+        delivered: dict[str, list[str]] | None = None,
+    ) -> dict[str, Any]:
         # Free every group branch from the main working tree so per-group verify
         # worktrees can check them out (integration leaves the repo on the last
         # group branch).
         self._git("checkout", self.base)
 
-        merged: List[str] = []
-        quarantined: Dict[str, str] = {}
-        self_merged: Dict[str, str] = {}
-        armed: Dict[str, str] = {}
-        post_merge_regressed: Dict[str, str] = {}
+        merged: list[str] = []
+        quarantined: dict[str, str] = {}
+        self_merged: dict[str, str] = {}
+        armed: dict[str, str] = {}
+        post_merge_regressed: dict[str, str] = {}
         lock = threading.Lock()
 
         # Verify in dependency WAVES (base before its dependents). Within a wave
@@ -1467,36 +1679,69 @@ class Verifier:
         # self._git_lock; the CI polling + gh calls overlap.
         pending = [g for g in groups if group_branch.get(g["name"]) is not None]
         while pending:
-            ready: List[Dict[str, Any]] = []
-            deferred: List[Dict[str, Any]] = []
+            ready: list[dict[str, Any]] = []
+            deferred: list[dict[str, Any]] = []
             for g in pending:
                 deps = g.get("depends_on", [])
-                dep_q = next((d for d in deps if d in quarantined or d in self_merged), None)
-                if dep_q:  # a failed base cascades to its dependents (dropped, not deferred)
+                dep_q = next(
+                    (d for d in deps if d in quarantined or d in self_merged), None
+                )
+                if (
+                    dep_q
+                ):  # a failed base cascades to its dependents (dropped, not deferred)
                     quarantined[g["name"]] = f"base group '{dep_q}' failed verification"
-                    self.log(f"  SKIP [{g['name']:9}] -- {quarantined[g['name']]} (worktree kept)")
+                    self.log(
+                        f"  SKIP [{g['name']:9}] -- {quarantined[g['name']]} (worktree kept)"
+                    )
                     continue
-                if next((d for d in deps if d in group_branch and d not in merged), None):
-                    deferred.append(g)  # a dependency is still being verified -> next wave
+                if next(
+                    (d for d in deps if d in group_branch and d not in merged), None
+                ):
+                    deferred.append(
+                        g
+                    )  # a dependency is still being verified -> next wave
                 else:
                     ready.append(g)
             if not ready:
                 for g in deferred:  # no progress possible -> quarantine the remainder
                     quarantined[g["name"]] = "dependency never merged"
-                    self.log(f"  SKIP [{g['name']:9}] -- dependency never merged (worktree kept)")
+                    self.log(
+                        f"  SKIP [{g['name']:9}] -- dependency never merged (worktree kept)"
+                    )
                 break
             if len(ready) == 1:
-                self.verify_one(ready[0], group_branch[ready[0]["name"]],
-                                delivered, merged, quarantined, lock, self_merged, armed,
-                                post_merge_regressed)
+                self.verify_one(
+                    ready[0],
+                    group_branch[ready[0]["name"]],
+                    delivered,
+                    merged,
+                    quarantined,
+                    lock,
+                    self_merged,
+                    armed,
+                    post_merge_regressed,
+                )
             else:
-                self.log(f"  VERIFY WAVE [parallel x{len(ready)}]: "
-                         f"{', '.join(g['name'] for g in ready)}")
+                self.log(
+                    f"  VERIFY WAVE [parallel x{len(ready)}]: "
+                    f"{', '.join(g['name'] for g in ready)}"
+                )
                 with ThreadPoolExecutor(max_workers=len(ready)) as ex:
-                    futs = [ex.submit(self.verify_one, g, group_branch[g["name"]],
-                                      delivered, merged, quarantined, lock, self_merged, armed,
-                                      post_merge_regressed)
-                            for g in ready]
+                    futs = [
+                        ex.submit(
+                            self.verify_one,
+                            g,
+                            group_branch[g["name"]],
+                            delivered,
+                            merged,
+                            quarantined,
+                            lock,
+                            self_merged,
+                            armed,
+                            post_merge_regressed,
+                        )
+                        for g in ready
+                    ]
                     for fut in futs:
                         fut.result()
             pending = deferred
@@ -1510,15 +1755,19 @@ class Verifier:
             for n, r in self_merged.items():
                 self.log(f"  - {n}: {r}")
         if post_merge_regressed:
-            self.log("VERIFY: POST-MERGE REGRESSIONS (merged, but broke the cumulative "
-                     "base -- human review required, no automatic revert):")
+            self.log(
+                "VERIFY: POST-MERGE REGRESSIONS (merged, but broke the cumulative "
+                "base -- human review required, no automatic revert):"
+            )
             for n, r in post_merge_regressed.items():
                 self.log(f"  - {n}: {r}")
-        self.log(f"VERIFY DONE: {len(merged)} merged, "
-                 f"{len(armed)} auto-merge armed (unconfirmed), "
-                 f"{len(quarantined)} quarantined, "
-                 f"{len(self_merged)} self-merge violation(s), "
-                 f"{len(post_merge_regressed)} post-merge regression(s).")
+        self.log(
+            f"VERIFY DONE: {len(merged)} merged, "
+            f"{len(armed)} auto-merge armed (unconfirmed), "
+            f"{len(quarantined)} quarantined, "
+            f"{len(self_merged)} self-merge violation(s), "
+            f"{len(post_merge_regressed)} post-merge regression(s)."
+        )
         return {
             "merged": merged,
             "automerge_armed": armed,
@@ -1530,12 +1779,17 @@ class Verifier:
         }
 
 
-def verify_and_cleanup(repo: Path, remote: str, base: str, spec_id: str,
-                       groups: List[Dict[str, Any]],
-                       group_branch: Dict[str, str],
-                       delivered: Optional[Dict[str, List[str]]] = None,
-                       git_lock: Optional[threading.Lock] = None,
-                       **kwargs) -> Dict[str, Any]:
+def verify_and_cleanup(
+    repo: Path,
+    remote: str,
+    base: str,
+    spec_id: str,
+    groups: list[dict[str, Any]],
+    group_branch: dict[str, str],
+    delivered: dict[str, list[str]] | None = None,
+    git_lock: threading.Lock | None = None,
+    **kwargs,
+) -> dict[str, Any]:
     """Convenience wrapper -- see Verifier for the injectable seams.
 
     `delivered` (group name -> task ids that actually merged) lets cleanup keep a
@@ -1544,4 +1798,5 @@ def verify_and_cleanup(repo: Path, remote: str, base: str, spec_id: str,
     worktree-registry mutations (add/remove/branch-delete/prune) serialize on it.
     """
     return Verifier(repo, remote, base, spec_id, git_lock=git_lock, **kwargs).run_all(
-        groups, group_branch, delivered)
+        groups, group_branch, delivered
+    )

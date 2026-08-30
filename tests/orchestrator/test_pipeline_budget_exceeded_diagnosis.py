@@ -24,8 +24,10 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import spawnlib  # noqa: E402
-from worktrail.orchestrator import live  # noqa: E402
+from worktrail.orchestrator import (
+    live,
+    spawnlib,
+)
 
 
 def _init_repo(root: Path) -> Path:
@@ -56,15 +58,20 @@ def _init_repo(root: Path) -> Path:
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t"], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.name", "T"], check=True)
-    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True
+    )
     subprocess.run(
         ["git", "-C", str(repo), "commit", "-q", "-m", "init"],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     return repo
 
 
-def _fake_report(task_id: str, role: str, sha: str = "deadbeef") -> spawnlib.SpawnResult:
+def _fake_report(
+    task_id: str, role: str, sha: str = "deadbeef"
+) -> spawnlib.SpawnResult:
     rs = '"PASSED"' if role == "review" else "null"
     text = (
         f'```json\n{{"task":"{task_id}","step":"{role}",'
@@ -86,28 +93,47 @@ class FakeSpawn:
             f = Path(wt) / "src" / f"{tid.lower()}.txt"
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_text(f"{tid}\n")
-            subprocess.run(["git", "-C", str(wt), "add", "-A"], check=True, capture_output=True)
+            subprocess.run(
+                ["git", "-C", str(wt), "add", "-A"], check=True, capture_output=True
+            )
             subprocess.run(
                 ["git", "-C", str(wt), "commit", "-q", "-m", f"feat({tid})"],
-                check=True, capture_output=True,
+                check=True,
+                capture_output=True,
             )
-        sha = subprocess.run(
-            ["git", "-C", str(wt), "rev-parse", "HEAD"],
-            capture_output=True, text=True,
-        ).stdout.strip()[:8] or "00000000"
+        sha = (
+            subprocess.run(
+                ["git", "-C", str(wt), "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+            ).stdout.strip()[:8]
+            or "00000000"
+        )
         return _fake_report(tid, role, sha)
 
 
 def _make_integrate_one():
     events = []
 
-    def integrate_one(g, repo, spec_id, tasks, remote, run_id, base,
-                      journal_path, status, group_branch, quarantined, **kwargs):
+    def integrate_one(
+        g,
+        repo,
+        spec_id,
+        tasks,
+        remote,
+        run_id,
+        base,
+        journal_path,
+        status,
+        group_branch,
+        quarantined,
+        **kwargs,
+    ):
         name = g["name"]
         events.append(name)
         deliverable = [t for t in g["tasks"] if status.get(t) in ("done", "completed")]
         if not deliverable:
-            quarantined[name] = "no deliverable tasks in {}".format(name)
+            quarantined[name] = f"no deliverable tasks in {name}"
             return None
         group_branch[name] = f"full-test/{name}"
         record_group = kwargs.get("_record_group")
@@ -122,8 +148,18 @@ class FakeVerifier:
     def __init__(self):
         self.calls = []
 
-    def verify_one(self, group, group_branch, delivered, merged, quarantined, lock,
-                   self_merged=None, armed=None, post_merge_regressed=None):
+    def verify_one(
+        self,
+        group,
+        group_branch,
+        delivered,
+        merged,
+        quarantined,
+        lock,
+        self_merged=None,
+        armed=None,
+        post_merge_regressed=None,
+    ):
         with lock:
             self.calls.append(group["name"])
             merged.append(group["name"])
@@ -167,7 +203,8 @@ class BudgetExceededDiagnosisTest(unittest.TestCase):
             # independent of whatever index plan_groups() assigns it.
             matches = [r for r in result["quarantined"].values() if "TASK-003" in r]
             self.assertEqual(
-                len(matches), 1,
+                len(matches),
+                1,
                 f"expected exactly one quarantined group naming TASK-003; got {result['quarantined']}",
             )
             reason = matches[0]

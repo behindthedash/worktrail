@@ -24,7 +24,7 @@ See `docs/design/conductor-lanes.md` §2 and §4.5.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from worktrail.orchestrator.coordinator import TAIL_KINDS
 from worktrail.taskformats.openspec import schema as os_schema
@@ -49,7 +49,7 @@ class OpenSpecTaskSource:
 
     # -- reads ---------------------------------------------------------------
 
-    def load(self, spec_ref: str) -> Tuple[str, List[Dict[str, Any]]]:
+    def load(self, spec_ref: str) -> tuple[str, list[dict[str, Any]]]:
         """Return `(change_id, tasks)` for one OpenSpec change.
 
         Dependency defaults, until the RunPlan supplies real edges:
@@ -76,15 +76,17 @@ class OpenSpecTaskSource:
         """
         tasks_md = self.task_file_path("", spec_ref)
         if not tasks_md.is_file():
-            raise FileNotFoundError(f"no tasks.md for change {spec_ref!r} at {tasks_md}")
+            raise FileNotFoundError(
+                f"no tasks.md for change {spec_ref!r} at {tasks_md}"
+            )
 
         parsed = os_schema.parse_tasks_md(tasks_md.read_text())
         rel = str(tasks_md.relative_to(self.repo_root))
 
-        out: List[Dict[str, Any]] = []
-        prev_in_group: Dict[str, str] = {}
-        prev_non_tail_in_group: Dict[str, str] = {}
-        non_tail_ids: List[str] = []
+        out: list[dict[str, Any]] = []
+        prev_in_group: dict[str, str] = {}
+        prev_non_tail_in_group: dict[str, str] = {}
+        non_tail_ids: list[str] = []
         for t in parsed.tasks:
             if t.kind in TAIL_KINDS:
                 # A tail task verifies or tidies up after the implementation. Its
@@ -121,7 +123,9 @@ class OpenSpecTaskSource:
             )
         return spec_ref, out
 
-    def validate_dependencies(self, spec_id: str, tasks: List[Dict[str, Any]]) -> List[str]:
+    def validate_dependencies(
+        self, spec_id: str, tasks: list[dict[str, Any]]
+    ) -> list[str]:
         """Report `deps` entries that name no task id in this change.
 
         Same-spec `deps` behaves identically to the devkit adapter: every
@@ -140,7 +144,7 @@ class OpenSpecTaskSource:
         unsupported for OpenSpec-format tasks" diagnostic.
         """
         task_ids = {t["id"] for t in tasks}
-        diagnostics: List[str] = []
+        diagnostics: list[str] = []
         for t in tasks:
             for dep in t.get("deps") or []:
                 if dep not in task_ids:
@@ -155,7 +159,7 @@ class OpenSpecTaskSource:
                 )
         return diagnostics
 
-    def resolve_external_dependency(self, dep_ref: str) -> Dict[str, Any]:
+    def resolve_external_dependency(self, dep_ref: str) -> dict[str, Any]:
         """Resolve a `<change-id>/<task-id>` cross-change reference."""
         unresolved = {
             "ref": dep_ref,
@@ -190,7 +194,9 @@ class OpenSpecTaskSource:
 
     # -- writes --------------------------------------------------------------
 
-    def mark_status(self, task_id: str, status: str, *, spec_ref: Optional[str] = None) -> bool:
+    def mark_status(
+        self, task_id: str, status: str, *, spec_ref: str | None = None
+    ) -> bool:
         """Tick the task's checkbox. Returns True if the file changed.
 
         Only `completed` is representable -- a checkbox is a boolean, and
@@ -204,7 +210,9 @@ class OpenSpecTaskSource:
             raise ValueError("OpenSpecTaskSource.mark_status requires spec_ref")
         if status != "completed":
             return False
-        return os_schema.set_task_checked(self.task_file_path(task_id, spec_ref), task_id, True)
+        return os_schema.set_task_checked(
+            self.task_file_path(task_id, spec_ref), task_id, True
+        )
 
     # -- paths ---------------------------------------------------------------
 

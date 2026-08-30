@@ -10,11 +10,11 @@ guards were removed -- the extraction half was never staleness-specific, and
 `check_deferred_work_handoff.has_handoff_coverage` still needs it to ask
 whether an existing brief already covers a deferred-work entry.
 """
+
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Tuple
-
+from typing import Any
 
 # Per-kind cap on the number of probes actually searched. When extraction
 # yields more candidates than this, the longest/most distinctive ones are
@@ -133,7 +133,7 @@ def _is_flag_token(token: str) -> bool:
     return bool(token) and bool(_FLAG_RE.match(token))
 
 
-def _cap(items: List[str], cap: int) -> Tuple[List[str], int]:
+def _cap(items: list[str], cap: int) -> tuple[list[str], int]:
     """Keep the `cap`-many longest/most distinctive items, preserving their
     original relative order; report how many were dropped."""
     if len(items) <= cap:
@@ -143,7 +143,7 @@ def _cap(items: List[str], cap: int) -> Tuple[List[str], int]:
     return ordered, len(items) - cap
 
 
-def extract_probes(text: str) -> Dict[str, Any]:
+def extract_probes(text: str) -> dict[str, Any]:
     """Extract path, symbol, and pull-request Evidence Probes from `text`.
 
     Purely textual -- consults no repository, never raises. Returns
@@ -168,8 +168,8 @@ def extract_probes(text: str) -> Dict[str, Any]:
     """
     text = text or ""
 
-    paths: List[str] = []
-    symbols: List[str] = []
+    paths: list[str] = []
+    symbols: list[str] = []
     seen_paths: set = set()
     seen_symbols: set = set()
 
@@ -195,11 +195,13 @@ def extract_probes(text: str) -> Dict[str, Any]:
             if token not in seen_paths:
                 seen_paths.add(token)
                 paths.append(token)
-        elif (_is_unquoted_symbol_token(token) or _is_flag_token(token)) and token not in seen_symbols:
+        elif (
+            _is_unquoted_symbol_token(token) or _is_flag_token(token)
+        ) and token not in seen_symbols:
             seen_symbols.add(token)
             symbols.append(token)
 
-    pull_requests: List[str] = []
+    pull_requests: list[str] = []
     seen_prs: set = set()
     for m in _PR_RE.finditer(text):
         num = m.group("num1") or m.group("num2")

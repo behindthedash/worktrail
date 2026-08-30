@@ -36,12 +36,12 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import yaml
 
-from . import work_queue as wq
 from ..shared.brief_frontmatter import serialize_frontmatter, validate_brief
+from . import work_queue as wq
 
 _FOCUS_KEY_PREFIX = "focus: "
 
@@ -54,7 +54,7 @@ _FOCUS_KEY_PREFIX = "focus: "
 _TRAILING_COMMENT_RE = re.compile(r"^\s+#")
 
 
-def _find_focus_span(raw_yaml: str) -> Optional[Tuple[Any, int, int]]:
+def _find_focus_span(raw_yaml: str) -> tuple[Any, int, int] | None:
     """Return `(parsed_value, start, end)` for the frontmatter block's
     `focus:` key, where `raw_yaml[start:end]` is the value node's exact
     on-disk text (via `yaml.compose()`'s node marks) -- or None when the
@@ -80,7 +80,10 @@ def _find_focus_span(raw_yaml: str) -> Optional[Tuple[Any, int, int]]:
             # a quoted/block scalar has no comment-truncation risk, and a
             # multi-line plain (folded) scalar has no single "rest of the
             # line" to recover from, so it is left to the existing behavior.
-            if value_node.style is None and value_node.start_mark.line == value_node.end_mark.line:
+            if (
+                value_node.style is None
+                and value_node.start_mark.line == value_node.end_mark.line
+            ):
                 line_end = raw_yaml.find("\n", end)
                 if line_end == -1:
                     line_end = len(raw_yaml)
@@ -99,12 +102,12 @@ def _canonical_focus_span(value: str) -> str:
     trailing newline, no `focus: ` key prefix)."""
     full = serialize_frontmatter({"focus": value})
     assert full.startswith(_FOCUS_KEY_PREFIX)
-    return full[len(_FOCUS_KEY_PREFIX):].rstrip("\n")
+    return full[len(_FOCUS_KEY_PREFIX) :].rstrip("\n")
 
 
-def build_preview(queue_base: Path) -> Dict[str, Any]:
-    proposals: List[Dict[str, Any]] = []
-    skipped: List[Dict[str, Any]] = []
+def build_preview(queue_base: Path) -> dict[str, Any]:
+    proposals: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
     for subdir in ("queue", "picked"):
         directory = queue_base / subdir
         if not directory.is_dir():
@@ -118,7 +121,9 @@ def build_preview(queue_base: Path) -> Dict[str, Any]:
 
             m = wq._FM_RE.match(content)
             if not m:
-                skipped.append({"id": path.stem, "reason": "no frontmatter block found"})
+                skipped.append(
+                    {"id": path.stem, "reason": "no frontmatter block found"}
+                )
                 continue
             raw_yaml = m.group(1)
 
@@ -134,22 +139,26 @@ def build_preview(queue_base: Path) -> Dict[str, Any]:
             span_text = raw_yaml[start:end]
 
             if not isinstance(value, str):
-                skipped.append({"id": path.stem, "reason": "focus: value is not a string"})
+                skipped.append(
+                    {"id": path.stem, "reason": "focus: value is not a string"}
+                )
                 continue
 
             if span_text.rstrip("\n") == _canonical_focus_span(value):
                 continue  # already canonical -- nothing to backfill
 
-            proposals.append({
-                "id": path.stem,
-                "path": str(path),
-                "focus_raw": span_text,
-                "focus_value": value,
-            })
+            proposals.append(
+                {
+                    "id": path.stem,
+                    "path": str(path),
+                    "focus_raw": span_text,
+                    "focus_value": value,
+                }
+            )
     return {"proposals": proposals, "skipped": skipped}
 
 
-def _locate_current_focus(content: str) -> Optional[Tuple[Any, Any, str, int, int]]:
+def _locate_current_focus(content: str) -> tuple[Any, Any, str, int, int] | None:
     """Re-locate the `focus:` value node's span in `content`'s *current*
     on-disk state (never a cached preview span). Returns
     `(fm_match, parsed_value, raw_yaml, start, end)`, or None when
@@ -170,7 +179,9 @@ def _locate_current_focus(content: str) -> Optional[Tuple[Any, Any, str, int, in
     return m, value, raw_yaml, start, end
 
 
-def _splice_focus(content: str, m: Any, raw_yaml: str, start: int, end: int, value: str) -> str:
+def _splice_focus(
+    content: str, m: Any, raw_yaml: str, start: int, end: int, value: str
+) -> str:
     """Replace only the `focus:` value node's `[start:end)` span within
     `raw_yaml` with `serialize_frontmatter`'s canonical rendering of
     `value`, leaving every other frontmatter line, the closing fence, and
@@ -186,12 +197,19 @@ def _splice_focus(content: str, m: Any, raw_yaml: str, start: int, end: int, val
     `>` -> canonical `|-`) or leaves the newline doubled.
     """
     original_span = raw_yaml[start:end]
-    trailing_newlines = original_span[len(original_span.rstrip("\n")):]
-    new_raw_yaml = raw_yaml[:start] + _canonical_focus_span(value) + trailing_newlines + raw_yaml[end:]
+    trailing_newlines = original_span[len(original_span.rstrip("\n")) :]
+    new_raw_yaml = (
+        raw_yaml[:start]
+        + _canonical_focus_span(value)
+        + trailing_newlines
+        + raw_yaml[end:]
+    )
     return content[: m.start(1)] + new_raw_yaml + content[m.end(1) :]
 
 
-def execute_apply(preview: Dict[str, Any], queue_base: Path, confirm: bool) -> Dict[str, Any]:
+def execute_apply(
+    preview: dict[str, Any], queue_base: Path, confirm: bool
+) -> dict[str, Any]:
     """Mirror `backfill_created_quoting.execute_apply`'s contract: `confirm=False`
     performs zero writes (every proposal reported skipped/"declined"); `confirm=True`
     re-locates each proposal's `focus:` span in the file's *current* content, skips
@@ -199,29 +217,43 @@ def execute_apply(preview: Dict[str, Any], queue_base: Path, confirm: bool) -> D
     preview observed, splices in the canonical rendering, then rolls the write back
     to the pre-splice content if either `validate_brief` or an exact re-parsed-value
     check fails."""
-    stamped: List[str] = []
-    skipped: List[Dict[str, Any]] = []
+    stamped: list[str] = []
+    skipped: list[dict[str, Any]] = []
 
     if not confirm:
         return {
             "stamped": stamped,
-            "skipped": [{"id": p["id"], "reason": "declined"} for p in preview["proposals"]],
+            "skipped": [
+                {"id": p["id"], "reason": "declined"} for p in preview["proposals"]
+            ],
         }
 
     for item in preview["proposals"]:
         path = Path(item["path"])
         if not path.is_file():
-            skipped.append({"id": item["id"], "reason": "file no longer present (claimed/moved/removed since preview)"})
+            skipped.append(
+                {
+                    "id": item["id"],
+                    "reason": "file no longer present (claimed/moved/removed since preview)",
+                }
+            )
             continue
 
         content = path.read_text(encoding="utf-8")
         located = _locate_current_focus(content)
         if located is None:
-            skipped.append({"id": item["id"], "reason": "frontmatter block or focus: key missing since preview"})
+            skipped.append(
+                {
+                    "id": item["id"],
+                    "reason": "frontmatter block or focus: key missing since preview",
+                }
+            )
             continue
         m, value, raw_yaml, start, end = located
         if raw_yaml[start:end] != item["focus_raw"]:
-            skipped.append({"id": item["id"], "reason": "focus: span changed since preview"})
+            skipped.append(
+                {"id": item["id"], "reason": "focus: span changed since preview"}
+            )
             continue
 
         new_content = _splice_focus(content, m, raw_yaml, start, end, value)
@@ -232,7 +264,10 @@ def execute_apply(preview: Dict[str, Any], queue_base: Path, confirm: bool) -> D
         if ok:
             new_m = wq._FM_RE.match(new_content)
             try:
-                reparsed_matches = new_m is not None and yaml.safe_load(new_m.group(1))["focus"] == value
+                reparsed_matches = (
+                    new_m is not None
+                    and yaml.safe_load(new_m.group(1))["focus"] == value
+                )
             except yaml.YAMLError:
                 reparsed_matches = False
 
@@ -251,7 +286,7 @@ def execute_apply(preview: Dict[str, Any], queue_base: Path, confirm: bool) -> D
     return {"stamped": stamped, "skipped": skipped}
 
 
-def _resolve_preview_payload(raw: str) -> Dict[str, Any]:
+def _resolve_preview_payload(raw: str) -> dict[str, Any]:
     """Parse `--preview`, accepting either `preview`'s full payload or a bare
     `{"proposals": [...]}` dict -- same shape-tolerance rationale as
     consolidate_cluster.py's `_resolve_draft_payload`."""
@@ -264,24 +299,40 @@ def _resolve_preview_payload(raw: str) -> Dict[str, Any]:
     return parsed
 
 
-def main(argv: Optional[List[str]] = None) -> int:
-    p = argparse.ArgumentParser(description="backfill focus: frontmatter scalar style on existing handoff briefs")
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(
+        description="backfill focus: frontmatter scalar style on existing handoff briefs"
+    )
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--queue-dir", default=None, help="override the queue base dir containing queue/ and picked/ (default: WORK_QUEUE_DIR)")
+    common.add_argument(
+        "--queue-dir",
+        default=None,
+        help="override the queue base dir containing queue/ and picked/ (default: WORK_QUEUE_DIR)",
+    )
     subs = p.add_subparsers(dest="cmd")
     subs.required = True
 
-    subs.add_parser("preview", parents=[common], help="scan queue/ + picked/ for non-canonical focus: spans; write nothing")
+    subs.add_parser(
+        "preview",
+        parents=[common],
+        help="scan queue/ + picked/ for non-canonical focus: spans; write nothing",
+    )
 
-    execute_p = subs.add_parser("execute", parents=[common], help="rewrite focus: spans from a preview")
+    execute_p = subs.add_parser(
+        "execute", parents=[common], help="rewrite focus: spans from a preview"
+    )
     execute_p.add_argument(
         "--preview",
         help="preview's JSON stdout; omit to read it from stdin instead "
         "(a full-corpus preview routinely exceeds the shell argv size limit)",
     )
     confirm_grp = execute_p.add_mutually_exclusive_group(required=True)
-    confirm_grp.add_argument("--confirm", action="store_true", help="write the canonicalized focus: spans")
-    confirm_grp.add_argument("--decline", action="store_true", help="perform zero writes")
+    confirm_grp.add_argument(
+        "--confirm", action="store_true", help="write the canonicalized focus: spans"
+    )
+    confirm_grp.add_argument(
+        "--decline", action="store_true", help="perform zero writes"
+    )
 
     args = p.parse_args(argv)
     queue_base = Path(args.queue_dir) if args.queue_dir else wq.base_dir()
@@ -292,7 +343,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     try:
-        preview = _resolve_preview_payload(args.preview if args.preview is not None else sys.stdin.read())
+        preview = _resolve_preview_payload(
+            args.preview if args.preview is not None else sys.stdin.read()
+        )
     except ValueError as exc:
         print(json.dumps({"error": str(exc)}), file=sys.stderr)
         return 2

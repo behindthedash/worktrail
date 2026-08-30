@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 """Unit tests for automerge_preflight.py (stdlib unittest, mirrors test_policy.py style)."""
+
 from __future__ import annotations
 
 import json
 import unittest
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from worktrail.router.automerge_preflight import (
-    is_preflight_query_error, owner_repo_from_git, repo_settings,
-    required_checks_gate, required_status_check_contexts,
+    is_preflight_query_error,
+    owner_repo_from_git,
+    repo_settings,
+    required_checks_gate,
+    required_status_check_contexts,
 )
 
-_NO_SLEEP = lambda seconds: None  # noqa: E731 -- tests must not incur real backoff delay
+_NO_SLEEP = lambda seconds: None
 
 
 class _FakeResult:
@@ -26,11 +30,11 @@ class _FakeRunner:
     tokens (enough to distinguish `git remote`, `gh api .../rules/...`, and
     `gh api repos/{owner_repo}`)."""
 
-    def __init__(self, responses: Dict[str, _FakeResult]) -> None:
+    def __init__(self, responses: dict[str, _FakeResult]) -> None:
         self.responses = responses
-        self.calls: List[List[str]] = []
+        self.calls: list[list[str]] = []
 
-    def __call__(self, cmd: List[str], **kwargs: Any) -> _FakeResult:
+    def __call__(self, cmd: list[str], **kwargs: Any) -> _FakeResult:
         self.calls.append(cmd)
         for key, result in self.responses.items():
             if cmd[: len(key.split())] == key.split():
@@ -38,11 +42,15 @@ class _FakeRunner:
         raise AssertionError(f"unscripted command: {cmd}")
 
 
-def _rules_response(contexts: List[str]) -> _FakeResult:
-    rules = [{
-        "type": "required_status_checks",
-        "parameters": {"required_status_checks": [{"context": c} for c in contexts]},
-    }]
+def _rules_response(contexts: list[str]) -> _FakeResult:
+    rules = [
+        {
+            "type": "required_status_checks",
+            "parameters": {
+                "required_status_checks": [{"context": c} for c in contexts]
+            },
+        }
+    ]
     return _FakeResult(0, json.dumps(rules))
 
 
@@ -52,15 +60,19 @@ def _repo_settings_response(allow_auto_merge: bool) -> _FakeResult:
 
 class TestOwnerRepoFromGit(unittest.TestCase):
     def test_parses_https_remote(self) -> None:
-        runner = _FakeRunner({
-            "git remote": _FakeResult(0, "https://github.com/acme/widgets.git\n"),
-        })
+        runner = _FakeRunner(
+            {
+                "git remote": _FakeResult(0, "https://github.com/acme/widgets.git\n"),
+            }
+        )
         self.assertEqual(owner_repo_from_git(Path("."), runner), "acme/widgets")
 
     def test_parses_ssh_remote(self) -> None:
-        runner = _FakeRunner({
-            "git remote": _FakeResult(0, "git@github.com:acme/widgets.git\n"),
-        })
+        runner = _FakeRunner(
+            {
+                "git remote": _FakeResult(0, "git@github.com:acme/widgets.git\n"),
+            }
+        )
         self.assertEqual(owner_repo_from_git(Path("."), runner), "acme/widgets")
 
     def test_no_remote_returns_none(self) -> None:
@@ -68,9 +80,11 @@ class TestOwnerRepoFromGit(unittest.TestCase):
         self.assertIsNone(owner_repo_from_git(Path("."), runner))
 
     def test_non_github_remote_returns_none(self) -> None:
-        runner = _FakeRunner({
-            "git remote": _FakeResult(0, "https://gitlab.com/acme/widgets.git\n"),
-        })
+        runner = _FakeRunner(
+            {
+                "git remote": _FakeResult(0, "https://gitlab.com/acme/widgets.git\n"),
+            }
+        )
         self.assertIsNone(owner_repo_from_git(Path("."), runner))
 
 
@@ -78,30 +92,42 @@ class TestRequiredStatusCheckContexts(unittest.TestCase):
     def test_extracts_contexts_from_ruleset_rules(self) -> None:
         runner = _FakeRunner({"gh api": _rules_response(["ci", "lint"])})
         self.assertEqual(
-            required_status_check_contexts("acme/widgets", "main", runner), ["ci", "lint"])
+            required_status_check_contexts("acme/widgets", "main", runner),
+            ["ci", "lint"],
+        )
 
     def test_zero_required_checks_is_empty_list_not_none(self) -> None:
         runner = _FakeRunner({"gh api": _rules_response([])})
-        self.assertEqual(required_status_check_contexts("acme/widgets", "main", runner), [])
+        self.assertEqual(
+            required_status_check_contexts("acme/widgets", "main", runner), []
+        )
 
     def test_ignores_non_status_check_rules(self) -> None:
         rules = [{"type": "deletion"}, {"type": "non_fast_forward"}]
         runner = _FakeRunner({"gh api": _FakeResult(0, json.dumps(rules))})
-        self.assertEqual(required_status_check_contexts("acme/widgets", "main", runner), [])
+        self.assertEqual(
+            required_status_check_contexts("acme/widgets", "main", runner), []
+        )
 
     def test_api_failure_returns_none(self) -> None:
         runner = _FakeRunner({"gh api": _FakeResult(1, "")})
-        self.assertIsNone(required_status_check_contexts("acme/widgets", "main", runner))
+        self.assertIsNone(
+            required_status_check_contexts("acme/widgets", "main", runner)
+        )
 
     def test_malformed_json_returns_none(self) -> None:
         runner = _FakeRunner({"gh api": _FakeResult(0, "not json")})
-        self.assertIsNone(required_status_check_contexts("acme/widgets", "main", runner))
+        self.assertIsNone(
+            required_status_check_contexts("acme/widgets", "main", runner)
+        )
 
 
 class TestRepoSettings(unittest.TestCase):
     def test_returns_parsed_settings(self) -> None:
         runner = _FakeRunner({"gh api": _repo_settings_response(True)})
-        self.assertEqual(repo_settings("acme/widgets", runner), {"allow_auto_merge": True})
+        self.assertEqual(
+            repo_settings("acme/widgets", runner), {"allow_auto_merge": True}
+        )
 
     def test_api_failure_returns_none(self) -> None:
         runner = _FakeRunner({"gh api": _FakeResult(1, "")})
@@ -113,9 +139,14 @@ class TestRequiredChecksGate(unittest.TestCase):
     # budget -- used to script "persistently fails" scenarios.
     _NEVER_RECOVERS = 10**9
 
-    def _runner(self, remote_ok: bool = True, contexts: Optional[List[str]] = None,
-                allow_auto_merge: bool = True,
-                rules_fail_count: int = 0, settings_fail_count: int = 0) -> "_RoutedRunner":
+    def _runner(
+        self,
+        remote_ok: bool = True,
+        contexts: list[str] | None = None,
+        allow_auto_merge: bool = True,
+        rules_fail_count: int = 0,
+        settings_fail_count: int = 0,
+    ) -> _RoutedRunner:
         """Route by URL content (rules query vs repo-settings query), not raw
         call order -- retries mean either query can be called multiple times,
         so a call-order counter (the pre-retry design) misattributes retried
@@ -123,8 +154,10 @@ class TestRequiredChecksGate(unittest.TestCase):
         script the first N calls to that query as failures before it starts
         succeeding (0 = always succeeds; `_NEVER_RECOVERS` = always fails)."""
         remote_result = (
-            _FakeResult(0, "https://github.com/acme/widgets.git\n") if remote_ok
-            else _FakeResult(1, ""))
+            _FakeResult(0, "https://github.com/acme/widgets.git\n")
+            if remote_ok
+            else _FakeResult(1, "")
+        )
         effective_contexts = contexts if contexts is not None else ["ci"]
         return _RoutedRunner(
             remote_result=remote_result,
@@ -166,7 +199,8 @@ class TestRequiredChecksGate(unittest.TestCase):
     def test_refuses_when_rules_query_persistently_fails(self) -> None:
         runner = self._runner(rules_fail_count=self._NEVER_RECOVERS)
         ok, reason = required_checks_gate(
-            Path("."), "main", runner, retries=3, sleep=_NO_SLEEP)
+            Path("."), "main", runner, retries=3, sleep=_NO_SLEEP
+        )
         self.assertFalse(ok)
         self.assertIn("gh api failed", reason)
         self.assertTrue(is_preflight_query_error(reason))
@@ -177,7 +211,8 @@ class TestRequiredChecksGate(unittest.TestCase):
     def test_refuses_when_settings_query_persistently_fails(self) -> None:
         runner = self._runner(contexts=["ci"], settings_fail_count=self._NEVER_RECOVERS)
         ok, reason = required_checks_gate(
-            Path("."), "main", runner, retries=3, sleep=_NO_SLEEP)
+            Path("."), "main", runner, retries=3, sleep=_NO_SLEEP
+        )
         self.assertFalse(ok)
         self.assertIn("could not query repo settings", reason)
         self.assertTrue(is_preflight_query_error(reason))
@@ -186,9 +221,12 @@ class TestRequiredChecksGate(unittest.TestCase):
         """The exact incident this brief fixes: one transient `gh api` blip on
         an otherwise-healthy repo must not read as "zero required checks" --
         it must retry and succeed."""
-        runner = self._runner(contexts=["ci"], allow_auto_merge=True, rules_fail_count=2)
+        runner = self._runner(
+            contexts=["ci"], allow_auto_merge=True, rules_fail_count=2
+        )
         ok, reason = required_checks_gate(
-            Path("."), "main", runner, retries=3, sleep=_NO_SLEEP)
+            Path("."), "main", runner, retries=3, sleep=_NO_SLEEP
+        )
         self.assertTrue(ok)
         self.assertIn("ci", reason)
         rules_calls = [c for c in runner.calls if "rules/branches" in " ".join(c)]
@@ -198,7 +236,8 @@ class TestRequiredChecksGate(unittest.TestCase):
         # Recovers on the 4th call, but retries is only 3 -- must still fail.
         runner = self._runner(contexts=["ci"], rules_fail_count=3)
         ok, reason = required_checks_gate(
-            Path("."), "main", runner, retries=3, sleep=_NO_SLEEP)
+            Path("."), "main", runner, retries=3, sleep=_NO_SLEEP
+        )
         self.assertFalse(ok)
         self.assertTrue(is_preflight_query_error(reason))
 
@@ -209,10 +248,17 @@ class _RoutedRunner(_FakeRunner):
     `*_fail_count` scripts the first N calls to that query as failures before
     switching to `*_result` -- 0 always succeeds, a huge count never recovers."""
 
-    def __init__(self, *, remote_result: _FakeResult, rules_result: _FakeResult,
-                 rules_failure: _FakeResult, rules_fail_count: int,
-                 settings_result: _FakeResult, settings_failure: _FakeResult,
-                 settings_fail_count: int) -> None:
+    def __init__(
+        self,
+        *,
+        remote_result: _FakeResult,
+        rules_result: _FakeResult,
+        rules_failure: _FakeResult,
+        rules_fail_count: int,
+        settings_result: _FakeResult,
+        settings_failure: _FakeResult,
+        settings_fail_count: int,
+    ) -> None:
         super().__init__({})
         self._remote_result = remote_result
         self._rules_result = rules_result
@@ -224,7 +270,7 @@ class _RoutedRunner(_FakeRunner):
         self._rules_calls = 0
         self._settings_calls = 0
 
-    def __call__(self, cmd: List[str], **kwargs: Any) -> _FakeResult:
+    def __call__(self, cmd: list[str], **kwargs: Any) -> _FakeResult:
         self.calls.append(cmd)
         joined = " ".join(cmd)
         if cmd[:2] == ["git", "remote"]:

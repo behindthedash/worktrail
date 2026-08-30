@@ -23,12 +23,12 @@ writes to the checked repo.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 from ..taskformats.devkit.checkbox_audit import audit_repo
 
 
-def check_repo_checkbox_drift(repo: Path) -> Dict[str, Any]:
+def check_repo_checkbox_drift(repo: Path) -> dict[str, Any]:
     """Run audit_repo() against repo's docs/specs/**/tasks/TASK-*.md tree.
 
     Returns a Checkbox Drift Finding: {"repo": str(repo), "findings": [...],

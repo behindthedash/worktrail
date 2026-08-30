@@ -66,6 +66,7 @@ Usage:
                            [--run RUN_RECORD]
   worktrail-preflight wait [--repo PATH] [--timeout SECONDS] [--interval SECONDS]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -78,7 +79,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
 
 from worktrail.addons.runner import AddOnFailure, run_addons
 
@@ -128,7 +129,7 @@ _DUPLICATE_MIN_WORDS = 2
 PR_CREATE_RE = re.compile(r"\bgh\s+pr\s+create\b")
 
 
-def labels_in_command(command: str) -> Set[str]:
+def labels_in_command(command: str) -> set[str]:
     """`--label`/`--label=` values present in a shell command line.
 
     `shlex.split` (not a flag regex) so quoted label values and the rest of
@@ -140,12 +141,12 @@ def labels_in_command(command: str) -> Set[str]:
         tokens = shlex.split(command)
     except ValueError:
         return set()
-    found: Set[str] = set()
+    found: set[str] = set()
     for i, token in enumerate(tokens):
         if token == "--label" and i + 1 < len(tokens):
             found.add(tokens[i + 1])
         elif token.startswith("--label="):
-            found.add(token[len("--label="):])
+            found.add(token[len("--label=") :])
     return found
 
 
@@ -166,11 +167,13 @@ def is_unparseable_command(command: str) -> bool:
     return False
 
 
-def _git(repo: Path, *args: str) -> Optional[str]:
+def _git(repo: Path, *args: str) -> str | None:
     try:
         result = subprocess.run(
             ["git", "-C", str(repo), *args],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -179,7 +182,7 @@ def _git(repo: Path, *args: str) -> Optional[str]:
     return result.stdout
 
 
-def _current_branch(repo: Path) -> Optional[str]:
+def _current_branch(repo: Path) -> str | None:
     ref = _git(repo, "symbolic-ref", "--short", "-q", "HEAD")
     if ref is None:
         return None
@@ -187,7 +190,7 @@ def _current_branch(repo: Path) -> Optional[str]:
     return ref or None
 
 
-def _sibling_worktree_branches(repo: Path) -> Dict[str, str]:
+def _sibling_worktree_branches(repo: Path) -> dict[str, str]:
     """branch name -> worktree path, for every OTHER worktree tracked by
     repo's canonical checkout.
 
@@ -199,21 +202,20 @@ def _sibling_worktree_branches(repo: Path) -> Dict[str, str]:
     output = _git(repo, "worktree", "list", "--porcelain")
     if output is None:
         return {}
-    branches: Dict[str, str] = {}
-    path: Optional[str] = None
+    branches: dict[str, str] = {}
+    path: str | None = None
     for line in output.splitlines():
         if line.startswith("worktree "):
-            path = line[len("worktree "):].strip()
+            path = line[len("worktree ") :].strip()
         elif line.startswith("branch "):
-            ref = line[len("branch "):].strip()
-            if ref.startswith("refs/heads/"):
-                ref = ref[len("refs/heads/"):]
+            ref = line[len("branch ") :].strip()
+            ref = ref.removeprefix("refs/heads/")
             if path is not None:
                 branches[ref] = path
     return branches
 
 
-def _open_pr_branches(repo: Path) -> List[str]:
+def _open_pr_branches(repo: Path) -> list[str]:
     """Open PR head branch names for repo's GitHub remote, via `gh pr list`.
 
     Best-effort only: `gh` missing, unauthenticated, offline, or lacking a
@@ -222,9 +224,21 @@ def _open_pr_branches(repo: Path) -> List[str]:
     """
     try:
         result = subprocess.run(
-            ["gh", "pr", "list", "--state", "open", "--json", "headRefName",
-             "--limit", "200"],
-            capture_output=True, text=True, timeout=15, cwd=str(repo),
+            [
+                "gh",
+                "pr",
+                "list",
+                "--state",
+                "open",
+                "--json",
+                "headRefName",
+                "--limit",
+                "200",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            cwd=str(repo),
         )
     except (OSError, subprocess.TimeoutExpired):
         return []
@@ -241,7 +255,7 @@ def _slug_words(branch: str) -> set:
     return set(_SLUG_WORD_RE.findall(branch.lower()))
 
 
-def _resolve_base_ref(repo: Path) -> Optional[str]:
+def _resolve_base_ref(repo: Path) -> str | None:
     """Find a ref to diff branches against for the touched-file check,
     preferring the repo policy's configured base_branch. Mirrors
     pre_pr_gate._resolve_base_ref / check_dod_verification._resolve_base_ref
@@ -251,7 +265,8 @@ def _resolve_base_ref(repo: Path) -> Optional[str]:
     configured = load_policy(repo).get("base_branch")
     candidates = (
         (f"origin/{configured}", configured)
-        if configured else pre_pr_gate.CANDIDATE_BASE_REFS
+        if configured
+        else pre_pr_gate.CANDIDATE_BASE_REFS
     )
     for ref in candidates:
         if _git(repo, "rev-parse", "--verify", "--quiet", ref) is not None:
@@ -259,7 +274,7 @@ def _resolve_base_ref(repo: Path) -> Optional[str]:
     return None
 
 
-def _touched_files(repo: Path, base_ref: str, ref: str) -> Optional[frozenset]:
+def _touched_files(repo: Path, base_ref: str, ref: str) -> frozenset | None:
     """Files `ref` has touched relative to its merge-base with `base_ref`,
     via `git diff base_ref...ref --name-only`. None means unresolvable (e.g.
     `ref` shares no history with `base_ref`) -- callers must treat that as
@@ -271,7 +286,7 @@ def _touched_files(repo: Path, base_ref: str, ref: str) -> Optional[frozenset]:
     return frozenset(line for line in diff.splitlines() if line.strip())
 
 
-def _pr_touched_files(repo: Path, branch: str) -> Optional[frozenset]:
+def _pr_touched_files(repo: Path, branch: str) -> frozenset | None:
     """Files touched by the open PR whose head branch is `branch`, via `gh
     pr diff --name-only`. Best-effort like `_open_pr_branches`: any failure
     (gh missing, unauthenticated, offline, a ref gh can't resolve) returns
@@ -280,7 +295,10 @@ def _pr_touched_files(repo: Path, branch: str) -> Optional[frozenset]:
     try:
         result = subprocess.run(
             ["gh", "pr", "diff", branch, "--name-only"],
-            capture_output=True, text=True, timeout=15, cwd=str(repo),
+            capture_output=True,
+            text=True,
+            timeout=15,
+            cwd=str(repo),
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -289,7 +307,7 @@ def _pr_touched_files(repo: Path, branch: str) -> Optional[frozenset]:
     return frozenset(line for line in result.stdout.splitlines() if line.strip())
 
 
-def duplicate_work_warning(repo: Path) -> Optional[str]:
+def duplicate_work_warning(repo: Path) -> str | None:
     """Warn (never deny) when the current branch closely overlaps an open
     PR's or a sibling worktree's branch, by branch-name word overlap or by
     touched-file overlap.
@@ -311,7 +329,7 @@ def duplicate_work_warning(repo: Path) -> Optional[str]:
     name_check_active = len(own_words) >= _DUPLICATE_MIN_WORDS
 
     here = str(repo.resolve())
-    candidates: Dict[str, Dict[str, str]] = {}
+    candidates: dict[str, dict[str, str]] = {}
     for other_branch, path in _sibling_worktree_branches(repo).items():
         if other_branch == branch:
             continue
@@ -350,7 +368,8 @@ def duplicate_work_warning(repo: Path) -> Optional[str]:
 
         if own_files and base_ref:
             other_files = (
-                _touched_files(repo, base_ref, other_branch) if kind == "worktree"
+                _touched_files(repo, base_ref, other_branch)
+                if kind == "worktree"
                 else _pr_touched_files(repo, other_branch)
             )
             if other_files:
@@ -365,7 +384,7 @@ def duplicate_work_warning(repo: Path) -> Optional[str]:
     return None
 
 
-def dirty_tree_reason(repo: Path) -> Optional[str]:
+def dirty_tree_reason(repo: Path) -> str | None:
     """Deny reason when tracked files carry uncommitted changes (staged or
     unstaged) relative to HEAD, or None when the tree is clean.
 
@@ -388,7 +407,9 @@ def dirty_tree_reason(repo: Path) -> Optional[str]:
     """
     diff = _git(repo, "diff", "HEAD", "--name-only")
     if diff is None:
-        return None  # unresolvable (e.g. no commits yet) -- no signal, never a false deny
+        return (
+            None  # unresolvable (e.g. no commits yet) -- no signal, never a false deny
+        )
     changed = [line for line in diff.splitlines() if line.strip()]
     if not changed:
         return None
@@ -403,7 +424,7 @@ def dirty_tree_reason(repo: Path) -> Optional[str]:
     )
 
 
-def tree_state(repo: Path) -> Optional[str]:
+def tree_state(repo: Path) -> str | None:
     """HEAD sha + working-tree status + diff digest.
 
     This is the exact marker contract the devops preflight hook established
@@ -422,14 +443,14 @@ def tree_state(repo: Path) -> Optional[str]:
     return digest.hexdigest()
 
 
-def marker_path(repo: Path) -> Optional[Path]:
+def marker_path(repo: Path) -> Path | None:
     git_dir = _git(repo, "rev-parse", "--absolute-git-dir")
     if git_dir is None:
         return None
     return Path(git_dir.strip()) / MARKER_NAME
 
 
-def read_marker(repo: Path) -> Optional[Dict[str, Any]]:
+def read_marker(repo: Path) -> dict[str, Any] | None:
     path = marker_path(repo)
     if path is None or not path.exists():
         return None
@@ -440,8 +461,11 @@ def read_marker(repo: Path) -> Optional[Dict[str, Any]]:
 
 
 def write_marker(
-    repo: Path, state: str, cmd: Optional[str], labels: Optional[List[str]] = None,
-) -> Optional[Path]:
+    repo: Path,
+    state: str,
+    cmd: str | None,
+    labels: list[str] | None = None,
+) -> Path | None:
     """Record a pass marker. ``labels`` (when the gate ran with ``--risk``) is
     the exact `go:risk-*`/`go:no-automerge` set the PR must carry -- computed
     once here so `check()` can hold `gh pr create` to it instead of trusting
@@ -456,14 +480,14 @@ def write_marker(
     return path
 
 
-def running_lock_path(repo: Path) -> Optional[Path]:
+def running_lock_path(repo: Path) -> Path | None:
     git_dir = _git(repo, "rev-parse", "--absolute-git-dir")
     if git_dir is None:
         return None
     return Path(git_dir.strip()) / RUNNING_LOCK_NAME
 
 
-def write_running_lock(repo: Path) -> Optional[Path]:
+def write_running_lock(repo: Path) -> Path | None:
     path = running_lock_path(repo)
     if path is None:
         return None
@@ -484,7 +508,7 @@ def remove_running_lock(repo: Path) -> None:
         pass
 
 
-def read_running_lock(repo: Path) -> Optional[Dict[str, Any]]:
+def read_running_lock(repo: Path) -> dict[str, Any] | None:
     path = running_lock_path(repo)
     if path is None or not path.exists():
         return None
@@ -533,7 +557,7 @@ def is_running(repo: Path) -> bool:
     return False
 
 
-def check(repo: Path, command: Optional[str] = None) -> Dict[str, Any]:
+def check(repo: Path, command: str | None = None) -> dict[str, Any]:
     """Marker-aware verdict: {"decision": "allow"|"deny", "reason": str,
     "warning": str (optional), "required_labels": [str] (optional)}.
 
@@ -561,8 +585,8 @@ def check(repo: Path, command: Optional[str] = None) -> Dict[str, Any]:
 
     warning = duplicate_work_warning(repo)
 
-    def _verdict(decision: str, reason: str) -> Dict[str, Any]:
-        verdict: Dict[str, Any] = {"decision": decision, "reason": reason}
+    def _verdict(decision: str, reason: str) -> dict[str, Any]:
+        verdict: dict[str, Any] = {"decision": decision, "reason": reason}
         if warning:
             verdict["warning"] = warning
         return verdict
@@ -594,7 +618,9 @@ def check(repo: Path, command: Optional[str] = None) -> Dict[str, Any]:
                     "(e.g. inside a `--body $(cat <<'EOF' ...)` heredoc). Use "
                     "`--body-file <path>` instead of an inline `--body` and retry.",
                 )
-            missing = [label for label in required if label not in labels_in_command(command)]
+            missing = [
+                label for label in required if label not in labels_in_command(command)
+            ]
             if missing:
                 return _verdict(
                     "deny",
@@ -666,10 +692,13 @@ def _run(args: argparse.Namespace) -> int:
 
     state = tree_state(repo)
     if state is None:
-        print("preflight: gate passed but tree state could not be recorded", file=sys.stderr)
+        print(
+            "preflight: gate passed but tree state could not be recorded",
+            file=sys.stderr,
+        )
         return 0
     cmd = pre_pr_gate.resolve_cmd(policy)
-    labels: List[str] = []
+    labels: list[str] = []
     if args.risk:
         gates = [g for g in args.gates.split(",") if g]
         labels, _eligible, _reason = pre_pr_gate.resolve_pr_labels(
@@ -709,39 +738,53 @@ def _wait(args: argparse.Namespace) -> int:
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = p.add_subparsers(dest="command", required=True)
 
     check_p = sub.add_parser(
-        "check", help="marker-aware verdict as JSON (for hook consumption)",
+        "check",
+        help="marker-aware verdict as JSON (for hook consumption)",
     )
-    check_p.add_argument("--repo", default=".", help="worktree root to check (default: cwd)")
     check_p.add_argument(
-        "--command", default=None, dest="gh_command",
+        "--repo", default=".", help="worktree root to check (default: cwd)"
+    )
+    check_p.add_argument(
+        "--command",
+        default=None,
+        dest="gh_command",
         help="the gh pr create/ready command being gated; when the pass marker "
-             "recorded required PR labels and this is a `gh pr create` command "
-             "missing one or more of them, the verdict denies",
+        "recorded required PR labels and this is a `gh pr create` command "
+        "missing one or more of them, the verdict denies",
     )
     check_p.set_defaults(func=_check)
 
     run_p = sub.add_parser(
-        "run", help="execute the full pre-PR gate and record a pass marker on success",
+        "run",
+        help="execute the full pre-PR gate and record a pass marker on success",
     )
-    run_p.add_argument("--repo", default=".", help="worktree root to gate (default: cwd)")
     run_p.add_argument(
-        "--risk", default=None, choices=("low", "medium", "high", "critical"),
+        "--repo", default=".", help="worktree root to gate (default: cwd)"
+    )
+    run_p.add_argument(
+        "--risk",
+        default=None,
+        choices=("low", "medium", "high", "critical"),
         help="classifier risk for this PR — forwarded to pre_pr_gate.py's --risk",
     )
     run_p.add_argument("--gates", default="", help="comma-separated classifier gates")
     run_p.add_argument("--target-branch", default="main", help="PR target branch")
     run_p.add_argument(
-        "--route", default=None,
+        "--route",
+        default=None,
         help="classified route letter — forwarded to pre_pr_gate.py's --route "
-             "for the require_human_routes check",
+        "for the require_human_routes check",
     )
     run_p.add_argument(
-        "--run", default=None, metavar="RUN_RECORD",
+        "--run",
+        default=None,
+        metavar="RUN_RECORD",
         help="shared go run record; enables mandatory scope completeness review",
     )
     run_p.set_defaults(func=_run)
@@ -749,15 +792,21 @@ def main(argv=None) -> int:
     wait_p = sub.add_parser(
         "wait",
         help="block until no `run` gate is executing against this repo "
-             "(running-lock file, not process-name matching)",
+        "(running-lock file, not process-name matching)",
     )
-    wait_p.add_argument("--repo", default=".", help="worktree root to watch (default: cwd)")
     wait_p.add_argument(
-        "--timeout", type=float, default=900.0,
+        "--repo", default=".", help="worktree root to watch (default: cwd)"
+    )
+    wait_p.add_argument(
+        "--timeout",
+        type=float,
+        default=900.0,
         help="max seconds to wait before giving up (default: 900)",
     )
     wait_p.add_argument(
-        "--interval", type=float, default=2.0,
+        "--interval",
+        type=float,
+        default=2.0,
         help="seconds between liveness checks (default: 2)",
     )
     wait_p.set_defaults(func=_wait)

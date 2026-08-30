@@ -10,22 +10,28 @@ Covers the behaviours reported from the first real parallel run:
 
 Run: python3 scripts/test_feedback_fixes.py
 """
+
 import os
 import sys
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import coordinator  # noqa: E402
-from worktrail.orchestrator import verify  # noqa: E402
+from worktrail.orchestrator import (
+    coordinator,
+    verify,
+)
 
 
 class ClassifyChecksInformational(unittest.TestCase):
     def test_informational_named_check_does_not_gate(self):
         rollup = [
             {"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS"},
-            {"name": "E2E (informational)", "status": "COMPLETED",
-             "conclusion": "FAILURE"},
+            {
+                "name": "E2E (informational)",
+                "status": "COMPLETED",
+                "conclusion": "FAILURE",
+            },
         ]
         pending, failing = verify.classify_checks(rollup)
         self.assertFalse(pending)
@@ -33,16 +39,24 @@ class ClassifyChecksInformational(unittest.TestCase):
 
     def test_non_required_check_does_not_gate(self):
         rollup = [
-            {"name": "lint", "status": "COMPLETED", "conclusion": "FAILURE",
-             "isRequired": False},
+            {
+                "name": "lint",
+                "status": "COMPLETED",
+                "conclusion": "FAILURE",
+                "isRequired": False,
+            },
         ]
         pending, failing = verify.classify_checks(rollup)
         self.assertEqual(failing, [])
 
     def test_required_failure_still_gates(self):
         rollup = [
-            {"name": "unit", "status": "COMPLETED", "conclusion": "FAILURE",
-             "isRequired": True},
+            {
+                "name": "unit",
+                "status": "COMPLETED",
+                "conclusion": "FAILURE",
+                "isRequired": True,
+            },
         ]
         pending, failing = verify.classify_checks(rollup)
         self.assertFalse(pending)
@@ -74,8 +88,12 @@ class OnlyFilterDepResolution(unittest.TestCase):
         self.assertIn("done", coordinator.DONE)  # invariant the fix relies on
         tasks = [
             {"id": "TASK-001", "status": "done", "deps": [], "files": ["a.py"]},
-            {"id": "TASK-002", "status": "pending", "deps": ["TASK-001"],
-             "files": ["b.py"]},
+            {
+                "id": "TASK-002",
+                "status": "pending",
+                "deps": ["TASK-001"],
+                "files": ["b.py"],
+            },
         ]
         frontier = coordinator.runnable_frontier(tasks, max_workers=4)
         self.assertEqual([t["id"] for t in frontier], ["TASK-002"])
@@ -83,8 +101,12 @@ class OnlyFilterDepResolution(unittest.TestCase):
     def test_dropped_dependency_would_block_dependent(self):
         # the OLD (buggy) behaviour: dep removed from the list entirely.
         tasks = [
-            {"id": "TASK-002", "status": "pending", "deps": ["TASK-001"],
-             "files": ["b.py"]},
+            {
+                "id": "TASK-002",
+                "status": "pending",
+                "deps": ["TASK-001"],
+                "files": ["b.py"],
+            },
         ]
         frontier = coordinator.runnable_frontier(tasks, max_workers=4)
         self.assertEqual(frontier, [])

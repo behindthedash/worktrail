@@ -2,9 +2,7 @@
 """Tests for impl-files warning in task_lifecycle.py"""
 
 import os
-import sys
 import tempfile
-import pytest
 
 from worktrail.taskformats.devkit.schema import validate_task
 
@@ -15,7 +13,9 @@ def _make_task(frontmatter: dict, body: str) -> str:
     """Write a temporary task file and return its path."""
     import yaml
 
-    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, encoding="utf-8")
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".md", delete=False, encoding="utf-8"
+    )
     tmp.write("---\n")
     tmp.write(yaml.dump(frontmatter, sort_keys=False))
     tmp.write("---\n")

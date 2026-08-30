@@ -17,7 +17,6 @@ def _write_task(d: Path, name: str, extra_fm: str = "") -> Path:
 
 
 class TestLoaderTimeoutProjection(unittest.TestCase):
-
     def _load(self, spec_dir: Path):
         _, tasks = loader.load_spec(str(spec_dir))
         return tasks

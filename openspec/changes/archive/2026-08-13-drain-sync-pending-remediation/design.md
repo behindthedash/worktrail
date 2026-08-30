@@ -70,10 +70,14 @@ def find_sync_pending_specs(
             spec_rel = resolve_spec_rel(repo_path, spec_id)
             if spec_rel is None:
                 continue
-            found.append({
-                "repo": repo_path, "repo_name": name,
-                "spec_id": spec_id, "spec_rel": spec_rel,
-            })
+            found.append(
+                {
+                    "repo": repo_path,
+                    "repo_name": name,
+                    "spec_id": spec_id,
+                    "spec_rel": spec_rel,
+                }
+            )
     return found
 ```
 
@@ -105,8 +109,19 @@ def build_sync_command(agent: str, repo: Path, spec_id: str) -> List[str]:
     own build_command() has no way to set process cwd itself (only codex/
     opencode's -C/--dir flags, which claude lacks), and drain.py's spawner
     contract has no cwd parameter for any existing row to widen."""
-    return ["worktrail-skill-dispatch", "--agent", agent, "--skill", "opsx:sync",
-            "--args", spec_id, "--cwd", str(repo), "--write"]
+    return [
+        "worktrail-skill-dispatch",
+        "--agent",
+        agent,
+        "--skill",
+        "opsx:sync",
+        "--args",
+        spec_id,
+        "--cwd",
+        str(repo),
+        "--write",
+    ]
+
 
 def resume_sync_pending(
     repos_root: Path,
@@ -121,9 +136,15 @@ def resume_sync_pending(
     stop the others. Thin wrapper over sweep_remediations, restricted to
     this row's key."""
     return sweep_remediations(
-        repos_root, go_repo, agent, timeout, spawner, log,
+        repos_root,
+        go_repo,
+        agent,
+        timeout,
+        spawner,
+        log,
         keys=["sync_pending"],
     )["sync_pending"]
+
 
 def _run_sync_pending(
     finding: Dict[str, Any],
@@ -136,10 +157,13 @@ def _run_sync_pending(
     cmd = build_sync_command(agent, repo, spec_id)
     log(f"resume-sync-pending: {finding['repo_name']} {spec_id} -> /opsx:sync")
     outcome = spawner(cmd, timeout)
-    log(f"resume-sync-pending result: {finding['repo_name']} {spec_id} "
-        f"exit={outcome.exit_code}")
+    log(
+        f"resume-sync-pending result: {finding['repo_name']} {spec_id} "
+        f"exit={outcome.exit_code}"
+    )
     return {
-        "repo": finding["repo_name"], "spec_id": spec_id,
+        "repo": finding["repo_name"],
+        "spec_id": spec_id,
         "exit_code": outcome.exit_code,
     }
 ```
@@ -154,19 +178,29 @@ doesn't branch on which row produced them.
 ```python
 REMEDIATION_TABLE: List[StageRemediation] = [
     StageRemediation(
-        "quarantined_budget_exhausted", "resume-quarantine",
+        "quarantined_budget_exhausted",
+        "resume-quarantine",
         find_resumable_quarantines,
-        functools.partial(_resume_via_full_real, label="resume-quarantine")),
+        functools.partial(_resume_via_full_real, label="resume-quarantine"),
+    ),
     StageRemediation(
-        "verify_pending", "resume-verify-pending",
+        "verify_pending",
+        "resume-verify-pending",
         find_verify_pending_specs,
-        functools.partial(_resume_via_full_real, label="resume-verify-pending")),
+        functools.partial(_resume_via_full_real, label="resume-verify-pending"),
+    ),
     StageRemediation(
-        "stale_bookkeeping", "close-stale-bookkeeping",
-        find_stale_bookkeeping_specs, close_stale_bookkeeping),
+        "stale_bookkeeping",
+        "close-stale-bookkeeping",
+        find_stale_bookkeeping_specs,
+        close_stale_bookkeeping,
+    ),
     StageRemediation(
-        "sync_pending", "resume-sync-pending",
-        find_sync_pending_specs, _run_sync_pending),
+        "sync_pending",
+        "resume-sync-pending",
+        find_sync_pending_specs,
+        _run_sync_pending,
+    ),
 ]
 ```
 

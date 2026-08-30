@@ -39,7 +39,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from ..shared.brief_frontmatter import split_frontmatter
 
@@ -108,7 +108,7 @@ def _identifier_tokens(text: str) -> set:
     return {t.lower() for t in _IDENTIFIER_RE.findall(text)}
 
 
-def _normalize_repo(val: Any) -> Optional[str]:
+def _normalize_repo(val: Any) -> str | None:
     """Return None for absent/null repos so they never match each other."""
     if val is None or val in ("null", "~", ""):
         return None
@@ -132,14 +132,14 @@ def _id_matches(identifier: str, stem: str) -> bool:
 
 
 def _is_blocked_by_pair(
-    new_fm: Dict[str, Any],
+    new_fm: dict[str, Any],
     new_stem: str,
-    cand_fm: Dict[str, Any],
+    cand_fm: dict[str, Any],
     cand_stem: str,
 ) -> bool:
     """True if either brief has a blocked-by entry pointing at the other."""
 
-    def _deps(fm: Dict[str, Any]) -> List[str]:
+    def _deps(fm: dict[str, Any]) -> list[str]:
         raw = fm.get("blocked-by") or []
         if isinstance(raw, str):
             return [raw]
@@ -156,7 +156,7 @@ def _is_blocked_by_pair(
     return False
 
 
-def _md_files(d: Path) -> List[Path]:
+def _md_files(d: Path) -> list[Path]:
     if not d.is_dir():
         return []
     return [f for f in d.iterdir() if f.is_file() and f.suffix == ".md"]
@@ -167,7 +167,7 @@ def _md_files(d: Path) -> List[Path]:
 # ---------------------------------------------------------------------------
 
 
-def score_candidates(new_brief_path: Path, base_dir: Path) -> Dict[str, Any]:
+def score_candidates(new_brief_path: Path, base_dir: Path) -> dict[str, Any]:
     """Score non-done queue/picked briefs against new_brief_path.
 
     Returns {"auto_link": [...], "confirm": [...]} where each entry is
@@ -183,7 +183,7 @@ def score_candidates(new_brief_path: Path, base_dir: Path) -> Dict[str, Any]:
     new_focus_tokens = _tokenize(new_focus)
     new_body_tokens = _tokenize(new_body or "")
 
-    scored: List[Dict[str, Any]] = []
+    scored: list[dict[str, Any]] = []
 
     for subdir in ("queue", "picked"):
         for f in _md_files(base_dir / subdir):
@@ -243,7 +243,7 @@ def score_candidates(new_brief_path: Path, base_dir: Path) -> Dict[str, Any]:
     return {"auto_link": auto_link, "confirm": confirm}
 
 
-def _coerce_id_list(val: Any) -> List[str]:
+def _coerce_id_list(val: Any) -> list[str]:
     if isinstance(val, list):
         return [str(x) for x in val if x]
     if isinstance(val, str) and val:
@@ -251,7 +251,7 @@ def _coerce_id_list(val: Any) -> List[str]:
     return []
 
 
-def batch_candidates(brief_path: Path, base_dir: Path) -> Dict[str, Any]:
+def batch_candidates(brief_path: Path, base_dir: Path) -> dict[str, Any]:
     """Find queue/ briefs foldable into the same session as brief_path.
 
     Same-repo is required (no repo on the brief -> no candidates). Inclusion:
@@ -277,7 +277,7 @@ def batch_candidates(brief_path: Path, base_dir: Path) -> Dict[str, Any]:
     body_tokens = _tokenize(body or "")
     ident_tokens = _identifier_tokens(focus_text) | _identifier_tokens(body or "")
 
-    scored: List[Dict[str, Any]] = []
+    scored: list[dict[str, Any]] = []
     for f in _md_files(base_dir / "queue"):
         if f.resolve() == brief_path.resolve():
             continue
@@ -300,10 +300,14 @@ def batch_candidates(brief_path: Path, base_dir: Path) -> Dict[str, Any]:
             _overlap_coefficient(focus_tokens, _tokenize(cand_focus)) * 0.7
             + _overlap_coefficient(body_tokens, _tokenize(cand_body or "")) * 0.3
         )
-        cand_ident_tokens = _identifier_tokens(cand_focus) | _identifier_tokens(cand_body or "")
+        cand_ident_tokens = _identifier_tokens(cand_focus) | _identifier_tokens(
+            cand_body or ""
+        )
         shares_identifier = bool(ident_tokens & cand_ident_tokens)
 
-        subtotal = base_score + SAME_REPO_BOOST + (TARGET_SPEC_BOOST if spec_match else 0.0)
+        subtotal = (
+            base_score + SAME_REPO_BOOST + (TARGET_SPEC_BOOST if spec_match else 0.0)
+        )
         identifier_boost = IDENTIFIER_BOOST if shares_identifier else 0.0
         total = subtotal + identifier_boost
 
@@ -331,7 +335,8 @@ def batch_candidates(brief_path: Path, base_dir: Path) -> Dict[str, Any]:
     scored.sort(key=lambda c: (not c["_related"], -c["_score"]))
     return {
         "batch": [
-            {k: v for k, v in c.items() if not k.startswith("_")} for c in scored[:BATCH_TOP_N]
+            {k: v for k, v in c.items() if not k.startswith("_")}
+            for c in scored[:BATCH_TOP_N]
         ]
     }
 

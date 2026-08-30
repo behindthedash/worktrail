@@ -82,7 +82,9 @@ def run_check(repo: Path, check: dict) -> str | None:
             return f"file_tracked check failed: {path} does not exist"
         result = subprocess.run(
             ["git", "ls-files", "--error-unmatch", path],
-            cwd=str(repo), capture_output=True, text=True,
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
         )
         if result.returncode != 0:
             return f"file_tracked check failed: {path} is not tracked by git"
@@ -91,11 +93,15 @@ def run_check(repo: Path, check: dict) -> str | None:
     if check_type == "ac_checkboxes_complete":
         task_path = check.get("task_path")
         if not task_path:
-            return f"malformed ac_checkboxes_complete check (missing 'task_path'): {check}"
+            return (
+                f"malformed ac_checkboxes_complete check (missing 'task_path'): {check}"
+            )
         _frontmatter, error, body = read_task_file(repo / task_path)
         if error:
             return f"ac_checkboxes_complete check failed: {task_path} could not be read ({error})"
-        if not schema._all_checkboxes_checked(body, sections=schema.COMPLETION_AUDIT_SECTIONS):
+        if not schema._all_checkboxes_checked(
+            body, sections=schema.COMPLETION_AUDIT_SECTIONS
+        ):
             return (
                 f"ac_checkboxes_complete check failed: {task_path} has unchecked "
                 "Acceptance Criteria / Definition of Done checkboxes"
@@ -153,7 +159,9 @@ def derive_dod_checks(frontmatter: dict, body: str, task_relpath: str) -> list[d
     checks: list[dict] = [
         {"type": "ac_checkboxes_complete", "task_path": task_relpath},
     ]
-    exempt = {e for e in (frontmatter.get("files-sync-exempt") or []) if isinstance(e, str)}
+    exempt = {
+        e for e in (frontmatter.get("files-sync-exempt") or []) if isinstance(e, str)
+    }
     for path in frontmatter.get("files") or []:
         if path in exempt:
             continue
@@ -204,7 +212,9 @@ def _find_candidate_paths(repo: Path, basename: str, *, limit: int = 5) -> list[
     matches."""
     result = subprocess.run(
         ["git", "ls-files", f"*/{basename}", basename],
-        cwd=str(repo), capture_output=True, text=True,
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
     )
     if result.returncode != 0:
         return []
@@ -242,16 +252,21 @@ def classify_failure(repo: Path, check: dict, failure: str) -> dict:
         else:
             candidates = _find_candidate_paths(repo, Path(path).name) if path else []
             if len(candidates) == 1:
-                suggestion = f"path moved — update the declared path to '{candidates[0]}'"
-            elif candidates:
                 suggestion = (
-                    "path moved — ambiguous candidates found: "
-                    + ", ".join(candidates)
+                    f"path moved — update the declared path to '{candidates[0]}'"
+                )
+            elif candidates:
+                suggestion = "path moved — ambiguous candidates found: " + ", ".join(
+                    candidates
                 )
             else:
                 suggestion = "no candidate found elsewhere in the repo — verify by hand"
-        return {"classification": "stale-files-metadata", "suggestion": suggestion,
-                "check": check, "failure": failure}
+        return {
+            "classification": "stale-files-metadata",
+            "suggestion": suggestion,
+            "check": check,
+            "failure": failure,
+        }
 
     if check_type == "ac_checkboxes_complete":
         task_path = check.get("task_path")
@@ -262,8 +277,12 @@ def classify_failure(repo: Path, check: dict, failure: str) -> dict:
             "failure": failure,
         }
 
-    return {"classification": "unclassified", "suggestion": None,
-            "check": check, "failure": failure}
+    return {
+        "classification": "unclassified",
+        "suggestion": None,
+        "check": check,
+        "failure": failure,
+    }
 
 
 def check_task_file_with_hints(repo: Path, task_path: Path) -> list[dict]:
@@ -347,11 +366,15 @@ def format_remediation_hint(hint: dict) -> str:
 
 
 def _resolve_base_ref(repo: Path, configured: str | None) -> str | None:
-    candidates = (f"origin/{configured}", configured) if configured else CANDIDATE_BASE_REFS
+    candidates = (
+        (f"origin/{configured}", configured) if configured else CANDIDATE_BASE_REFS
+    )
     for ref in candidates:
         result = subprocess.run(
             ["git", "rev-parse", "--verify", "--quiet", ref],
-            cwd=str(repo), capture_output=True, text=True,
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
         )
         if result.returncode == 0:
             return ref
@@ -364,13 +387,17 @@ def _changed_paths_via_git(repo: Path, configured_base: str | None) -> list[str]
         return []
     merge_base = subprocess.run(
         ["git", "merge-base", "HEAD", base_ref],
-        cwd=str(repo), capture_output=True, text=True,
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
     )
     if merge_base.returncode != 0:
         return []
     diff = subprocess.run(
         ["git", "diff", "--name-only", merge_base.stdout.strip(), "HEAD"],
-        cwd=str(repo), capture_output=True, text=True,
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
     )
     if diff.returncode != 0:
         return []
@@ -381,15 +408,18 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     parser.add_argument("--repo", default=".", help="worktree root (default: cwd)")
     parser.add_argument(
-        "--base-branch", default=None,
+        "--base-branch",
+        default=None,
         help="base branch to diff against (default: try origin/main, origin/master, main, master)",
     )
     parser.add_argument(
-        "--all", action="store_true",
+        "--all",
+        action="store_true",
         help="audit every task file under docs/specs/, not just those changed in the current diff",
     )
     parser.add_argument(
-        "--suggest-remediation", action="store_true",
+        "--suggest-remediation",
+        action="store_true",
         help=(
             "classify each failure as 'stale files: metadata' (a declared path is "
             "missing/untracked — suggests the verified-correct path when found "

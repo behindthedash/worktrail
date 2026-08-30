@@ -37,12 +37,10 @@ import json
 import sys
 from collections import defaultdict, deque
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-from . import coordinator
-from . import dispatch
-from . import worktree
 from ..taskformats import resolve as taskformats
+from . import coordinator, dispatch, worktree
 
 _HERE = Path(__file__).resolve().parent
 _SKILL = _HERE.parent
@@ -89,11 +87,11 @@ class ScriptedSpawn:
 
     label = "placeholder spawn; no live agents"
 
-    def __init__(self, scenario: Optional[Dict[str, Any]] = None) -> None:
+    def __init__(self, scenario: dict[str, Any] | None = None) -> None:
         self.scenario = scenario or {}
-        self.counters: Dict = {}
+        self.counters: dict = {}
 
-    def __call__(self, role: str, task: Dict[str, Any]) -> str:
+    def __call__(self, role: str, task: dict[str, Any]) -> str:
         tid = task["id"]
         sha = f"{tid[-3:]}{role[:3]}"
         review_field = "null"
@@ -113,7 +111,7 @@ class ScriptedSpawn:
         )
 
 
-def _wrap_report(rep: Dict[str, Any], tid: str, role: str) -> str:
+def _wrap_report(rep: dict[str, Any], tid: str, role: str) -> str:
     body = {
         "task": tid,
         "step": role,
@@ -132,17 +130,19 @@ class ReplaySpawn:
     """Replays a recorded cassette. Deterministic -> golden-able. A missing
     entry raises (a sign the orchestrator's dispatch sequence changed)."""
 
-    def __init__(self, cassette: Dict[str, Any]) -> None:
+    def __init__(self, cassette: dict[str, Any]) -> None:
         entries = cassette.get("entries", [])
-        self._q: Dict = defaultdict(deque)
+        self._q: dict = defaultdict(deque)
         for e in entries:
             self._q[(e["task"], e["role"])].append(e.get("report", {}))
         self.label = f"replay cassette ({len(entries)} entries)"
 
-    def __call__(self, role: str, task: Dict[str, Any]) -> str:
+    def __call__(self, role: str, task: dict[str, Any]) -> str:
         key = (task["id"], role)
         if not self._q[key]:
-            raise KeyError(f"cassette has no remaining '{role}' report for {task['id']}")
+            raise KeyError(
+                f"cassette has no remaining '{role}' report for {task['id']}"
+            )
         return _wrap_report(self._q[key].popleft(), task["id"], role)
 
 
@@ -156,7 +156,7 @@ class LiveSpawn:
 
     label = "LIVE agent spawn"
 
-    def __call__(self, role: str, task: Dict[str, Any]) -> str:
+    def __call__(self, role: str, task: dict[str, Any]) -> str:
         raise NotImplementedError(
             "LiveSpawn requires Agent-tool wiring and an explicit go-ahead. "
             "Build the prompt with dispatch.build_worker_prompt(), spawn the "
@@ -169,17 +169,17 @@ class LiveSpawn:
 # --------------------------------------------------------------------------- #
 def simulate_text(
     spec_id: str,
-    tasks: List[Dict[str, Any]],
+    tasks: list[dict[str, Any]],
     spawn,
     max_workers: int = 3,
-    record: Optional[List] = None,
+    record: list | None = None,
 ) -> str:
     tasks = copy.deepcopy(tasks)
     for t in tasks:
         t.setdefault("status", "pending")
         t.setdefault("retry_count", 0)
     by_id = {t["id"]: t for t in tasks}
-    lines: List[str] = []
+    lines: list[str] = []
     out = lines.append
 
     base = worktree.default_worktree_base("/repos/app")
@@ -199,7 +199,7 @@ def simulate_text(
     out(f"  tail (serialized): {', '.join(plan['tail'])}")
     out("")
 
-    def drive(task: Dict[str, Any], indent: str) -> None:
+    def drive(task: dict[str, Any], indent: str) -> None:
         task["status"] = "claimed"
         while task["status"] not in TERMINAL:
             role = ROLE_BY_STATUS[task["status"]]
@@ -213,8 +213,14 @@ def simulate_text(
                     }
                 )
             old, new = dispatch.apply_report(tasks, report, role)
-            extra = f" [{report.get('review_status')}]" if role == dispatch.ROLE_REVIEW else ""
-            out(f"{indent}{role:9} {old:12} -> {new:11} (retry={task['retry_count']}){extra}")
+            extra = (
+                f" [{report.get('review_status')}]"
+                if role == dispatch.ROLE_REVIEW
+                else ""
+            )
+            out(
+                f"{indent}{role:9} {old:12} -> {new:11} (retry={task['retry_count']}){extra}"
+            )
 
     tick = 0
     while True:
@@ -226,7 +232,9 @@ def simulate_text(
         for ft in frontier:
             t = by_id[ft["id"]]
             wt = worktree.worktree_path(base, spec_id, t["id"])
-            out(f"  + git worktree add -b {worktree.task_branch(spec_id, t['id'])} {wt} <base>")
+            out(
+                f"  + git worktree add -b {worktree.task_branch(spec_id, t['id'])} {wt} <base>"
+            )
             drive(t, "        ")
             out(f"  = {t['id']} {t['status']} (sha {t.get('head_sha')})")
         out("")
@@ -238,7 +246,9 @@ def simulate_text(
     for g in order:
         out(f"  merge [{g['name']}] on {worktree.group_branch(spec_id, g['name'])}")
         for tid in g["tasks"]:
-            out(f"        git worktree remove {worktree.worktree_path(base, spec_id, tid)}")
+            out(
+                f"        git worktree remove {worktree.worktree_path(base, spec_id, tid)}"
+            )
     out("")
 
     out("TAIL (serialized on final integration branch):")
@@ -272,10 +282,10 @@ def simulate_text(
 # --------------------------------------------------------------------------- #
 # Input assembly
 # --------------------------------------------------------------------------- #
-def _build(file: Optional[str], spec: Optional[str], cassette: Optional[str]):
+def _build(file: str | None, spec: str | None, cassette: str | None):
     if spec:
         spec_id, tasks = taskformats.load_spec(spec)
-        scenario: Dict[str, Any] = {}
+        scenario: dict[str, Any] = {}
     else:
         data = json.load(open(file or DEFAULT_FIXTURE))
         spec_id = data.get("spec_id", "spec")
@@ -302,7 +312,9 @@ def main(argv=None) -> int:
     for name in ("run", "record", "check"):
         sp = sub.add_parser(name)
         sp.add_argument("--file", default=None)
-        sp.add_argument("--spec", default=None, help="spec folder relative to the repo root")
+        sp.add_argument(
+            "--spec", default=None, help="spec folder relative to the repo root"
+        )
         sp.add_argument("--cassette", default=None)
         if name == "run":
             sp.add_argument("--write-golden", default=None)
@@ -329,10 +341,11 @@ def main(argv=None) -> int:
 
     if args.cmd == "record":
         sid, tasks, spawn = _build(args.file, args.spec, args.cassette)
-        entries: List = []
+        entries: list = []
         simulate_text(sid, tasks, spawn, record=entries)
         Path(args.out).write_text(
-            json.dumps({"spec_id": sid, "entries": entries}, indent=2, sort_keys=True) + "\n"
+            json.dumps({"spec_id": sid, "entries": entries}, indent=2, sort_keys=True)
+            + "\n"
         )
         sys.stderr.write(f"[cassette written: {args.out} ({len(entries)} entries)]\n")
         return 0

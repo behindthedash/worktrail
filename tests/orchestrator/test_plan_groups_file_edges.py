@@ -51,9 +51,9 @@ def _cross_group_collisions(tasks):
         # base merges first, so a group stacked on base is sequenced after it
         if "base" in (ga, gb) and stacked.get(gb if ga == "base" else ga):
             continue
-        shared = coordinator._norm_files(by_id[a].get("files")) & coordinator._norm_files(
-            by_id[b].get("files")
-        )
+        shared = coordinator._norm_files(
+            by_id[a].get("files")
+        ) & coordinator._norm_files(by_id[b].get("files"))
         if shared:
             out.append((a, b, sorted(shared)))
     return out
@@ -75,7 +75,10 @@ class SharedFileEdgeTests(unittest.TestCase):
     def test_disjoint_tasks_stay_in_separate_groups(self):
         """The guard against over-merging: file edges must not become a blunt
         instrument that serialises everything."""
-        tasks = [_task("TASK-001", files=["src/a.ts"]), _task("TASK-002", files=["src/b.ts"])]
+        tasks = [
+            _task("TASK-001", files=["src/a.ts"]),
+            _task("TASK-002", files=["src/b.ts"]),
+        ]
         self.assertEqual(len(coordinator.plan_groups(tasks)), 2)
 
     def test_tasks_without_file_scope_are_not_welded_together(self):
@@ -125,7 +128,9 @@ class BaseInteractionTests(unittest.TestCase):
         by_name = {g["name"]: g for g in groups}
         self.assertIn("base", by_name)
         owner = next(g for g in groups if "TASK-004" in g["tasks"])
-        self.assertNotEqual(owner["name"], "base", "must sequence, not absorb into base")
+        self.assertNotEqual(
+            owner["name"], "base", "must sequence, not absorb into base"
+        )
         self.assertEqual(owner["depends_on"], ["base"])
 
     def test_a_group_disjoint_from_base_does_not_stack(self):
@@ -165,7 +170,10 @@ class NoCrossGroupCollisionsTests(unittest.TestCase):
         self.assertEqual(_cross_group_collisions(tasks), [])
 
     def test_wide_independent_fan_out_with_pairwise_overlaps(self):
-        tasks = [_task(f"TASK-{i:03d}", files=[f"src/{i}.ts", f"src/pair{i // 2}.ts"]) for i in range(1, 9)]
+        tasks = [
+            _task(f"TASK-{i:03d}", files=[f"src/{i}.ts", f"src/pair{i // 2}.ts"])
+            for i in range(1, 9)
+        ]
         self.assertEqual(_cross_group_collisions(tasks), [])
 
     def test_all_disjoint_stays_maximally_parallel(self):

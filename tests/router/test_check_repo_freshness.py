@@ -5,6 +5,7 @@ Exercises real throwaway git repos rather than mocking subprocess -- the
 logic under test *is* the git plumbing (fetch, rev-list --left-right), so a
 fake would just re-assert the mock.
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -16,7 +17,9 @@ from worktrail.router import check_repo_freshness as crf
 
 
 def _git(repo: str, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=True)
+    return subprocess.run(
+        ["git", *args], cwd=repo, capture_output=True, text=True, check=True
+    )
 
 
 def _init_repo(branch: str = "main") -> str:
@@ -32,8 +35,12 @@ def _init_repo(branch: str = "main") -> str:
 
 def _clone(remote: str, branch: str = "main") -> str:
     d = tempfile.mkdtemp(prefix="repo-freshness-clone-")
-    subprocess.run(["git", "clone", "-q", "-b", branch, remote, d],
-                    capture_output=True, text=True, check=True)
+    subprocess.run(
+        ["git", "clone", "-q", "-b", branch, remote, d],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
     _git(d, "config", "user.email", "test@example.com")
     _git(d, "config", "user.name", "Test")
     return d
@@ -74,8 +81,9 @@ class TestFreshAndBehind(unittest.TestCase):
         # Someone else pushes a new commit directly to the "remote" -- this
         # is exactly the kudera-consulting incident: the clone's checkout
         # never learns about it until something fetches.
-        (Path(remote) / "docs-specs-go-policy.yaml").write_text("pre_pr_cmd: true\n",
-                                                                  encoding="utf-8")
+        (Path(remote) / "docs-specs-go-policy.yaml").write_text(
+            "pre_pr_cmd: true\n", encoding="utf-8"
+        )
         _git(remote, "add", ".")
         _git(remote, "commit", "-q", "-m", "add policy upstream")
 

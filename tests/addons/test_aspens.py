@@ -103,7 +103,9 @@ class ConfigureTests(_MarkerIsolation):
     def test_configure_never_installs_aspens_own_hook(self):
         with tempfile.TemporaryDirectory() as t:
             worktree = Path(t)
-            ctx = SimpleNamespace(worktree=worktree, config={"target": "x", "backend": "y"})
+            ctx = SimpleNamespace(
+                worktree=worktree, config={"target": "x", "backend": "y"}
+            )
 
             with patch("worktrail.addons.aspens.subprocess.run") as mock_run:
                 mock_run.return_value = SimpleNamespace(returncode=0)
@@ -118,13 +120,18 @@ class RunTests(_MarkerIsolation):
         repo = root / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
-        subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t"], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "config", "user.email", "t@t"], check=True
+        )
         subprocess.run(["git", "-C", str(repo), "config", "user.name", "T"], check=True)
         (repo / "README.md").write_text("init\n")
-        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True
+        )
         subprocess.run(
             ["git", "-C", str(repo), "commit", "-q", "-m", "init"],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         return repo
 
@@ -139,7 +146,9 @@ class RunTests(_MarkerIsolation):
                     return SimpleNamespace(returncode=0, stdout="", stderr="")
                 return real_run(cmd, *args, **kwargs)
 
-            with patch("worktrail.addons.aspens.subprocess.run", side_effect=_fake_run) as mock_run:
+            with patch(
+                "worktrail.addons.aspens.subprocess.run", side_effect=_fake_run
+            ) as mock_run:
                 AspensAddOn().run(ctx)
 
             sync_call = next(

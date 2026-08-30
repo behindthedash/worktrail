@@ -21,13 +21,16 @@ from worktrail.router import cluster_telemetry as ct
 class DefaultLogPathTests(unittest.TestCase):
     def test_default_is_under_worktrail_home(self):
         with unittest.mock.patch.dict(
-                os.environ, {"WORKTRAIL_HOME": "/tmp/wt-home"}, clear=False):
+            os.environ, {"WORKTRAIL_HOME": "/tmp/wt-home"}, clear=False
+        ):
             os.environ.pop("GO_CLUSTER_LOG", None)
             path = ct.default_log_path()
         self.assertEqual(path, Path("/tmp/wt-home") / "cluster-log.jsonl")
 
     def test_env_override(self):
-        with unittest.mock.patch.dict(os.environ, {"GO_CLUSTER_LOG": "/tmp/custom-cluster-log.jsonl"}):
+        with unittest.mock.patch.dict(
+            os.environ, {"GO_CLUSTER_LOG": "/tmp/custom-cluster-log.jsonl"}
+        ):
             path = ct.default_log_path()
         self.assertEqual(path, Path("/tmp/custom-cluster-log.jsonl"))
 
@@ -67,7 +70,9 @@ class LogShownTests(unittest.TestCase):
         # A directory path can never be opened for append -- this must
         # degrade silently, not raise.
         try:
-            ct.log_shown([{"members": ["a"], "signals": [], "size": 1}], Path(self._tmp.name))
+            ct.log_shown(
+                [{"members": ["a"], "signals": [], "size": 1}], Path(self._tmp.name)
+            )
         except Exception as exc:  # noqa: BLE001
             self.fail(f"log_shown raised instead of degrading: {exc}")
 
@@ -98,7 +103,9 @@ class LogOutcomeTests(unittest.TestCase):
 
 class ReadRecordsTests(unittest.TestCase):
     def test_missing_file_returns_empty(self):
-        self.assertEqual(ct.read_records(Path("/tmp/definitely-not-a-real-cluster-log.jsonl")), [])
+        self.assertEqual(
+            ct.read_records(Path("/tmp/definitely-not-a-real-cluster-log.jsonl")), []
+        )
 
     def test_skips_unparseable_lines(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -106,7 +113,8 @@ class ReadRecordsTests(unittest.TestCase):
             log_path.write_text(
                 json.dumps({"kind": "shown", "members": ["a"]}) + "\n"
                 "not valid json\n"
-                + json.dumps({"kind": "outcome", "status": "declined"}) + "\n",
+                + json.dumps({"kind": "outcome", "status": "declined"})
+                + "\n",
                 encoding="utf-8",
             )
             records = ct.read_records(log_path)
@@ -125,10 +133,14 @@ class SummarizeTests(unittest.TestCase):
 
     def test_no_data_yields_none_precision(self):
         summary = ct.summarize(self.log_path)
-        self.assertEqual(summary, {"shown": 0, "consolidated": 0, "declined": 0, "precision": None})
+        self.assertEqual(
+            summary, {"shown": 0, "consolidated": 0, "declined": 0, "precision": None}
+        )
 
     def test_shown_only_no_decisions_yet(self):
-        ct.log_shown([{"members": ["a", "b", "c"], "signals": [], "size": 3}], self.log_path)
+        ct.log_shown(
+            [{"members": ["a", "b", "c"], "signals": [], "size": 3}], self.log_path
+        )
         summary = ct.summarize(self.log_path)
         self.assertEqual(summary["shown"], 1)
         self.assertIsNone(summary["precision"])

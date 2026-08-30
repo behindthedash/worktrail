@@ -70,7 +70,9 @@ def _reply(**per_task) -> str:
 # --------------------------------------------------------------------------- #
 # The P3 acceptance criterion
 # --------------------------------------------------------------------------- #
-def test_compiling_the_same_change_twice_spawns_nothing_the_second_time(change, tmp_path):
+def test_compiling_the_same_change_twice_spawns_nothing_the_second_time(
+    change, tmp_path
+):
     spec_id, tasks = _load(change)
     spawn = RecordingSpawn(
         _reply(
@@ -103,7 +105,12 @@ def test_editing_the_change_invalidates_the_cache(change, tmp_path):
     spawn = RecordingSpawn(
         _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
     )
-    kwargs = dict(spec_id=spec_id, repo=change.parents[2], cache_dir=tmp_path / "plans", spawn=spawn)
+    kwargs = dict(
+        spec_id=spec_id,
+        repo=change.parents[2],
+        cache_dir=tmp_path / "plans",
+        spawn=spawn,
+    )
 
     conductor_compile.compile_run_plan(change, tasks, **kwargs)
     (change / "proposal.md").write_text("## Why\nBecause, revised.\n")
@@ -113,8 +120,15 @@ def test_editing_the_change_invalidates_the_cache(change, tmp_path):
 
 def test_force_recompiles_over_a_cache_hit(change, tmp_path):
     spec_id, tasks = _load(change)
-    spawn = RecordingSpawn(_reply(**{t["id"]: {"files": ["a.py"], "deps": []} for t in tasks}))
-    kwargs = dict(spec_id=spec_id, repo=change.parents[2], cache_dir=tmp_path / "plans", spawn=spawn)
+    spawn = RecordingSpawn(
+        _reply(**{t["id"]: {"files": ["a.py"], "deps": []} for t in tasks})
+    )
+    kwargs = dict(
+        spec_id=spec_id,
+        repo=change.parents[2],
+        cache_dir=tmp_path / "plans",
+        spawn=spawn,
+    )
 
     conductor_compile.compile_run_plan(change, tasks, **kwargs)
     conductor_compile.compile_run_plan(change, tasks, force=True, **kwargs)
@@ -130,7 +144,9 @@ def test_force_recompiles_over_a_cache_hit(change, tmp_path):
 # resumed run would then disagree with the plan its own worktree was built
 # under. See `compile_run_plan`'s `allow_force_over_active_worktrees`.)
 # --------------------------------------------------------------------------- #
-def test_force_is_refused_when_task_worktrees_already_exist_for_the_spec(change, tmp_path):
+def test_force_is_refused_when_task_worktrees_already_exist_for_the_spec(
+    change, tmp_path
+):
     from worktrail.orchestrator import worktree as wt
 
     spec_id, tasks = _load(change)
@@ -140,7 +156,9 @@ def test_force_is_refused_when_task_worktrees_already_exist_for_the_spec(change,
     first_spawn = RecordingSpawn(
         _reply(**{t["id"]: {"files": ["a.py"], "deps": []} for t in tasks})
     )
-    first = conductor_compile.compile_run_plan(change, tasks, spawn=first_spawn, **kwargs)
+    first = conductor_compile.compile_run_plan(
+        change, tasks, spawn=first_spawn, **kwargs
+    )
     assert first_spawn.calls == 1
 
     wt_base = wt.default_worktree_base(repo)
@@ -153,8 +171,12 @@ def test_force_is_refused_when_task_worktrees_already_exist_for_the_spec(change,
     second = conductor_compile.compile_run_plan(
         change, tasks, force=True, spawn=second_spawn, log=logs.append, **kwargs
     )
-    assert second_spawn.calls == 0, "an active-worktree spec must not reach the model on --force"
-    assert second.to_dict() == first.to_dict(), "the plan already backing the worktree must be kept"
+    assert second_spawn.calls == 0, (
+        "an active-worktree spec must not reach the model on --force"
+    )
+    assert second.to_dict() == first.to_dict(), (
+        "the plan already backing the worktree must be kept"
+    )
     assert any("refused" in line for line in logs)
 
 
@@ -168,7 +190,9 @@ def test_allow_force_over_active_worktrees_overrides_the_guard(change, tmp_path)
     conductor_compile.compile_run_plan(
         change,
         tasks,
-        spawn=RecordingSpawn(_reply(**{t["id"]: {"files": ["a.py"], "deps": []} for t in tasks})),
+        spawn=RecordingSpawn(
+            _reply(**{t["id"]: {"files": ["a.py"], "deps": []} for t in tasks})
+        ),
         **kwargs,
     )
 
@@ -200,27 +224,37 @@ def test_force_still_recompiles_when_no_task_worktrees_exist(change, tmp_path):
     conductor_compile.compile_run_plan(
         change,
         tasks,
-        spawn=RecordingSpawn(_reply(**{t["id"]: {"files": ["a.py"], "deps": []} for t in tasks})),
+        spawn=RecordingSpawn(
+            _reply(**{t["id"]: {"files": ["a.py"], "deps": []} for t in tasks})
+        ),
         **kwargs,
     )
     second_spawn = RecordingSpawn(
         _reply(**{t["id"]: {"files": ["b.py"], "deps": []} for t in tasks})
     )
-    second = conductor_compile.compile_run_plan(change, tasks, force=True, spawn=second_spawn, **kwargs)
+    second = conductor_compile.compile_run_plan(
+        change, tasks, force=True, spawn=second_spawn, **kwargs
+    )
     assert second_spawn.calls == 1
     assert second.by_id()[tasks[0]["id"]].files == ("b.py",)
 
 
-def test_the_default_spawn_patch_site_still_receives_the_same_call_shape(change, tmp_path):
+def test_the_default_spawn_patch_site_still_receives_the_same_call_shape(
+    change, tmp_path
+):
     """`_default_spawn` remains the fallback seam for callers that patch it
     directly, so the positional call contract must stay intact."""
     from unittest.mock import patch
 
     spec_id, tasks = _load(change)
-    reply = _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
+    reply = _reply(
+        **{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks}
+    )
     kwargs = dict(spec_id=spec_id, repo=change.parents[2], cache_dir=tmp_path / "plans")
 
-    with patch("worktrail.conductor.compile._default_spawn", return_value=reply) as default_spawn:
+    with patch(
+        "worktrail.conductor.compile._default_spawn", return_value=reply
+    ) as default_spawn:
         plan = conductor_compile.compile_run_plan(change, tasks, **kwargs)
 
     assert plan.source == runplan.SOURCE_COMPILED
@@ -242,28 +276,32 @@ def test_the_default_spawn_policy_for_an_unconfigured_repo_keeps_pre_change_argv
     from unittest.mock import patch
 
     spec_id, tasks = _load(change)
-    reply = _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
+    reply = _reply(
+        **{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks}
+    )
 
-    with patch.dict(
-        "os.environ",
-        {
-            "GO_AGENT_CLI": "",
-            "ORCH_AGENT": "",
-            "OPENCODE_PARENT": "",
-            "CODEX_CI": "",
-            "CODEX_THREAD_ID": "",
-        },
-        clear=False,
+    with (
+        patch.dict(
+            "os.environ",
+            {
+                "GO_AGENT_CLI": "",
+                "ORCH_AGENT": "",
+                "OPENCODE_PARENT": "",
+                "CODEX_CI": "",
+                "CODEX_THREAD_ID": "",
+            },
+            clear=False,
+        ),
+        patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent,
     ):
-        with patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent:
-            spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
-            plan = conductor_compile.compile_run_plan(
-                change,
-                tasks,
-                spec_id=spec_id,
-                repo=change.parents[2],
-                cache_dir=tmp_path / "plans",
-            )
+        spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
+        plan = conductor_compile.compile_run_plan(
+            change,
+            tasks,
+            spec_id=spec_id,
+            repo=change.parents[2],
+            cache_dir=tmp_path / "plans",
+        )
 
     assert plan.source == runplan.SOURCE_COMPILED
     assert spawn_agent.call_count == 1
@@ -323,7 +361,9 @@ def test_repo_policy_roles_compile_tier_wins_over_default_tier(change, tmp_path)
     )
 
     spec_id, tasks = _load(change)
-    reply = _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
+    reply = _reply(
+        **{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks}
+    )
 
     with _clear_ambient_agent_env(tmp_path):
         with patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent:
@@ -348,15 +388,16 @@ def test_explicit_agent_and_model_override_a_declared_target(change, tmp_path):
     kwargs, override a declared target's configured model for one spawn --
     the "explicit-cell override" task 5.2's AC describes -- without touching
     the operator's real routing file."""
-    from unittest.mock import patch
-
     import os
+    from unittest.mock import patch
 
     from worktrail.router.policy import ROUTING_FILE_ENV, resolved_routing_file_path
 
     repo = change.parents[2]
     spec_id, tasks = _load(change)
-    reply = _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
+    reply = _reply(
+        **{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks}
+    )
     seeded_routing_file = resolved_routing_file_path()
     seeded_routing_text = seeded_routing_file.read_text(encoding="utf-8")
 
@@ -369,8 +410,15 @@ def test_explicit_agent_and_model_override_a_declared_target(change, tmp_path):
                 spec_id=spec_id,
                 repo=repo,
                 cache_dir=tmp_path / "plans",
-                spawn=lambda prompt, cwd, timeout, log: conductor_compile._default_spawn(
-                    prompt, cwd, timeout, log, agent="claude-sub", model="override-model"
+                spawn=lambda prompt, cwd, timeout, log: (
+                    conductor_compile._default_spawn(
+                        prompt,
+                        cwd,
+                        timeout,
+                        log,
+                        agent="claude-sub",
+                        model="override-model",
+                    )
                 ),
             )
 
@@ -419,13 +467,23 @@ def test_cli_agent_and_model_flags_override_a_declared_target(tmp_path):
 
     d = _git_change_dir(tmp_path)
     spec_id, tasks = _load(d)
-    reply = _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
+    reply = _reply(
+        **{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks}
+    )
 
     with _clear_ambient_agent_env(tmp_path):
         with patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent:
             spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
             rc = conductor_compile.main(
-                [str(d), "--agent", "codex-sub", "--model", "override-model", "--cache-dir", str(tmp_path / "plans")]
+                [
+                    str(d),
+                    "--agent",
+                    "codex-sub",
+                    "--model",
+                    "override-model",
+                    "--cache-dir",
+                    str(tmp_path / "plans"),
+                ]
             )
 
     assert rc == 0
@@ -441,7 +499,9 @@ def test_cli_agent_flag_alone_prefers_the_target_within_the_resolved_tier(tmp_pa
 
     d = _git_change_dir(tmp_path)
     spec_id, tasks = _load(d)
-    reply = _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
+    reply = _reply(
+        **{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks}
+    )
 
     with _clear_ambient_agent_env(tmp_path):
         with patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent:
@@ -468,13 +528,21 @@ def test_cli_fallback_chain_flag_is_accepted_but_does_not_reach_spawn_agent(tmp_
 
     d = _git_change_dir(tmp_path)
     spec_id, tasks = _load(d)
-    reply = _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
+    reply = _reply(
+        **{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks}
+    )
 
     with _clear_ambient_agent_env(tmp_path):
         with patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent:
             spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
             rc = conductor_compile.main(
-                [str(d), "--fallback-chain", "codex-sub,opencode-free", "--cache-dir", str(tmp_path / "plans")]
+                [
+                    str(d),
+                    "--fallback-chain",
+                    "codex-sub,opencode-free",
+                    "--cache-dir",
+                    str(tmp_path / "plans"),
+                ]
             )
 
     assert rc == 0
@@ -493,7 +561,9 @@ def test_ambient_orch_model_env_vars_do_not_influence_compile_spawn(change, tmp_
     from unittest.mock import patch
 
     spec_id, tasks = _load(change)
-    reply = _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
+    reply = _reply(
+        **{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks}
+    )
 
     env = {
         "GO_AGENT_CLI": "",
@@ -528,10 +598,14 @@ def test_an_injected_spawn_callable_bypasses_the_policy_resolver(change, tmp_pat
     from unittest.mock import patch
 
     spec_id, tasks = _load(change)
-    reply = _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
+    reply = _reply(
+        **{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks}
+    )
     spawn = RecordingSpawn(reply)
 
-    with patch("worktrail.router.invocation_context.resolve", side_effect=AssertionError):
+    with patch(
+        "worktrail.router.invocation_context.resolve", side_effect=AssertionError
+    ):
         plan = conductor_compile.compile_run_plan(
             change,
             tasks,
@@ -556,11 +630,23 @@ def test_a_format_that_already_declares_file_scope_is_seeded_not_compiled(tmp_pa
     d.mkdir(parents=True)
     (d / "tasks.md").write_text("## 1. G\n\n- [ ] 1.1 a\n")
     tasks = [
-        {"id": "1.1", "title": "a", "kind": "impl", "deps": [], "files": ["src/a.py"], "path": "tasks.md"}
+        {
+            "id": "1.1",
+            "title": "a",
+            "kind": "impl",
+            "deps": [],
+            "files": ["src/a.py"],
+            "path": "tasks.md",
+        }
     ]
     spawn = RecordingSpawn("should never be called")
     plan = conductor_compile.compile_run_plan(
-        d, tasks, spec_id="seeded", repo=tmp_path, cache_dir=tmp_path / "plans", spawn=spawn
+        d,
+        tasks,
+        spec_id="seeded",
+        repo=tmp_path,
+        cache_dir=tmp_path / "plans",
+        spawn=spawn,
     )
     assert spawn.calls == 0
     assert plan.source == runplan.SOURCE_SEED
@@ -581,7 +667,14 @@ def test_a_change_with_full_declared_scope_is_seeded_with_tail_tasks_exempt(tmp_
         "## 1. Core\n\n- [ ] 1.1 a\n- [ ] 1.2 b\n\n## 2. Verify\n\n- [ ] 2.1 [e2e] check\n- [ ] 2.2 [cleanup] tidy\n"
     )
     tasks = [
-        {"id": "1.1", "title": "a", "kind": "impl", "deps": [], "files": ["src/a.py"], "path": "tasks.md"},
+        {
+            "id": "1.1",
+            "title": "a",
+            "kind": "impl",
+            "deps": [],
+            "files": ["src/a.py"],
+            "path": "tasks.md",
+        },
         {
             "id": "1.2",
             "title": "b",
@@ -590,17 +683,38 @@ def test_a_change_with_full_declared_scope_is_seeded_with_tail_tasks_exempt(tmp_
             "files": ["src/a.py", "src/b.py"],
             "path": "tasks.md",
         },
-        {"id": "2.1", "title": "check", "kind": "e2e", "deps": ["1.1", "1.2"], "files": [], "path": "tasks.md"},
-        {"id": "2.2", "title": "tidy", "kind": "cleanup", "deps": ["2.1"], "files": [], "path": "tasks.md"},
+        {
+            "id": "2.1",
+            "title": "check",
+            "kind": "e2e",
+            "deps": ["1.1", "1.2"],
+            "files": [],
+            "path": "tasks.md",
+        },
+        {
+            "id": "2.2",
+            "title": "tidy",
+            "kind": "cleanup",
+            "deps": ["2.1"],
+            "files": [],
+            "path": "tasks.md",
+        },
     ]
     assert conductor_compile.needs_compile(tasks) == []
 
     spawn = RecordingSpawn("should never be called")
     plan = conductor_compile.compile_run_plan(
-        d, tasks, spec_id="fully-declared", repo=tmp_path, cache_dir=tmp_path / "plans", spawn=spawn
+        d,
+        tasks,
+        spec_id="fully-declared",
+        repo=tmp_path,
+        cache_dir=tmp_path / "plans",
+        spawn=spawn,
     )
 
-    assert spawn.calls == 0, "declared scope on every implementation task must satisfy compilation with no model call"
+    assert spawn.calls == 0, (
+        "declared scope on every implementation task must satisfy compilation with no model call"
+    )
     assert plan.source == runplan.SOURCE_SEED
     by_id = plan.by_id()
     assert by_id["1.1"].files == ("src/a.py",)
@@ -609,7 +723,9 @@ def test_a_change_with_full_declared_scope_is_seeded_with_tail_tasks_exempt(tmp_
     assert by_id["2.2"].files == ()
 
 
-def test_partial_declared_scope_is_kept_and_gaps_fall_back_when_spawning_fails(tmp_path):
+def test_partial_declared_scope_is_kept_and_gaps_fall_back_when_spawning_fails(
+    tmp_path,
+):
     """Requirement: Declared scope satisfies compilation without a model call.
 
     A declared file scope on one task must survive a failed compile attempt
@@ -622,8 +738,22 @@ def test_partial_declared_scope_is_kept_and_gaps_fall_back_when_spawning_fails(t
     d.mkdir(parents=True)
     (d / "tasks.md").write_text("## 1. Core\n\n- [ ] 1.1 a\n- [ ] 1.2 b\n")
     tasks = [
-        {"id": "1.1", "title": "a", "kind": "impl", "deps": [], "files": ["src/a.py"], "path": "tasks.md"},
-        {"id": "1.2", "title": "b", "kind": "impl", "deps": ["1.1"], "files": [], "path": "tasks.md"},
+        {
+            "id": "1.1",
+            "title": "a",
+            "kind": "impl",
+            "deps": [],
+            "files": ["src/a.py"],
+            "path": "tasks.md",
+        },
+        {
+            "id": "1.2",
+            "title": "b",
+            "kind": "impl",
+            "deps": ["1.1"],
+            "files": [],
+            "path": "tasks.md",
+        },
     ]
     assert conductor_compile.needs_compile(tasks) == ["1.2"]
 
@@ -631,13 +761,22 @@ def test_partial_declared_scope_is_kept_and_gaps_fall_back_when_spawning_fails(t
         raise RuntimeError("provider unavailable")
 
     plan = conductor_compile.compile_run_plan(
-        d, tasks, spec_id="partial", repo=tmp_path, cache_dir=tmp_path / "plans", spawn=boom
+        d,
+        tasks,
+        spec_id="partial",
+        repo=tmp_path,
+        cache_dir=tmp_path / "plans",
+        spawn=boom,
     )
 
     assert plan.source == runplan.SOURCE_BASELINE
     by_id = plan.by_id()
-    assert by_id["1.1"].files == ("src/a.py",), "the declared scope must survive a failed compile"
-    assert by_id["1.2"].files == (), "an undeclared task stays scopeless once the model call fails"
+    assert by_id["1.1"].files == ("src/a.py",), (
+        "the declared scope must survive a failed compile"
+    )
+    assert by_id["1.2"].files == (), (
+        "an undeclared task stays scopeless once the model call fails"
+    )
     assert "provider unavailable" in plan.notes[0]
 
 
@@ -653,13 +792,34 @@ def test_editing_a_declared_files_scope_invalidates_the_cached_plan(tmp_path):
     d.mkdir(parents=True)
     (d / "tasks.md").write_text("## 1. Core\n\n- [ ] 1.1 a\n- [ ] 1.2 b\n")
     tasks = [
-        {"id": "1.1", "title": "a", "kind": "impl", "deps": [], "files": ["src/a.py"], "path": "tasks.md"},
-        {"id": "1.2", "title": "b", "kind": "impl", "deps": ["1.1"], "files": [], "path": "tasks.md"},
+        {
+            "id": "1.1",
+            "title": "a",
+            "kind": "impl",
+            "deps": [],
+            "files": ["src/a.py"],
+            "path": "tasks.md",
+        },
+        {
+            "id": "1.2",
+            "title": "b",
+            "kind": "impl",
+            "deps": ["1.1"],
+            "files": [],
+            "path": "tasks.md",
+        },
     ]
     spawn = RecordingSpawn(
-        _reply(**{"1.1": {"files": ["src/a.py"], "deps": []}, "1.2": {"files": ["src/b.py"], "deps": ["1.1"]}})
+        _reply(
+            **{
+                "1.1": {"files": ["src/a.py"], "deps": []},
+                "1.2": {"files": ["src/b.py"], "deps": ["1.1"]},
+            }
+        )
     )
-    kwargs = dict(spec_id="declared", repo=tmp_path, cache_dir=tmp_path / "plans", spawn=spawn)
+    kwargs = dict(
+        spec_id="declared", repo=tmp_path, cache_dir=tmp_path / "plans", spawn=spawn
+    )
 
     first = conductor_compile.compile_run_plan(d, tasks, **kwargs)
     assert spawn.calls == 1
@@ -673,7 +833,9 @@ def test_editing_a_declared_files_scope_invalidates_the_cached_plan(tmp_path):
         }
     )
     second = conductor_compile.compile_run_plan(d, tasks, **kwargs)
-    assert second.fingerprint != first.fingerprint, "editing a declaration must not serve a stale cached plan"
+    assert second.fingerprint != first.fingerprint, (
+        "editing a declaration must not serve a stale cached plan"
+    )
     assert spawn.calls == 2, "a changed fingerprint must miss the cache and recompile"
     assert second.by_id()["1.1"].files == ("src/a.py", "src/a_helper.py")
 
@@ -682,7 +844,13 @@ def test_tail_tasks_do_not_by_themselves_trigger_a_compile(tmp_path):
     """A tail is held out of the fan-out on `kind`, so it never reaches the
     file-collision check and inferring a scope for it would buy nothing."""
     tasks = [
-        {"id": "1.1", "kind": "impl", "files": ["src/a.py"], "deps": [], "path": "t.md"},
+        {
+            "id": "1.1",
+            "kind": "impl",
+            "files": ["src/a.py"],
+            "deps": [],
+            "path": "t.md",
+        },
         {"id": "2.1", "kind": "e2e", "files": [], "deps": ["1.1"], "path": "t.md"},
     ]
     assert conductor_compile.needs_compile(tasks) == []
@@ -712,8 +880,14 @@ def test_no_llm_returns_the_baseline_without_spawning(change, tmp_path):
     "reply, why",
     [
         ("I could not work it out, sorry.", "no JSON at all"),
-        ('```json\n{"tasks": [{"id": "9.9", "files": []}]}\n```', "an id that does not exist"),
-        ('```json\n{"tasks": [{"id": "1.1", "files": []}]}\n```', "an incomplete task set"),
+        (
+            '```json\n{"tasks": [{"id": "9.9", "files": []}]}\n```',
+            "an id that does not exist",
+        ),
+        (
+            '```json\n{"tasks": [{"id": "1.1", "files": []}]}\n```',
+            "an incomplete task set",
+        ),
         ('```json\n{"tasks": "nope"}\n```', "the wrong shape"),
     ],
 )
@@ -739,7 +913,12 @@ def test_a_failed_spawn_does_not_raise(change, tmp_path):
 
     spec_id, tasks = _load(change)
     plan = conductor_compile.compile_run_plan(
-        change, tasks, spec_id=spec_id, repo=change.parents[2], cache_dir=tmp_path / "plans", spawn=boom
+        change,
+        tasks,
+        spec_id=spec_id,
+        repo=change.parents[2],
+        cache_dir=tmp_path / "plans",
+        spawn=boom,
     )
     assert plan.source == runplan.SOURCE_BASELINE
     assert "provider unavailable" in plan.notes[0]
@@ -753,12 +932,16 @@ def test_a_rejected_response_is_not_cached(change, tmp_path):
     kwargs = dict(spec_id=spec_id, repo=change.parents[2], cache_dir=tmp_path / "plans")
 
     conductor_compile.compile_run_plan(change, tasks, spawn=bad, **kwargs)
-    good = RecordingSpawn(_reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks}))
+    good = RecordingSpawn(
+        _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
+    )
     plan = conductor_compile.compile_run_plan(change, tasks, spawn=good, **kwargs)
     assert good.calls == 1 and plan.source == runplan.SOURCE_COMPILED
 
 
-@pytest.mark.parametrize("bad", ["../../etc/passwd", "/etc/passwd", "src/../../out.py", "..\\..\\win.py"])
+@pytest.mark.parametrize(
+    "bad", ["../../etc/passwd", "/etc/passwd", "src/../../out.py", "..\\..\\win.py"]
+)
 def test_paths_escaping_the_repo_reject_the_plan(change, tmp_path, bad):
     """A file scope becomes a worker's declared write surface, so a traversal
     here is not a formatting nit. `lstrip("./")` looked like the obvious
@@ -773,7 +956,12 @@ def test_paths_escaping_the_repo_reject_the_plan(change, tmp_path, bad):
         }
     )
     plan = conductor_compile.compile_run_plan(
-        change, tasks, spec_id=spec_id, repo=change.parents[2], cache_dir=tmp_path / "plans", spawn=RecordingSpawn(reply)
+        change,
+        tasks,
+        spec_id=spec_id,
+        repo=change.parents[2],
+        cache_dir=tmp_path / "plans",
+        spawn=RecordingSpawn(reply),
     )
     assert plan.source == runplan.SOURCE_BASELINE
 
@@ -788,7 +976,12 @@ def test_a_leading_dot_slash_is_normalised_not_rejected(change, tmp_path):
         }
     )
     plan = conductor_compile.compile_run_plan(
-        change, tasks, spec_id=spec_id, repo=change.parents[2], cache_dir=tmp_path / "plans", spawn=RecordingSpawn(reply)
+        change,
+        tasks,
+        spec_id=spec_id,
+        repo=change.parents[2],
+        cache_dir=tmp_path / "plans",
+        spawn=RecordingSpawn(reply),
     )
     assert plan.by_id()["1.1"].files == ("src/parser.py",)
 
@@ -805,7 +998,12 @@ def test_kind_comes_from_the_artifact_not_the_model(change, tmp_path):
         }
     )
     plan = conductor_compile.compile_run_plan(
-        change, tasks, spec_id=spec_id, repo=change.parents[2], cache_dir=tmp_path / "plans", spawn=RecordingSpawn(reply)
+        change,
+        tasks,
+        spec_id=spec_id,
+        repo=change.parents[2],
+        cache_dir=tmp_path / "plans",
+        spawn=RecordingSpawn(reply),
     )
     assert plan.by_id()["2.1"].kind == "e2e"
 
@@ -851,7 +1049,12 @@ def test_the_rescan_instruction_reaches_the_formatted_prompt(change, tmp_path):
         _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
     )
     conductor_compile.compile_run_plan(
-        change, tasks, spec_id=spec_id, repo=change.parents[2], cache_dir=tmp_path / "plans", spawn=spawn
+        change,
+        tasks,
+        spec_id=spec_id,
+        repo=change.parents[2],
+        cache_dir=tmp_path / "plans",
+        spawn=spawn,
     )
     assert "Final pass" in spawn.prompts[0]
 
@@ -874,7 +1077,9 @@ def test_the_cli_fails_loudly_when_impl_tasks_stay_scope_less(tmp_path, capsys):
     d = repo / "openspec" / "changes" / "add-thing"
     d.mkdir(parents=True)
     (d / "proposal.md").write_text("## Why\nBecause.\n")
-    (d / "tasks.md").write_text("## 1. Core\n\n- [ ] 1.1 Add the parser\n- [ ] 1.2 Wire the endpoint\n")
+    (d / "tasks.md").write_text(
+        "## 1. Core\n\n- [ ] 1.1 Add the parser\n- [ ] 1.2 Wire the endpoint\n"
+    )
 
     rc = conductor_compile.main([str(d), "--no-llm"])
     err = capsys.readouterr().err
@@ -883,7 +1088,9 @@ def test_the_cli_fails_loudly_when_impl_tasks_stay_scope_less(tmp_path, capsys):
     assert "scope" in err.lower()
 
 
-def test_the_cli_json_mode_also_fails_loudly_when_impl_tasks_stay_scope_less(tmp_path, capsys):
+def test_the_cli_json_mode_also_fails_loudly_when_impl_tasks_stay_scope_less(
+    tmp_path, capsys
+):
     """`--json` used to return 0 right after printing the plan, never reaching
     the scope-gap check below -- so a caller that only checks the exit code
     (rather than parsing stdout for empty `files`) saw a silent success even
@@ -896,7 +1103,9 @@ def test_the_cli_json_mode_also_fails_loudly_when_impl_tasks_stay_scope_less(tmp
     d = repo / "openspec" / "changes" / "add-thing"
     d.mkdir(parents=True)
     (d / "proposal.md").write_text("## Why\nBecause.\n")
-    (d / "tasks.md").write_text("## 1. Core\n\n- [ ] 1.1 Add the parser\n- [ ] 1.2 Wire the endpoint\n")
+    (d / "tasks.md").write_text(
+        "## 1. Core\n\n- [ ] 1.1 Add the parser\n- [ ] 1.2 Wire the endpoint\n"
+    )
 
     rc = conductor_compile.main([str(d), "--no-llm", "--json"])
     out, err = capsys.readouterr()
@@ -912,7 +1121,9 @@ def test_the_cli_json_mode_also_fails_loudly_when_impl_tasks_stay_scope_less(tmp
 # CI's requirement-coverage gate (req_coverage.find_uncovered_requirements) --
 # same shape as the scope-gap tests above, for the new `uncovered` term.
 # --------------------------------------------------------------------------- #
-def test_the_cli_fails_loudly_when_a_declared_requirement_has_no_task_coverage(tmp_path, capsys):
+def test_the_cli_fails_loudly_when_a_declared_requirement_has_no_task_coverage(
+    tmp_path, capsys
+):
     """The task itself is fully scoped (no scope gap, no collision), so this
     isolates the requirement-coverage gate: a requirement newly declared under
     `## ADDED Requirements` but never named in `tasks.md` must still fail the
@@ -978,7 +1189,9 @@ def test_the_cli_json_mode_also_fails_loudly_when_a_declared_requirement_has_no_
     json.loads(out)
 
 
-def test_the_cli_exits_zero_when_the_declared_requirement_is_covered_in_tasks_md(tmp_path, capsys):
+def test_the_cli_exits_zero_when_the_declared_requirement_is_covered_in_tasks_md(
+    tmp_path, capsys
+):
     """The counterpart: naming the requirement anywhere in `tasks.md` (D1's
     case-insensitive name-presence match) must not trip the gate."""
     import subprocess
@@ -1037,7 +1250,10 @@ def test_the_cli_auto_repairs_an_unordered_file_collision(tmp_path, capsys):
         **{
             "1.1": {"files": ["src/parser.py"], "deps": []},
             "2.1": {"files": ["tests/check.py"], "deps": ["1.1"]},
-            "2.2": {"files": ["tests/check.py"], "deps": ["1.1"]},  # siblings, unordered
+            "2.2": {
+                "files": ["tests/check.py"],
+                "deps": ["1.1"],
+            },  # siblings, unordered
         }
     )
     with patch("worktrail.conductor.compile._default_spawn", return_value=reply):
@@ -1051,8 +1267,8 @@ def test_the_cli_auto_repairs_an_unordered_file_collision(tmp_path, capsys):
 
 
 def test_the_cli_json_mode_auto_repairs_an_unordered_file_collision(tmp_path, capsys):
-    from unittest.mock import patch
     import subprocess
+    from unittest.mock import patch
 
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -1109,7 +1325,9 @@ def test_a_passing_cli_run_writes_the_compile_marker(tmp_path, capsys):
     d = repo / "openspec" / "changes" / "add-thing"
     d.mkdir(parents=True)
     (d / "proposal.md").write_text("## Why\nBecause.\n")
-    (d / "tasks.md").write_text("## 1. Core\n\n- [ ] 1.1 Add the parser\n- [ ] 1.2 Wire the endpoint\n")
+    (d / "tasks.md").write_text(
+        "## 1. Core\n\n- [ ] 1.1 Add the parser\n- [ ] 1.2 Wire the endpoint\n"
+    )
 
     reply = _reply(
         **{
@@ -1144,7 +1362,9 @@ def test_a_failing_cli_run_does_not_write_the_compile_marker(tmp_path, capsys):
     d = repo / "openspec" / "changes" / "add-thing"
     d.mkdir(parents=True)
     (d / "proposal.md").write_text("## Why\nBecause.\n")
-    (d / "tasks.md").write_text("## 1. Core\n\n- [ ] 1.1 Add the parser\n- [ ] 1.2 Wire the endpoint\n")
+    (d / "tasks.md").write_text(
+        "## 1. Core\n\n- [ ] 1.1 Add the parser\n- [ ] 1.2 Wire the endpoint\n"
+    )
 
     rc = conductor_compile.main([str(d), "--no-llm"])
     capsys.readouterr()
@@ -1204,7 +1424,10 @@ def test_a_stale_marker_is_overwritten_by_the_next_passing_compile(tmp_path, cap
         rc = conductor_compile.main([str(d)])
     capsys.readouterr()
     assert rc == 0
-    assert marker.read_text(encoding="utf-8").strip() != "stale-fingerprint-from-a-previous-content-version"
+    assert (
+        marker.read_text(encoding="utf-8").strip()
+        != "stale-fingerprint-from-a-previous-content-version"
+    )
 
 
 def test_the_cli_json_mode_exits_zero_when_every_task_gets_scope(tmp_path, capsys):
@@ -1219,7 +1442,9 @@ def test_the_cli_json_mode_exits_zero_when_every_task_gets_scope(tmp_path, capsy
     d = repo / "openspec" / "changes" / "add-thing"
     d.mkdir(parents=True)
     (d / "proposal.md").write_text("## Why\nBecause.\n")
-    (d / "tasks.md").write_text("## 1. Core\n\n- [ ] 1.1 Add the parser\n- [ ] 1.2 Wire the endpoint\n")
+    (d / "tasks.md").write_text(
+        "## 1. Core\n\n- [ ] 1.1 Add the parser\n- [ ] 1.2 Wire the endpoint\n"
+    )
 
     reply = (
         "```json\n"
@@ -1252,7 +1477,9 @@ def test_the_cli_exits_zero_when_every_task_gets_scope(tmp_path, capsys):
     d = repo / "openspec" / "changes" / "add-thing"
     d.mkdir(parents=True)
     (d / "proposal.md").write_text("## Why\nBecause.\n")
-    (d / "tasks.md").write_text("## 1. Core\n\n- [ ] 1.1 Add the parser\n- [ ] 1.2 Wire the endpoint\n")
+    (d / "tasks.md").write_text(
+        "## 1. Core\n\n- [ ] 1.1 Add the parser\n- [ ] 1.2 Wire the endpoint\n"
+    )
 
     reply = (
         "```json\n"
@@ -1320,7 +1547,12 @@ def test_a_purpose_within_the_configured_vocabulary_is_kept(change, tmp_path):
     )
     spawn = RecordingSpawn(reply)
     plan = conductor_compile.compile_run_plan(
-        change, tasks, spec_id=spec_id, repo=repo, cache_dir=tmp_path / "plans", spawn=spawn
+        change,
+        tasks,
+        spec_id=spec_id,
+        repo=repo,
+        cache_dir=tmp_path / "plans",
+        spawn=spawn,
     )
     assert '"purpose"' in spawn.prompts[0] and "scaffolding" in spawn.prompts[0], (
         "a repo with routing.purpose_tiers configured must get a purpose-requesting prompt"
@@ -1340,7 +1572,11 @@ def test_a_purpose_outside_the_vocabulary_is_dropped_not_rejected(change, tmp_pa
     spec_id, tasks = _load(change)
     reply = _reply(
         **{
-            "1.1": {"files": ["src/parser.py"], "deps": [], "purpose": "not-a-real-tier"},
+            "1.1": {
+                "files": ["src/parser.py"],
+                "deps": [],
+                "purpose": "not-a-real-tier",
+            },
             "1.2": {"files": ["src/api.py"], "deps": []},
             "2.1": {"files": ["tests/e2e.py"], "deps": []},
         }
@@ -1390,7 +1626,9 @@ def test_no_purpose_tiers_configured_leaves_every_task_unset(change, tmp_path):
 # --------------------------------------------------------------------------- #
 # End to end: the parallelism a compile actually unlocks
 # --------------------------------------------------------------------------- #
-def test_a_compiled_plan_unlocks_parallelism_the_format_could_not_express(change, tmp_path):
+def test_a_compiled_plan_unlocks_parallelism_the_format_could_not_express(
+    change, tmp_path
+):
     """`OpenSpecTaskSource` serialises within a section because it has no file
     scope to reason with. This is the payoff: with scope, the frontier widens."""
     from worktrail.orchestrator import coordinator
@@ -1438,7 +1676,9 @@ def repo_with_worktree(tmp_path: Path):
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
-    subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@example.com"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "t@example.com"], check=True
+    )
     subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
     (repo / "README.md").write_text("x\n")
     subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
@@ -1453,7 +1693,9 @@ def repo_with_worktree(tmp_path: Path):
     return repo, worktree
 
 
-def test_git_repo_root_resolves_a_linked_worktree_to_the_canonical_checkout(repo_with_worktree):
+def test_git_repo_root_resolves_a_linked_worktree_to_the_canonical_checkout(
+    repo_with_worktree,
+):
     repo, worktree = repo_with_worktree
     spec_dir = worktree / "openspec" / "changes" / "add-thing"
     spec_dir.mkdir(parents=True)
@@ -1465,7 +1707,9 @@ def test_git_repo_root_resolves_a_linked_worktree_to_the_canonical_checkout(repo
     assert resolved_from_worktree == resolved_from_repo
 
 
-def test_cli_compiling_from_a_worktree_caches_under_the_canonical_repo(repo_with_worktree, capsys):
+def test_cli_compiling_from_a_worktree_caches_under_the_canonical_repo(
+    repo_with_worktree, capsys
+):
     """Regression for the divergence: `worktrail-compile` invoked with a spec
     dir inside a linked worktree (exactly how the SDD skills run it) must
     still print a cache path under `<repo>-worktrees/runplans`, not
@@ -1479,8 +1723,12 @@ def test_cli_compiling_from_a_worktree_caches_under_the_canonical_repo(repo_with
 
     rc = conductor_compile.main([str(d), "--no-llm"])
     out = capsys.readouterr().out
-    assert rc == 1  # scope gap expected with --no-llm; the cache line still prints first
-    cache_line = next(line for line in out.splitlines() if line.strip().startswith("cache:"))
+    assert (
+        rc == 1
+    )  # scope gap expected with --no-llm; the cache line still prints first
+    cache_line = next(
+        line for line in out.splitlines() if line.strip().startswith("cache:")
+    )
     expected_cache_dir = conductor_compile.default_cache_dir(repo)
     assert str(expected_cache_dir) in cache_line
     assert str(worktree) not in cache_line

@@ -18,9 +18,7 @@ from collections import deque, namedtuple
 from pathlib import Path
 from unittest.mock import patch
 
-from worktrail.orchestrator import coordinator
-from worktrail.orchestrator import integrate
-import tempfile
+from worktrail.orchestrator import coordinator, integrate
 
 Proc = namedtuple("Proc", "returncode stdout stderr")
 
@@ -76,8 +74,17 @@ def integrate_groups(
 
     for g in groups:
         result = integrate.integrate_one(
-            g, repo, spec_id, tasks, remote, run_id, base,
-            journal_path, status, group_branch, quarantined,
+            g,
+            repo,
+            spec_id,
+            tasks,
+            remote,
+            run_id,
+            base,
+            journal_path,
+            status,
+            group_branch,
+            quarantined,
             strip_spec_folder=not g.get("depends_on") and g["name"] != spec_carrier,
             smoke_cmd=smoke_cmd,
             assembly_resolve_spawn=assembly_resolve_spawn,
@@ -113,7 +120,9 @@ class FakeRun:
             ls_remote_responses: dict mapping branch name -> bool (True = exists)
             remote_url: mocked git remote URL
         """
-        self.pr_view_responses = {k: deque(v) for k, v in (pr_view_responses or {}).items()}
+        self.pr_view_responses = {
+            k: deque(v) for k, v in (pr_view_responses or {}).items()
+        }
         self.ls_remote_responses = ls_remote_responses or {}
         self.remote_url = remote_url
         self.calls = []
@@ -137,7 +146,7 @@ class FakeRun:
         # git ls-remote origin <branch>
         if cmd[:3] == ["ls-remote", "origin"] or cmd[:2] == ["ls-remote", "origin"]:
             branch = cmd[3] if len(cmd) > 3 else cmd[2] if len(cmd) > 2 else None
-            if branch in self.ls_remote_responses and self.ls_remote_responses[branch]:
+            if self.ls_remote_responses.get(branch):
                 return Proc(0, f"abc123\trefs/heads/{branch}\n", "")
             return Proc(1, "", "")
 
@@ -204,7 +213,9 @@ class WriteGroupJournalQuarantineReason(unittest.TestCase):
     def test_reason_omitted_when_empty(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             journal_path = str(Path(tmpdir) / "journal.json")
-            integrate._write_group_journal(journal_path, "base", "https://x/pr/1", "b", "OPEN")
+            integrate._write_group_journal(
+                journal_path, "base", "https://x/pr/1", "b", "OPEN"
+            )
             record = json.loads(Path(journal_path).read_text())["groups"]["base"]
             self.assertNotIn("quarantine_reason", record)
 
@@ -212,20 +223,32 @@ class WriteGroupJournalQuarantineReason(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             journal_path = str(Path(tmpdir) / "journal.json")
             integrate._write_group_journal(
-                journal_path, "base", "", "b", "QUARANTINED",
+                journal_path,
+                "base",
+                "",
+                "b",
+                "QUARANTINED",
                 integrate.QUARANTINE_BUDGET_EXHAUSTED,
             )
             record = json.loads(Path(journal_path).read_text())["groups"]["base"]
-            self.assertEqual(record["quarantine_reason"], integrate.QUARANTINE_BUDGET_EXHAUSTED)
+            self.assertEqual(
+                record["quarantine_reason"], integrate.QUARANTINE_BUDGET_EXHAUSTED
+            )
 
     def test_reason_dropped_on_transition_to_non_quarantined_state(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             journal_path = str(Path(tmpdir) / "journal.json")
             integrate._write_group_journal(
-                journal_path, "base", "", "b", "QUARANTINED",
+                journal_path,
+                "base",
+                "",
+                "b",
+                "QUARANTINED",
                 integrate.QUARANTINE_BUDGET_EXHAUSTED,
             )
-            integrate._write_group_journal(journal_path, "base", "https://x/pr/1", "b", "OPEN")
+            integrate._write_group_journal(
+                journal_path, "base", "https://x/pr/1", "b", "OPEN"
+            )
             record = json.loads(Path(journal_path).read_text())["groups"]["base"]
             self.assertNotIn("quarantine_reason", record)
 
@@ -237,16 +260,24 @@ class ReuseExistingOpenPR(unittest.TestCase):
         """Verify the integrate loop reuses an OPEN PR and does not call gh pr create."""
         pr_view = {
             "full-123/base": [
-                {"number": 42, "state": "OPEN", "url": "https://github.com/owner/repo/pull/42"}
+                {
+                    "number": 42,
+                    "state": "OPEN",
+                    "url": "https://github.com/owner/repo/pull/42",
+                }
             ]
         }
         ls_remote = {}  # no existing remote branch for this test
 
         run = FakeRun(pr_view_responses=pr_view, ls_remote_responses=ls_remote)
 
-        with patch("worktrail.orchestrator.integrate.coordinator.plan_groups") as mock_groups:
+        with patch(
+            "worktrail.orchestrator.integrate.coordinator.plan_groups"
+        ) as mock_groups:
             with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                with patch(
+                    "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
+                ):
                     group = mock_group("base", ["T001"])
                     mock_groups.return_value = [group]
 
@@ -269,7 +300,9 @@ class ReuseExistingOpenPR(unittest.TestCase):
                     # Should NOT call gh pr create for this branch
                     create_calls = run.find_calls("gh", "pr", "create")
                     self.assertEqual(
-                        len(create_calls), 0, "Should not call gh pr create for existing OPEN PR"
+                        len(create_calls),
+                        0,
+                        "Should not call gh pr create for existing OPEN PR",
                     )
 
     def test_reused_draft_pr_is_marked_ready_before_reuse(self):
@@ -286,13 +319,22 @@ class ReuseExistingOpenPR(unittest.TestCase):
         }
         run = FakeRun(pr_view_responses=pr_view)
 
-        with patch("worktrail.orchestrator.integrate.coordinator.plan_groups") as mock_groups:
+        with patch(
+            "worktrail.orchestrator.integrate.coordinator.plan_groups"
+        ) as mock_groups:
             with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                with patch(
+                    "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
+                ):
                     mock_groups.return_value = [mock_group("base", ["T001"])]
                     prs, _, _ = integrate_groups(
-                        Path("/repo"), "spec-001", [mock_task("T001")], "origin",
-                        "run-draft", "main", cleanup=False,
+                        Path("/repo"),
+                        "spec-001",
+                        [mock_task("T001")],
+                        "origin",
+                        "run-draft",
+                        "main",
+                        cleanup=False,
                     )
 
         self.assertEqual(len(prs), 1)
@@ -304,16 +346,24 @@ class ReuseExistingOpenPR(unittest.TestCase):
         """Verify existing remote branch + OPEN PR are both reused."""
         pr_view = {
             "full-456/base": [
-                {"number": 50, "state": "OPEN", "url": "https://github.com/owner/repo/pull/50"}
+                {
+                    "number": 50,
+                    "state": "OPEN",
+                    "url": "https://github.com/owner/repo/pull/50",
+                }
             ]
         }
         ls_remote = {"full-456/base": True}  # branch exists on remote
 
         run = FakeRun(pr_view_responses=pr_view, ls_remote_responses=ls_remote)
 
-        with patch("worktrail.orchestrator.integrate.coordinator.plan_groups") as mock_groups:
+        with patch(
+            "worktrail.orchestrator.integrate.coordinator.plan_groups"
+        ) as mock_groups:
             with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                with patch(
+                    "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
+                ):
                     group = mock_group("base", ["T001"])
                     mock_groups.return_value = [group]
 
@@ -338,7 +388,9 @@ class ReuseExistingOpenPR(unittest.TestCase):
                         c for c in run.calls if "checkout" in c and "full-456/base" in c
                     ]
                     self.assertEqual(
-                        len(checkout_calls), 0, "Should not force-reset existing remote branch"
+                        len(checkout_calls),
+                        0,
+                        "Should not force-reset existing remote branch",
                     )
 
 
@@ -349,16 +401,24 @@ class SkipMergedPRs(unittest.TestCase):
         """Verify the integrate loop skips groups with MERGED PRs."""
         pr_view = {
             "full-789/base": [
-                {"number": 30, "state": "MERGED", "url": "https://github.com/owner/repo/pull/30"}
+                {
+                    "number": 30,
+                    "state": "MERGED",
+                    "url": "https://github.com/owner/repo/pull/30",
+                }
             ]
         }
         ls_remote = {}
 
         run = FakeRun(pr_view_responses=pr_view, ls_remote_responses=ls_remote)
 
-        with patch("worktrail.orchestrator.integrate.coordinator.plan_groups") as mock_groups:
+        with patch(
+            "worktrail.orchestrator.integrate.coordinator.plan_groups"
+        ) as mock_groups:
             with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                with patch(
+                    "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
+                ):
                     group = mock_group("base", ["T001"])
                     mock_groups.return_value = [group]
 
@@ -373,7 +433,9 @@ class SkipMergedPRs(unittest.TestCase):
                     )
 
                     # MERGED PR should NOT appear in prs list (already integrated)
-                    self.assertEqual(len(prs), 0, "MERGED PRs should not be added to prs list")
+                    self.assertEqual(
+                        len(prs), 0, "MERGED PRs should not be added to prs list"
+                    )
 
                     # Verify no checkout -B or gh pr create for this group
                     checkout_calls = [
@@ -394,9 +456,13 @@ class NoExistingBranchOrPR(unittest.TestCase):
 
         run = FakeRun(pr_view_responses=pr_view, ls_remote_responses=ls_remote)
 
-        with patch("worktrail.orchestrator.integrate.coordinator.plan_groups") as mock_groups:
+        with patch(
+            "worktrail.orchestrator.integrate.coordinator.plan_groups"
+        ) as mock_groups:
             with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                with patch(
+                    "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
+                ):
                     group = mock_group("base", ["T001"])
                     mock_groups.return_value = [group]
 
@@ -414,10 +480,13 @@ class NoExistingBranchOrPR(unittest.TestCase):
                     self.assertEqual(len(prs), 1)
                     create_calls = run.find_calls("gh", "pr", "create")
                     self.assertEqual(
-                        len(create_calls), 1, "Should call gh pr create when no PR exists"
+                        len(create_calls),
+                        1,
+                        "Should call gh pr create when no PR exists",
                     )
                     self.assertNotIn(
-                        "--draft", create_calls[0],
+                        "--draft",
+                        create_calls[0],
                         "orchestrator-created PRs must be ready for auto-merge eligibility",
                     )
 
@@ -425,16 +494,24 @@ class NoExistingBranchOrPR(unittest.TestCase):
         """Verify CLOSED PR is treated as absent (new PR created)."""
         pr_view = {
             "run-old/base": [
-                {"number": 1, "state": "CLOSED", "url": "https://github.com/owner/repo/pull/1"}
+                {
+                    "number": 1,
+                    "state": "CLOSED",
+                    "url": "https://github.com/owner/repo/pull/1",
+                }
             ]
         }
         ls_remote = {}
 
         run = FakeRun(pr_view_responses=pr_view, ls_remote_responses=ls_remote)
 
-        with patch("worktrail.orchestrator.integrate.coordinator.plan_groups") as mock_groups:
+        with patch(
+            "worktrail.orchestrator.integrate.coordinator.plan_groups"
+        ) as mock_groups:
             with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                with patch(
+                    "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
+                ):
                     group = mock_group("base", ["T001"])
                     mock_groups.return_value = [group]
 
@@ -472,7 +549,11 @@ class FailedLabelAddDoesNotCorruptPrUrl(unittest.TestCase):
         run = FakeRun(pr_view_responses={}, ls_remote_responses={})
 
         def call(*args, **kwargs):
-            cmd = args[0] if args and not isinstance(args[0], (str, Path)) else list(args[1:])
+            cmd = (
+                args[0]
+                if args and not isinstance(args[0], (str, Path))
+                else list(args[1:])
+            )
             if cmd[:3] == ["gh", "pr", "create"]:
                 return Proc(1, "", "could not add label: 'go:risk-medium' not found")
             return run(*args, **kwargs)
@@ -487,7 +568,9 @@ class FailedLabelAddDoesNotCorruptPrUrl(unittest.TestCase):
             quarantined: dict = {}
 
             with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                with patch(
+                    "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
+                ):
                     result = integrate.integrate_one(
                         group,
                         Path("/repo"),
@@ -508,18 +591,26 @@ class FailedLabelAddDoesNotCorruptPrUrl(unittest.TestCase):
 
             journal = json.loads(Path(journal_path).read_text())
             record = journal["groups"]["base"]
-            self.assertEqual(record["pr_url"], "", "pr_url must stay empty, never the error text")
+            self.assertEqual(
+                record["pr_url"], "", "pr_url must stay empty, never the error text"
+            )
             self.assertNotIn("could not add label", record["pr_url"])
             self.assertEqual(record["state"], "QUARANTINED")
-            self.assertEqual(record["quarantine_reason"], integrate.QUARANTINE_INTEGRATION_ERROR)
+            self.assertEqual(
+                record["quarantine_reason"], integrate.QUARANTINE_INTEGRATION_ERROR
+            )
 
     def test_group_loop_quarantines_group_on_label_failure(self):
         """End-to-end via the integrate loop: no PR recorded, group quarantined."""
         run = self._failing_run()
 
-        with patch("worktrail.orchestrator.integrate.coordinator.plan_groups") as mock_groups:
+        with patch(
+            "worktrail.orchestrator.integrate.coordinator.plan_groups"
+        ) as mock_groups:
             with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                with patch(
+                    "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
+                ):
                     group = mock_group("base", ["T001"])
                     mock_groups.return_value = [group]
 
@@ -533,7 +624,9 @@ class FailedLabelAddDoesNotCorruptPrUrl(unittest.TestCase):
                         cleanup=False,
                     )
 
-                    self.assertEqual(prs, [], "no PR should be recorded for the failed group")
+                    self.assertEqual(
+                        prs, [], "no PR should be recorded for the failed group"
+                    )
                     self.assertIn("base", quarantined)
 
 
@@ -546,7 +639,9 @@ class TransientGhFailureRetry(unittest.TestCase):
     `gh pr create`). Deterministic failures (validation errors, unresolvable
     labels, "already exists", auth) keep the existing single-shot behavior."""
 
-    TRANSIENT_ERR = "GraphQL: Something went wrong while executing your query. (HTTP 500)"
+    TRANSIENT_ERR = (
+        "GraphQL: Something went wrong while executing your query. (HTTP 500)"
+    )
 
     def _flaky(self, fail_prefix, n_failures, stderr, base_run=None):
         """Side-effect callable failing the first `n_failures` calls matching
@@ -556,7 +651,11 @@ class TransientGhFailureRetry(unittest.TestCase):
         remaining = {"n": n_failures}
 
         def call(*args, **kwargs):
-            cmd = args[0] if args and not isinstance(args[0], (str, Path)) else list(args[1:])
+            cmd = (
+                args[0]
+                if args and not isinstance(args[0], (str, Path))
+                else list(args[1:])
+            )
             if cmd[: len(fail_prefix)] == list(fail_prefix) and remaining["n"] > 0:
                 remaining["n"] -= 1
                 run.calls.append(cmd)  # keep find_calls() accounting complete
@@ -569,9 +668,12 @@ class TransientGhFailureRetry(unittest.TestCase):
         group = mock_group("base", ["T001"])
         quarantined: dict = {}
         with patch("worktrail.orchestrator.integrate._retry_sleep", new=sleeps.append):
-            with patch("worktrail.orchestrator.integrate._git", side_effect=side_effect):
+            with patch(
+                "worktrail.orchestrator.integrate._git", side_effect=side_effect
+            ):
                 with patch(
-                    "worktrail.orchestrator.integrate.subprocess.run", side_effect=side_effect
+                    "worktrail.orchestrator.integrate.subprocess.run",
+                    side_effect=side_effect,
                 ):
                     result = integrate.integrate_one(
                         group,
@@ -614,7 +716,8 @@ class TransientGhFailureRetry(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             journal_path = str(Path(tmpdir) / "journal.json")
             call, run = self._flaky(
-                ["gh", "pr", "create"], 99,
+                ["gh", "pr", "create"],
+                99,
                 "could not add label: 'go:risk-medium' not found",
             )
             sleeps: list = []
@@ -623,8 +726,11 @@ class TransientGhFailureRetry(unittest.TestCase):
 
             self.assertIsNone(result)
             self.assertIn("base", quarantined)
-            self.assertEqual(len(run.find_calls("gh", "pr", "create")), 1,
-                             "deterministic failures must not retry")
+            self.assertEqual(
+                len(run.find_calls("gh", "pr", "create")),
+                1,
+                "deterministic failures must not retry",
+            )
             self.assertEqual(sleeps, [])
             record = json.loads(Path(journal_path).read_text())["groups"]["base"]
             self.assertEqual(record["state"], "QUARANTINED")
@@ -649,12 +755,16 @@ class TransientGhFailureRetry(unittest.TestCase):
             )
             self.assertEqual(
                 sleeps,
-                [integrate.GH_TRANSIENT_BACKOFF_S * n
-                 for n in range(1, integrate.GH_TRANSIENT_ATTEMPTS)],
+                [
+                    integrate.GH_TRANSIENT_BACKOFF_S * n
+                    for n in range(1, integrate.GH_TRANSIENT_ATTEMPTS)
+                ],
             )
             record = json.loads(Path(journal_path).read_text())["groups"]["base"]
             self.assertEqual(record["state"], "QUARANTINED")
-            self.assertEqual(record["quarantine_reason"], integrate.QUARANTINE_INTEGRATION_ERROR)
+            self.assertEqual(
+                record["quarantine_reason"], integrate.QUARANTINE_INTEGRATION_ERROR
+            )
 
     def test_pr_view_transient_failure_retried_reuses_open_pr(self):
         """A transient 5xx on the reconcile `gh pr view` must not fall through
@@ -664,11 +774,15 @@ class TransientGhFailureRetry(unittest.TestCase):
             journal_path = str(Path(tmpdir) / "journal.json")
             base_run = FakeRun(
                 pr_view_responses={
-                    "run-pv/base": [{
-                        "number": 5, "state": "OPEN",
-                        "url": "https://github.com/owner/repo/pull/5",
-                        "headRefName": "run-pv/base", "isDraft": False,
-                    }]
+                    "run-pv/base": [
+                        {
+                            "number": 5,
+                            "state": "OPEN",
+                            "url": "https://github.com/owner/repo/pull/5",
+                            "headRefName": "run-pv/base",
+                            "isDraft": False,
+                        }
+                    ]
                 },
                 ls_remote_responses={"run-pv/base": True},
             )
@@ -677,13 +791,18 @@ class TransientGhFailureRetry(unittest.TestCase):
             )
             sleeps: list = []
 
-            result, quarantined = self._integrate(call, journal_path, sleeps, run_id="run-pv")
+            result, quarantined = self._integrate(
+                call, journal_path, sleeps, run_id="run-pv"
+            )
 
             self.assertEqual(quarantined, {})
             self.assertIsNotNone(result)
             self.assertEqual(result[2], "https://github.com/owner/repo/pull/5")
-            self.assertEqual(run.find_calls("gh", "pr", "create"), [],
-                             "existing OPEN PR must be reused, not re-created")
+            self.assertEqual(
+                run.find_calls("gh", "pr", "create"),
+                [],
+                "existing OPEN PR must be reused, not re-created",
+            )
             self.assertEqual(sleeps, [integrate.GH_TRANSIENT_BACKOFF_S])
 
     def test_pr_list_transient_failure_retried_discovers_operator_pr(self):
@@ -695,18 +814,32 @@ class TransientGhFailureRetry(unittest.TestCase):
             state = {"failed": False}
 
             def call(*args, **kwargs):
-                cmd = args[0] if args and not isinstance(args[0], (str, Path)) else list(args[1:])
+                cmd = (
+                    args[0]
+                    if args and not isinstance(args[0], (str, Path))
+                    else list(args[1:])
+                )
                 if cmd[:3] == ["gh", "pr", "list"]:
                     run.calls.append(cmd)
                     if not state["failed"]:
                         state["failed"] = True
                         return Proc(1, "", "HTTP 502: Bad Gateway")
-                    return Proc(0, json.dumps([{
-                        "number": 7, "state": "OPEN",
-                        "url": "https://github.com/owner/repo/pull/7",
-                        "headRefName": "operator/base", "baseRefName": "main",
-                        "isDraft": False,
-                    }]), "")
+                    return Proc(
+                        0,
+                        json.dumps(
+                            [
+                                {
+                                    "number": 7,
+                                    "state": "OPEN",
+                                    "url": "https://github.com/owner/repo/pull/7",
+                                    "headRefName": "operator/base",
+                                    "baseRefName": "main",
+                                    "isDraft": False,
+                                }
+                            ]
+                        ),
+                        "",
+                    )
                 return run(*args, **kwargs)
 
             sleeps: list = []
@@ -727,15 +860,29 @@ class TransientGhFailureRetry(unittest.TestCase):
             run = FakeRun(pr_view_responses={}, ls_remote_responses={})
 
             def call(*args, **kwargs):
-                cmd = args[0] if args and not isinstance(args[0], (str, Path)) else list(args[1:])
+                cmd = (
+                    args[0]
+                    if args and not isinstance(args[0], (str, Path))
+                    else list(args[1:])
+                )
                 if cmd[:3] == ["gh", "pr", "list"]:
                     run.calls.append(cmd)
-                    return Proc(0, json.dumps([{
-                        "number": 11, "state": "OPEN",
-                        "url": "https://github.com/owner/repo/pull/11",
-                        "headRefName": "run-tr/base", "baseRefName": "unrelated-base",
-                        "isDraft": False,
-                    }]), "")
+                    return Proc(
+                        0,
+                        json.dumps(
+                            [
+                                {
+                                    "number": 11,
+                                    "state": "OPEN",
+                                    "url": "https://github.com/owner/repo/pull/11",
+                                    "headRefName": "run-tr/base",
+                                    "baseRefName": "unrelated-base",
+                                    "isDraft": False,
+                                }
+                            ]
+                        ),
+                        "",
+                    )
                 return run(*args, **kwargs)
 
             sleeps: list = []
@@ -756,15 +903,29 @@ class TransientGhFailureRetry(unittest.TestCase):
             run = FakeRun(pr_view_responses={}, ls_remote_responses={})
 
             def call(*args, **kwargs):
-                cmd = args[0] if args and not isinstance(args[0], (str, Path)) else list(args[1:])
+                cmd = (
+                    args[0]
+                    if args and not isinstance(args[0], (str, Path))
+                    else list(args[1:])
+                )
                 if cmd[:3] == ["gh", "pr", "list"]:
                     run.calls.append(cmd)
-                    return Proc(0, json.dumps([{
-                        "number": 99, "state": "OPEN",
-                        "url": "https://github.com/owner/repo/pull/99",
-                        "headRefName": "some-other-branch", "baseRefName": "some-other-target",
-                        "isDraft": False,
-                    }]), "")
+                    return Proc(
+                        0,
+                        json.dumps(
+                            [
+                                {
+                                    "number": 99,
+                                    "state": "OPEN",
+                                    "url": "https://github.com/owner/repo/pull/99",
+                                    "headRefName": "some-other-branch",
+                                    "baseRefName": "some-other-target",
+                                    "isDraft": False,
+                                }
+                            ]
+                        ),
+                        "",
+                    )
                 return run(*args, **kwargs)
 
             sleeps: list = []
@@ -782,11 +943,15 @@ class TransientGhFailureRetry(unittest.TestCase):
             journal_path = str(Path(tmpdir) / "journal.json")
             base_run = FakeRun(
                 pr_view_responses={
-                    "run-rd/base": [{
-                        "number": 9, "state": "OPEN",
-                        "url": "https://github.com/owner/repo/pull/9",
-                        "headRefName": "run-rd/base", "isDraft": True,
-                    }]
+                    "run-rd/base": [
+                        {
+                            "number": 9,
+                            "state": "OPEN",
+                            "url": "https://github.com/owner/repo/pull/9",
+                            "headRefName": "run-rd/base",
+                            "isDraft": True,
+                        }
+                    ]
                 },
                 ls_remote_responses={"run-rd/base": True},
             )
@@ -795,7 +960,9 @@ class TransientGhFailureRetry(unittest.TestCase):
             )
             sleeps: list = []
 
-            result, quarantined = self._integrate(call, journal_path, sleeps, run_id="run-rd")
+            result, quarantined = self._integrate(
+                call, journal_path, sleeps, run_id="run-rd"
+            )
 
             self.assertEqual(quarantined, {})
             self.assertIsNotNone(result)
@@ -808,7 +975,7 @@ class TransientGhFailureRetry(unittest.TestCase):
             "GraphQL: Something went wrong while executing your query.",
             "HTTP 502: Bad Gateway",
             "HTTP 503: Service Unavailable",
-            "Post \"https://api.github.com/graphql\": dial tcp: i/o timeout",
+            'Post "https://api.github.com/graphql": dial tcp: i/o timeout',
             "net/http: TLS handshake timeout",
             "dial tcp: lookup api.github.com: connection refused",
         ]
@@ -837,11 +1004,18 @@ class PRLabels(unittest.TestCase):
         try:
             run = FakeRun(pr_view_responses={}, ls_remote_responses={})
 
-            with patch("worktrail.orchestrator.integrate.coordinator.plan_groups") as mock_groups:
+            with patch(
+                "worktrail.orchestrator.integrate.coordinator.plan_groups"
+            ) as mock_groups:
                 with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                    with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
-                        with patch("worktrail.orchestrator.integrate._resolve_pre_pr_gate",
-                                   return_value=Path(fake_gate)):
+                    with patch(
+                        "worktrail.orchestrator.integrate.subprocess.run",
+                        side_effect=run,
+                    ):
+                        with patch(
+                            "worktrail.orchestrator.integrate._resolve_pre_pr_gate",
+                            return_value=Path(fake_gate),
+                        ):
                             mock_groups.return_value = [mock_group("base", ["T001"])]
 
                             integrate_groups(
@@ -857,11 +1031,13 @@ class PRLabels(unittest.TestCase):
 
             # Verify pre_pr_gate --labels-only was called with --risk high
             refresh_calls = [
-                c for c in run.calls
-                if "--labels-only" in c and "--risk" in c
+                c for c in run.calls if "--labels-only" in c and "--risk" in c
             ]
-            self.assertGreaterEqual(len(refresh_calls), 1,
-                                    "Should call pre_pr_gate --labels-only for new PR")
+            self.assertGreaterEqual(
+                len(refresh_calls),
+                1,
+                "Should call pre_pr_gate --labels-only for new PR",
+            )
             risk_idx = refresh_calls[0].index("--risk") + 1
             self.assertEqual(refresh_calls[0][risk_idx], "high")
 
@@ -869,7 +1045,9 @@ class PRLabels(unittest.TestCase):
             create_calls = run.find_calls("gh", "pr", "create")
             self.assertEqual(len(create_calls), 1)
             self.assertEqual(
-                create_calls[0][create_calls[0].index("--label"):create_calls[0].index("--title")],
+                create_calls[0][
+                    create_calls[0].index("--label") : create_calls[0].index("--title")
+                ],
                 ["--label", "go:risk-high"],
             )
         finally:
@@ -878,17 +1056,29 @@ class PRLabels(unittest.TestCase):
     def test_create_passes_eligible_label_only(self):
         run = FakeRun(pr_view_responses={}, ls_remote_responses={})
 
-        with patch("worktrail.orchestrator.integrate.coordinator.plan_groups") as mock_groups:
+        with patch(
+            "worktrail.orchestrator.integrate.coordinator.plan_groups"
+        ) as mock_groups:
             with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                with patch(
+                    "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
+                ):
                     mock_groups.return_value = [mock_group("base", ["T001"])]
                     integrate_groups(
-                        Path("/repo"), "spec-001", [mock_task("T001")], "origin",
-                        "run-eligible", "main", cleanup=False, pr_labels=["go:risk-low"],
+                        Path("/repo"),
+                        "spec-001",
+                        [mock_task("T001")],
+                        "origin",
+                        "run-eligible",
+                        "main",
+                        cleanup=False,
+                        pr_labels=["go:risk-low"],
                     )
 
         create_calls = run.find_calls("gh", "pr", "create")
-        labels = create_calls[0][create_calls[0].index("--label"):create_calls[0].index("--title")]
+        labels = create_calls[0][
+            create_calls[0].index("--label") : create_calls[0].index("--title")
+        ]
         self.assertEqual(labels, ["--label", "go:risk-low"])
 
     def test_refresh_labels_passes_route_when_set(self):
@@ -901,11 +1091,18 @@ class PRLabels(unittest.TestCase):
         try:
             run = FakeRun(pr_view_responses={}, ls_remote_responses={})
 
-            with patch("worktrail.orchestrator.integrate.coordinator.plan_groups") as mock_groups:
+            with patch(
+                "worktrail.orchestrator.integrate.coordinator.plan_groups"
+            ) as mock_groups:
                 with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                    with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
-                        with patch("worktrail.orchestrator.integrate._resolve_pre_pr_gate",
-                                   return_value=Path(fake_gate)):
+                    with patch(
+                        "worktrail.orchestrator.integrate.subprocess.run",
+                        side_effect=run,
+                    ):
+                        with patch(
+                            "worktrail.orchestrator.integrate._resolve_pre_pr_gate",
+                            return_value=Path(fake_gate),
+                        ):
                             mock_groups.return_value = [mock_group("base", ["T001"])]
 
                             integrate_groups(
@@ -940,11 +1137,18 @@ class PRLabels(unittest.TestCase):
         try:
             run = FakeRun(pr_view_responses={}, ls_remote_responses={})
 
-            with patch("worktrail.orchestrator.integrate.coordinator.plan_groups") as mock_groups:
+            with patch(
+                "worktrail.orchestrator.integrate.coordinator.plan_groups"
+            ) as mock_groups:
                 with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                    with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
-                        with patch("worktrail.orchestrator.integrate._resolve_pre_pr_gate",
-                                   return_value=Path(fake_gate)):
+                    with patch(
+                        "worktrail.orchestrator.integrate.subprocess.run",
+                        side_effect=run,
+                    ):
+                        with patch(
+                            "worktrail.orchestrator.integrate._resolve_pre_pr_gate",
+                            return_value=Path(fake_gate),
+                        ):
                             mock_groups.return_value = [mock_group("base", ["T001"])]
 
                             integrate_groups(
@@ -975,9 +1179,13 @@ class NoForceResetExistingRemoteBranch(unittest.TestCase):
 
         run = FakeRun(pr_view_responses=pr_view, ls_remote_responses=ls_remote)
 
-        with patch("worktrail.orchestrator.integrate.coordinator.plan_groups") as mock_groups:
+        with patch(
+            "worktrail.orchestrator.integrate.coordinator.plan_groups"
+        ) as mock_groups:
             with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                with patch(
+                    "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
+                ):
                     group = mock_group("base", ["T001"])
                     mock_groups.return_value = [group]
 
@@ -998,7 +1206,9 @@ class NoForceResetExistingRemoteBranch(unittest.TestCase):
                         if "checkout" in c and "-B" in c and "run-resume/base" in c
                     ]
                     self.assertEqual(
-                        len(checkout_b_calls), 0, "Should not force-reset existing remote branch"
+                        len(checkout_b_calls),
+                        0,
+                        "Should not force-reset existing remote branch",
                     )
 
 
@@ -1012,9 +1222,13 @@ class EdgeCases(unittest.TestCase):
 
         run = FakeRun(pr_view_responses=pr_view, ls_remote_responses=ls_remote)
 
-        with patch("worktrail.orchestrator.integrate.coordinator.plan_groups") as mock_groups:
+        with patch(
+            "worktrail.orchestrator.integrate.coordinator.plan_groups"
+        ) as mock_groups:
             with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                with patch(
+                    "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
+                ):
                     group = mock_group("base", ["T001"])
                     mock_groups.return_value = [group]
 
@@ -1031,15 +1245,21 @@ class EdgeCases(unittest.TestCase):
                     # Should fall back to creating PR
                     create_calls = run.find_calls("gh", "pr", "create")
                     self.assertEqual(
-                        len(create_calls), 1, "Should fallback to create when ls-remote fails"
+                        len(create_calls),
+                        1,
+                        "Should fallback to create when ls-remote fails",
                     )
 
     def test_pr_view_invalid_json_falls_back(self):
         """Verify invalid JSON from gh pr view falls back to creating PR."""
         # Use a Proc that returns invalid JSON
-        with patch("worktrail.orchestrator.integrate.coordinator.plan_groups") as mock_groups:
+        with patch(
+            "worktrail.orchestrator.integrate.coordinator.plan_groups"
+        ) as mock_groups:
             with patch("worktrail.orchestrator.integrate._git") as mock_git:
-                with patch("worktrail.orchestrator.integrate.subprocess.run") as mock_run:
+                with patch(
+                    "worktrail.orchestrator.integrate.subprocess.run"
+                ) as mock_run:
                     group = mock_group("base", ["T001"])
                     mock_groups.return_value = [group]
 
@@ -1081,9 +1301,13 @@ class EdgeCases(unittest.TestCase):
 
                     # Should still create PR (invalid JSON treated as error)
                     create_calls = [
-                        c for c in mock_run.call_args_list if c[0][0][:3] == ["gh", "pr", "create"]
+                        c
+                        for c in mock_run.call_args_list
+                        if c[0][0][:3] == ["gh", "pr", "create"]
                     ]
-                    self.assertTrue(create_calls, "Should fallback to create on invalid JSON")
+                    self.assertTrue(
+                        create_calls, "Should fallback to create on invalid JSON"
+                    )
 
 
 class MultipleGroupsReconciliation(unittest.TestCase):
@@ -1093,10 +1317,18 @@ class MultipleGroupsReconciliation(unittest.TestCase):
         """Verify reconciliation handles mixed states across groups."""
         pr_view = {
             "multi-run/base": [
-                {"number": 10, "state": "OPEN", "url": "https://github.com/owner/repo/pull/10"}
+                {
+                    "number": 10,
+                    "state": "OPEN",
+                    "url": "https://github.com/owner/repo/pull/10",
+                }
             ],
             "multi-run/feature-1": [
-                {"number": 20, "state": "MERGED", "url": "https://github.com/owner/repo/pull/20"}
+                {
+                    "number": 20,
+                    "state": "MERGED",
+                    "url": "https://github.com/owner/repo/pull/20",
+                }
             ],
             # feature-2 has no PR yet
         }
@@ -1107,9 +1339,13 @@ class MultipleGroupsReconciliation(unittest.TestCase):
 
         run = FakeRun(pr_view_responses=pr_view, ls_remote_responses=ls_remote)
 
-        with patch("worktrail.orchestrator.integrate.coordinator.plan_groups") as mock_groups:
+        with patch(
+            "worktrail.orchestrator.integrate.coordinator.plan_groups"
+        ) as mock_groups:
             with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                with patch(
+                    "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
+                ):
                     base = mock_group("base", ["T001"])
                     feat1 = mock_group("feature-1", ["T002"], depends_on=["base"])
                     feat2 = mock_group("feature-2", ["T003"], depends_on=["base"])
@@ -1129,13 +1365,17 @@ class MultipleGroupsReconciliation(unittest.TestCase):
                     # feature-1: MERGED PR skipped
                     # feature-2: new PR created
                     self.assertEqual(
-                        len(prs), 2, "Should have 2 PRs (base OPEN reused, feature-2 created)"
+                        len(prs),
+                        2,
+                        "Should have 2 PRs (base OPEN reused, feature-2 created)",
                     )
 
                     pr_names = [p[0] for p in prs]
                     self.assertIn("base", pr_names)
                     self.assertIn("feature-2", pr_names)
-                    self.assertNotIn("feature-1", pr_names, "MERGED PR should not be in list")
+                    self.assertNotIn(
+                        "feature-1", pr_names, "MERGED PR should not be in list"
+                    )
 
 
 class SingleGroupIntegrateEntry(unittest.TestCase):
@@ -1147,13 +1387,25 @@ class SingleGroupIntegrateEntry(unittest.TestCase):
             journal_path = str(Path(tmpdir) / "journal.json")
             # Pre-populate journal with a different group to verify isolation
             Path(journal_path).write_text(
-                json.dumps({"groups": {"other": {"pr_url": "x", "head_branch": "y", "state": "OPEN"}}})
+                json.dumps(
+                    {
+                        "groups": {
+                            "other": {
+                                "pr_url": "x",
+                                "head_branch": "y",
+                                "state": "OPEN",
+                            }
+                        }
+                    }
+                )
             )
             run = FakeRun()
             group = mock_group("base", ["T001"])
 
             with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                with patch(
+                    "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
+                ):
                     result = integrate.integrate_one(
                         group,
                         Path("/repo"),
@@ -1185,8 +1437,12 @@ class SingleGroupIntegrateEntry(unittest.TestCase):
         """integrate_one returns None for an already-MERGED group; no branch or PR created."""
         pr_view = {
             "run-mg/base": [
-                {"number": 5, "state": "MERGED", "url": "https://github.com/o/r/pull/5",
-                 "headRefName": "run-mg/base"}
+                {
+                    "number": 5,
+                    "state": "MERGED",
+                    "url": "https://github.com/o/r/pull/5",
+                    "headRefName": "run-mg/base",
+                }
             ]
         }
         run = FakeRun(pr_view_responses=pr_view)
@@ -1194,7 +1450,9 @@ class SingleGroupIntegrateEntry(unittest.TestCase):
         quarantined: dict = {}
 
         with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-            with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+            with patch(
+                "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
+            ):
                 result = integrate.integrate_one(
                     mock_group("base", ["T001"]),
                     Path("/repo"),
@@ -1211,15 +1469,19 @@ class SingleGroupIntegrateEntry(unittest.TestCase):
 
                 self.assertIsNone(result, "MERGED group must return None")
                 self.assertIn(
-                    "base", group_branch,
+                    "base",
+                    group_branch,
                     "a MERGED group must still register in group_branch so callers "
                     "see it as integrated rather than concluding "
                     "'nothing to assemble' and bailing out before tail dispatch",
                 )
                 checkout_b = [c for c in run.calls if "checkout" in c and "-B" in c]
-                self.assertEqual(len(checkout_b), 0, "Should not create branch for MERGED group")
                 self.assertEqual(
-                    len(run.find_calls("gh", "pr", "create")), 0,
+                    len(checkout_b), 0, "Should not create branch for MERGED group"
+                )
+                self.assertEqual(
+                    len(run.find_calls("gh", "pr", "create")),
+                    0,
                     "Should not create PR for MERGED group",
                 )
 
@@ -1227,15 +1489,21 @@ class SingleGroupIntegrateEntry(unittest.TestCase):
         """integrate_one reuses an existing OPEN PR without calling gh pr create."""
         pr_view = {
             "run-op/base": [
-                {"number": 77, "state": "OPEN", "url": "https://github.com/o/r/pull/77",
-                 "headRefName": "run-op/base"}
+                {
+                    "number": 77,
+                    "state": "OPEN",
+                    "url": "https://github.com/o/r/pull/77",
+                    "headRefName": "run-op/base",
+                }
             ]
         }
         run = FakeRun(pr_view_responses=pr_view)
         group_branch: dict = {}
 
         with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-            with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+            with patch(
+                "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
+            ):
                 result = integrate.integrate_one(
                     mock_group("base", ["T001"]),
                     Path("/repo"),
@@ -1254,7 +1522,8 @@ class SingleGroupIntegrateEntry(unittest.TestCase):
                 name, target, pr_url = result
                 self.assertIn("77", pr_url)
                 self.assertEqual(
-                    len(run.find_calls("gh", "pr", "create")), 0,
+                    len(run.find_calls("gh", "pr", "create")),
+                    0,
                     "Should not call gh pr create when OPEN PR exists",
                 )
 
@@ -1264,7 +1533,9 @@ class SingleGroupIntegrateEntry(unittest.TestCase):
         quarantined: dict = {}
 
         with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-            with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+            with patch(
+                "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
+            ):
                 result = integrate.integrate_one(
                     mock_group("base", ["T001"]),
                     Path("/repo"),
@@ -1282,7 +1553,8 @@ class SingleGroupIntegrateEntry(unittest.TestCase):
                 self.assertIsNone(result, "Empty deliverable must return None")
                 self.assertIn("base", quarantined, "Group must be quarantined")
                 self.assertEqual(
-                    len(run.find_calls("gh", "pr", "create")), 0,
+                    len(run.find_calls("gh", "pr", "create")),
+                    0,
                     "Should not create PR for quarantined group",
                 )
 
@@ -1294,7 +1566,9 @@ class SingleGroupIntegrateEntry(unittest.TestCase):
             journal_path = str(Path(tmpdir) / "journal.json")
             run = FakeRun()
             with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                with patch(
+                    "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
+                ):
                     result = integrate.integrate_one(
                         mock_group("base", ["T001"]),
                         Path("/repo"),
@@ -1311,7 +1585,9 @@ class SingleGroupIntegrateEntry(unittest.TestCase):
             self.assertIsNone(result)
             record = json.loads(Path(journal_path).read_text())["groups"]["base"]
             self.assertEqual(record["state"], "QUARANTINED")
-            self.assertEqual(record["quarantine_reason"], integrate.QUARANTINE_TASK_FAILURE)
+            self.assertEqual(
+                record["quarantine_reason"], integrate.QUARANTINE_TASK_FAILURE
+            )
 
     def test_dep_on_quarantined_cascades_records_dependency_reason(self):
         """A cascade-quarantined dependent group's journal record carries the
@@ -1322,7 +1598,9 @@ class SingleGroupIntegrateEntry(unittest.TestCase):
             group_branch: dict = {}
             quarantined = {"base": "incomplete task(s): T001"}
             with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                with patch(
+                    "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
+                ):
                     result = integrate.integrate_one(
                         mock_group("feature", ["T002"], depends_on=["base"]),
                         Path("/repo"),
@@ -1356,15 +1634,24 @@ class MultiGroupLoopShapes(unittest.TestCase):
 
             pr_view = {
                 "run-fr/base": [
-                    {"number": 10, "state": "OPEN", "url": "https://github.com/o/r/pull/10",
-                     "headRefName": "run-fr/base"}
+                    {
+                        "number": 10,
+                        "state": "OPEN",
+                        "url": "https://github.com/o/r/pull/10",
+                        "headRefName": "run-fr/base",
+                    }
                 ],
             }
             run = FakeRun(pr_view_responses=pr_view)
 
-            with patch("worktrail.orchestrator.integrate.coordinator.plan_groups") as mock_groups:
+            with patch(
+                "worktrail.orchestrator.integrate.coordinator.plan_groups"
+            ) as mock_groups:
                 with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                    with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                    with patch(
+                        "worktrail.orchestrator.integrate.subprocess.run",
+                        side_effect=run,
+                    ):
                         mock_groups.return_value = [
                             mock_group("base", ["T001"]),
                             mock_group("feature", ["T002"], depends_on=["base"]),
@@ -1396,7 +1683,9 @@ class MultiGroupLoopShapes(unittest.TestCase):
                         for grp in ("base", "feature"):
                             record = journal["groups"][grp]
                             self.assertIn("pr_url", record, f"{grp} missing pr_url")
-                            self.assertIn("head_branch", record, f"{grp} missing head_branch")
+                            self.assertIn(
+                                "head_branch", record, f"{grp} missing head_branch"
+                            )
                             self.assertIn("state", record, f"{grp} missing state")
                         self.assertEqual(journal["groups"]["base"]["state"], "OPEN")
 
@@ -1411,7 +1700,9 @@ class DepOnQuarantinedCascade(unittest.TestCase):
         quarantined: dict = {}
 
         with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-            with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+            with patch(
+                "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
+            ):
                 # base: all tasks failed → quarantined
                 r_base = integrate.integrate_one(
                     mock_group("base", ["T001"]),
@@ -1443,12 +1734,18 @@ class DepOnQuarantinedCascade(unittest.TestCase):
                     group_branch,
                     quarantined,
                 )
-                self.assertIsNone(r_feat, "Dependent of quarantined base must return None")
+                self.assertIsNone(
+                    r_feat, "Dependent of quarantined base must return None"
+                )
                 self.assertIn("feature", quarantined)
-                self.assertIn("base", quarantined["feature"],
-                              "Quarantine reason must name the quarantined dependency")
+                self.assertIn(
+                    "base",
+                    quarantined["feature"],
+                    "Quarantine reason must name the quarantined dependency",
+                )
                 self.assertEqual(
-                    len(run.find_calls("gh", "pr", "create")), 0,
+                    len(run.find_calls("gh", "pr", "create")),
+                    0,
                     "Should not create PR for either quarantined group",
                 )
 
@@ -1494,10 +1791,13 @@ class IntegrationWorktreeIsolation(unittest.TestCase):
             (repo / "wip.txt").write_text("uncommitted spec edit\n")
 
             with integrate._integration_worktree(repo, "run-1/base", base) as iw:
-                self.assertTrue(Path(iw).exists(), "worktree dir should exist inside context")
+                self.assertTrue(
+                    Path(iw).exists(), "worktree dir should exist inside context"
+                )
                 m = subprocess.run(
                     ["git", "-C", str(iw), "merge", "--no-edit", "spec-001/task-001"],
-                    capture_output=True, text=True,
+                    capture_output=True,
+                    text=True,
                 )
                 self.assertEqual(m.returncode, 0, f"merge failed: {m.stderr}")
                 # The merge landed in the ISOLATED tree, not in the spec worktree.
@@ -1507,8 +1807,12 @@ class IntegrationWorktreeIsolation(unittest.TestCase):
             self.assertEqual(
                 _run(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip(), "spec/x"
             )
-            self.assertTrue((repo / "wip.txt").exists(), "uncommitted spec edit must survive")
-            self.assertFalse((repo / "feature.txt").exists(), "merge must not touch spec worktree")
+            self.assertTrue(
+                (repo / "wip.txt").exists(), "uncommitted spec edit must survive"
+            )
+            self.assertFalse(
+                (repo / "feature.txt").exists(), "merge must not touch spec worktree"
+            )
 
             # The group branch exists and carries the merged task commit.
             log = _run(repo, "log", "--oneline", "run-1/base").stdout
@@ -1548,7 +1852,9 @@ class IntegrationWorktreeIsolation(unittest.TestCase):
             with patch.object(integrate, "_git", side_effect=flaky_git):
                 with integrate._integration_worktree(repo, "run-1/base", base) as iw:
                     self.assertTrue(Path(iw).exists())
-            self.assertEqual(calls["add"], 2, "must retry exactly once after the first failure")
+            self.assertEqual(
+                calls["add"], 2, "must retry exactly once after the first failure"
+            )
 
     def test_worktree_add_raises_informative_error_after_retry_exhausted(self):
         """A persistent `git worktree add` failure must raise WorktreeAddError
@@ -1559,7 +1865,9 @@ class IntegrationWorktreeIsolation(unittest.TestCase):
 
             def always_fails(r, *args, check=True):
                 if args[:2] == ("worktree", "add"):
-                    return Proc(255, "", "fatal: unable to create worktree registration")
+                    return Proc(
+                        255, "", "fatal: unable to create worktree registration"
+                    )
                 return integrate.live._git(r, *args, check=check)
 
             with patch.object(integrate, "_git", side_effect=always_fails):
@@ -1602,7 +1910,12 @@ class SpecFolderOwnership(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             iw = Path(tmp)
             nested = (
-                iw / "docs" / "specs" / "053-parent" / "changes" / "2026-07-21-output-contract"
+                iw
+                / "docs"
+                / "specs"
+                / "053-parent"
+                / "changes"
+                / "2026-07-21-output-contract"
             )
             nested.mkdir(parents=True)
 
@@ -1614,72 +1927,101 @@ class SpecFolderOwnership(unittest.TestCase):
         """The designated spec-carrier group must NOT reset the spec folder."""
         run, spec_checkouts = self._make_strip_tracker()
 
-        with patch("worktrail.orchestrator.integrate.coordinator.plan_groups") as mock_groups:
+        with patch(
+            "worktrail.orchestrator.integrate.coordinator.plan_groups"
+        ) as mock_groups:
             with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                with patch(
+                    "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
+                ):
                     # Single base group — it is the spec carrier
                     group = mock_group("base", ["T001"])
                     mock_groups.return_value = [group]
 
                     integrate_groups(
-                        Path("/repo"), "spec-048",
-                        [mock_task("T001")], "origin", "full-123", "main",
+                        Path("/repo"),
+                        "spec-048",
+                        [mock_task("T001")],
+                        "origin",
+                        "full-123",
+                        "main",
                         cleanup=False,
                     )
 
                     self.assertEqual(
-                        len(spec_checkouts), 0,
-                        "Spec carrier must not reset spec folder"
+                        len(spec_checkouts),
+                        0,
+                        "Spec carrier must not reset spec folder",
                     )
 
     def test_sibling_independent_group_strips_spec_folder(self):
         """An independent sibling (depends_on=[]) that is not the carrier must strip."""
         run, spec_checkouts = self._make_strip_tracker()
 
-        with patch("worktrail.orchestrator.integrate.coordinator.plan_groups") as mock_groups:
+        with patch(
+            "worktrail.orchestrator.integrate.coordinator.plan_groups"
+        ) as mock_groups:
             with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                with patch(
+                    "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
+                ):
                     base_g = mock_group("base", ["T001"])
-                    feat_g = mock_group("feature-2", ["T002"], depends_on=[])  # independent
+                    feat_g = mock_group(
+                        "feature-2", ["T002"], depends_on=[]
+                    )  # independent
                     mock_groups.return_value = [base_g, feat_g]
 
                     integrate_groups(
-                        Path("/repo"), "spec-048",
-                        [mock_task("T001"), mock_task("T002")], "origin", "full-123", "main",
+                        Path("/repo"),
+                        "spec-048",
+                        [mock_task("T001"), mock_task("T002")],
+                        "origin",
+                        "full-123",
+                        "main",
                         cleanup=False,
                     )
 
                     self.assertEqual(
-                        len(spec_checkouts), 1,
-                        "Independent non-carrier sibling must reset spec folder once"
+                        len(spec_checkouts),
+                        1,
+                        "Independent non-carrier sibling must reset spec folder once",
                     )
                     # The reset should target the base branch
                     self.assertIn("main", spec_checkouts[0])
                     self.assertTrue(
                         any("docs/specs/spec-048" in str(a) for a in spec_checkouts[0]),
-                        "Reset must target the spec-048 folder"
+                        "Reset must target the spec-048 folder",
                     )
 
     def test_stacked_group_does_not_strip(self):
         """A group stacked on base (depends_on=['base']) must NOT strip spec folder."""
         run, spec_checkouts = self._make_strip_tracker()
 
-        with patch("worktrail.orchestrator.integrate.coordinator.plan_groups") as mock_groups:
+        with patch(
+            "worktrail.orchestrator.integrate.coordinator.plan_groups"
+        ) as mock_groups:
             with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                with patch(
+                    "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
+                ):
                     base_g = mock_group("base", ["T001"])
                     feat_g = mock_group("feature-1", ["T002"], depends_on=["base"])
                     mock_groups.return_value = [base_g, feat_g]
 
                     integrate_groups(
-                        Path("/repo"), "spec-048",
-                        [mock_task("T001"), mock_task("T002")], "origin", "full-123", "main",
+                        Path("/repo"),
+                        "spec-048",
+                        [mock_task("T001"), mock_task("T002")],
+                        "origin",
+                        "full-123",
+                        "main",
                         cleanup=False,
                     )
 
                     self.assertEqual(
-                        len(spec_checkouts), 0,
-                        "Stacked group must not strip spec folder (no sibling conflict risk)"
+                        len(spec_checkouts),
+                        0,
+                        "Stacked group must not strip spec folder (no sibling conflict risk)",
                     )
 
     def test_strip_spec_folder_kwarg_passed_through_integrate_one(self):
@@ -1687,22 +2029,33 @@ class SpecFolderOwnership(unittest.TestCase):
         run, spec_checkouts = self._make_strip_tracker()
 
         with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-            with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+            with patch(
+                "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
+            ):
                 g = mock_group("feature-2", ["T001"])
                 status = {"T001": "done"}
                 group_branch: dict = {}
                 quarantined: dict = {}
 
                 integrate.integrate_one(
-                    g, Path("/repo"), "spec-048",
-                    [mock_task("T001")], "origin", "full-123", "main",
-                    None, status, group_branch, quarantined,
+                    g,
+                    Path("/repo"),
+                    "spec-048",
+                    [mock_task("T001")],
+                    "origin",
+                    "full-123",
+                    "main",
+                    None,
+                    status,
+                    group_branch,
+                    quarantined,
                     strip_spec_folder=True,
                 )
 
                 self.assertEqual(
-                    len(spec_checkouts), 1,
-                    "strip_spec_folder=True must reset the spec folder"
+                    len(spec_checkouts),
+                    1,
+                    "strip_spec_folder=True must reset the spec folder",
                 )
 
 
@@ -1738,16 +2091,28 @@ class PrePrDriftGate(unittest.TestCase):
 
         `gate` of `None` exercises the unresolvable-script path (4.5).
         """
-        with patch("worktrail.orchestrator.integrate.coordinator.plan_groups") as mock_groups:
+        with patch(
+            "worktrail.orchestrator.integrate.coordinator.plan_groups"
+        ) as mock_groups:
             with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
-                    with patch("worktrail.orchestrator.integrate._resolve_pre_pr_gate",
-                               return_value=gate):
+                with patch(
+                    "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
+                ):
+                    with patch(
+                        "worktrail.orchestrator.integrate._resolve_pre_pr_gate",
+                        return_value=gate,
+                    ):
                         mock_groups.return_value = [mock_group("base", ["T001"])]
                         integrate_groups(
-                            Path("/repo"), "spec-001", [mock_task("T001")], "origin",
-                            "run-drift", "main", cleanup=False,
-                            pr_labels=["go:risk-low"], smoke_cmd=smoke_cmd,
+                            Path("/repo"),
+                            "spec-001",
+                            [mock_task("T001")],
+                            "origin",
+                            "run-drift",
+                            "main",
+                            cleanup=False,
+                            pr_labels=["go:risk-low"],
+                            smoke_cmd=smoke_cmd,
                             journal_path=journal_path,
                         )
 
@@ -1769,14 +2134,18 @@ class PrePrDriftGate(unittest.TestCase):
         self._run_group(run, gate=Path("/fake/pre_pr_gate.py"))
 
         gate_calls = self._gate_calls(run)
-        self.assertEqual(len(gate_calls), 1, "drift gate must run exactly once per group")
+        self.assertEqual(
+            len(gate_calls), 1, "drift gate must run exactly once per group"
+        )
         repo_arg = gate_calls[0][gate_calls[0].index("--repo") + 1]
         self.assertNotEqual(
-            repo_arg, "/repo",
+            repo_arg,
+            "/repo",
             "gate must not inspect the canonical checkout -- its HEAD is the base branch",
         )
         self.assertIn(
-            "/repo-integrate/", repo_arg,
+            "/repo-integrate/",
+            repo_arg,
             f"gate --repo must be the group's integration worktree, got {repo_arg}",
         )
 
@@ -1787,34 +2156,56 @@ class PrePrDriftGate(unittest.TestCase):
         def failing_gate(*args, **kwargs):
             if args and isinstance(args[0], list) and "--checks-only" in args[0]:
                 run.calls.append(list(args[0]))
-                return Proc(4, "", "PRE-PR GATE: FAIL - DoD verification failed for T001")
+                return Proc(
+                    4, "", "PRE-PR GATE: FAIL - DoD verification failed for T001"
+                )
             return run(*args, **kwargs)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             journal_path = str(Path(tmpdir) / "journal.json")
-            with patch("worktrail.orchestrator.integrate.coordinator.plan_groups") as mock_groups:
-                with patch("worktrail.orchestrator.integrate._git", side_effect=failing_gate):
-                    with patch("worktrail.orchestrator.integrate.subprocess.run",
-                               side_effect=failing_gate):
-                        with patch("worktrail.orchestrator.integrate._resolve_pre_pr_gate",
-                                   return_value=Path("/fake/pre_pr_gate.py")):
+            with patch(
+                "worktrail.orchestrator.integrate.coordinator.plan_groups"
+            ) as mock_groups:
+                with patch(
+                    "worktrail.orchestrator.integrate._git", side_effect=failing_gate
+                ):
+                    with patch(
+                        "worktrail.orchestrator.integrate.subprocess.run",
+                        side_effect=failing_gate,
+                    ):
+                        with patch(
+                            "worktrail.orchestrator.integrate._resolve_pre_pr_gate",
+                            return_value=Path("/fake/pre_pr_gate.py"),
+                        ):
                             mock_groups.return_value = [mock_group("base", ["T001"])]
                             integrate_groups(
-                                Path("/repo"), "spec-001", [mock_task("T001")], "origin",
-                                "run-drift-fail", "main", cleanup=False,
-                                pr_labels=["go:risk-low"], journal_path=journal_path,
+                                Path("/repo"),
+                                "spec-001",
+                                [mock_task("T001")],
+                                "origin",
+                                "run-drift-fail",
+                                "main",
+                                cleanup=False,
+                                pr_labels=["go:risk-low"],
+                                journal_path=journal_path,
                             )
 
-            self.assertEqual(run.find_calls("gh", "pr", "create"), [],
-                             "a drifted group must not open a PR")
             self.assertEqual(
-                [c for c in run.calls if "push" in c], [],
+                run.find_calls("gh", "pr", "create"),
+                [],
+                "a drifted group must not open a PR",
+            )
+            self.assertEqual(
+                [c for c in run.calls if "push" in c],
+                [],
                 "a drifted group must not push its branch either -- the gate "
                 "runs before the push, not merely before PR creation",
             )
             record = json.loads(Path(journal_path).read_text())["groups"]["base"]
             self.assertEqual(record["state"], "QUARANTINED")
-            self.assertEqual(record["quarantine_reason"], integrate.QUARANTINE_PRE_PR_DRIFT)
+            self.assertEqual(
+                record["quarantine_reason"], integrate.QUARANTINE_PRE_PR_DRIFT
+            )
 
     def test_drift_failure_short_circuits_before_smoke_command(self):
         """The cheap deterministic checks run first, so a drift failure never
@@ -1831,22 +2222,36 @@ class PrePrDriftGate(unittest.TestCase):
                 return Proc(0, "", "")
             return run(*args, **kwargs)
 
-        with patch("worktrail.orchestrator.integrate.coordinator.plan_groups") as mock_groups:
-            with patch("worktrail.orchestrator.integrate._git", side_effect=failing_gate):
-                with patch("worktrail.orchestrator.integrate.subprocess.run",
-                           side_effect=failing_gate):
-                    with patch("worktrail.orchestrator.integrate._resolve_pre_pr_gate",
-                               return_value=Path("/fake/pre_pr_gate.py")):
+        with patch(
+            "worktrail.orchestrator.integrate.coordinator.plan_groups"
+        ) as mock_groups:
+            with patch(
+                "worktrail.orchestrator.integrate._git", side_effect=failing_gate
+            ):
+                with patch(
+                    "worktrail.orchestrator.integrate.subprocess.run",
+                    side_effect=failing_gate,
+                ):
+                    with patch(
+                        "worktrail.orchestrator.integrate._resolve_pre_pr_gate",
+                        return_value=Path("/fake/pre_pr_gate.py"),
+                    ):
                         mock_groups.return_value = [mock_group("base", ["T001"])]
                         integrate_groups(
-                            Path("/repo"), "spec-001", [mock_task("T001")], "origin",
-                            "run-drift-order", "main", cleanup=False,
+                            Path("/repo"),
+                            "spec-001",
+                            [mock_task("T001")],
+                            "origin",
+                            "run-drift-order",
+                            "main",
+                            cleanup=False,
                             pr_labels=["go:risk-low"],
                             smoke_cmd="pytest -q",
                         )
 
-        self.assertEqual(smoke_ran, [],
-                         "smoke command must not run after the drift gate fails")
+        self.assertEqual(
+            smoke_ran, [], "smoke command must not run after the drift gate fails"
+        )
 
     def test_clean_group_still_pushes_and_opens_its_pr(self):
         """Happy-path regression: adding the gate must not disturb a clean group."""
@@ -1857,7 +2262,7 @@ class PrePrDriftGate(unittest.TestCase):
         create_calls = run.find_calls("gh", "pr", "create")
         self.assertEqual(len(create_calls), 1, "a clean group must still open its PR")
         labels = create_calls[0][
-            create_calls[0].index("--label"):create_calls[0].index("--title")
+            create_calls[0].index("--label") : create_calls[0].index("--title")
         ]
         self.assertEqual(labels, ["--label", "go:risk-low"])
 
@@ -1870,19 +2275,29 @@ class PrePrDriftGate(unittest.TestCase):
             journal_path = str(Path(tmpdir) / "journal.json")
             self._run_group(run, gate=None, journal_path=journal_path)
 
-            self.assertEqual(run.find_calls("gh", "pr", "create"), [],
-                             "an unresolvable gate must not open a PR")
+            self.assertEqual(
+                run.find_calls("gh", "pr", "create"),
+                [],
+                "an unresolvable gate must not open a PR",
+            )
             record = json.loads(Path(journal_path).read_text())["groups"]["base"]
             self.assertEqual(record["state"], "QUARANTINED")
-            self.assertEqual(record["quarantine_reason"], integrate.QUARANTINE_PRE_PR_DRIFT)
+            self.assertEqual(
+                record["quarantine_reason"], integrate.QUARANTINE_PRE_PR_DRIFT
+            )
 
     def test_gate_timeout_fails_closed(self):
         """A hung gate is a failure, not a pass."""
+
         def timing_out(cmd, **kwargs):
             raise subprocess.TimeoutExpired(cmd, 300)
 
-        with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=timing_out):
-            ok, detail = integrate._run_drift_gate(Path("/repo-integrate/base-abc"), "base")
+        with patch(
+            "worktrail.orchestrator.integrate.subprocess.run", side_effect=timing_out
+        ):
+            ok, detail = integrate._run_drift_gate(
+                Path("/repo-integrate/base-abc"), "base"
+            )
 
         self.assertFalse(ok)
         self.assertIn("timed out", detail)
@@ -1895,14 +2310,24 @@ class EmptyDiffGuard(unittest.TestCase):
     self-reported "done" without implementing anything."""
 
     def _run_group(self, run, journal_path):
-        with patch("worktrail.orchestrator.integrate.coordinator.plan_groups") as mock_groups:
+        with patch(
+            "worktrail.orchestrator.integrate.coordinator.plan_groups"
+        ) as mock_groups:
             with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                with patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run):
+                with patch(
+                    "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
+                ):
                     mock_groups.return_value = [mock_group("base", ["T001"])]
                     integrate_groups(
-                        Path("/repo"), "spec-001", [mock_task("T001")], "origin",
-                        "run-empty-diff", "main", cleanup=False,
-                        pr_labels=["go:risk-low"], journal_path=journal_path,
+                        Path("/repo"),
+                        "spec-001",
+                        [mock_task("T001")],
+                        "origin",
+                        "run-empty-diff",
+                        "main",
+                        cleanup=False,
+                        pr_labels=["go:risk-low"],
+                        journal_path=journal_path,
                     )
 
     def test_empty_diff_quarantines_and_opens_no_pr(self):
@@ -1911,8 +2336,11 @@ class EmptyDiffGuard(unittest.TestCase):
         run = FakeRun(pr_view_responses={}, ls_remote_responses={})
 
         def no_op_diff(*args, **kwargs):
-            cmd = list(args[1:]) if args and isinstance(args[0], (str, Path)) else (
-                args[0] if args else [])
+            cmd = (
+                list(args[1:])
+                if args and isinstance(args[0], (str, Path))
+                else (args[0] if args else [])
+            )
             if cmd[:2] == ["diff", "--quiet"]:
                 run.calls.append(cmd)
                 return Proc(0, "", "")  # identical to base -- no-op
@@ -1922,13 +2350,21 @@ class EmptyDiffGuard(unittest.TestCase):
             journal_path = str(Path(tmpdir) / "journal.json")
             self._run_group(no_op_diff, journal_path)
 
-            self.assertEqual(run.find_calls("push"), [],
-                             "an empty-diff group must never push its branch")
-            self.assertEqual(run.find_calls("gh", "pr", "create"), [],
-                             "an empty-diff group must never open a PR")
+            self.assertEqual(
+                run.find_calls("push"),
+                [],
+                "an empty-diff group must never push its branch",
+            )
+            self.assertEqual(
+                run.find_calls("gh", "pr", "create"),
+                [],
+                "an empty-diff group must never open a PR",
+            )
             record = json.loads(Path(journal_path).read_text())["groups"]["base"]
             self.assertEqual(record["state"], "QUARANTINED")
-            self.assertEqual(record["quarantine_reason"], integrate.QUARANTINE_EMPTY_DIFF)
+            self.assertEqual(
+                record["quarantine_reason"], integrate.QUARANTINE_EMPTY_DIFF
+            )
 
     def test_non_empty_diff_still_pushes_and_opens_pr(self):
         """REQUIREMENT: the guard must not false-positive on real work -- the
@@ -1952,8 +2388,11 @@ class EmptyDiffGuard(unittest.TestCase):
         gate_calls = []
 
         def no_op_diff(*args, **kwargs):
-            cmd = list(args[1:]) if args and isinstance(args[0], (str, Path)) else (
-                args[0] if args else [])
+            cmd = (
+                list(args[1:])
+                if args and isinstance(args[0], (str, Path))
+                else (args[0] if args else [])
+            )
             if cmd[:2] == ["diff", "--quiet"]:
                 run.calls.append(cmd)
                 return Proc(0, "", "")
@@ -1963,11 +2402,15 @@ class EmptyDiffGuard(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             journal_path = str(Path(tmpdir) / "journal.json")
-            with patch("worktrail.orchestrator.integrate._resolve_pre_pr_gate",
-                       return_value=Path("/fake/pre_pr_gate.py")):
+            with patch(
+                "worktrail.orchestrator.integrate._resolve_pre_pr_gate",
+                return_value=Path("/fake/pre_pr_gate.py"),
+            ):
                 self._run_group(no_op_diff, journal_path)
 
-        self.assertEqual(gate_calls, [], "drift gate must never run for an empty-diff group")
+        self.assertEqual(
+            gate_calls, [], "drift gate must never run for an empty-diff group"
+        )
 
 
 if __name__ == "__main__":

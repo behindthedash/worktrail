@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Optional
 
-GROUP_RE = re.compile(r"^#{2,3}\s+(?:(?:Phase|User Story)\s+)?([\w.-]+)\s*[:.-]?\s*(.*?)\s*$", re.I)
+GROUP_RE = re.compile(
+    r"^#{2,3}\s+(?:(?:Phase|User Story)\s+)?([\w.-]+)\s*[:.-]?\s*(.*?)\s*$",
+    re.IGNORECASE,
+)
 TASK_RE = re.compile(r"^\s*-\s+\[( |x|X)\]\s+(?:\*\*)?(T\d{3,})(?:\*\*)?\s+(.*?)\s*$")
 TAG_RE = re.compile(r"^\s*\[([^\]]+)\]\s*")
 STATUS_PENDING = "pending"
@@ -31,7 +33,7 @@ class ParsedTasks:
     tasks: list[ParsedTask] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
-    def by_id(self, task_id: str) -> Optional[ParsedTask]:
+    def by_id(self, task_id: str) -> ParsedTask | None:
         return next((task for task in self.tasks if task.id == task_id), None)
 
 
@@ -43,7 +45,7 @@ def split_tags(title: str) -> tuple[str, list[str]]:
         if not match:
             return rest.strip(), tags
         tags.append(match.group(1).strip())
-        rest = rest[match.end():]
+        rest = rest[match.end() :]
 
 
 def parse_tasks_md(text: str) -> ParsedTasks:
@@ -62,7 +64,9 @@ def parse_tasks_md(text: str) -> ParsedTasks:
         if task_match:
             mark, task_id, raw_title = task_match.groups()
             if task_id in seen:
-                result.warnings.append(f"line {line_no + 1}: duplicate task id {task_id}")
+                result.warnings.append(
+                    f"line {line_no + 1}: duplicate task id {task_id}"
+                )
                 continue
             seen.add(task_id)
             title, tags = split_tags(raw_title)

@@ -15,8 +15,9 @@ from worktrail.orchestrator import worktree
 
 class WorktreeManagerDryRunTests(unittest.TestCase):
     def _wm(self, **kw):
-        return worktree.WorktreeManager(repo_root=Path("/repos/app"), spec_id="001-test",
-                                        dry_run=True, **kw)
+        return worktree.WorktreeManager(
+            repo_root=Path("/repos/app"), spec_id="001-test", dry_run=True, **kw
+        )
 
     def test_add_dry_run_returns_path(self):
         wm = self._wm()
@@ -49,8 +50,12 @@ class WorktreeManagerDryRunTests(unittest.TestCase):
         self.assertTrue(any("worktree" in cmd for cmd in wm.log))
 
     def test_custom_worktree_base(self):
-        wm = worktree.WorktreeManager(repo_root=Path("/repos/app"), spec_id="001-test",
-                                      worktree_base=Path("/custom/wt-base"), dry_run=True)
+        wm = worktree.WorktreeManager(
+            repo_root=Path("/repos/app"),
+            spec_id="001-test",
+            worktree_base=Path("/custom/wt-base"),
+            dry_run=True,
+        )
         p = wm.add("TASK-002")
         self.assertIn("/custom/wt-base", str(p))
 
@@ -60,22 +65,33 @@ class WorktreeFakeRunnerTests(unittest.TestCase):
 
     def _proc(self, returncode=0, stdout="", stderr=""):
         from collections import namedtuple
+
         P = namedtuple("P", "returncode stdout stderr")
         return P(returncode, stdout, stderr)
 
     def test_worktree_add_error_raises(self):
         def fail_runner(_cmd):
             return self._proc(returncode=1, stderr="not a git repo")
-        wm = worktree.WorktreeManager(repo_root=Path("/repos/app"), spec_id="001-test",
-                                      runner=fail_runner, dry_run=False)
+
+        wm = worktree.WorktreeManager(
+            repo_root=Path("/repos/app"),
+            spec_id="001-test",
+            runner=fail_runner,
+            dry_run=False,
+        )
         with self.assertRaises(worktree.WorktreeError):
             wm.add("TASK-001")
 
     def test_sandbox_denied_raises_sandbox_error(self):
         def sandbox_runner(_cmd):
             return self._proc(returncode=1, stderr="Operation not permitted (sandbox)")
-        wm = worktree.WorktreeManager(repo_root=Path("/repos/app"), spec_id="001-test",
-                                      runner=sandbox_runner, dry_run=False)
+
+        wm = worktree.WorktreeManager(
+            repo_root=Path("/repos/app"),
+            spec_id="001-test",
+            runner=sandbox_runner,
+            dry_run=False,
+        )
         with self.assertRaises(worktree.SandboxDenied):
             wm.add("TASK-001")
 

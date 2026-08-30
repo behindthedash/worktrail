@@ -24,9 +24,17 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import integrate  # noqa: E402
-from worktrail.orchestrator import live  # noqa: E402
-from test_pipeline import FakeSpawn, FakeVerifier, _init_repo, _make_integrate_one  # noqa: E402
+from test_pipeline import (
+    FakeSpawn,
+    FakeVerifier,
+    _init_repo,
+    _make_integrate_one,
+)
+
+from worktrail.orchestrator import (
+    integrate,
+    live,
+)
 
 Proc = namedtuple("Proc", "returncode stdout stderr")
 

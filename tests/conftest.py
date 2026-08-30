@@ -80,8 +80,12 @@ def _isolate_go_machine_wide_config(tmp_path, monkeypatch):
             encoding="utf-8",
         )
         monkeypatch.setenv("GO_ROUTING_FILE", str(routing_file))
-        monkeypatch.setenv("GO_MODEL_DEFAULTS_FILE", str(tmp_path / "no-such-model-defaults.yaml"))
-        monkeypatch.setenv("GO_AGENT_CAPACITY_CACHE", str(tmp_path / "agent-capacity.json"))
+        monkeypatch.setenv(
+            "GO_MODEL_DEFAULTS_FILE", str(tmp_path / "no-such-model-defaults.yaml")
+        )
+        monkeypatch.setenv(
+            "GO_AGENT_CAPACITY_CACHE", str(tmp_path / "agent-capacity.json")
+        )
         # The real work queue is machine-wide state too: any code path that falls
         # back to work_queue.base_dir() (e.g. drain's backlog seeding) must land in
         # a per-test directory, never the operator's $WORK_QUEUE_DIR/~/work-queue.

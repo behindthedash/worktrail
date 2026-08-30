@@ -21,12 +21,10 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Dict, List, Optional
 
 import yaml
 
 from worktrail.router import consolidate_cluster as cc
-
 
 # --------------------------------------------------------------------------- #
 # Fixture construction
@@ -38,10 +36,17 @@ def _write_brief(
     filename: str,
     *,
     focus: str = "",
-    suggested_approach: Optional[List[str]] = None,
+    suggested_approach: list[str] | None = None,
 ) -> str:
     """Write a realistic queued-brief .md file; return its stem (brief id)."""
-    lines = ["---", f"id: {filename[:-3]}", f'focus: "{focus}"', "status: queued", "---", ""]
+    lines = [
+        "---",
+        f"id: {filename[:-3]}",
+        f'focus: "{focus}"',
+        "status: queued",
+        "---",
+        "",
+    ]
     lines.append("## Focus")
     lines.append("")
     lines.append(focus)
@@ -69,16 +74,23 @@ class ConsolidateClusterTestCase(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def _env(self) -> Dict[str, str]:
+    def _env(self) -> dict[str, str]:
         env = dict(os.environ)
         env["WORK_QUEUE_DIR"] = str(self.wq_base)
         return env
 
-    def _wq_claim(self, identifier: str) -> Dict:
+    def _wq_claim(self, identifier: str) -> dict:
         """Real `work_queue.py claim` subprocess call -- used to simulate an
         out-of-band race between the dashboard snapshot and preview/execute."""
         r = subprocess.run(
-            [sys.executable, "-m", "worktrail.workqueue.work_queue", "claim", identifier, "--json"],
+            [
+                sys.executable,
+                "-m",
+                "worktrail.workqueue.work_queue",
+                "claim",
+                identifier,
+                "--json",
+            ],
             capture_output=True,
             text=True,
             env=self._env(),
@@ -95,7 +107,7 @@ class ConsolidateClusterTestCase(unittest.TestCase):
         self.assertEqual(r.returncode, 0, msg=r.stderr)
         return r.stdout
 
-    def _frontmatter(self, path: Path) -> Dict[str, str]:
+    def _frontmatter(self, path: Path) -> dict[str, str]:
         return cc._parse_frontmatter(path.read_text(encoding="utf-8"))
 
 
@@ -108,9 +120,13 @@ class ResolvableMembersAndPreview(ConsolidateClusterTestCase):
     def test_all_members_resolvable_when_nothing_changed(self):
         """Baseline for AC-005: all member ids still present in queue_dir are
         returned in resolvable_members, excluded_members is empty."""
-        m1 = _write_brief(self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work")
+        m1 = _write_brief(
+            self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work"
+        )
         m2 = _write_brief(self.queue_dir, "20260701-100100-beta.md", focus="Beta work")
-        m3 = _write_brief(self.queue_dir, "20260701-100200-gamma.md", focus="Gamma work")
+        m3 = _write_brief(
+            self.queue_dir, "20260701-100200-gamma.md", focus="Gamma work"
+        )
 
         preview = cc.build_preview([m1, m2, m3], self.queue_dir)
 
@@ -122,9 +138,13 @@ class ResolvableMembersAndPreview(ConsolidateClusterTestCase):
     def test_out_of_band_claim_excludes_member(self):
         """AC-005: a member claimed out-of-band (real work_queue.py claim)
         between cluster formation and build_preview() is excluded."""
-        m1 = _write_brief(self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work")
+        m1 = _write_brief(
+            self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work"
+        )
         m2 = _write_brief(self.queue_dir, "20260701-100100-beta.md", focus="Beta work")
-        m3 = _write_brief(self.queue_dir, "20260701-100200-gamma.md", focus="Gamma work")
+        m3 = _write_brief(
+            self.queue_dir, "20260701-100200-gamma.md", focus="Gamma work"
+        )
 
         claim_result = self._wq_claim(m2)
         self.assertEqual(claim_result["status"], "claimed")
@@ -139,7 +159,9 @@ class ResolvableMembersAndPreview(ConsolidateClusterTestCase):
     def test_withdrawn_when_resolvable_drops_below_two(self):
         """AC-005, REQ-CHG-005: when the out-of-band claim(s) above drop
         resolvable membership below 2, build_preview() withdraws (no draft)."""
-        m1 = _write_brief(self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work")
+        m1 = _write_brief(
+            self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work"
+        )
         m2 = _write_brief(self.queue_dir, "20260701-100100-beta.md", focus="Beta work")
 
         claim_result = self._wq_claim(m2)
@@ -277,14 +299,16 @@ class ExecuteConsolidationDecline(ConsolidateClusterTestCase):
     def test_declined_performs_zero_writes(self):
         """AC-002, AC-004: confirmed=False writes nothing to queue_dir/
         picked_dir and never invokes the work_queue CLI."""
-        m1 = _write_brief(self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work")
+        m1 = _write_brief(
+            self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work"
+        )
         m2 = _write_brief(self.queue_dir, "20260701-100100-beta.md", focus="Beta work")
         draft = cc.draft_consolidated_brief([m1, m2], self.queue_dir)
 
         queue_before = sorted(f.name for f in self.queue_dir.iterdir())
         picked_before = sorted(f.name for f in self.picked_dir.iterdir())
 
-        calls: List[List[str]] = []
+        calls: list[list[str]] = []
         real_run = subprocess.run
 
         def _spy_run(args, *a, **kw):
@@ -302,17 +326,23 @@ class ExecuteConsolidationDecline(ConsolidateClusterTestCase):
         self.assertEqual(result["status"], "declined")
         self.assertEqual(calls, [])
         self.assertEqual(sorted(f.name for f in self.queue_dir.iterdir()), queue_before)
-        self.assertEqual(sorted(f.name for f in self.picked_dir.iterdir()), picked_before)
+        self.assertEqual(
+            sorted(f.name for f in self.picked_dir.iterdir()), picked_before
+        )
 
     def test_declined_list_json_snapshot_byte_identical(self):
         """AC-004: a work_queue.py list --json snapshot before and after a
         confirmed=False call is byte-for-byte identical."""
-        m1 = _write_brief(self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work")
+        m1 = _write_brief(
+            self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work"
+        )
         m2 = _write_brief(self.queue_dir, "20260701-100100-beta.md", focus="Beta work")
         draft = cc.draft_consolidated_brief([m1, m2], self.queue_dir)
 
         before = self._wq_list_json()
-        cc.execute_consolidation(False, [m1, m2], draft, self.queue_dir, self.picked_dir)
+        cc.execute_consolidation(
+            False, [m1, m2], draft, self.queue_dir, self.picked_dir
+        )
         after = self._wq_list_json()
 
         self.assertEqual(before, after)
@@ -357,7 +387,9 @@ class ExecuteConsolidationConfirm(ConsolidateClusterTestCase):
 
         for member_id in (m1, m2):
             picked_path = self.picked_dir / f"{member_id}.md"
-            self.assertTrue(picked_path.exists(), msg=f"{member_id} missing from picked/")
+            self.assertTrue(
+                picked_path.exists(), msg=f"{member_id} missing from picked/"
+            )
             fm = self._frontmatter(picked_path)
             self.assertEqual(fm.get("status"), "done")
             body = picked_path.read_text(encoding="utf-8")
@@ -372,7 +404,9 @@ class ExecuteConsolidationConfirm(ConsolidateClusterTestCase):
         immediately before execute_consolidation is recorded in
         members_skipped, not members_completed, and the remaining members
         are still processed normally (batch is not aborted)."""
-        m1 = _write_brief(self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work")
+        m1 = _write_brief(
+            self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work"
+        )
         m2 = _write_brief(self.queue_dir, "20260701-100100-beta.md", focus="Beta work")
         draft = cc.draft_consolidated_brief([m1, m2], self.queue_dir)
 
@@ -396,9 +430,16 @@ class ExecuteConsolidationConfirm(ConsolidateClusterTestCase):
         """Edge case: confirmed=True with an empty resolvable_ids list does
         not write a consolidated brief with zero provenance, and returns a
         result distinguishable from a normal 'written' outcome."""
-        draft = {"title": "Consolidated", "focus": "", "suggested_approach": [], "member_ids": []}
+        draft = {
+            "title": "Consolidated",
+            "focus": "",
+            "suggested_approach": [],
+            "member_ids": [],
+        }
 
-        result = cc.execute_consolidation(True, [], draft, self.queue_dir, self.picked_dir)
+        result = cc.execute_consolidation(
+            True, [], draft, self.queue_dir, self.picked_dir
+        )
 
         self.assertEqual(result["members_completed"], [])
         self.assertNotEqual(result["status"], "written")
@@ -408,7 +449,9 @@ class ExecuteConsolidationConfirm(ConsolidateClusterTestCase):
         """Edge case: the consolidated brief's status: frontmatter field is
         queued immediately after execute_consolidation writes it (claimable,
         not accidentally already-done/picked)."""
-        m1 = _write_brief(self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work")
+        m1 = _write_brief(
+            self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work"
+        )
         m2 = _write_brief(self.queue_dir, "20260701-100100-beta.md", focus="Beta work")
         draft = cc.draft_consolidated_brief([m1, m2], self.queue_dir)
 
@@ -452,8 +495,18 @@ class BuildConsolidatedBriefContent(unittest.TestCase):
     def test_different_member_sets_with_same_generic_title_get_different_ids(self):
         """Bug #3: two unrelated clusters whose auto-generated titles both
         slugify to the same generic stem must not collide on brief id."""
-        draft_a = {"title": "Consolidated", "focus": "a", "suggested_approach": [], "member_ids": ["m1", "m2"]}
-        draft_b = {"title": "Consolidated", "focus": "b", "suggested_approach": [], "member_ids": ["m3", "m4"]}
+        draft_a = {
+            "title": "Consolidated",
+            "focus": "a",
+            "suggested_approach": [],
+            "member_ids": ["m1", "m2"],
+        }
+        draft_b = {
+            "title": "Consolidated",
+            "focus": "b",
+            "suggested_approach": [],
+            "member_ids": ["m3", "m4"],
+        }
 
         id_a, _ = cc._build_consolidated_brief_content(draft_a)
         id_b, _ = cc._build_consolidated_brief_content(draft_b)
@@ -461,7 +514,12 @@ class BuildConsolidatedBriefContent(unittest.TestCase):
         self.assertNotEqual(id_a, id_b)
 
     def test_same_member_set_is_deterministic(self):
-        draft = {"title": "Consolidated", "focus": "a", "suggested_approach": [], "member_ids": ["m2", "m1"]}
+        draft = {
+            "title": "Consolidated",
+            "focus": "a",
+            "suggested_approach": [],
+            "member_ids": ["m2", "m1"],
+        }
         id_1, _ = cc._build_consolidated_brief_content(draft)
         id_2, _ = cc._build_consolidated_brief_content(draft)
         # same second (patched-free here, real clock) -- compare the slug+hash
@@ -476,11 +534,15 @@ class ExecuteConsolidationValidatesBeforeMutating(ConsolidateClusterTestCase):
         into `{}`) must fail validation and return before claiming or
         marking any member done -- never strand claimed members with
         nothing to supersede them."""
-        m1 = _write_brief(self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work")
+        m1 = _write_brief(
+            self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work"
+        )
         m2 = _write_brief(self.queue_dir, "20260701-100100-beta.md", focus="Beta work")
-        broken_draft: Dict = {}  # mirrors the wrapper-unwrap bug's effective payload
+        broken_draft: dict = {}  # mirrors the wrapper-unwrap bug's effective payload
 
-        result = cc.execute_consolidation(True, [m1, m2], broken_draft, self.queue_dir, self.picked_dir)
+        result = cc.execute_consolidation(
+            True, [m1, m2], broken_draft, self.queue_dir, self.picked_dir
+        )
 
         self.assertEqual(result["status"], "write-verification-failed")
         self.assertIsNone(result["new_brief_path"])
@@ -502,18 +564,38 @@ class ResolveDraftPayload(unittest.TestCase):
     whole wrapper, and previously that silently produced an empty brief."""
 
     def test_accepts_bare_draft_dict(self):
-        draft = {"title": "t", "focus": "f", "suggested_approach": [], "member_ids": ["m1", "m2"]}
+        draft = {
+            "title": "t",
+            "focus": "f",
+            "suggested_approach": [],
+            "member_ids": ["m1", "m2"],
+        }
         resolved = cc._resolve_draft_payload(json.dumps(draft))
         self.assertEqual(resolved, draft)
 
     def test_unwraps_full_preview_payload(self):
-        draft = {"title": "t", "focus": "f", "suggested_approach": [], "member_ids": ["m1", "m2"]}
-        wrapper = {"resolvable_members": ["m1", "m2"], "excluded_members": [], "withdrawn": False, "draft": draft}
+        draft = {
+            "title": "t",
+            "focus": "f",
+            "suggested_approach": [],
+            "member_ids": ["m1", "m2"],
+        }
+        wrapper = {
+            "resolvable_members": ["m1", "m2"],
+            "excluded_members": [],
+            "withdrawn": False,
+            "draft": draft,
+        }
         resolved = cc._resolve_draft_payload(json.dumps(wrapper))
         self.assertEqual(resolved, draft)
 
     def test_withdrawn_wrapper_with_null_draft_raises_clear_error(self):
-        wrapper = {"resolvable_members": [], "excluded_members": ["m1"], "withdrawn": True, "draft": None}
+        wrapper = {
+            "resolvable_members": [],
+            "excluded_members": ["m1"],
+            "withdrawn": True,
+            "draft": None,
+        }
         with self.assertRaises(ValueError) as ctx:
             cc._resolve_draft_payload(json.dumps(wrapper))
         self.assertIn("member_ids", str(ctx.exception))
@@ -537,7 +619,9 @@ class MainCliDraftContract(ConsolidateClusterTestCase):
         """End-to-end regression for the documented SKILL.md usage
         (`execute <members...> --draft '<preview JSON>' --confirm`), which
         passes the FULL preview payload, not the bare inner draft."""
-        m1 = _write_brief(self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work")
+        m1 = _write_brief(
+            self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work"
+        )
         m2 = _write_brief(self.queue_dir, "20260701-100100-beta.md", focus="Beta work")
         preview = cc.build_preview([m1, m2], self.queue_dir)
         self.assertFalse(preview["withdrawn"])
@@ -559,7 +643,9 @@ class MainCliDraftContract(ConsolidateClusterTestCase):
         )
 
         self.assertEqual(code, 0)
-        new_brief_files = [f for f in self.queue_dir.glob("*.md") if f.stem not in (m1, m2)]
+        new_brief_files = [
+            f for f in self.queue_dir.glob("*.md") if f.stem not in (m1, m2)
+        ]
         self.assertEqual(len(new_brief_files), 1)
         fm = self._frontmatter(new_brief_files[0])
         self.assertTrue(fm.get("focus"))
@@ -570,7 +656,14 @@ class MainCliDraftContract(ConsolidateClusterTestCase):
                 "execute",
                 "m1",
                 "--draft",
-                json.dumps({"resolvable_members": [], "excluded_members": ["m1"], "withdrawn": True, "draft": None}),
+                json.dumps(
+                    {
+                        "resolvable_members": [],
+                        "excluded_members": ["m1"],
+                        "withdrawn": True,
+                        "draft": None,
+                    }
+                ),
                 "--confirm",
                 "--json",
                 "--queue-dir",
@@ -614,7 +707,9 @@ class ExecuteDraftFileAlternative(ConsolidateClusterTestCase):
     def test_draft_file_produces_same_result_as_draft_argv(self):
         """`--draft-file` is a drop-in alternative to `--draft`: reading the
         identical payload from a file writes the same consolidated brief."""
-        m1 = _write_brief(self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work")
+        m1 = _write_brief(
+            self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work"
+        )
         m2 = _write_brief(self.queue_dir, "20260701-100100-beta.md", focus="Beta work")
         preview = cc.build_preview([m1, m2], self.queue_dir)
         draft_file = self.tmp_path / "draft.json"
@@ -637,7 +732,9 @@ class ExecuteDraftFileAlternative(ConsolidateClusterTestCase):
         )
 
         self.assertEqual(code, 0)
-        new_brief_files = [f for f in self.queue_dir.glob("*.md") if f.stem not in (m1, m2)]
+        new_brief_files = [
+            f for f in self.queue_dir.glob("*.md") if f.stem not in (m1, m2)
+        ]
         self.assertEqual(len(new_brief_files), 1)
 
     def test_oversized_draft_would_overflow_argv_but_draft_file_succeeds(self):
@@ -709,11 +806,20 @@ class ExecuteDraftFileAlternative(ConsolidateClusterTestCase):
 
 
 class NestedConsolidationClosureEvidence(ConsolidateClusterTestCase):
-    def _write_nested_batch_member(self, filename: str, *, focus: str, sub_ids: List[str]) -> str:
+    def _write_nested_batch_member(
+        self, filename: str, *, focus: str, sub_ids: list[str]
+    ) -> str:
         """Write a member brief that is itself a consolidation-batch brief
         (carries its own '## Consolidated from' section), simulating a
         cluster re-consolidating an already-consolidated brief."""
-        lines = ["---", f"id: {filename[:-3]}", f'focus: "{focus}"', "status: queued", "---", ""]
+        lines = [
+            "---",
+            f"id: {filename[:-3]}",
+            f'focus: "{focus}"',
+            "status: queued",
+            "---",
+            "",
+        ]
         lines.append("## Focus")
         lines.append("")
         lines.append(focus)
@@ -739,7 +845,9 @@ class NestedConsolidationClosureEvidence(ConsolidateClusterTestCase):
         plain = _write_brief(self.queue_dir, "20260801-000100-plain.md", focus="plain")
         draft = cc.draft_consolidated_brief([nested, plain], self.queue_dir)
 
-        result = cc.execute_consolidation(True, [nested, plain], draft, self.queue_dir, self.picked_dir)
+        result = cc.execute_consolidation(
+            True, [nested, plain], draft, self.queue_dir, self.picked_dir
+        )
 
         self.assertEqual(result["status"], "written")
         self.assertEqual(sorted(result["members_completed"]), sorted([nested, plain]))
@@ -753,9 +861,11 @@ class NestedConsolidationClosureEvidence(ConsolidateClusterTestCase):
         `--note` at all -- `_build_nested_consolidation_note` must not
         fire for the common case."""
         plain = _write_brief(self.queue_dir, "20260801-000200-plain.md", focus="plain")
-        self.assertIsNone(cc._build_nested_consolidation_note(
-            (self.queue_dir / f"{plain}.md").read_text(encoding="utf-8")
-        ))
+        self.assertIsNone(
+            cc._build_nested_consolidation_note(
+                (self.queue_dir / f"{plain}.md").read_text(encoding="utf-8")
+            )
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -767,7 +877,9 @@ class NestedConsolidationClosureEvidence(ConsolidateClusterTestCase):
 
 
 class OriginalCreatedPropagation(ConsolidateClusterTestCase):
-    def _write_created_brief(self, filename: str, *, focus: str, created: str, quoted: bool = True) -> str:
+    def _write_created_brief(
+        self, filename: str, *, focus: str, created: str, quoted: bool = True
+    ) -> str:
         """Write a brief whose `created:` line is either a quoted string
         (parses as `str`) or bare (parses as PyYAML's native `datetime`)."""
         created_line = f'created: "{created}"' if quoted else f"created: {created}"
@@ -788,20 +900,26 @@ class OriginalCreatedPropagation(ConsolidateClusterTestCase):
         """A multi-member draft whose members have different created:
         timestamps yields original_created equal to the earliest one."""
         m1 = self._write_created_brief(
-            "20260701-100000-alpha.md", focus="Alpha work", created="2026-07-05T10:00:00Z"
+            "20260701-100000-alpha.md",
+            focus="Alpha work",
+            created="2026-07-05T10:00:00Z",
         )
         m2 = self._write_created_brief(
             "20260701-100100-beta.md", focus="Beta work", created="2026-07-01T09:00:00Z"
         )
         m3 = self._write_created_brief(
-            "20260701-100200-gamma.md", focus="Gamma work", created="2026-07-10T12:00:00Z"
+            "20260701-100200-gamma.md",
+            focus="Gamma work",
+            created="2026-07-10T12:00:00Z",
         )
 
         draft = cc.draft_consolidated_brief([m1, m2, m3], self.queue_dir)
 
         self.assertEqual(
             draft["original_created"],
-            datetime.datetime(2026, 7, 1, 9, 0, 0, tzinfo=datetime.timezone.utc).isoformat(),
+            datetime.datetime(
+                2026, 7, 1, 9, 0, 0, tzinfo=datetime.timezone.utc
+            ).isoformat(),
         )
 
     def test_native_pyyaml_datetime_created_contributes_correctly(self):
@@ -822,19 +940,25 @@ class OriginalCreatedPropagation(ConsolidateClusterTestCase):
 
         self.assertEqual(
             draft["original_created"],
-            datetime.datetime(2026, 7, 1, 9, 0, 0, tzinfo=datetime.timezone.utc).isoformat(),
+            datetime.datetime(
+                2026, 7, 1, 9, 0, 0, tzinfo=datetime.timezone.utc
+            ).isoformat(),
         )
 
     def test_missing_or_unparseable_created_is_skipped_without_raising(self):
         """A member with a missing created: field, and a member with an
         unparseable created: value, are both skipped -- the surviving
         member's timestamp still wins, and no exception propagates."""
-        m1 = _write_brief(self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work")
+        m1 = _write_brief(
+            self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work"
+        )
         m2 = self._write_created_brief(
             "20260701-100100-beta.md", focus="Beta work", created="not-a-real-timestamp"
         )
         m3 = self._write_created_brief(
-            "20260701-100200-gamma.md", focus="Gamma work", created="2026-07-03T08:00:00Z"
+            "20260701-100200-gamma.md",
+            focus="Gamma work",
+            created="2026-07-03T08:00:00Z",
         )
 
         draft = cc.draft_consolidated_brief([m1, m2, m3], self.queue_dir)
@@ -842,12 +966,16 @@ class OriginalCreatedPropagation(ConsolidateClusterTestCase):
         self.assertEqual(sorted(draft["member_ids"]), sorted([m1, m2, m3]))
         self.assertEqual(
             draft["original_created"],
-            datetime.datetime(2026, 7, 3, 8, 0, 0, tzinfo=datetime.timezone.utc).isoformat(),
+            datetime.datetime(
+                2026, 7, 3, 8, 0, 0, tzinfo=datetime.timezone.utc
+            ).isoformat(),
         )
 
     def test_written_brief_carries_original_created_when_draft_has_it(self):
         m1 = self._write_created_brief(
-            "20260701-100000-alpha.md", focus="Alpha work", created="2026-07-01T09:00:00Z"
+            "20260701-100000-alpha.md",
+            focus="Alpha work",
+            created="2026-07-01T09:00:00Z",
         )
         m2 = self._write_created_brief(
             "20260701-100100-beta.md", focus="Beta work", created="2026-07-05T10:00:00Z"
@@ -898,10 +1026,13 @@ if __name__ == "__main__":
 
 
 class BlockScalarFocusParsing(ConsolidateClusterTestCase):
-    BLOCK_FOCUS_1 = ("Verify bridge-health-guard's queue_growth trend "
-                     "reverses: watch history for ~5 days")
-    BLOCK_FOCUS_2 = ("Add a fail-closed datalena PR target guard: reject "
-                     "shared-branch pushes")
+    BLOCK_FOCUS_1 = (
+        "Verify bridge-health-guard's queue_growth trend "
+        "reverses: watch history for ~5 days"
+    )
+    BLOCK_FOCUS_2 = (
+        "Add a fail-closed datalena PR target guard: reject shared-branch pushes"
+    )
 
     def _write_block_scalar_member(self, filename: str, focus: str) -> str:
         """Exactly the shape create_handoff emits for any focus containing
@@ -915,13 +1046,15 @@ class BlockScalarFocusParsing(ConsolidateClusterTestCase):
             "status: queued\n"
             "---\n\n"
             f"## Focus\n\n{focus}\n",
-            encoding="utf-8")
+            encoding="utf-8",
+        )
         return filename[:-3]
 
     def test_parse_frontmatter_reads_block_scalar_value(self):
         self._write_block_scalar_member("20260813-100000-m1.md", self.BLOCK_FOCUS_1)
         fm = cc._parse_frontmatter(
-            (self.queue_dir / "20260813-100000-m1.md").read_text(encoding="utf-8"))
+            (self.queue_dir / "20260813-100000-m1.md").read_text(encoding="utf-8")
+        )
         self.assertEqual(fm["focus"], self.BLOCK_FOCUS_1)
 
     def test_parse_frontmatter_reads_folded_quoted_scalar(self):
@@ -933,18 +1066,22 @@ class BlockScalarFocusParsing(ConsolidateClusterTestCase):
         path = self.queue_dir / "20260813-100001-m2.md"
         path.write_text(
             f"---\nid: m2\nfocus: {folded}\nstatus: queued\n---\n\nbody\n",
-            encoding="utf-8")
+            encoding="utf-8",
+        )
         fm = cc._parse_frontmatter(path.read_text(encoding="utf-8"))
         self.assertEqual(fm["focus"], long_focus.strip())
 
     def test_draft_from_block_scalar_members_has_no_style_markers(self):
-        m1 = self._write_block_scalar_member("20260813-100002-m1.md", self.BLOCK_FOCUS_1)
-        m2 = self._write_block_scalar_member("20260813-100003-m2.md", self.BLOCK_FOCUS_2)
+        m1 = self._write_block_scalar_member(
+            "20260813-100002-m1.md", self.BLOCK_FOCUS_1
+        )
+        m2 = self._write_block_scalar_member(
+            "20260813-100003-m2.md", self.BLOCK_FOCUS_2
+        )
 
         draft = cc.draft_consolidated_brief([m1, m2], self.queue_dir)
 
-        self.assertEqual(draft["focus"],
-                         f"{self.BLOCK_FOCUS_1} / {self.BLOCK_FOCUS_2}")
+        self.assertEqual(draft["focus"], f"{self.BLOCK_FOCUS_1} / {self.BLOCK_FOCUS_2}")
         self.assertEqual(draft["title"], f"Consolidated: {self.BLOCK_FOCUS_1}")
         self.assertNotIn("|-", draft["focus"])
         for member in draft["members"]:
@@ -959,11 +1096,14 @@ class BlockScalarFocusParsing(ConsolidateClusterTestCase):
     def test_multiline_block_focus_collapses_to_one_line_in_draft(self):
         multiline = "First line of the focus\ncontinues on a second line"
         m1 = self._write_block_scalar_member("20260813-100004-m1.md", multiline)
-        m2 = self._write_block_scalar_member("20260813-100005-m2.md", self.BLOCK_FOCUS_2)
+        m2 = self._write_block_scalar_member(
+            "20260813-100005-m2.md", self.BLOCK_FOCUS_2
+        )
 
         draft = cc.draft_consolidated_brief([m1, m2], self.queue_dir)
-        self.assertIn("First line of the focus continues on a second line",
-                      draft["focus"])
+        self.assertIn(
+            "First line of the focus continues on a second line", draft["focus"]
+        )
         self.assertNotIn("\n", draft["focus"])
 
     def test_written_focus_frontmatter_never_folds(self):

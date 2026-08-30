@@ -62,7 +62,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import yaml
 
@@ -95,8 +95,14 @@ DECISION_ENVELOPE_VERSION = 1
 _ENVELOPE_STATUSES = ("pending",) + STATUSES
 
 _REQUIRED_ENVELOPE_FIELDS = (
-    "schema", "version", "decision_id", "status", "question", "options",
-    "created_at", "provenance",
+    "schema",
+    "version",
+    "decision_id",
+    "status",
+    "question",
+    "options",
+    "created_at",
+    "provenance",
 )
 
 
@@ -104,8 +110,7 @@ class DecisionEnvelopeError(ValueError):
     """An envelope is not a valid worktrail pending-decision envelope."""
 
 
-def decision_identity(source: str, repo: str, subject: str,
-                      question: str = "") -> str:
+def decision_identity(source: str, repo: str, subject: str, question: str = "") -> str:
     """Deterministic decision id for one logical pending decision.
 
     Same inputs -> same id on every re-run, so a guard that fires twice on
@@ -113,12 +118,12 @@ def decision_identity(source: str, repo: str, subject: str,
     growing pile of duplicates. Different subject/question -> different id.
     The slug keeps ids readable in listings; the digest guarantees uniqueness.
     """
-    for name, value in (("source", source), ("repo", repo),
-                        ("subject", subject)):
+    for name, value in (("source", source), ("repo", repo), ("subject", subject)):
         if not value or not str(value).strip():
             raise ValueError(
                 f"decision_identity {name} is required: an id derived from "
-                "blank provenance would collide across unrelated decisions")
+                "blank provenance would collide across unrelated decisions"
+            )
     key = "\x00".join((str(source), str(repo), str(subject), question or ""))
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
     slug = _slugify(str(subject))
@@ -129,16 +134,16 @@ def pending_decision_envelope(
     *,
     decision_id: str,
     question: str,
-    options: List[str],
+    options: list[str],
     source: str,
-    repo: Optional[str] = None,
-    subject: Optional[str] = None,
-    brief: Optional[str] = None,
-    run_id: Optional[str] = None,
-    dispatch_mode: Optional[str] = None,
-    supersedes: Optional[str] = None,
-    created_at: Optional[str] = None,
-) -> Dict[str, Any]:
+    repo: str | None = None,
+    subject: str | None = None,
+    brief: str | None = None,
+    run_id: str | None = None,
+    dispatch_mode: str | None = None,
+    supersedes: str | None = None,
+    created_at: str | None = None,
+) -> dict[str, Any]:
     """Build the versioned envelope a guard hands to its caller (and prints).
 
     Provider-neutral by construction: no field names a specific agent harness.
@@ -155,9 +160,14 @@ def pending_decision_envelope(
         raise ValueError("envelope options must be a non-empty list")
     if not source or not str(source).strip():
         raise ValueError("envelope provenance source is required")
-    provenance: Dict[str, Any] = {"source": str(source).strip()}
-    for key, value in (("repo", repo), ("subject", subject), ("brief", brief),
-                       ("run_id", run_id), ("dispatch_mode", dispatch_mode)):
+    provenance: dict[str, Any] = {"source": str(source).strip()}
+    for key, value in (
+        ("repo", repo),
+        ("subject", subject),
+        ("brief", brief),
+        ("run_id", run_id),
+        ("dispatch_mode", dispatch_mode),
+    ):
         if value:
             provenance[key] = str(value)
     return {
@@ -173,7 +183,7 @@ def pending_decision_envelope(
     }
 
 
-def parse_pending_decision_envelope(raw: Any) -> Dict[str, Any]:
+def parse_pending_decision_envelope(raw: Any) -> dict[str, Any]:
     """Validate + normalize an envelope received over any boundary.
 
     Accepts a JSON string or an already-parsed dict. Unknown extra fields are
@@ -186,42 +196,51 @@ def parse_pending_decision_envelope(raw: Any) -> Dict[str, Any]:
             raw = json.loads(raw)
         except json.JSONDecodeError as exc:
             raise DecisionEnvelopeError(
-                f"pending-decision envelope is not valid JSON: {exc}") from exc
+                f"pending-decision envelope is not valid JSON: {exc}"
+            ) from exc
     if not isinstance(raw, dict):
         raise DecisionEnvelopeError(
-            f"pending-decision envelope must be a JSON object, got "
-            f"{type(raw).__name__}")
+            f"pending-decision envelope must be a JSON object, got {type(raw).__name__}"
+        )
     missing = [f for f in _REQUIRED_ENVELOPE_FIELDS if f not in raw]
     if missing:
         raise DecisionEnvelopeError(
-            f"pending-decision envelope missing required field(s): "
-            f"{', '.join(missing)}")
+            f"pending-decision envelope missing required field(s): {', '.join(missing)}"
+        )
     if raw["schema"] != DECISION_ENVELOPE_SCHEMA:
         raise DecisionEnvelopeError(
-            f"expected schema {DECISION_ENVELOPE_SCHEMA!r}, got {raw['schema']!r}")
+            f"expected schema {DECISION_ENVELOPE_SCHEMA!r}, got {raw['schema']!r}"
+        )
     if raw["version"] != DECISION_ENVELOPE_VERSION:
         raise DecisionEnvelopeError(
             f"unsupported envelope version {raw['version']!r} "
-            f"(this reader understands {DECISION_ENVELOPE_VERSION})")
+            f"(this reader understands {DECISION_ENVELOPE_VERSION})"
+        )
     if raw.get("status") not in _ENVELOPE_STATUSES:
         raise DecisionEnvelopeError(
             f"invalid envelope status {raw.get('status')!r}; expected one of "
-            f"{', '.join(_ENVELOPE_STATUSES)}")
+            f"{', '.join(_ENVELOPE_STATUSES)}"
+        )
     if not isinstance(raw.get("question"), str) or not raw["question"].strip():
         raise DecisionEnvelopeError("envelope question must be a non-empty string")
     opts = raw.get("options")
-    if not isinstance(opts, list) or not opts or not all(
-            isinstance(o, str) and o.strip() for o in opts):
+    if (
+        not isinstance(opts, list)
+        or not opts
+        or not all(isinstance(o, str) and o.strip() for o in opts)
+    ):
         raise DecisionEnvelopeError(
-            "envelope options must be a non-empty list of non-empty strings")
+            "envelope options must be a non-empty list of non-empty strings"
+        )
     prov = raw.get("provenance")
     if not isinstance(prov, dict) or not str(prov.get("source") or "").strip():
         raise DecisionEnvelopeError(
-            "envelope provenance must be an object with a non-empty 'source'")
+            "envelope provenance must be an object with a non-empty 'source'"
+        )
     return raw
 
 
-def decisions_dir(queue_base: Optional[Path] = None) -> Path:
+def decisions_dir(queue_base: Path | None = None) -> Path:
     return Path(queue_base or work_queue.base_dir()).expanduser() / "decisions"
 
 
@@ -233,7 +252,7 @@ def _now_iso() -> str:
     return dt.datetime.now().astimezone().isoformat(timespec="seconds")
 
 
-def _read_fm(path: Path) -> Dict[str, Any]:
+def _read_fm(path: Path) -> dict[str, Any]:
     try:
         fm, _body = split_frontmatter(path.read_text(encoding="utf-8"))
     except OSError:
@@ -241,8 +260,9 @@ def _read_fm(path: Path) -> Dict[str, Any]:
     return fm
 
 
-def find_decision(identifier: str,
-                  queue_base: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+def find_decision(
+    identifier: str, queue_base: Path | None = None
+) -> dict[str, Any] | None:
     """Locate a decision by id (exact stem or unique prefix) across all three
     status directories. The directory a record lives in — not its `status:`
     field — is the arbiter, so a hand-moved file is honored.
@@ -250,7 +270,7 @@ def find_decision(identifier: str,
     Returns {"path", "status", "fm"} or None.
     """
     base = decisions_dir(queue_base)
-    hits: List[Dict[str, Any]] = []
+    hits: list[dict[str, Any]] = []
     for status in STATUSES:
         d = base / status
         if not d.is_dir():
@@ -264,15 +284,14 @@ def find_decision(identifier: str,
     return hits[0] if len(hits) == 1 else None
 
 
-def open_decision_ids(queue_base: Optional[Path] = None) -> List[str]:
+def open_decision_ids(queue_base: Path | None = None) -> list[str]:
     d = decisions_dir(queue_base) / "open"
     if not d.is_dir():
         return []
     return sorted(md.stem for md in d.glob("*.md"))
 
 
-def decision_status(decision_id: str,
-                    queue_base: Optional[Path] = None) -> Optional[str]:
+def decision_status(decision_id: str, queue_base: Path | None = None) -> str | None:
     """`open`/`answered`/`resolved` by directory, or None when the id does not
     resolve (lenient: a deleted record must never wedge its brief)."""
     found = find_decision(decision_id, queue_base)
@@ -283,11 +302,12 @@ def decision_status(decision_id: str,
 # ask
 
 
-def _require(value: Optional[str], name: str) -> str:
+def _require(value: str | None, name: str) -> str:
     if not value or not value.strip():
         raise ValueError(
             f"--{name} is required and must be non-empty: a decision record "
-            f"without it is not reviewable by a human and will be refused")
+            f"without it is not reviewable by a human and will be refused"
+        )
     return value.strip()
 
 
@@ -297,21 +317,21 @@ def ask(
     background: str,
     why: str,
     context: str,
-    options: List[str],
-    option_costs: Optional[List[str]] = None,
-    recommendation: Optional[str] = None,
-    repo: Optional[str] = None,
-    brief: Optional[str] = None,
-    run_record: Optional[str] = None,
+    options: list[str],
+    option_costs: list[str] | None = None,
+    recommendation: str | None = None,
+    repo: str | None = None,
+    brief: str | None = None,
+    run_record: str | None = None,
     release_brief: bool = False,
-    queue_base: Optional[Path] = None,
-    decision_id: Optional[str] = None,
-    source: Optional[str] = None,
-    subject: Optional[str] = None,
-    run_id: Optional[str] = None,
-    dispatch_mode: Optional[str] = None,
-    supersedes: Optional[str] = None,
-) -> Dict[str, Any]:
+    queue_base: Path | None = None,
+    decision_id: str | None = None,
+    source: str | None = None,
+    subject: str | None = None,
+    run_id: str | None = None,
+    dispatch_mode: str | None = None,
+    supersedes: str | None = None,
+) -> dict[str, Any]:
     """Create an open decision record; optionally block+release its brief.
 
     Structured fields are mandatory by design (see module docstring): the
@@ -340,12 +360,14 @@ def ask(
     if len(options) < 2:
         raise ValueError(
             "at least two --option entries are required: a decision with one "
-            "option is not a decision, it is a notification")
+            "option is not a decision, it is a notification"
+        )
     option_costs = [c.strip() for c in (option_costs or []) if c and c.strip()]
     if option_costs and len(option_costs) != len(options):
         raise ValueError(
             f"--option-cost must be given once per --option in the same "
-            f"order ({len(options)} option(s), {len(option_costs)} cost(s))")
+            f"order ({len(options)} option(s), {len(option_costs)} cost(s))"
+        )
     if release_brief and not brief:
         raise ValueError("--release requires --brief")
 
@@ -354,7 +376,7 @@ def ask(
     # Idempotency first: a re-run whose derived id already has a record must
     # converge on it -- including past the duplicate-open-per-brief guard,
     # which would otherwise refuse the replay.
-    existing: Optional[Dict[str, Any]] = None
+    existing: dict[str, Any] | None = None
     if decision_id and decision_id.strip():
         decision_id = decision_id.strip()
         found = find_decision(decision_id, base)
@@ -363,8 +385,7 @@ def ask(
 
     if existing is not None:
         path = existing["path"]
-        status = ("already-resolved" if existing["status"] == "resolved"
-                  else "existing")
+        status = "already-resolved" if existing["status"] == "resolved" else "existing"
         envelope = load_decision_envelope(decision_id, base) or {}
     else:
         if brief:
@@ -373,7 +394,8 @@ def ask(
                 if rec and str(rec["fm"].get("brief") or "") == brief:
                     raise ValueError(
                         f"brief {brief} already has an open decision "
-                        f"({existing_id}); answer or resolve it first")
+                        f"({existing_id}); answer or resolve it first"
+                    )
 
         open_dir = decisions_dir(base) / "open"
         open_dir.mkdir(parents=True, exist_ok=True)
@@ -386,23 +408,29 @@ def ask(
             suffix += 1
         decision_id = path.stem
 
-        frontmatter: Dict[str, Any] = {
+        frontmatter: dict[str, Any] = {
             "id": path.stem,
             "created": now.isoformat(timespec="seconds"),
             "status": "open",
         }
-        for key, value in (("repo", repo), ("brief", brief),
-                           ("run-record", run_record), ("source", source),
-                           ("subject", subject), ("run-id", run_id),
-                           ("dispatch-mode", dispatch_mode),
-                           ("supersedes", supersedes)):
+        for key, value in (
+            ("repo", repo),
+            ("brief", brief),
+            ("run-record", run_record),
+            ("source", source),
+            ("subject", subject),
+            ("run-id", run_id),
+            ("dispatch-mode", dispatch_mode),
+            ("supersedes", supersedes),
+        ):
             if value:
                 frontmatter[key] = value
 
         option_lines = "\n".join(
             f"{n}. {opt}"
             + (f"\n   - Cost: {option_costs[n - 1]}" if option_costs else "")
-            for n, opt in enumerate(options, start=1))
+            for n, opt in enumerate(options, start=1)
+        )
         body = (
             f"## Question\n\n{question}\n\n"
             f"## Background\n\n{background}\n\n"
@@ -411,26 +439,49 @@ def ask(
             f"## Options\n\n"
             f"_In priority order (the agent's preference first). Answer with a "
             f"number, or write your own direction._\n\n{option_lines}\n"
-            + (f"\n## Recommendation\n\n{recommendation.strip()}\n"
-               if recommendation and recommendation.strip() else "")
+            + (
+                f"\n## Recommendation\n\n{recommendation.strip()}\n"
+                if recommendation and recommendation.strip()
+                else ""
+            )
             + f"\n## Answer\n\n{_PENDING_ANSWER}\n"
         )
         path.write_text(
-            "---\n" + yaml.safe_dump(frontmatter, sort_keys=False,
-                                     default_flow_style=False, allow_unicode=True)
-            + "---\n\n" + body,
-            encoding="utf-8")
+            "---\n"
+            + yaml.safe_dump(
+                frontmatter,
+                sort_keys=False,
+                default_flow_style=False,
+                allow_unicode=True,
+            )
+            + "---\n\n"
+            + body,
+            encoding="utf-8",
+        )
         status = "created"
         envelope = pending_decision_envelope(
-            decision_id=decision_id, question=question, options=options,
-            source=source or "manual", repo=repo, subject=subject, brief=brief,
-            run_id=run_id, dispatch_mode=dispatch_mode, supersedes=supersedes,
-            created_at=frontmatter["created"])
+            decision_id=decision_id,
+            question=question,
+            options=options,
+            source=source or "manual",
+            repo=repo,
+            subject=subject,
+            brief=brief,
+            run_id=run_id,
+            dispatch_mode=dispatch_mode,
+            supersedes=supersedes,
+            created_at=frontmatter["created"],
+        )
 
-    result: Dict[str, Any] = {"status": status, "id": decision_id,
-                              "path": str(path), "brief": brief,
-                              "released": False, "error": None,
-                              "envelope": envelope}
+    result: dict[str, Any] = {
+        "status": status,
+        "id": decision_id,
+        "path": str(path),
+        "brief": brief,
+        "released": False,
+        "error": None,
+        "envelope": envelope,
+    }
     if brief:
         stamped = _stamp_brief(brief, path.stem, base)
         result["brief_stamped"] = stamped
@@ -442,7 +493,8 @@ def ask(
                     f"unwritable) -- the decision record was created at "
                     f"{path}, but the brief was NOT released and stays "
                     f"claimed; release it manually or re-file with the "
-                    f"correct --brief value")
+                    f"correct --brief value"
+                )
             else:
                 prev = os.environ.get("WORK_QUEUE_DIR")
                 os.environ["WORK_QUEUE_DIR"] = str(base)
@@ -462,12 +514,13 @@ def ask(
                         f"(status={released.get('status')!r}) -- it remains "
                         f"in picked/ instead of being requeued blocked; "
                         f"release it manually with `worktrail-work-queue "
-                        f"release`")
+                        f"release`"
+                    )
     work_queue._git_backup(f"decision ask {path.stem}")
     return result
 
 
-def _brief_path(brief_id: str, base: Path) -> Optional[Path]:
+def _brief_path(brief_id: str, base: Path) -> Path | None:
     for folder in (base / "picked", base / "queue"):
         res = work_queue.resolve(brief_id, folder)
         if res["status"] == "match":
@@ -507,8 +560,9 @@ def _clear_brief_stamp(brief_id: str, decision_id: str, base: Path) -> bool:
 # answer / resolve
 
 
-def _move_with_status(found: Dict[str, Any], new_status: str,
-                      stamp_key: str, queue_base: Optional[Path]) -> Path:
+def _move_with_status(
+    found: dict[str, Any], new_status: str, stamp_key: str, queue_base: Path | None
+) -> Path:
     base = decisions_dir(queue_base)
     dst_dir = base / new_status
     dst_dir.mkdir(parents=True, exist_ok=True)
@@ -518,8 +572,9 @@ def _move_with_status(found: Dict[str, Any], new_status: str,
     return dst
 
 
-def answer(identifier: str, answer_text: str,
-           queue_base: Optional[Path] = None) -> Dict[str, Any]:
+def answer(
+    identifier: str, answer_text: str, queue_base: Path | None = None
+) -> dict[str, Any]:
     """Record the human's answer and move the record to answered/."""
     if not answer_text or not answer_text.strip():
         raise ValueError("--answer must be non-empty")
@@ -534,8 +589,7 @@ def answer(identifier: str, answer_text: str,
     if idx == -1:
         content = content.rstrip() + f"\n\n{marker}\n\n{answer_text.strip()}\n"
     else:
-        content = (content[: idx + len(marker)] + "\n\n"
-                   + answer_text.strip() + "\n")
+        content = content[: idx + len(marker)] + "\n\n" + answer_text.strip() + "\n"
     found["path"].write_text(content, encoding="utf-8")
     if found["status"] == "open":
         dst = _move_with_status(found, "answered", "answered-at", queue_base)
@@ -546,8 +600,7 @@ def answer(identifier: str, answer_text: str,
     return {"status": "answered", "id": dst.stem, "path": str(dst)}
 
 
-def resolve_decision(identifier: str,
-                     queue_base: Optional[Path] = None) -> Dict[str, Any]:
+def resolve_decision(identifier: str, queue_base: Path | None = None) -> dict[str, Any]:
     """Archive a consumed decision and unblock its brief's frontmatter.
 
     Only an answered decision can be resolved — resolving an open one would
@@ -567,25 +620,35 @@ def resolve_decision(identifier: str,
         base = Path(queue_base or work_queue.base_dir()).expanduser()
         brief_cleared = _clear_brief_stamp(brief_id, dst.stem, base)
     work_queue._git_backup(f"decision resolve {dst.stem}")
-    return {"status": "resolved", "id": dst.stem, "path": str(dst),
-            "brief": brief_id or None, "brief_cleared": brief_cleared}
+    return {
+        "status": "resolved",
+        "id": dst.stem,
+        "path": str(dst),
+        "brief": brief_id or None,
+        "brief_cleared": brief_cleared,
+    }
 
 
 # ---------------------------------------------------------------------------
 # envelope round-trip, answer validation/consumption, supersession
 
 
-def _extract_section(body: str, heading: str) -> Optional[str]:
-    m = re.search(rf"^##\s+{re.escape(heading)}\s*$\r?\n(.*?)(?=^##\s|\Z)",
-                  body, re.MULTILINE | re.DOTALL)
+def _extract_section(body: str, heading: str) -> str | None:
+    m = re.search(
+        rf"^##\s+{re.escape(heading)}\s*$\r?\n(.*?)(?=^##\s|\Z)",
+        body,
+        re.MULTILINE | re.DOTALL,
+    )
     return m.group(1).strip() if m else None
 
 
-def _extract_options(body: str) -> List[str]:
+def _extract_options(body: str) -> list[str]:
     """The option lines a rendered record carries back as plain strings."""
     section = _extract_section(body, "Options") or ""
-    return [m.group(1).strip()
-            for m in re.finditer(r"^\d+\.\s+(.+)$", section, re.MULTILINE)]
+    return [
+        m.group(1).strip()
+        for m in re.finditer(r"^\d+\.\s+(.+)$", section, re.MULTILINE)
+    ]
 
 
 def _extract_answer(body: str) -> str:
@@ -595,9 +658,9 @@ def _extract_answer(body: str) -> str:
     return "" if section.strip() == _PENDING_ANSWER.strip() else section.strip()
 
 
-def load_decision_envelope(identifier: str,
-                           queue_base: Optional[Path] = None
-                           ) -> Optional[Dict[str, Any]]:
+def load_decision_envelope(
+    identifier: str, queue_base: Path | None = None
+) -> dict[str, Any] | None:
     """Rebuild the versioned envelope from a decision record on disk.
 
     `status` is the directory the record lives in (never the frontmatter
@@ -612,22 +675,27 @@ def load_decision_envelope(identifier: str,
         fm, body = split_frontmatter(found["path"].read_text(encoding="utf-8"))
     except OSError:
         fm, body = found["fm"], ""
-    provenance: Dict[str, Any] = {}
-    for key, value in (("source", "source"), ("repo", "repo"),
-                       ("subject", "subject"), ("brief", "brief"),
-                       ("run_id", "run-id"),
-                       ("dispatch_mode", "dispatch-mode")):
+    provenance: dict[str, Any] = {}
+    for key, value in (
+        ("source", "source"),
+        ("repo", "repo"),
+        ("subject", "subject"),
+        ("brief", "brief"),
+        ("run_id", "run-id"),
+        ("dispatch_mode", "dispatch-mode"),
+    ):
         if fm.get(value):
             provenance[key] = str(fm[value])
     created = fm.get("created")
     answered_at = fm.get("answered-at")
-    envelope: Dict[str, Any] = {
+    envelope: dict[str, Any] = {
         "schema": DECISION_ENVELOPE_SCHEMA,
         "version": DECISION_ENVELOPE_VERSION,
         "decision_id": found["path"].stem,
         "status": found["status"],
         "question": (_extract_section(body, "Question") or "").splitlines()[0]
-                    if _extract_section(body, "Question") else "",
+        if _extract_section(body, "Question")
+        else "",
         "options": _extract_options(body),
         "supersedes": fm.get("supersedes"),
         "created_at": str(created) if created else None,
@@ -640,14 +708,14 @@ def load_decision_envelope(identifier: str,
 
 
 def validate_decision_answer(
-    envelope: Dict[str, Any],
+    envelope: dict[str, Any],
     *,
-    expected_source: Optional[str] = None,
-    expected_repo: Optional[str] = None,
-    expected_subject: Optional[str] = None,
-    max_age_seconds: Optional[float] = None,
-    now: Optional[dt.datetime] = None,
-) -> Dict[str, Any]:
+    expected_source: str | None = None,
+    expected_repo: str | None = None,
+    expected_subject: str | None = None,
+    max_age_seconds: float | None = None,
+    now: dt.datetime | None = None,
+) -> dict[str, Any]:
     """Resume-side gate: may this run act on this decision's answer?
 
     Checks provenance (the recorded source/repo/subject match what the
@@ -658,23 +726,24 @@ def validate_decision_answer(
     result is {"valid": bool, "reasons": [str], ...} so a caller reports every
     failed expectation at once instead of the first.
     """
-    reasons: List[str] = []
+    reasons: list[str] = []
     if envelope.get("status") != "answered":
-        reasons.append(
-            f"decision status is {envelope.get('status')!r}, not 'answered'")
+        reasons.append(f"decision status is {envelope.get('status')!r}, not 'answered'")
     if envelope.get("superseded_by"):
-        reasons.append(
-            f"decision was superseded by {envelope['superseded_by']!r}")
+        reasons.append(f"decision was superseded by {envelope['superseded_by']!r}")
     prov = envelope.get("provenance") or {}
-    for label, expected in (("source", expected_source),
-                            ("repo", expected_repo),
-                            ("subject", expected_subject)):
+    for label, expected in (
+        ("source", expected_source),
+        ("repo", expected_repo),
+        ("subject", expected_subject),
+    ):
         if expected is not None and prov.get(label) != expected:
             reasons.append(
                 f"provenance {label} mismatch: recorded "
-                f"{prov.get(label)!r} != expected {expected!r}")
+                f"{prov.get(label)!r} != expected {expected!r}"
+            )
 
-    def _parse(value: Any) -> Optional[dt.datetime]:
+    def _parse(value: Any) -> dt.datetime | None:
         if not value or not isinstance(value, str):
             return None
         try:
@@ -687,7 +756,8 @@ def validate_decision_answer(
     if envelope.get("answered_at") and answered is None:
         reasons.append(
             f"answered_at {envelope.get('answered_at')!r} is missing, "
-            "unparsable, or timezone-naive")
+            "unparsable, or timezone-naive"
+        )
     created = _parse(envelope.get("created_at"))
     if answered is not None and created is not None and answered < created:
         reasons.append("answered_at precedes created_at (clock skew or tamper)")
@@ -697,13 +767,18 @@ def validate_decision_answer(
         if age > max_age_seconds:
             reasons.append(
                 f"answer is stale: age {age:.0f}s exceeds the "
-                f"{max_age_seconds:.0f}s freshness window")
-    return {"valid": not reasons, "reasons": reasons,
-            "answered_at": envelope.get("answered_at")}
+                f"{max_age_seconds:.0f}s freshness window"
+            )
+    return {
+        "valid": not reasons,
+        "reasons": reasons,
+        "answered_at": envelope.get("answered_at"),
+    }
 
 
-def consume_answer(identifier: str, consumed_by: Optional[str] = None,
-                   queue_base: Optional[Path] = None) -> Dict[str, Any]:
+def consume_answer(
+    identifier: str, consumed_by: str | None = None, queue_base: Path | None = None
+) -> dict[str, Any]:
     """Consume an answered decision exactly once.
 
     The resuming agent's primitive (distinct from the manual-archive
@@ -719,8 +794,11 @@ def consume_answer(identifier: str, consumed_by: Optional[str] = None,
     if found["status"] == "open":
         return {"status": "still-open", "id": found["path"].stem}
     if found["status"] == "resolved":
-        return {"status": "already-consumed", "id": found["path"].stem,
-                "consumed_by": found["fm"].get("consumed-by")}
+        return {
+            "status": "already-consumed",
+            "id": found["path"].stem,
+            "consumed_by": found["fm"].get("consumed-by"),
+        }
     try:
         _fm, body = split_frontmatter(found["path"].read_text(encoding="utf-8"))
     except OSError:
@@ -730,7 +808,7 @@ def consume_answer(identifier: str, consumed_by: Optional[str] = None,
         # In answered/ by directory but no actual answer text was written --
         # consuming would invent a decision the human never made.
         return {"status": "unanswered", "id": found["path"].stem}
-    stamps: Dict[str, str] = {"consumed-at": _now_iso()}
+    stamps: dict[str, str] = {"consumed-at": _now_iso()}
     if consumed_by:
         stamps["consumed-by"] = consumed_by
     dst = _move_with_status(found, "resolved", "resolved-at", queue_base)
@@ -741,14 +819,23 @@ def consume_answer(identifier: str, consumed_by: Optional[str] = None,
         base = Path(queue_base or work_queue.base_dir()).expanduser()
         brief_cleared = _clear_brief_stamp(brief_id, dst.stem, base)
     work_queue._git_backup(f"decision consume {dst.stem}")
-    return {"status": "consumed", "id": dst.stem, "path": str(dst),
-            "answer": answer_text, "consumed_by": consumed_by or None,
-            "brief": brief_id or None, "brief_cleared": brief_cleared}
+    return {
+        "status": "consumed",
+        "id": dst.stem,
+        "path": str(dst),
+        "answer": answer_text,
+        "consumed_by": consumed_by or None,
+        "brief": brief_id or None,
+        "brief_cleared": brief_cleared,
+    }
 
 
-def supersede(old_identifier: str, new_decision_id: str,
-              reason: Optional[str] = None,
-              queue_base: Optional[Path] = None) -> Dict[str, Any]:
+def supersede(
+    old_identifier: str,
+    new_decision_id: str,
+    reason: str | None = None,
+    queue_base: Path | None = None,
+) -> dict[str, Any]:
     """Retire an unresolved decision in favor of a newer one.
 
     Used when facts changed after a decision was filed (guard re-run on a
@@ -767,7 +854,7 @@ def supersede(old_identifier: str, new_decision_id: str,
     if found["status"] == "resolved":
         return {"status": "already-resolved", "id": found["path"].stem}
     dst = _move_with_status(found, "resolved", "superseded-at", queue_base)
-    stamps: Dict[str, str] = {"superseded-by": new_decision_id}
+    stamps: dict[str, str] = {"superseded-by": new_decision_id}
     if reason and reason.strip():
         stamps["superseded-reason"] = reason.strip()
     work_queue._set_fm_fields(dst, stamps)
@@ -777,31 +864,41 @@ def supersede(old_identifier: str, new_decision_id: str,
         base = Path(queue_base or work_queue.base_dir()).expanduser()
         brief_cleared = _clear_brief_stamp(brief_id, dst.stem, base)
     work_queue._git_backup(f"decision supersede {dst.stem}")
-    return {"status": "superseded", "id": dst.stem, "path": str(dst),
-            "superseded_by": new_decision_id, "brief": brief_id or None,
-            "brief_cleared": brief_cleared}
+    return {
+        "status": "superseded",
+        "id": dst.stem,
+        "path": str(dst),
+        "superseded_by": new_decision_id,
+        "brief": brief_id or None,
+        "brief_cleared": brief_cleared,
+    }
 
 
 # ---------------------------------------------------------------------------
 # list / show
 
 
-def _decision_row(md: Path, status: str, fm: Dict[str, Any],
-                  body: str) -> Dict[str, Any]:
+def _decision_row(
+    md: Path, status: str, fm: dict[str, Any], body: str
+) -> dict[str, Any]:
     m = re.search(r"^##\s+Question\s*$\r?\n\r?\n?(.+)$", body, re.MULTILINE)
     return {
-        "id": md.stem, "status": status, "path": str(md),
-        "repo": fm.get("repo"), "brief": fm.get("brief"),
+        "id": md.stem,
+        "status": status,
+        "path": str(md),
+        "repo": fm.get("repo"),
+        "brief": fm.get("brief"),
         "created": fm.get("created"),
         "answered_at": fm.get("answered-at"),
         "question": (m.group(1).strip() if m else ""),
     }
 
 
-def list_decisions(status: Optional[str] = None,
-                   queue_base: Optional[Path] = None) -> Dict[str, Any]:
+def list_decisions(
+    status: str | None = None, queue_base: Path | None = None
+) -> dict[str, Any]:
     base = decisions_dir(queue_base)
-    rows: List[Dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
     for st in STATUSES:
         if status and st != status:
             continue
@@ -822,41 +919,66 @@ def list_decisions(status: Optional[str] = None,
 # CLI
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Queue product decisions for a human; resume agents once "
-                    "answered.")
-    parser.add_argument("--queue-dir", type=Path, default=None,
-                        help="work-queue base (default: $WORK_QUEUE_DIR)")
+        description="Queue product decisions for a human; resume agents once answered."
+    )
+    parser.add_argument(
+        "--queue-dir",
+        type=Path,
+        default=None,
+        help="work-queue base (default: $WORK_QUEUE_DIR)",
+    )
     subs = parser.add_subparsers(dest="cmd", required=True)
 
     ap = subs.add_parser("ask", help="file a decision for a human to answer")
     ap.add_argument("--question", required=True)
-    ap.add_argument("--background", required=True,
-                    help="plain-English story for a reader with no context: what "
-                         "the problem is, why it exists, how we got here")
-    ap.add_argument("--why", required=True,
-                    help="why this is a product decision, not an engineering call")
-    ap.add_argument("--context", required=True,
-                    help="what was attempted and the evidence gathered")
-    ap.add_argument("--option", action="append", default=[], dest="options",
-                    help="a concrete option with its tradeoff, in priority order "
-                         "(repeat; >= 2 required)")
-    ap.add_argument("--option-cost", action="append", default=[],
-                    dest="option_costs",
-                    help="cost/effort label for the corresponding --option, in the "
-                         "same order (e.g. 'low -- config only, ships today' vs "
-                         "'high -- better long-term architecture, ~3 days'); when "
-                         "used, give exactly one per --option")
-    ap.add_argument("--recommendation",
-                    help="which option to take -- conditioned on product priority "
-                         "when it genuinely depends (e.g. 'quick to production: "
-                         "option 1; long-term architecture: option 2')")
+    ap.add_argument(
+        "--background",
+        required=True,
+        help="plain-English story for a reader with no context: what "
+        "the problem is, why it exists, how we got here",
+    )
+    ap.add_argument(
+        "--why",
+        required=True,
+        help="why this is a product decision, not an engineering call",
+    )
+    ap.add_argument(
+        "--context", required=True, help="what was attempted and the evidence gathered"
+    )
+    ap.add_argument(
+        "--option",
+        action="append",
+        default=[],
+        dest="options",
+        help="a concrete option with its tradeoff, in priority order "
+        "(repeat; >= 2 required)",
+    )
+    ap.add_argument(
+        "--option-cost",
+        action="append",
+        default=[],
+        dest="option_costs",
+        help="cost/effort label for the corresponding --option, in the "
+        "same order (e.g. 'low -- config only, ships today' vs "
+        "'high -- better long-term architecture, ~3 days'); when "
+        "used, give exactly one per --option",
+    )
+    ap.add_argument(
+        "--recommendation",
+        help="which option to take -- conditioned on product priority "
+        "when it genuinely depends (e.g. 'quick to production: "
+        "option 1; long-term architecture: option 2')",
+    )
     ap.add_argument("--repo")
     ap.add_argument("--brief", help="source brief id to stamp awaiting-decision")
     ap.add_argument("--run-record")
-    ap.add_argument("--release", action="store_true",
-                    help="release the --brief back to the queue (blocked until answered)")
+    ap.add_argument(
+        "--release",
+        action="store_true",
+        help="release the --brief back to the queue (blocked until answered)",
+    )
 
     lp = subs.add_parser("list", help="list decision records")
     lp.add_argument("--status", choices=STATUSES)
@@ -871,17 +993,21 @@ def main(argv: Optional[List[str]] = None) -> int:
     rp = subs.add_parser("resolve", help="archive a consumed decision")
     rp.add_argument("identifier")
 
-    cp = subs.add_parser("consume",
-                         help="consume an answered decision exactly once")
+    cp = subs.add_parser("consume", help="consume an answered decision exactly once")
     cp.add_argument("identifier")
-    cp.add_argument("--consumed-by", default=None,
-                    help="who is applying this answer (agent/dispatch id)")
+    cp.add_argument(
+        "--consumed-by",
+        default=None,
+        help="who is applying this answer (agent/dispatch id)",
+    )
 
-    sup = subs.add_parser("supersede",
-                          help="retire an unresolved decision for a newer one")
+    sup = subs.add_parser(
+        "supersede", help="retire an unresolved decision for a newer one"
+    )
     sup.add_argument("identifier")
-    sup.add_argument("--new-decision-id", required=True,
-                     help="the replacement decision's id")
+    sup.add_argument(
+        "--new-decision-id", required=True, help="the replacement decision's id"
+    )
     sup.add_argument("--reason", default=None)
 
     for p in (ap, lp, sp, anp, rp, cp, sup):
@@ -891,19 +1017,28 @@ def main(argv: Optional[List[str]] = None) -> int:
     qb = args.queue_dir
     try:
         if args.cmd == "ask":
-            result = ask(args.question, background=args.background,
-                         why=args.why, context=args.context,
-                         options=args.options, option_costs=args.option_costs,
-                         recommendation=args.recommendation, repo=args.repo,
-                         brief=args.brief, run_record=args.run_record,
-                         release_brief=args.release, queue_base=qb)
+            result = ask(
+                args.question,
+                background=args.background,
+                why=args.why,
+                context=args.context,
+                options=args.options,
+                option_costs=args.option_costs,
+                recommendation=args.recommendation,
+                repo=args.repo,
+                brief=args.brief,
+                run_record=args.run_record,
+                release_brief=args.release,
+                queue_base=qb,
+            )
         elif args.cmd == "list":
             result = list_decisions(args.status, queue_base=qb)
         elif args.cmd == "show":
             found = find_decision(args.identifier, qb)
             if found is None:
-                print(f"error: no decision matches {args.identifier!r}",
-                      file=sys.stderr)
+                print(
+                    f"error: no decision matches {args.identifier!r}", file=sys.stderr
+                )
                 return 1
             content = found["path"].read_text(encoding="utf-8")
             if args.as_json:
@@ -920,11 +1055,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         elif args.cmd == "answer":
             result = answer(args.identifier, args.answer, queue_base=qb)
         elif args.cmd == "consume":
-            result = consume_answer(args.identifier, args.consumed_by,
-                                    queue_base=qb)
+            result = consume_answer(args.identifier, args.consumed_by, queue_base=qb)
         elif args.cmd == "supersede":
-            result = supersede(args.identifier, args.new_decision_id,
-                               reason=args.reason, queue_base=qb)
+            result = supersede(
+                args.identifier, args.new_decision_id, reason=args.reason, queue_base=qb
+            )
         else:
             result = resolve_decision(args.identifier, queue_base=qb)
     except (OSError, ValueError) as exc:
@@ -941,14 +1076,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         if not rows:
             print("no decisions")
         for row in rows:
-            print(f"[{row['status']}] {row['id']}"
-                  + (f" (brief {row['brief']})" if row["brief"] else "")
-                  + (f" — {row['question']}" if row["question"] else ""))
+            print(
+                f"[{row['status']}] {row['id']}"
+                + (f" (brief {row['brief']})" if row["brief"] else "")
+                + (f" — {row['question']}" if row["question"] else "")
+            )
     else:
         print(result.get("path") or result.get("status"))
     failed = isinstance(result, dict) and (
         result.get("status") in ("not-found", "still-open", "unanswered")
-        or (args.cmd == "ask" and result.get("error")))
+        or (args.cmd == "ask" and result.get("error"))
+    )
     return 1 if failed else 0
 
 

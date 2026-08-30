@@ -4,7 +4,6 @@ conventions."""
 
 import json
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 from worktrail.router import audit_postmerge as audit
 
@@ -19,11 +18,13 @@ class _FakeCompleted:
 # ---------------------------------------------------------------------------
 # first-run lookback default
 
+
 def test_first_run_lookback_is_n_days_before_now():
     now = datetime(2026, 1, 10, tzinfo=timezone.utc)
-    assert audit.first_run_lookback(lookback_days=7, now=now) == (
-        now - timedelta(days=7)
-    ).isoformat()
+    assert (
+        audit.first_run_lookback(lookback_days=7, now=now)
+        == (now - timedelta(days=7)).isoformat()
+    )
 
 
 def test_effective_since_with_no_marker_falls_back_to_first_run_lookback(
@@ -37,6 +38,7 @@ def test_effective_since_with_no_marker_falls_back_to_first_run_lookback(
 
 # ---------------------------------------------------------------------------
 # marker advances on success
+
 
 def test_write_marker_then_read_marker_round_trips(tmp_path):
     state_dir = tmp_path / "state"
@@ -72,6 +74,7 @@ def test_write_marker_preserves_other_persisted_state_keys(tmp_path):
 # ---------------------------------------------------------------------------
 # marker unchanged on `gh` failure
 
+
 def test_marker_unchanged_when_gh_pr_list_fails(tmp_path, monkeypatch):
     state_dir = tmp_path / "state"
     audit.write_marker("repo", state_dir, "2026-01-01T00:00:00+00:00")
@@ -81,9 +84,7 @@ def test_marker_unchanged_when_gh_pr_list_fails(tmp_path, monkeypatch):
 
     monkeypatch.setattr(audit.subprocess, "run", fake_run)
 
-    result = audit.list_merged_prs(
-        tmp_path / "repo", since="2026-01-01T00:00:00+00:00"
-    )
+    result = audit.list_merged_prs(tmp_path / "repo", since="2026-01-01T00:00:00+00:00")
 
     assert result is None
     assert audit.read_marker("repo", state_dir) == "2026-01-01T00:00:00+00:00"
@@ -98,9 +99,7 @@ def test_marker_unchanged_when_gh_binary_missing(tmp_path, monkeypatch):
 
     monkeypatch.setattr(audit.subprocess, "run", fake_run)
 
-    result = audit.list_merged_prs(
-        tmp_path / "repo", since="2026-01-01T00:00:00+00:00"
-    )
+    result = audit.list_merged_prs(tmp_path / "repo", since="2026-01-01T00:00:00+00:00")
 
     assert result is None
     assert audit.read_marker("repo", state_dir) == "2026-01-01T00:00:00+00:00"
@@ -113,7 +112,10 @@ def test_marker_unchanged_when_gh_pr_view_fails_partway(tmp_path, monkeypatch):
     def fake_run(cmd, **kwargs):
         if cmd[:3] == ["gh", "pr", "list"]:
             return _FakeCompleted(
-                0, json.dumps([{"url": "u", "number": 1, "mergedAt": "2026-01-02T00:00:00+00:00"}])
+                0,
+                json.dumps(
+                    [{"url": "u", "number": 1, "mergedAt": "2026-01-02T00:00:00+00:00"}]
+                ),
             )
         if cmd[:3] == ["gh", "pr", "view"]:
             return _FakeCompleted(1, "", "gh: not found")
@@ -121,9 +123,7 @@ def test_marker_unchanged_when_gh_pr_view_fails_partway(tmp_path, monkeypatch):
 
     monkeypatch.setattr(audit.subprocess, "run", fake_run)
 
-    result = audit.list_merged_prs(
-        tmp_path / "repo", since="2026-01-01T00:00:00+00:00"
-    )
+    result = audit.list_merged_prs(tmp_path / "repo", since="2026-01-01T00:00:00+00:00")
 
     assert result is None
     assert audit.read_marker("repo", state_dir) == "2026-01-01T00:00:00+00:00"
@@ -131,6 +131,7 @@ def test_marker_unchanged_when_gh_pr_view_fails_partway(tmp_path, monkeypatch):
 
 # ---------------------------------------------------------------------------
 # corrupt/missing marker degrades to first-run window
+
 
 def test_missing_marker_degrades_to_first_run_lookback(tmp_path, monkeypatch):
     monkeypatch.setattr(audit, "first_run_lookback", lambda days: "SENTINEL-LOOKBACK")
@@ -178,32 +179,53 @@ def test_state_file_not_a_json_object_degrades_to_first_run_window(tmp_path):
 # ---------------------------------------------------------------------------
 # classify_checks() reuse
 
+
 def _fake_gh_single_pr(rollup):
     """A fake `subprocess.run` returning one merged PR whose `statusCheckRollup`
     is `rollup` -- for exercising `sweep_repo()`'s reuse of `classify_checks()`."""
+
     def fake_run(cmd, **kwargs):
         if cmd[:3] == ["gh", "pr", "list"]:
             return _FakeCompleted(
-                0, json.dumps([{"url": "u1", "number": 1, "mergedAt": "2026-01-02T00:00:00+00:00"}])
+                0,
+                json.dumps(
+                    [
+                        {
+                            "url": "u1",
+                            "number": 1,
+                            "mergedAt": "2026-01-02T00:00:00+00:00",
+                        }
+                    ]
+                ),
             )
         if cmd[:3] == ["gh", "pr", "view"]:
             return _FakeCompleted(
                 0,
-                json.dumps({
-                    "url": "u1", "number": 1,
-                    "mergedAt": "2026-01-02T00:00:00+00:00",
-                    "statusCheckRollup": rollup,
-                }),
+                json.dumps(
+                    {
+                        "url": "u1",
+                        "number": 1,
+                        "mergedAt": "2026-01-02T00:00:00+00:00",
+                        "statusCheckRollup": rollup,
+                    }
+                ),
             )
         raise AssertionError(f"unexpected command: {cmd}")
+
     return fake_run
 
 
 def test_sweep_repo_flags_merged_pr_with_failing_required_check(tmp_path, monkeypatch):
     state_dir = tmp_path / "state"
-    monkeypatch.setattr(audit.subprocess, "run", _fake_gh_single_pr([
-        {"name": "ci/tests", "status": "COMPLETED", "conclusion": "FAILURE"},
-    ]))
+    monkeypatch.setattr(
+        audit.subprocess,
+        "run",
+        _fake_gh_single_pr(
+            [
+                {"name": "ci/tests", "status": "COMPLETED", "conclusion": "FAILURE"},
+            ]
+        ),
+    )
 
     result = audit.sweep_repo(tmp_path / "repo", state_dir, repo_name="repo")
 
@@ -212,11 +234,19 @@ def test_sweep_repo_flags_merged_pr_with_failing_required_check(tmp_path, monkey
     assert result["flagged"][0]["failing_checks"] == ["ci/tests"]
 
 
-def test_sweep_repo_does_not_flag_merged_pr_with_all_green_checks(tmp_path, monkeypatch):
+def test_sweep_repo_does_not_flag_merged_pr_with_all_green_checks(
+    tmp_path, monkeypatch
+):
     state_dir = tmp_path / "state"
-    monkeypatch.setattr(audit.subprocess, "run", _fake_gh_single_pr([
-        {"name": "ci/tests", "status": "COMPLETED", "conclusion": "SUCCESS"},
-    ]))
+    monkeypatch.setattr(
+        audit.subprocess,
+        "run",
+        _fake_gh_single_pr(
+            [
+                {"name": "ci/tests", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            ]
+        ),
+    )
 
     result = audit.sweep_repo(tmp_path / "repo", state_dir, repo_name="repo")
 
@@ -226,9 +256,19 @@ def test_sweep_repo_does_not_flag_merged_pr_with_all_green_checks(tmp_path, monk
 
 def test_sweep_repo_does_not_flag_informational_check_failure(tmp_path, monkeypatch):
     state_dir = tmp_path / "state"
-    monkeypatch.setattr(audit.subprocess, "run", _fake_gh_single_pr([
-        {"name": "E2E (informational)", "status": "COMPLETED", "conclusion": "FAILURE"},
-    ]))
+    monkeypatch.setattr(
+        audit.subprocess,
+        "run",
+        _fake_gh_single_pr(
+            [
+                {
+                    "name": "E2E (informational)",
+                    "status": "COMPLETED",
+                    "conclusion": "FAILURE",
+                },
+            ]
+        ),
+    )
 
     result = audit.sweep_repo(tmp_path / "repo", state_dir, repo_name="repo")
 
@@ -238,6 +278,7 @@ def test_sweep_repo_does_not_flag_informational_check_failure(tmp_path, monkeypa
 
 # ---------------------------------------------------------------------------
 # --max-prs capping
+
 
 def _fake_gh_many_candidates(count):
     """A fake `subprocess.run` whose `gh pr list` returns `count` candidate
@@ -259,20 +300,28 @@ def _fake_gh_many_candidates(count):
         if cmd[:3] == ["gh", "pr", "view"]:
             number = int(cmd[3])
             if number > count:
-                raise AssertionError(f"gh pr view called for uncapped PR number {number}")
+                raise AssertionError(
+                    f"gh pr view called for uncapped PR number {number}"
+                )
             return _FakeCompleted(
                 0,
-                json.dumps({
-                    "url": f"u{number}", "number": number,
-                    "mergedAt": f"2026-01-{number:02d}T00:00:00+00:00",
-                    "statusCheckRollup": [],
-                }),
+                json.dumps(
+                    {
+                        "url": f"u{number}",
+                        "number": number,
+                        "mergedAt": f"2026-01-{number:02d}T00:00:00+00:00",
+                        "statusCheckRollup": [],
+                    }
+                ),
             )
         raise AssertionError(f"unexpected command: {cmd}")
+
     return fake_run
 
 
-def test_list_merged_prs_only_fetches_max_prs_worth_of_candidates(tmp_path, monkeypatch):
+def test_list_merged_prs_only_fetches_max_prs_worth_of_candidates(
+    tmp_path, monkeypatch
+):
     monkeypatch.setattr(audit.subprocess, "run", _fake_gh_many_candidates(5))
 
     result = audit.list_merged_prs(
@@ -288,9 +337,7 @@ def test_sweep_repo_checked_count_capped_at_max_prs(tmp_path, monkeypatch):
     state_dir = tmp_path / "state"
     monkeypatch.setattr(audit.subprocess, "run", _fake_gh_many_candidates(5))
 
-    result = audit.sweep_repo(
-        tmp_path / "repo", state_dir, repo_name="repo", max_prs=3
-    )
+    result = audit.sweep_repo(tmp_path / "repo", state_dir, repo_name="repo", max_prs=3)
 
     assert result["checked"] == 3
 
@@ -312,6 +359,7 @@ def test_sweep_repo_marker_advances_only_past_the_capped_prs_actually_processed(
 # ---------------------------------------------------------------------------
 # dashboard_snapshot()
 
+
 def test_dashboard_snapshot_empty_state_dir_returns_empty_summary(tmp_path):
     state_dir = tmp_path / "state"  # never created
 
@@ -325,22 +373,42 @@ def test_dashboard_snapshot_empty_state_dir_returns_empty_summary(tmp_path):
 def test_dashboard_snapshot_with_flagged_prs_returns_them(tmp_path):
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True)
-    (state_dir / "repo-a.json").write_text(json.dumps({
-        "last_swept_at": "2026-01-01T00:00:00+00:00",
-        "flagged": [
-            {"repo": "repo-a", "url": "u1", "failing_checks": ["ci/tests"],
-             "merged_at": "2026-01-01T00:00:00+00:00"},
-        ],
-    }))
-    (state_dir / "repo-b.json").write_text(json.dumps({
-        "last_swept_at": "2026-01-02T00:00:00+00:00",
-        "flagged": [
-            {"repo": "repo-b", "url": "u2", "failing_checks": ["ci/lint"],
-             "merged_at": "2026-01-02T00:00:00+00:00"},
-            {"repo": "repo-b", "url": "u3", "failing_checks": ["ci/build"],
-             "merged_at": "2026-01-02T00:00:00+00:00"},
-        ],
-    }))
+    (state_dir / "repo-a.json").write_text(
+        json.dumps(
+            {
+                "last_swept_at": "2026-01-01T00:00:00+00:00",
+                "flagged": [
+                    {
+                        "repo": "repo-a",
+                        "url": "u1",
+                        "failing_checks": ["ci/tests"],
+                        "merged_at": "2026-01-01T00:00:00+00:00",
+                    },
+                ],
+            }
+        )
+    )
+    (state_dir / "repo-b.json").write_text(
+        json.dumps(
+            {
+                "last_swept_at": "2026-01-02T00:00:00+00:00",
+                "flagged": [
+                    {
+                        "repo": "repo-b",
+                        "url": "u2",
+                        "failing_checks": ["ci/lint"],
+                        "merged_at": "2026-01-02T00:00:00+00:00",
+                    },
+                    {
+                        "repo": "repo-b",
+                        "url": "u3",
+                        "failing_checks": ["ci/build"],
+                        "merged_at": "2026-01-02T00:00:00+00:00",
+                    },
+                ],
+            }
+        )
+    )
 
     summary = audit.dashboard_snapshot(state_dir)
 
@@ -352,13 +420,21 @@ def test_dashboard_snapshot_with_flagged_prs_returns_them(tmp_path):
 def test_dashboard_snapshot_with_only_clean_sweeps_returns_empty(tmp_path):
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True)
-    (state_dir / "repo-a.json").write_text(json.dumps({
-        "last_swept_at": "2026-01-01T00:00:00+00:00",
-        "flagged": [],
-    }))
-    (state_dir / "repo-b.json").write_text(json.dumps({
-        "last_swept_at": "2026-01-02T00:00:00+00:00",
-    }))
+    (state_dir / "repo-a.json").write_text(
+        json.dumps(
+            {
+                "last_swept_at": "2026-01-01T00:00:00+00:00",
+                "flagged": [],
+            }
+        )
+    )
+    (state_dir / "repo-b.json").write_text(
+        json.dumps(
+            {
+                "last_swept_at": "2026-01-02T00:00:00+00:00",
+            }
+        )
+    )
 
     assert audit.dashboard_snapshot(state_dir) == {
         "repos_flagged": 0,

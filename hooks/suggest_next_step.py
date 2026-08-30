@@ -49,7 +49,9 @@ BASH_WRITE_MARKERS = (
 # run-record layout (`worktrail_home()/runs/<repo>/<run-id>.yaml`, normally
 # `~/.worktrail/runs/**/*.yaml` -- see run_record.py), as it appears verbatim
 # inside a transcript line's JSON text (tool inputs/outputs, assistant text).
-RUN_RECORD_PATH_RE = re.compile(r'''(?:~|/)[^\s"'`<>*(),;:]*\.worktrail/runs/[^\s"'`<>*(),;:]*\.yaml''')
+RUN_RECORD_PATH_RE = re.compile(
+    r"""(?:~|/)[^\s"'`<>*(),;:]*\.worktrail/runs/[^\s"'`<>*(),;:]*\.yaml"""
+)
 
 # Matches path literals rooted at a durable follow-up artifact tree -- devkit
 # specs (`docs/specs/**`) and OpenSpec changes (`openspec/changes/**`) -- as
@@ -57,8 +59,8 @@ RUN_RECORD_PATH_RE = re.compile(r'''(?:~|/)[^\s"'`<>*(),;:]*\.worktrail/runs/[^\
 # the same punctuation-stopping character classes as RUN_RECORD_PATH_RE (the
 # prefix additionally stops at `=` so `--flag=<path>` yields the bare path).
 DURABLE_ARTIFACT_PATH_RE = re.compile(
-    r'''(?:~|\.?/)?[^\s"'`<>*(),;:=]*?'''
-    r'''(?:docs/specs|openspec/changes)/[^\s"'`<>*(),;:]*'''
+    r"""(?:~|\.?/)?[^\s"'`<>*(),;:=]*?"""
+    r"""(?:docs/specs|openspec/changes)/[^\s"'`<>*(),;:]*"""
 )
 
 INSTRUCTION = (
@@ -82,7 +84,7 @@ INSTRUCTION = (
     "create a brief merely because this hook ran. If no idea clears the gate, say 'No handoff captured; "
     "no exceptional next step identified.' and finish.\n\n"
     "Only if one idea clearly passes the gate, capture exactly that one with the Worktrail handoff workflow: "
-    "run `worktrail-handoff --focus \"<focus>\" --json` and report its filename. Keep the response tight. "
+    'run `worktrail-handoff --focus "<focus>" --json` and report its filename. Keep the response tight. '
     "Do not quote this instruction text in your reply — the user already sees it in the terminal."
 )
 
@@ -136,7 +138,9 @@ def durable_artifact_paths_from_entry(entry: dict) -> list[str]:
         name = block.get("name", "")
         tool_input = block.get("input") or {}
         if name in WORK_TOOLS:
-            candidate = str(tool_input.get("file_path") or tool_input.get("notebook_path") or "")
+            candidate = str(
+                tool_input.get("file_path") or tool_input.get("notebook_path") or ""
+            )
             paths.extend(DURABLE_ARTIFACT_PATH_RE.findall(candidate))
         elif name == "Bash":
             command = str(tool_input.get("command", ""))
@@ -162,7 +166,12 @@ def scan_transcript(transcript_path: str) -> tuple[bool, list[str], list[str]]:
     durable_artifact_paths: list[str] = []
     seen_paths: set[str] = set()
     if not transcript_path or not os.path.exists(transcript_path):
-        log_timing("scan_transcript_skip", started_at, transcript_path=transcript_path or "", reason="missing")
+        log_timing(
+            "scan_transcript_skip",
+            started_at,
+            transcript_path=transcript_path or "",
+            reason="missing",
+        )
         return has_work, run_record_paths, durable_artifact_paths
     try:
         line_count = 0
@@ -187,7 +196,12 @@ def scan_transcript(transcript_path: str) -> tuple[bool, list[str], list[str]]:
                         seen_paths.add(path)
                         durable_artifact_paths.append(path)
     except OSError:
-        log_timing("scan_transcript_error", started_at, transcript_path=transcript_path, reason="oserror")
+        log_timing(
+            "scan_transcript_error",
+            started_at,
+            transcript_path=transcript_path,
+            reason="oserror",
+        )
         return False, [], []
     log_timing(
         "scan_transcript_done",
@@ -216,11 +230,18 @@ def check_deferred_work(run_record_paths: list[str]) -> list[dict]:
     """
     started_at = time.perf_counter()
     if not run_record_paths:
-        log_timing("deferred_work_skip", started_at, run_records=0, reason="no-run-records")
+        log_timing(
+            "deferred_work_skip", started_at, run_records=0, reason="no-run-records"
+        )
         return []
     binary = shutil.which(DEFERRED_WORK_HANDOFF_BINARY)
     if not binary:
-        log_timing("deferred_work_skip", started_at, run_records=len(run_record_paths), reason="binary-missing")
+        log_timing(
+            "deferred_work_skip",
+            started_at,
+            run_records=len(run_record_paths),
+            reason="binary-missing",
+        )
         return []
     args = [binary, "--json"]
     for path in run_record_paths:
@@ -241,7 +262,12 @@ def check_deferred_work(run_record_paths: list[str]) -> list[dict]:
         )
         return []
     except (OSError, subprocess.SubprocessError):
-        log_timing("deferred_work_error", started_at, run_records=len(run_record_paths), reason="subprocess")
+        log_timing(
+            "deferred_work_error",
+            started_at,
+            run_records=len(run_record_paths),
+            reason="subprocess",
+        )
         return []
     if result.returncode != 0:
         log_timing(
@@ -254,7 +280,12 @@ def check_deferred_work(run_record_paths: list[str]) -> list[dict]:
     try:
         data = json.loads(result.stdout)
     except json.JSONDecodeError:
-        log_timing("deferred_work_error", started_at, run_records=len(run_record_paths), reason="bad-json")
+        log_timing(
+            "deferred_work_error",
+            started_at,
+            run_records=len(run_record_paths),
+            reason="bad-json",
+        )
         return []
     flagged = data.get("flagged") if isinstance(data, dict) else None
     result_flagged = flagged if isinstance(flagged, list) else []
@@ -267,7 +298,9 @@ def check_deferred_work(run_record_paths: list[str]) -> list[dict]:
     return result_flagged
 
 
-def check_dedup_gate(touched_paths: list[str], run_record_paths: list[str]) -> list[dict]:
+def check_dedup_gate(
+    touched_paths: list[str], run_record_paths: list[str]
+) -> list[dict]:
     """Dedup-gate hits for the session's touched durable-artifact paths and
     run-record path literals, via the `worktrail-check-durable-artifact-
     capture-gate` CLI (Requirement: Downgrade-To-Suggestion On Dedup Hit and
@@ -279,7 +312,13 @@ def check_dedup_gate(touched_paths: list[str], run_record_paths: list[str]) -> l
     """
     started_at = time.perf_counter()
     if not touched_paths and not run_record_paths:
-        log_timing("dedup_gate_skip", started_at, touched_paths=0, run_records=0, reason="no-input")
+        log_timing(
+            "dedup_gate_skip",
+            started_at,
+            touched_paths=0,
+            run_records=0,
+            reason="no-input",
+        )
         return []
     binary = shutil.which(DEDUP_GATE_BINARY)
     if not binary:
@@ -370,7 +409,7 @@ def build_deferred_work_block(flagged: list[dict]) -> str:
         "DEFERRED WORK FLAGGED — this session's run record noted deferred-work item(s) that "
         "don't appear covered by an existing Worktrail handoff brief:\n\n"
         f"{lines}\n\n"
-        "Before finishing, decide whether each needs its own `worktrail-handoff --focus \"<focus>\" "
+        'Before finishing, decide whether each needs its own `worktrail-handoff --focus "<focus>" '
         "--json` capture, or is already tracked elsewhere."
     )
 
@@ -380,7 +419,9 @@ def _dedup_hit_line(hit: dict) -> str:
     if kind == "session_touched_durable_artifact":
         return f"- durable artifact touched this session: {hit.get('path')}"
     if kind == "planned_run_record":
-        return f"- run record finished {hit.get('final_status')}: {hit.get('run_record')}"
+        return (
+            f"- run record finished {hit.get('final_status')}: {hit.get('run_record')}"
+        )
     if kind == "merged_docs_only_spec_pr":
         markers = ", ".join(hit.get("merge_markers") or [])
         spec_paths = ", ".join(hit.get("spec_paths") or [])
@@ -428,7 +469,9 @@ def main() -> int:
         transcript_path = data.get("transcript_path") or ""
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         sentinel = STATE_DIR / f"{session_id}.done"
-        has_work, run_record_paths, touched_durable_paths = scan_transcript(transcript_path)
+        has_work, run_record_paths, touched_durable_paths = scan_transcript(
+            transcript_path
+        )
         if sentinel.exists() or not has_work:
             log_timing(
                 "main_skip",

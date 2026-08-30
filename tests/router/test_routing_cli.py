@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Tests for routing_cli.py. Run: python3 test_routing_cli.py"""
+
 import io
 import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stdout
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -122,12 +123,18 @@ class ListOpencodeModelsTests(unittest.TestCase):
     def test_parses_one_model_id_per_line(self):
         def fake_runner(cmd, **kwargs):
             self.assertEqual(cmd, ["opencode", "models"])
-            return _FakeResult(stdout="opencode/deepseek-v4-flash-free\nopenrouter/gpt-5.4\ngoogle/gemini-3\n")
+            return _FakeResult(
+                stdout="opencode/deepseek-v4-flash-free\nopenrouter/gpt-5.4\ngoogle/gemini-3\n"
+            )
 
         models = list_opencode_models(runner=fake_runner)
         self.assertEqual(
             models,
-            {"opencode/deepseek-v4-flash-free", "openrouter/gpt-5.4", "google/gemini-3"},
+            {
+                "opencode/deepseek-v4-flash-free",
+                "openrouter/gpt-5.4",
+                "google/gemini-3",
+            },
         )
 
     def test_ignores_blank_lines_and_strips_whitespace(self):
@@ -161,8 +168,10 @@ class ListOpencodeModelsTests(unittest.TestCase):
     def test_default_runner_is_subprocess_run(self):
         import inspect
 
-        self.assertIs(inspect.signature(list_opencode_models).parameters["runner"].default,
-                       subprocess.run)
+        self.assertIs(
+            inspect.signature(list_opencode_models).parameters["runner"].default,
+            subprocess.run,
+        )
 
 
 class CheckTests(unittest.TestCase):
@@ -179,6 +188,7 @@ class CheckTests(unittest.TestCase):
     def _fake_runner(self, *model_ids):
         def runner(cmd, **kwargs):
             return _FakeResult(stdout="\n".join(model_ids))
+
         return runner
 
     def test_all_cells_clean_exits_zero(self):
@@ -221,7 +231,9 @@ tiers:
         )
         self.assertEqual(rc, 1)
         cache = agent_capacity.load(self.capacity_path)
-        key = agent_capacity.provider_key("opencode-free", "opencode/retired-model-free")
+        key = agent_capacity.provider_key(
+            "opencode-free", "opencode/retired-model-free"
+        )
         state = cache["providers"][key]
         self.assertEqual(state["status"], "unavailable")
         self.assertEqual(state["failure_class"], "model_unavailable")
@@ -439,7 +451,8 @@ class MigrateTests(unittest.TestCase):
         _migrate(path=self.routing_path)
         routing, _ = self._load()
         self.assertEqual(
-            list(routing["targets"]), ["claude-sub", "codex-sub", "opencode-free"])
+            list(routing["targets"]), ["claude-sub", "codex-sub", "opencode-free"]
+        )
         self.assertEqual(routing["targets"]["claude-sub"]["pool"], "subscription")
         self.assertEqual(routing["targets"]["opencode-free"]["pool"], "free")
 
@@ -509,7 +522,9 @@ tiers:
         self.assertEqual(rc, 0)
         backup_path = Path(str(self.routing_path) + ".bak")
         self.assertTrue(backup_path.is_file())
-        self.assertEqual(backup_path.read_text(encoding="utf-8"), SHIPPED_2026_08_FIXTURE)
+        self.assertEqual(
+            backup_path.read_text(encoding="utf-8"), SHIPPED_2026_08_FIXTURE
+        )
 
     def test_refuses_when_file_already_loads_cleanly(self):
         clean = """
@@ -539,7 +554,11 @@ default_tier: t2-build
 
 
 def _uncommented_lines(text: str) -> list:
-    return [line for line in text.splitlines() if line.strip() and not line.strip().startswith("#")]
+    return [
+        line
+        for line in text.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
 
 
 class StarterRoutingYamlTests(unittest.TestCase):
@@ -579,7 +598,8 @@ class StarterRoutingYamlTests(unittest.TestCase):
 
     def test_mentions_opencode_free_only_in_a_comment(self):
         commented = [
-            line for line in STARTER_ROUTING_YAML.splitlines()
+            line
+            for line in STARTER_ROUTING_YAML.splitlines()
             if "opencode-free" in line
         ]
         self.assertTrue(commented)
@@ -601,13 +621,17 @@ class InitTests(unittest.TestCase):
         self.routing_path = Path(self._tmp.name) / "routing.yaml"
 
     def test_prints_check_reminder(self):
-        with mock.patch.dict("os.environ", {"WORKTRAIL_ROUTING_FILE": str(self.routing_path)}):
+        with mock.patch.dict(
+            "os.environ", {"WORKTRAIL_ROUTING_FILE": str(self.routing_path)}
+        ):
             out = io.StringIO()
             with redirect_stdout(out):
                 rc = _init(force=False)
         self.assertEqual(rc, 0)
         self.assertIn("worktrail-routing --check", out.getvalue())
-        self.assertEqual(self.routing_path.read_text(encoding="utf-8"), STARTER_ROUTING_YAML)
+        self.assertEqual(
+            self.routing_path.read_text(encoding="utf-8"), STARTER_ROUTING_YAML
+        )
 
 
 if __name__ == "__main__":

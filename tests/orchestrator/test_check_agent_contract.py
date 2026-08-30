@@ -15,25 +15,29 @@ from collections import namedtuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import check_agent_contract as cac  # noqa: E402
+from worktrail.orchestrator import check_agent_contract as cac
 
 Proc = namedtuple("Proc", "returncode stdout stderr")
 
 
 def _claude_ok_stream() -> str:
-    return "\n".join([
-        '{"type":"system","subtype":"init"}',
-        '{"type":"assistant","message":{"content":[]}}',
-        '{"type":"result","result":"ok","usage":{},"session_id":"abc"}',
-    ])
+    return "\n".join(
+        [
+            '{"type":"system","subtype":"init"}',
+            '{"type":"assistant","message":{"content":[]}}',
+            '{"type":"result","result":"ok","usage":{},"session_id":"abc"}',
+        ]
+    )
 
 
 def _opencode_ok_stream() -> str:
-    return "\n".join([
-        '{"type":"step_start","sessionID":"s1"}',
-        '{"type":"text","part":{"text":"ok"}}',
-        '{"type":"step_finish","part":{"tokens":{}}}',
-    ])
+    return "\n".join(
+        [
+            '{"type":"step_start","sessionID":"s1"}',
+            '{"type":"text","part":{"text":"ok"}}',
+            '{"type":"step_finish","part":{"tokens":{}}}',
+        ]
+    )
 
 
 def _raw_fallback_stream() -> str:
@@ -130,6 +134,7 @@ class CheckAgentMain(unittest.TestCase):
                 if fail:
                     return Proc(1, "", "boom")
                 return Proc(0, _claude_ok_stream(), "")
+
             return runner
 
         orig = cac.subprocess.run

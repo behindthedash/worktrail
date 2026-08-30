@@ -23,11 +23,13 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import live  # noqa: E402
+from worktrail.orchestrator import live
 
 
 def _run(repo: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True)
+    return subprocess.run(
+        ["git", "-C", str(repo), *args], capture_output=True, text=True, check=True
+    )
 
 
 def _init_bare_and_clone(tmp: Path):
@@ -37,7 +39,9 @@ def _init_bare_and_clone(tmp: Path):
     subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
 
     local = tmp / "local"
-    subprocess.run(["git", "clone", "-q", str(origin), str(local)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "clone", "-q", str(origin), str(local)], check=True, capture_output=True
+    )
     _run(local, "config", "user.email", "t@t")
     _run(local, "config", "user.name", "T")
     (local / "README.md").write_text("init\n")
@@ -52,7 +56,9 @@ def _push_extra_commit_from_a_second_clone(origin: Path, tmp: Path, n: int = 1) 
     """Simulate another session pushing N commits to origin/main that the
     `local` clone under test has not fetched yet."""
     other = tmp / "other"
-    subprocess.run(["git", "clone", "-q", str(origin), str(other)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "clone", "-q", str(origin), str(other)], check=True, capture_output=True
+    )
     _run(other, "config", "user.email", "o@o")
     _run(other, "config", "user.name", "O")
     # The bare origin's HEAD symref may still point at git's init.defaultBranch
@@ -121,7 +127,9 @@ class RefreshBaseBranchDivergedAbortsCleanly(unittest.TestCase):
                 live._refresh_base_branch(local, "origin", "main")
             after = _run(local, "rev-parse", "main").stdout.strip()
 
-            self.assertEqual(before, after, "a diverged local base must never be force-updated")
+            self.assertEqual(
+                before, after, "a diverged local base must never be force-updated"
+            )
             self.assertIn("diverged", out.getvalue())
             self.assertIn("not fast-forwardable", out.getvalue())
 
@@ -185,7 +193,9 @@ class RefreshBaseBranchWorktreeSync(unittest.TestCase):
                 live._refresh_base_branch(spec_wt, "origin", "main")
 
             remote_tip = _run(local, "rev-parse", "origin/main").stdout.strip()
-            self.assertEqual(_run(local, "rev-parse", "main").stdout.strip(), remote_tip)
+            self.assertEqual(
+                _run(local, "rev-parse", "main").stdout.strip(), remote_tip
+            )
             self.assertEqual(
                 _run(local, "status", "--porcelain").stdout,
                 "",
@@ -212,10 +222,16 @@ class RefreshBaseBranchWorktreeSync(unittest.TestCase):
                 live._refresh_base_branch(spec_wt, "origin", "main")
 
             # Ref move is refused entirely -- both worktrees still see the old tip.
-            self.assertEqual(_run(local, "rev-parse", "main").stdout.strip(), before_sha)
-            self.assertEqual(_run(spec_wt, "rev-parse", "main").stdout.strip(), before_sha)
+            self.assertEqual(
+                _run(local, "rev-parse", "main").stdout.strip(), before_sha
+            )
+            self.assertEqual(
+                _run(spec_wt, "rev-parse", "main").stdout.strip(), before_sha
+            )
             # The dirty checkout's index/workdir are byte-for-byte untouched.
-            self.assertEqual(_run(local, "status", "--porcelain").stdout, local_dirty_before)
+            self.assertEqual(
+                _run(local, "status", "--porcelain").stdout, local_dirty_before
+            )
             self.assertIn(str(local), out.getvalue())
             self.assertIn("uncommitted local changes", out.getvalue())
 
@@ -234,7 +250,9 @@ class RefreshBaseBranchWorktreeSync(unittest.TestCase):
                 live._refresh_base_branch(local, "origin", "main")
 
             remote_tip = _run(local, "rev-parse", "origin/main").stdout.strip()
-            self.assertEqual(_run(local, "rev-parse", "main").stdout.strip(), remote_tip)
+            self.assertEqual(
+                _run(local, "rev-parse", "main").stdout.strip(), remote_tip
+            )
             self.assertEqual(
                 _run(local, "status", "--porcelain").stdout,
                 "",
@@ -276,7 +294,9 @@ class ResumeDriftReport(unittest.TestCase):
             with redirect_stdout(out):
                 live._resume_drift_report(repo, "main", "001-x", [{"id": "TASK-001"}])
 
-            self.assertIn("PIPELINE RESUME: base 'main' is 3 commit(s) ahead", out.getvalue())
+            self.assertIn(
+                "PIPELINE RESUME: base 'main' is 3 commit(s) ahead", out.getvalue()
+            )
 
     def test_silent_when_base_at_fork_point(self):
         with tempfile.TemporaryDirectory() as tmp_s:
@@ -304,9 +324,13 @@ class ResumeDriftReport(unittest.TestCase):
             out = io.StringIO()
             try:
                 with redirect_stdout(out):
-                    live._resume_drift_report(repo, "main", "001-x", [{"id": "TASK-001"}])
+                    live._resume_drift_report(
+                        repo, "main", "001-x", [{"id": "TASK-001"}]
+                    )
             except Exception as exc:  # noqa: BLE001
-                self.fail(f"must never raise when no task branch exists yet; got {exc!r}")
+                self.fail(
+                    f"must never raise when no task branch exists yet; got {exc!r}"
+                )
             self.assertEqual(out.getvalue(), "")
 
 

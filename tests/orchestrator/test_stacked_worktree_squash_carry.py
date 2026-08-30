@@ -31,7 +31,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import live  # noqa: E402
+from worktrail.orchestrator import live
 
 
 def _git(repo, *args, check=True):
@@ -77,7 +77,9 @@ def _push_upstream_squash_merge(tmp, bare, *, dep_file_only: bool):
     _git(upstream_edit, "config", "user.name", "Test")
     (upstream_edit / "dep_file.py").write_text("dependency content\n")
     if not dep_file_only:
-        (upstream_edit / "shared.py").write_text("line1\nline2-from-dependency\nline3\n")
+        (upstream_edit / "shared.py").write_text(
+            "line1\nline2-from-dependency\nline3\n"
+        )
     _git(upstream_edit, "add", "-A")
     _git(upstream_edit, "commit", "-q", "-m", "TASK-001 squash-merge onto main")
     _git(upstream_edit, "push", "-q", "origin", "main")
@@ -128,7 +130,9 @@ class CarrySquashMergedDependenciesCleanCase(unittest.TestCase):
             )
 
             status = _git(wt, "status", "--porcelain").stdout
-            self.assertEqual(status.strip(), "", "clean merge leaves no lingering state")
+            self.assertEqual(
+                status.strip(), "", "clean merge leaves no lingering state"
+            )
             self.assertEqual((wt / "dep_file.py").read_text(), "dependency content\n")
 
 
@@ -222,7 +226,11 @@ class CarrySquashMergedDependenciesExistingFileStaleness(unittest.TestCase):
 
             task = {"id": "TASK-002", "deps": ["TASK-001"]}
             by_id = {
-                "TASK-001": {"id": "TASK-001", "status": "completed", "files": ["existing.md"]},
+                "TASK-001": {
+                    "id": "TASK-001",
+                    "status": "completed",
+                    "files": ["existing.md"],
+                },
                 "TASK-002": task,
             }
             wt = Path(tmp) / "wt" / "102-x-task-002"
@@ -243,7 +251,9 @@ class CarrySquashMergedDependenciesExistingFileStaleness(unittest.TestCase):
             )
 
 
-def _push_upstream_tasks_md(tmp, bare, content: str, *, also_touch_shared: str | None = None):
+def _push_upstream_tasks_md(
+    tmp, bare, content: str, *, also_touch_shared: str | None = None
+):
     """Simulate a squash-merged group independently adding
     `openspec/changes/102-x/tasks.md` (from a clone with no local knowledge of
     the worktree's own addition of the same path -- squash-merge history
@@ -294,7 +304,11 @@ class TasksMdChecklistConflictResolvesViaUnion(unittest.TestCase):
 
             self.assertEqual(
                 event,
-                {"event": "checklist_conflict_resolved", "task": "TASK-002", "at": mock.ANY},
+                {
+                    "event": "checklist_conflict_resolved",
+                    "task": "TASK-002",
+                    "at": mock.ANY,
+                },
                 "resolving the checklist-union exception must report a structured event",
             )
             self.assertEqual(
@@ -303,7 +317,9 @@ class TasksMdChecklistConflictResolvesViaUnion(unittest.TestCase):
                 "the union of checked boxes from both sides must be kept",
             )
             status = _git(wt, "status", "--porcelain").stdout
-            self.assertEqual(status.strip(), "", "the resolved merge leaves a clean tree")
+            self.assertEqual(
+                status.strip(), "", "the resolved merge leaves a clean tree"
+            )
             self.assertEqual(
                 subprocess.run(
                     ["git", "-C", str(wt), "rev-parse", "-q", "--verify", "MERGE_HEAD"],
@@ -335,7 +351,9 @@ class TasksMdConflictPlusOtherFileFailsLoud(unittest.TestCase):
             )
             (wt / "shared.py").write_text("line1\nline2-STALE-LOCAL\nline3\n")
             _git(wt, "add", "-A")
-            _git(wt, "commit", "-q", "-m", "TASK-002 checks off 1.1 and edits shared.py")
+            _git(
+                wt, "commit", "-q", "-m", "TASK-002 checks off 1.1 and edits shared.py"
+            )
 
             _push_upstream_tasks_md(
                 tmp,
@@ -349,7 +367,8 @@ class TasksMdConflictPlusOtherFileFailsLoud(unittest.TestCase):
             )
 
             self.assertIsNone(
-                event, "an aborted merge (conflict beyond tasks.md alone) reports no event"
+                event,
+                "an aborted merge (conflict beyond tasks.md alone) reports no event",
             )
             status = _git(wt, "status", "--porcelain").stdout
             self.assertEqual(status.strip(), "", "an aborted merge leaves a clean tree")

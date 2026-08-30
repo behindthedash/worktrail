@@ -41,14 +41,9 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
-from . import agent_capacity
-from . import coordinator
-from . import dispatch
-from . import orchestrate
-from . import progress
-from . import spawnlib
 from ..router import invocation_context
 from ..taskformats import resolve as taskformats
+from . import agent_capacity, coordinator, dispatch, orchestrate, progress, spawnlib
 
 
 def _ts() -> str:
@@ -103,7 +98,7 @@ def _detect_default_agent() -> str:
         return "claude"
 
 
-def _default_smoke_cmd(repo: Path) -> "str | None":
+def _default_smoke_cmd(repo: Path) -> str | None:
     """Auto-resolve the pre-PR gate command from policy when `--smoke-cmd` was
     not passed explicitly.
 
@@ -134,7 +129,7 @@ def _default_smoke_cmd(repo: Path) -> "str | None":
     return cmd
 
 
-def _default_post_merge_smoke_cmd(repo: Path) -> "str | None":
+def _default_post_merge_smoke_cmd(repo: Path) -> str | None:
     """Auto-resolve verify.py's cumulative post-merge gate command from policy
     when `--post-merge-smoke-cmd` was not passed explicitly.
 
@@ -286,11 +281,11 @@ class RunLock:
     degrades to a no-op rather than blocking a run.
     """
 
-    def __init__(self, journal_path: "str | Path") -> None:
+    def __init__(self, journal_path: str | Path) -> None:
         self.path = Path(journal_path).with_suffix(".lock")
         self._fh = None
 
-    def acquire(self) -> "RunLock":
+    def acquire(self) -> RunLock:
         try:
             import fcntl
         except ImportError:  # non-POSIX: degrade to no-op
@@ -321,7 +316,7 @@ class RunLock:
             self._fh.close()
             self._fh = None
 
-    def __enter__(self) -> "RunLock":
+    def __enter__(self) -> RunLock:
         return self.acquire()
 
     def __exit__(self, *_) -> None:
@@ -329,7 +324,7 @@ class RunLock:
 
 
 def apply_run_plan(
-    repo: "Path", spec_rel: str, spec_id: str, tasks: list, *, spawn=None
+    repo: Path, spec_rel: str, spec_id: str, tasks: list, *, spawn=None
 ) -> list:
     """Enrich freshly-loaded tasks with a RunPlan, reusing this run's pinned plan
     (or compiling and pinning one, if this is the run's first compile).
@@ -383,7 +378,9 @@ def apply_run_plan(
 
     pinned = _pinned_plan_fingerprint(repo, spec_rel)
     if pinned is not None:
-        plan = _runplan.load_cached(conductor_compile.default_cache_dir(repo), spec_id, pinned)
+        plan = _runplan.load_cached(
+            conductor_compile.default_cache_dir(repo), spec_id, pinned
+        )
         if plan is None:
             jp = journal_path_for(repo, spec_rel)
             raise RuntimeError(
@@ -415,8 +412,12 @@ def apply_run_plan(
                 spawn=spawn,
                 log=lambda m: print(f"{_ts()} {m}"),
             )
-        except OSError as exc:  # an unreadable/unwritable cache must never take a run down
-            print(f"{_ts()} run plan: cache unreadable ({exc}); using the spec's own deps")
+        except (
+            OSError
+        ) as exc:  # an unreadable/unwritable cache must never take a run down
+            print(
+                f"{_ts()} run plan: cache unreadable ({exc}); using the spec's own deps"
+            )
             return tasks
 
     merged, notes = _runplan.apply_to_tasks(tasks, plan)
@@ -426,7 +427,7 @@ def apply_run_plan(
     return merged
 
 
-def _pinned_plan_fingerprint(repo: "Path", spec_rel: str) -> "str | None":
+def _pinned_plan_fingerprint(repo: Path, spec_rel: str) -> str | None:
     """This run's pinned plan fingerprint, if `_record_plan_fingerprint` has
     already stamped one into the journal -- None on a fresh run, or on any
     journal I/O failure (DEC-004: journal I/O never takes a run down; same
@@ -446,7 +447,7 @@ def _pinned_plan_fingerprint(repo: "Path", spec_rel: str) -> "str | None":
 PLAN_PIN_KEYS = ("plan_fingerprint", "plan_fingerprints")
 
 
-def _preserve_plan_pin(path: "str | Path", jdict: dict) -> dict:
+def _preserve_plan_pin(path: str | Path, jdict: dict) -> dict:
     """Carry the run's plan pin across a wholesale journal rewrite.
 
     Both schedulers' `record()` build their journal dict from scratch (spec_id,
@@ -481,7 +482,7 @@ def _preserve_plan_pin(path: "str | Path", jdict: dict) -> dict:
     return jdict
 
 
-def _record_plan_fingerprint(repo: "Path", spec_rel: str, plan) -> None:
+def _record_plan_fingerprint(repo: Path, spec_rel: str, plan) -> None:
     """Stamp which compiled RunPlan this run is executing, into the journal.
 
     Group membership is derived from each task's `deps`/`files`
@@ -504,7 +505,9 @@ def _record_plan_fingerprint(repo: "Path", spec_rel: str, plan) -> None:
     fp = getattr(plan, "fingerprint", None)
     if not fp:
         return
-    print(f"{_ts()} run plan: fingerprint={fp[:12]} source={getattr(plan, 'source', '?')}")
+    print(
+        f"{_ts()} run plan: fingerprint={fp[:12]} source={getattr(plan, 'source', '?')}"
+    )
     try:
         jp = journal_path_for(repo, spec_rel)
         journal = json.loads(jp.read_text()) if jp.exists() else {}
@@ -526,7 +529,7 @@ def _record_plan_fingerprint(repo: "Path", spec_rel: str, plan) -> None:
         print(f"{_ts()} run plan: could not record fingerprint ({exc})")
 
 
-def journal_path_for(repo: "Path", spec_rel: str) -> Path:
+def journal_path_for(repo: Path, spec_rel: str) -> Path:
     """Run-journal path for a (repo, spec) pair: beside the worktrees, keyed by the
     spec folder name. Single source of truth shared by full_real and `status` so
     the checklist reads exactly the journal a run writes."""
@@ -534,7 +537,7 @@ def journal_path_for(repo: "Path", spec_rel: str) -> Path:
     return wt_base / f"run-{Path(spec_rel.rstrip('/')).name}.json"
 
 
-def _print_usage_report(journal_path: "str | Path") -> None:
+def _print_usage_report(journal_path: str | Path) -> None:
     """Print the per-role token + cost report and tools/skills footprint (best-effort)."""
     try:
         journal = json.loads(Path(journal_path).read_text())
@@ -545,7 +548,7 @@ def _print_usage_report(journal_path: "str | Path") -> None:
     print(progress.render_context_quality(journal))
 
 
-def _format_automerge_evidence_note(evidence: "dict[str, dict[str, str]]") -> "str | None":
+def _format_automerge_evidence_note(evidence: dict[str, dict[str, str]]) -> str | None:
     """Human-readable note for `verify.run_all()`'s `automerge_evidence` -- explained
     self-merges (a group's PR flipped to MERGED mid-turn because external automation
     had it pre-armed, not because a worker ran `gh pr merge` itself). Previously
@@ -559,11 +562,13 @@ def _format_automerge_evidence_note(evidence: "dict[str, dict[str, str]]") -> "s
     return (
         f"NOTE: {len(evidence)} group(s) merged mid-turn by pre-armed external "
         f"auto-merge (explained self-merge, not a violation): "
-        + ", ".join(f"{name} (enabledBy={ev.get('enabledBy')})" for name, ev in evidence.items())
+        + ", ".join(
+            f"{name} (enabledBy={ev.get('enabledBy')})" for name, ev in evidence.items()
+        )
     )
 
 
-def _format_unreconciled_tail_note(findings: "list[dict]") -> "str | None":
+def _format_unreconciled_tail_note(findings: list[dict]) -> str | None:
     """Human-readable warning for `integrate.detect_unreconciled_tail_evidence`'s
     findings -- terminal tail-kind (e2e/cleanup) tasks whose own commits never
     got merged onto base, so the run must not report unqualified success.
@@ -597,11 +602,11 @@ def _format_unreconciled_tail_note(findings: "list[dict]") -> "str | None":
 
 
 def _format_migration_quarantine_warning(
-    groups: "list[dict]",
-    tasks: "list[dict]",
-    migration_patterns: "Sequence[str] | None",
-    quarantined: "dict[str, str]",
-) -> "str | None":
+    groups: list[dict],
+    tasks: list[dict],
+    migration_patterns: Sequence[str] | None,
+    quarantined: dict[str, str],
+) -> str | None:
     """Explicit warning when a migration-touching group is quarantined while
     other groups still proceeded to PR without it.
 
@@ -641,7 +646,9 @@ def _format_migration_quarantine_warning(
     )
 
 
-def _safety_net_events_from_preflight_fallbacks(fallbacks: "dict[str, dict]") -> "list[dict]":
+def _safety_net_events_from_preflight_fallbacks(
+    fallbacks: dict[str, dict],
+) -> list[dict]:
     """Convert `verify.run_all()`'s `preflight_fallbacks` (group -> detail) into
     `progress.append_safety_net_events` entries, so a required-checks preflight
     READ failure (see `Verifier.auto_merge`) is queryable across runs the same
@@ -652,7 +659,7 @@ def _safety_net_events_from_preflight_fallbacks(fallbacks: "dict[str, dict]") ->
     ]
 
 
-def read_or_create_run_id(journal_path: "Path") -> str:
+def read_or_create_run_id(journal_path: Path) -> str:
     """Read a stable run_id from *journal_path* or generate and persist a fresh one.
 
     - Journal exists with ``run_id`` key → return it unchanged.
@@ -670,7 +677,9 @@ def read_or_create_run_id(journal_path: "Path") -> str:
             # Legacy journal: inject run_id, preserve entries
             run_id = f"full-{int(time.time())}"
             data["run_id"] = run_id
-            progress.atomic_write_text(p, json.dumps(data, indent=2, sort_keys=True) + "\n")
+            progress.atomic_write_text(
+                p, json.dumps(data, indent=2, sort_keys=True) + "\n"
+            )
             return run_id
         except (OSError, json.JSONDecodeError):
             pass
@@ -678,12 +687,15 @@ def read_or_create_run_id(journal_path: "Path") -> str:
     run_id = f"full-{int(time.time())}"
     p.parent.mkdir(parents=True, exist_ok=True)
     progress.atomic_write_text(
-        p, json.dumps({"run_id": run_id, "entries": []}, indent=2, sort_keys=True) + "\n"
+        p,
+        json.dumps({"run_id": run_id, "entries": []}, indent=2, sort_keys=True) + "\n",
     )
     return run_id
 
 
-def _resolve_journaled_head_branch(name: str, rec: dict, run_id: str) -> tuple[str, str | None]:
+def _resolve_journaled_head_branch(
+    name: str, rec: dict, run_id: str
+) -> tuple[str, str | None]:
     """Validate one group's journaled head_branch before trusting it for VERIFY.
 
     Returns ``(branch, quarantine_reason)``. ``quarantine_reason`` is ``None``
@@ -706,7 +718,9 @@ def _resolve_journaled_head_branch(name: str, rec: dict, run_id: str) -> tuple[s
     return candidate or owned, None
 
 
-def _group_superseded_by_tail_prs(task_ids: "list[str]", journal_groups: dict) -> str | None:
+def _group_superseded_by_tail_prs(
+    task_ids: list[str], journal_groups: dict
+) -> str | None:
     """A quarantine reason when every task originally bundled into a group has
     independently reached a terminal (merged or PR-opened) state through its own
     `tail-<task-id>` group record instead of the parent's own PR.
@@ -729,7 +743,7 @@ def _group_superseded_by_tail_prs(task_ids: "list[str]", journal_groups: dict) -
     """
     if not task_ids:
         return None
-    tail_names: "list[str]" = []
+    tail_names: list[str] = []
     for task_id in task_ids:
         tail_name = f"tail-{task_id.lower()}"
         rec = journal_groups.get(tail_name)
@@ -743,7 +757,7 @@ def _group_superseded_by_tail_prs(task_ids: "list[str]", journal_groups: dict) -
 
 
 def _group_branch_from_journal(
-    journal_groups: dict, run_id: str, groups: "list[dict] | None" = None
+    journal_groups: dict, run_id: str, groups: list[dict] | None = None
 ) -> tuple[dict, dict]:
     """Build a resumed group_branch map from journal records, quarantining any
     group whose head_branch fails `_resolve_journaled_head_branch`, or whose every
@@ -914,7 +928,8 @@ def diagnose_stuck_group(g: dict, by_id: dict, terminal_statuses: set) -> str:
     """
     missing = sorted(tid for tid in g["tasks"] if tid not in by_id)
     stuck = sorted(
-        tid for tid in g["tasks"]
+        tid
+        for tid in g["tasks"]
         if tid in by_id and by_id[tid].get("status") not in terminal_statuses
     )
     if not missing and not stuck:
@@ -934,7 +949,8 @@ def diagnose_stuck_group(g: dict, by_id: dict, terminal_statuses: set) -> str:
         if task is None:
             return []
         return [
-            d for d in task.get("deps", [])
+            d
+            for d in task.get("deps", [])
             if by_id.get(d, {}).get("status") not in coordinator.DONE
         ]
 
@@ -961,7 +977,9 @@ def diagnose_stuck_group(g: dict, by_id: dict, terminal_statuses: set) -> str:
         roots: set = set()
         for d in unmet:
             roots |= _root_blockers(d, {tid})
-        tail_roots = sorted(r for r in roots if by_id.get(r, {}).get("kind") in coordinator.TAIL_KINDS)
+        tail_roots = sorted(
+            r for r in roots if by_id.get(r, {}).get("kind") in coordinator.TAIL_KINDS
+        )
         other_roots = sorted(r for r in roots - set(tail_roots))
         parts = []
         if tail_roots:
@@ -970,13 +988,19 @@ def diagnose_stuck_group(g: dict, by_id: dict, terminal_statuses: set) -> str:
                 f"run in the tail phase after fan-out"
             )
         if other_roots:
-            statuses = ", ".join(f"{r}={by_id.get(r, {}).get('status', '?')}" for r in other_roots)
-            parts.append(f"depends on {', '.join(other_roots)} which never reached done ({statuses})")
+            statuses = ", ".join(
+                f"{r}={by_id.get(r, {}).get('status', '?')}" for r in other_roots
+            )
+            parts.append(
+                f"depends on {', '.join(other_roots)} which never reached done ({statuses})"
+            )
         lines.append(f"task {tid} blocked: " + "; ".join(parts))
     return "; ".join(lines)
 
 
-def _quarantine_reason_with_diagnosis(base_reason: str, g: dict, by_id: dict, terminal_statuses: set) -> str:
+def _quarantine_reason_with_diagnosis(
+    base_reason: str, g: dict, by_id: dict, terminal_statuses: set
+) -> str:
     """`base_reason`, with `diagnose_stuck_group()`'s diagnosis appended when non-empty.
 
     Shared by every post-fanout quarantine branch (budget-exceeded, non-terminal) so
@@ -1036,7 +1060,8 @@ def validate_task_metadata(tasks: list) -> None:
     if collisions:
         detail = "; ".join(f"{f}: {a} <-> {b}" for f, a, b in collisions)
         raise RuntimeError(
-            "task(s) declare the same file with no dependency order between them: " + detail
+            "task(s) declare the same file with no dependency order between them: "
+            + detail
         )
 
 
@@ -1044,7 +1069,9 @@ def _fanout_failed_status(repo: Path, spec_rel: str) -> Optional[dict]:
     """Best-effort read of the prior-run heartbeat sidecar for this spec."""
     try:
         spec_id = Path(spec_rel).name
-        status_path = repo.parent / f"{repo.name}-worktrees" / f"run-{spec_id}.status.json"
+        status_path = (
+            repo.parent / f"{repo.name}-worktrees" / f"run-{spec_id}.status.json"
+        )
         if not status_path.is_file():
             return None
         status = json.loads(status_path.read_text())
@@ -1091,10 +1118,13 @@ def precheck(repo: Path, spec_rel: str) -> int:
             f"inspect {journal_path} before re-running full-real."
         )
         failed = [t.get("id") for t in status.get("failed_tasks") or [] if t.get("id")]
-        blocked = [t.get("id") for t in status.get("blocked_tasks") or [] if t.get("id")]
+        blocked = [
+            t.get("id") for t in status.get("blocked_tasks") or [] if t.get("id")
+        ]
         if failed:
             print(
-                "WARN: clear the failed task cassette entries before retrying: " + ", ".join(failed)
+                "WARN: clear the failed task cassette entries before retrying: "
+                + ", ".join(failed)
             )
         if blocked:
             print("INFO: blocked tasks recorded in status.json: " + ", ".join(blocked))
@@ -1179,7 +1209,9 @@ def precheck(repo: Path, spec_rel: str) -> int:
             except OSError:
                 body_text = None
             if body_text is not None:
-                create_files, modify_files = taskformats.file_sections_for(task_path, body_text)
+                create_files, modify_files = taskformats.file_sections_for(
+                    task_path, body_text
+                )
                 if create_files or modify_files:
                     is_modify_only = not create_files and bool(modify_files)
 
@@ -1263,7 +1295,9 @@ def _clear_integration_state(journal: dict) -> bool:
     return had
 
 
-def skip_tasks(repo: Path, spec_rel: str, task_ids: list, reason: str = "manually skipped") -> int:
+def skip_tasks(
+    repo: Path, spec_rel: str, task_ids: list, reason: str = "manually skipped"
+) -> int:
     """Mark stuck tasks terminal so the next `full-real` resume stops waiting on them.
 
     Appends one `escalated` journal entry per task id (reconcile_from_journal then
@@ -1284,13 +1318,20 @@ def skip_tasks(repo: Path, spec_rel: str, task_ids: list, reason: str = "manuall
     for tid in task_ids:
         entries.append(
             _journal_failure_entry(
-                {"id": tid}, "manual-skip", reason, now, now, terminal_status="escalated"
+                {"id": tid},
+                "manual-skip",
+                reason,
+                now,
+                now,
+                terminal_status="escalated",
             )
         )
     progress.atomic_write_text(
         str(journal_path), json.dumps(journal, indent=2, sort_keys=True) + "\n"
     )
-    print(f"{_ts()} SKIP: marked {', '.join(task_ids)} escalated ({reason}) in {journal_path}")
+    print(
+        f"{_ts()} SKIP: marked {', '.join(task_ids)} escalated ({reason}) in {journal_path}"
+    )
     return 0
 
 
@@ -1340,7 +1381,9 @@ def clear_tasks(repo: Path, spec_rel: str, task_ids: list) -> int:
     """
     journal_path = journal_path_for(repo, spec_rel)
     if not journal_path.exists():
-        print(f"{_ts()} CLEAR-TASK: no run journal at {journal_path} -- nothing to clear")
+        print(
+            f"{_ts()} CLEAR-TASK: no run journal at {journal_path} -- nothing to clear"
+        )
         return 1
     journal = json.loads(journal_path.read_text())
     entries = journal.get("entries", [])
@@ -1349,7 +1392,8 @@ def clear_tasks(repo: Path, spec_rel: str, task_ids: list) -> int:
     def _terminal_failure(entry: dict) -> bool:
         return (
             not entry.get("event")
-            and (entry.get("report") or {}).get("terminal_status") in _NON_RETRYABLE_TERMINAL
+            and (entry.get("report") or {}).get("terminal_status")
+            in _NON_RETRYABLE_TERMINAL
         )
 
     # Guardrail: never discard completed work. Refuse the whole operation (zero
@@ -1371,7 +1415,9 @@ def clear_tasks(repo: Path, spec_rel: str, task_ids: list) -> int:
             )
             return 1
     uncleared = sorted(
-        t for t in targets if not any(_terminal_failure(e) and e.get("task") == t for e in entries)
+        t
+        for t in targets
+        if not any(_terminal_failure(e) and e.get("task") == t for e in entries)
     )
     if uncleared:
         print(
@@ -1381,7 +1427,9 @@ def clear_tasks(repo: Path, spec_rel: str, task_ids: list) -> int:
         return 1
 
     cleared = set(targets)
-    remove = {id(e) for e in entries if _terminal_failure(e) and e.get("task") in targets}
+    remove = {
+        id(e) for e in entries if _terminal_failure(e) and e.get("task") in targets
+    }
     # Cascade to fixpoint: a gate blocked by a cleared task is removed, and ITS
     # task then counts as cleared for gates further downstream.
     changed = True
@@ -1417,7 +1465,9 @@ def clear_tasks(repo: Path, spec_rel: str, task_ids: list) -> int:
     return 0
 
 
-def _annotate_external_deps(repo: Path, tasks: list, spec_rel: str | None = None) -> None:
+def _annotate_external_deps(
+    repo: Path, tasks: list, spec_rel: str | None = None
+) -> None:
     """Freshly set `external_deps_ok`/`external_deps_blockers` on every pending task
     with a non-empty `external_deps` list (contracts/frontier-external-deps-gate.md).
 
@@ -1458,7 +1508,10 @@ def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProc
 
 
 def _branch_exists(repo: Path, name: str) -> bool:
-    return _git(repo, "rev-parse", "--verify", "--quiet", name, check=False).returncode == 0
+    return (
+        _git(repo, "rev-parse", "--verify", "--quiet", name, check=False).returncode
+        == 0
+    )
 
 
 def _is_ancestor(git_dir: Path, ancestor: str, descendant: str) -> bool:
@@ -1474,7 +1527,9 @@ def _is_ancestor(git_dir: Path, ancestor: str, descendant: str) -> bool:
     hand-written `_git(..., "merge-base", "--is-ancestor", ...)` call.
     """
     return (
-        _git(git_dir, "merge-base", "--is-ancestor", ancestor, descendant, check=False).returncode
+        _git(
+            git_dir, "merge-base", "--is-ancestor", ancestor, descendant, check=False
+        ).returncode
         == 0
     )
 
@@ -1566,14 +1621,20 @@ def _refresh_base_branch(repo: Path, remote: str, base: str) -> None:
 
     upd = _git(repo, "update-ref", f"refs/heads/{base}", remote_sha, check=False)
     if upd.returncode != 0:
-        print(f"{_ts()} BASE REFRESH: update-ref failed for '{base}'; leaving local ref untouched")
+        print(
+            f"{_ts()} BASE REFRESH: update-ref failed for '{base}'; leaving local ref untouched"
+        )
         return
-    print(f"{_ts()} BASE REFRESH: {base} {old_sha[:8]} -> {remote_sha[:8]} ({remote}/{base})")
+    print(
+        f"{_ts()} BASE REFRESH: {base} {old_sha[:8]} -> {remote_sha[:8]} ({remote}/{base})"
+    )
 
     for path in checkouts:
         sync = _git(path, "reset", "--hard", check=False)
         if sync.returncode == 0:
-            print(f"{_ts()} BASE REFRESH: synced checkout at {path} to {remote_sha[:8]}")
+            print(
+                f"{_ts()} BASE REFRESH: synced checkout at {path} to {remote_sha[:8]}"
+            )
         else:
             print(
                 f"{_ts()} BASE REFRESH: failed to sync checkout at {path}: "
@@ -1601,7 +1662,9 @@ def _resume_drift_report(repo: Path, base: str, spec_id: str, tasks: list) -> No
         if mb.returncode != 0 or not mb.stdout.strip():
             return
         spec_base_sha = mb.stdout.strip()
-        count = _git(repo, "rev-list", "--count", f"{spec_base_sha}..{base}", check=False)
+        count = _git(
+            repo, "rev-list", "--count", f"{spec_base_sha}..{base}", check=False
+        )
         if count.returncode == 0 and count.stdout.strip().isdigit():
             n = count.stdout.strip()
             if n != "0":
@@ -1641,7 +1704,9 @@ def _resume_quarantine_staleness_warning(
             if mb.returncode != 0 or not mb.stdout.strip():
                 continue
             merge_base_sha = mb.stdout.strip()
-            count = _git(repo, "rev-list", "--count", f"{merge_base_sha}..{base}", check=False)
+            count = _git(
+                repo, "rev-list", "--count", f"{merge_base_sha}..{base}", check=False
+            )
             if count.returncode != 0 or not count.stdout.strip().isdigit():
                 continue
             max_count = max(max_count, int(count.stdout.strip()))
@@ -1656,7 +1721,9 @@ def _resume_quarantine_staleness_warning(
             )
 
 
-def build_external_deps_by_ref(repo: Path, tasks: list, spec_rel: str | None = None) -> dict:
+def build_external_deps_by_ref(
+    repo: Path, tasks: list, spec_rel: str | None = None
+) -> dict:
     """Resolve every task's `external_deps` refs (cross-spec `external-dependencies:`
     entries, spec 025) into the `external_deps_by_ref` shape `dispatch.build_worker_prompt`
     expects: `ref -> {"id", "files"}` for the sibling task, included ONLY when
@@ -1687,7 +1754,10 @@ def build_external_deps_by_ref(repo: Path, tasks: list, spec_rel: str | None = N
             sibling_task = taskformats.task_for(sibling_spec, task_id)
             if sibling_task is None:
                 continue
-            external_deps_by_ref[ref] = {"id": task_id, "files": sibling_task.get("files", [])}
+            external_deps_by_ref[ref] = {
+                "id": task_id,
+                "files": sibling_task.get("files", []),
+            }
     return external_deps_by_ref
 
 
@@ -1751,9 +1821,13 @@ def _validate_retained_task_branch(
     conflicting user work still gets a human. Without `wt` (no checkout to
     merge in), behavior is validate-and-raise, unchanged.
     """
-    branch_head = _git(repo, "rev-parse", "--verify", f"{branch}^{{commit}}", check=False)
+    branch_head = _git(
+        repo, "rev-parse", "--verify", f"{branch}^{{commit}}", check=False
+    )
     if branch_head.returncode != 0:
-        raise WorktreeAddError(f"retained task branch {branch} has no resolvable commit")
+        raise WorktreeAddError(
+            f"retained task branch {branch} has no resolvable commit"
+        )
 
     events: list = []
     if not _is_ancestor(repo, start_ref, branch):
@@ -1775,20 +1849,28 @@ def _validate_retained_task_branch(
                 f"retained task branch {branch} is still stale after a clean merge of "
                 f"{start_ref}; repair it explicitly before resuming"
             )
-        events.append({
-            "event": "retained_branch_auto_merged",
-            "branch": branch,
-            "start_ref": start_ref,
-            "merged_head": _git(
-                repo, "rev-parse", "--verify", f"{branch}^{{commit}}", check=False
-            ).stdout.strip(),
-        })
+        events.append(
+            {
+                "event": "retained_branch_auto_merged",
+                "branch": branch,
+                "start_ref": start_ref,
+                "merged_head": _git(
+                    repo, "rev-parse", "--verify", f"{branch}^{{commit}}", check=False
+                ).stdout.strip(),
+            }
+        )
 
     if expected_head_sha:
         expected = _git(
-            repo, "rev-parse", "--verify", f"{expected_head_sha}^{{commit}}", check=False
+            repo,
+            "rev-parse",
+            "--verify",
+            f"{expected_head_sha}^{{commit}}",
+            check=False,
         )
-        if expected.returncode != 0 or not _is_ancestor(repo, expected_head_sha, branch):
+        if expected.returncode != 0 or not _is_ancestor(
+            repo, expected_head_sha, branch
+        ):
             raise WorktreeAddError(
                 f"retained task branch {branch} does not contain journaled task head "
                 f"{expected_head_sha}. Repair the branch or clear the stale run explicitly."
@@ -1815,7 +1897,10 @@ def _stack_resolve_verify(wt: Path, conflicted_files: list) -> bool:
     `<<<<<<<` marker. Any failure here means the resolution is rejected outright,
     regardless of what the worker claimed.
     """
-    if _git(wt, "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False).returncode == 0:
+    if (
+        _git(wt, "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False).returncode
+        == 0
+    ):
         return False  # merge still in progress
     if _git(wt, "status", "--porcelain", check=False).stdout.strip():
         return False  # dirty tree
@@ -1866,7 +1951,9 @@ def _stack_resolve_attempt(
     return False
 
 
-_CHECKLIST_LINE_RE = re.compile(r"^(?P<prefix>\s*-\s*\[)(?P<mark>[ xX])(?P<suffix>\]\s*)(?P<text>.*)$")
+_CHECKLIST_LINE_RE = re.compile(
+    r"^(?P<prefix>\s*-\s*\[)(?P<mark>[ xX])(?P<suffix>\]\s*)(?P<text>.*)$"
+)
 
 
 def _union_merge_checklist(ours: str, theirs: str) -> str:
@@ -1877,6 +1964,7 @@ def _union_merge_checklist(ours: str, theirs: str) -> str:
     unchanged. Never removes a checkmark either side already had, so no
     completed work is ever hidden by the merge.
     """
+
     def parse(text: str) -> tuple[dict, list]:
         checked: dict = {}
         order: list = []
@@ -1901,7 +1989,11 @@ def _union_merge_checklist(ours: str, theirs: str) -> str:
             continue
         seen.add(key)
         m = _CHECKLIST_LINE_RE.match(line)
-        mark = "x" if (ours_checked.get(key, False) or theirs_checked.get(key, False)) else " "
+        mark = (
+            "x"
+            if (ours_checked.get(key, False) or theirs_checked.get(key, False))
+            else " "
+        )
         merged_lines.append(f"{m.group('prefix')}{mark}{m.group('suffix')}{key}")
     for key, line in theirs_order:
         if key is not None and key not in seen:
@@ -1920,7 +2012,9 @@ def _resolve_tasks_md_checklist_conflict(wt: Path, spec_id: str) -> bool:
     merge. Returns True if resolved (merge committed); False if the conflict is
     not this narrow case -- caller aborts exactly as before this change.
     """
-    unmerged = _git(wt, "diff", "--name-only", "--diff-filter=U", check=False).stdout.split()
+    unmerged = _git(
+        wt, "diff", "--name-only", "--diff-filter=U", check=False
+    ).stdout.split()
     expected = f"openspec/changes/{spec_id}/tasks.md"
     if unmerged != [expected]:
         return False
@@ -1935,7 +2029,7 @@ def _resolve_tasks_md_checklist_conflict(wt: Path, spec_id: str) -> bool:
 
 def _carry_squash_merged_dependencies(
     repo: Path, spec_id: str, task: dict, by_id: dict, wt: Path, remote: str, base: str
-) -> "dict | None":
+) -> dict | None:
     """Carry a DONE dependency's content into `wt` across a squash-merge boundary.
 
     `dependency_start_ref` falls back to bare `HEAD` for a dependency whose task
@@ -1992,7 +2086,9 @@ def _carry_squash_merged_dependencies(
     if not stale_deps:
         return
 
-    _git(repo, "fetch", "-q", remote, base, check=False)  # best-effort; offline stays a no-op
+    _git(
+        repo, "fetch", "-q", remote, base, check=False
+    )  # best-effort; offline stays a no-op
     ref = f"{remote}/{base}" if _branch_exists(repo, f"{remote}/{base}") else base
     if not _branch_exists(repo, ref):
         return  # neither ref resolvable; _require_dependency_files raises with forensics
@@ -2066,7 +2162,9 @@ def add_stacked_worktree(
 
     r = _add()
     if r.returncode != 0:
-        _git(repo, "worktree", "prune", check=False)  # clear a stale registration, retry once
+        _git(
+            repo, "worktree", "prune", check=False
+        )  # clear a stale registration, retry once
         r = _add()
         if r.returncode != 0:
             raise WorktreeAddError(
@@ -2118,7 +2216,11 @@ def _add_stacked_worktree_kwargs(target, kwargs: dict) -> dict:
 
 
 def bootstrap_worktree(
-    wt: Path, bootstrap_cmd: str | None, log=print, *, required: bool = False,
+    wt: Path,
+    bootstrap_cmd: str | None,
+    log=print,
+    *,
+    required: bool = False,
 ) -> bool:
     """Install a freshly-created task worktree's local dependencies before a worker
     is spawned into it.
@@ -2160,7 +2262,9 @@ def bootstrap_worktree(
             f"{'stopping before worker spawn' if required else 'worker will self-install'}"
         )
         if required:
-            raise WorktreeAddError(f"required worktree bootstrap could not launch in {wt}: {e}") from e
+            raise WorktreeAddError(
+                f"required worktree bootstrap could not launch in {wt}: {e}"
+            ) from e
         return False
     if proc.returncode != 0:
         tail = (proc.stderr or proc.stdout or "").strip()[-400:]
@@ -2184,7 +2288,9 @@ def instantiate(template: Path = SAMPLE_TEMPLATE, dest: Path = DEFAULT_DEST) -> 
     if wt_base.exists():  # hermetic: drop stale worktrees from prior runs
         shutil.rmtree(wt_base)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(template, dest, ignore=shutil.ignore_patterns("node_modules", "dist", ".git"))
+    shutil.copytree(
+        template, dest, ignore=shutil.ignore_patterns("node_modules", "dist", ".git")
+    )
     subprocess.run(["git", "init", "-q", str(dest)], check=True)
     _git(dest, "config", "user.email", "orchestrator@example.com")
     _git(dest, "config", "user.name", "Orchestrator")
@@ -2217,7 +2323,9 @@ def run_research_session(
     spec_lines: list[str] = []
     for candidate in sorted(spec_folder.glob("*.md")):
         if candidate.parent == spec_folder:  # root only, not tasks/ or changes/
-            spec_lines.append(f"=== {candidate.name} ===\n{candidate.read_text()[:4000]}")
+            spec_lines.append(
+                f"=== {candidate.name} ===\n{candidate.read_text()[:4000]}"
+            )
 
     dm = spec_folder / "data-model.md"
     if dm.exists() and not any("data-model" in s for s in spec_lines):
@@ -2261,7 +2369,9 @@ def run_research_session(
         "Context pre-loaded. Workers forking this session will inherit it."
     )
 
-    print(f"{_ts()} RESEARCH: pre-loading {len(file_sections)} shared source file(s) into session")
+    print(
+        f"{_ts()} RESEARCH: pre-loading {len(file_sections)} shared source file(s) into session"
+    )
     # --setting-sources project,local drops the operator's USER-level settings
     # (and Stop hook) from this pre-load spawn too -- same investigation
     # 20260711-130900 mechanism as _LEAN_WORKER_FLAGS below, applied here since
@@ -2279,9 +2389,13 @@ def run_research_session(
         log=print,
     )
     if result.session_id:
-        print(f"{_ts()} RESEARCH: session_id={result.session_id} (workers will fork from this)")
+        print(
+            f"{_ts()} RESEARCH: session_id={result.session_id} (workers will fork from this)"
+        )
     else:
-        print(f"{_ts()} RESEARCH: WARNING — no session_id returned; --fork-research has no effect")
+        print(
+            f"{_ts()} RESEARCH: WARNING — no session_id returned; --fork-research has no effect"
+        )
     return result.session_id
 
 
@@ -2298,7 +2412,7 @@ class LiveSpawn:
         fallback_agent: str | None = None,
         tier_map: dict | None = None,
         purpose_tier_map: dict | None = None,
-        fallback_chain: "list[str] | None" = None,
+        fallback_chain: list[str] | None = None,
         effort: str | None = None,
         dispatch_id: str | None = None,
     ) -> None:
@@ -2394,13 +2508,15 @@ class LiveSpawn:
             "anchor_fmt": anchor.replace(probe, "{task_id}"),
         }
 
-    def __call__(self, role: str, task: dict, worktree: Path) -> "spawnlib.SpawnResult":
+    def __call__(self, role: str, task: dict, worktree: Path) -> spawnlib.SpawnResult:
         effective_timeout = task.get("timeout") or self.timeout
         # Consume any extra reads staged by drive() for adaptive context widening
         # (set when a prior review reported context_quality=insufficient). Only
         # injected on fix dispatches; popped here so they don't bleed into later roles.
         extra_reads = (
-            list(task.pop("_extra_reads", None) or []) if role == dispatch.ROLE_FIX else []
+            list(task.pop("_extra_reads", None) or [])
+            if role == dispatch.ROLE_FIX
+            else []
         )
         ctx = {
             "spec_id": self.spec_id,
@@ -2433,9 +2549,14 @@ class LiveSpawn:
         default_tier = self._routing.get("default_tier")
         available_tiers = (self._routing.get("tiers") or {}).keys()
         tier, prefer, independent = dispatch.tier_for(
-            role, task, roles=roles, purposes=purposes,
-            default_tier=default_tier, available_tiers=available_tiers,
+            role,
+            task,
+            roles=roles,
+            purposes=purposes,
+            default_tier=default_tier,
+            available_tiers=available_tiers,
         )
+
         # role_agents (--role-agent-map, a harness name e.g. "claude") is a
         # secondary, CLI-level preference: it only applies when routing.roles
         # didn't already name one for this role, and is translated from a
@@ -2486,11 +2607,15 @@ class LiveSpawn:
         # raises the authoritative NoExecutionTarget; peeking must never fail
         # a request that was always going to fail anyway for a different
         # reason (the harness label on a doomed request is moot).
-        from ..runtime.selection import select_cell, NoExecutionTarget as _NoExecutionTarget
+        from ..runtime.selection import NoExecutionTarget as _NoExecutionTarget
+        from ..runtime.selection import select_cell
 
         try:
             peeked_harness = select_cell(
-                self._routing, tier, prefer=prefer, exclude_harness=exclude_harness,
+                self._routing,
+                tier,
+                prefer=prefer,
+                exclude_harness=exclude_harness,
                 capacity=agent_capacity,
             ).harness
         except _NoExecutionTarget:
@@ -2515,18 +2640,26 @@ class LiveSpawn:
             # Raises NoExecutionTarget here (not caught) when nothing is
             # available -- this IS the real, authoritative selection.
             winning = select_cell(
-                self._routing, tier, prefer=prefer, exclude_harness=exclude_harness,
+                self._routing,
+                tier,
+                prefer=prefer,
+                exclude_harness=exclude_harness,
                 capacity=agent_capacity,
             )
             with spawnlib.explicit_cell_override(
-                winning.target, explicit_model or winning.model,
+                winning.target,
+                explicit_model or winning.model,
                 effort=explicit_effort or winning.effort,
             ):
                 self.last_agent = winning.harness
                 if winning.harness == "claude":
-                    result = spawnlib.spawn_claude_p(prompt, worktree, tier="explicit", **spawn_kwargs)
+                    result = spawnlib.spawn_claude_p(
+                        prompt, worktree, tier="explicit", **spawn_kwargs
+                    )
                 else:
-                    result = spawnlib.spawn_agent(prompt, worktree, tier="explicit", **spawn_kwargs)
+                    result = spawnlib.spawn_agent(
+                        prompt, worktree, tier="explicit", **spawn_kwargs
+                    )
         else:
             # No explicit override: let spawn_agent/spawn_claude_p do the full
             # tier-row walk, including its own automatic same-row re-selection
@@ -2534,13 +2667,21 @@ class LiveSpawn:
             self.last_agent = peeked_harness
             if peeked_harness == "claude":
                 result = spawnlib.spawn_claude_p(
-                    prompt, worktree, tier=tier, prefer=prefer,
-                    exclude_harness=exclude_harness, **spawn_kwargs,
+                    prompt,
+                    worktree,
+                    tier=tier,
+                    prefer=prefer,
+                    exclude_harness=exclude_harness,
+                    **spawn_kwargs,
                 )
             else:
                 result = spawnlib.spawn_agent(
-                    prompt, worktree, tier=tier, prefer=prefer,
-                    exclude_harness=exclude_harness, **spawn_kwargs,
+                    prompt,
+                    worktree,
+                    tier=tier,
+                    prefer=prefer,
+                    exclude_harness=exclude_harness,
+                    **spawn_kwargs,
                 )
 
         # The actually-served cell can differ from the peeked/winning one
@@ -2586,7 +2727,10 @@ def spawn_one(
         print(f"---- report-back parse FAILED: {e} ----")
 
     print("---- worker commit (files) ----")
-    print(_git(wt, "show", "--stat", "--oneline", "HEAD", check=False).stdout or "(no commit)")
+    print(
+        _git(wt, "show", "--stat", "--oneline", "HEAD", check=False).stdout
+        or "(no commit)"
+    )
 
     if not keep:
         _git(repo, "worktree", "remove", str(wt), "--force", check=False)
@@ -2628,7 +2772,9 @@ def live_run(
         if out_cassette:
             progress.atomic_write_text(
                 out_cassette,
-                json.dumps({"spec_id": spec_id, "entries": entries}, indent=2, sort_keys=True)
+                json.dumps(
+                    {"spec_id": spec_id, "entries": entries}, indent=2, sort_keys=True
+                )
                 + "\n",
             )
 
@@ -2697,9 +2843,11 @@ def live_run(
                 }
             )
             record()
-            extra = f" [{rep.get('review_status')}]" if role == dispatch.ROLE_REVIEW else ""
+            extra = (
+                f" [{rep.get('review_status')}]" if role == dispatch.ROLE_REVIEW else ""
+            )
             print(
-                f"{_ts()}   {task['id']} {role:9} {old:12} -> {new}{extra}  (sha {str(rep.get('head_sha',''))[:8]})"
+                f"{_ts()}   {task['id']} {role:9} {old:12} -> {new}{extra}  (sha {str(rep.get('head_sha', ''))[:8]})"
             )
 
     tick = 0
@@ -2718,7 +2866,9 @@ def live_run(
             drive(by_id[tid])
 
     done = sum(1 for t in tasks if t["status"] in coordinator.DONE)
-    print(f"{_ts()} LIVE RUN DONE: {done}/{len(tasks)} tasks done; {len(entries)} cassette entries")
+    print(
+        f"{_ts()} LIVE RUN DONE: {done}/{len(tasks)} tasks done; {len(entries)} cassette entries"
+    )
     if out_cassette:
         print(f"cassette: {out_cassette}")
     return {
@@ -2744,7 +2894,9 @@ def full(
     model = model or _default_model_for_agent(agent)
     out_cassette = str(_SKILL / ".fixtures" / "sample-spec" / "cassette.live.json")
 
-    res = live_run(DEFAULT_DEST, max_workers, out_cassette, None, False, agent, model)  # fan-out
+    res = live_run(
+        DEFAULT_DEST, max_workers, out_cassette, None, False, agent, model
+    )  # fan-out
     repo = Path(DEFAULT_DEST)
     spec_id, tasks = res["spec_id"], res["tasks"]  # carry real per-task statuses
     by_id = {t["id"]: t for t in tasks}
@@ -2758,7 +2910,9 @@ def full(
     )
 
     if not group_branch:
-        print("No groups integrated cleanly -- nothing to assemble; see quarantine above.")
+        print(
+            "No groups integrated cleanly -- nothing to assemble; see quarantine above."
+        )
         print("=== FULL RUN COMPLETE (quarantined only) ===")
         return {"group_prs": prs, "final": None, "quarantined": quarantined}
 
@@ -2782,14 +2936,18 @@ def full(
                 if dep in by_id and by_id[dep].get("status") not in coordinator.DONE
             ]
             failed = [
-                dep for dep in unmet if by_id[dep].get("status") in coordinator.FAILED_STATUSES
+                dep
+                for dep in unmet
+                if by_id[dep].get("status") in coordinator.FAILED_STATUSES
             ]
             if unmet and not failed:
                 continue
             tid = t["id"]
             if failed:
                 t["status"] = "failed"
-                print(f"  !! {tid} blocked by failed prerequisite(s): {', '.join(failed)}")
+                print(
+                    f"  !! {tid} blocked by failed prerequisite(s): {', '.join(failed)}"
+                )
             else:
                 t["status"] = "claimed"
                 while t["status"] not in orchestrate.TERMINAL:
@@ -2808,7 +2966,9 @@ def full(
             progressed = True
         if not progressed:
             unresolved = ", ".join(t["id"] for t in pending_tail)
-            raise RuntimeError(f"tail dependency gate stalled with unresolved tasks: {unresolved}")
+            raise RuntimeError(
+                f"tail dependency gate stalled with unresolved tasks: {unresolved}"
+            )
 
     _git(repo, "push", "-q", "sandbox", f"{integ}:{integ}")
     r = subprocess.run(
@@ -2830,7 +2990,11 @@ def full(
         capture_output=True,
         text=True,
     )
-    final = (r.stdout or r.stderr).strip().splitlines()[-1] if (r.stdout or r.stderr) else "(none)"
+    final = (
+        (r.stdout or r.stderr).strip().splitlines()[-1]
+        if (r.stdout or r.stderr)
+        else "(none)"
+    )
     print(f"  PR [integration] base=main -> {final}")
 
     if not keep_prs:
@@ -2843,7 +3007,9 @@ def full(
             )
     if quarantined:
         reasons = ", ".join(f"{k}: {v}" for k, v in quarantined.items())
-        print(f"NOTE: {len(quarantined)} group(s) quarantined for human review: {reasons}")
+        print(
+            f"NOTE: {len(quarantined)} group(s) quarantined for human review: {reasons}"
+        )
     print("=== FULL RUN COMPLETE ===")
     return {"group_prs": prs, "final": final, "quarantined": quarantined}
 
@@ -2862,7 +3028,9 @@ def _review_exempt(task: dict) -> bool:
     return task.get("kind") == "docs"
 
 
-def _scope_escalation_files(task: dict, report: dict, wt: Path, by_id: dict) -> list[str]:
+def _scope_escalation_files(
+    task: dict, report: dict, wt: Path, by_id: dict
+) -> list[str]:
     """Validate one bounded fix-scope escalation from concrete `missing_context` paths.
 
     Only an actually failed fix qualifies. Paths must be existing repo-relative
@@ -2985,7 +3153,7 @@ def _dependency_file_declared_path_exists(wt: Path, declared: str) -> bool:
     return (wt / declared).exists()
 
 
-def _require_dependency_files(wt: Path, task: dict, by_id: dict) -> "list[dict]":
+def _require_dependency_files(wt: Path, task: dict, by_id: dict) -> list[dict]:
     """Fail loud at dispatch time if a dependency's declared files are missing
     from the stacked worktree after the dependency's branch was merged in.
 
@@ -3024,7 +3192,7 @@ def _require_dependency_files(wt: Path, task: dict, by_id: dict) -> "list[dict]"
     (`safety_net_report.py`) -- the print above is only visible in a single
     run's transcript.
     """
-    events: "list[dict]" = []
+    events: list[dict] = []
     for dep_id in task.get("deps", []):
         dep = by_id.get(dep_id)
         if not dep:
@@ -3092,7 +3260,7 @@ def _require_dependency_files_with_repair(
     spec_id: str,
     remote: str | None,
     base: str | None,
-) -> "list[dict]":
+) -> list[dict]:
     """`_require_dependency_files`, but retries the squash-merge carry once
     before re-raising on `WorktreeMissingDependencyFileError`.
 
@@ -3275,7 +3443,7 @@ def live_run_real(
     fallback_agent: str | None = None,
     tier_map: dict | None = None,
     purpose_tier_map: dict | None = None,
-    fallback_chain: "list[str] | None" = None,
+    fallback_chain: list[str] | None = None,
     effort: str | None = None,
     run_budget: float | None = None,
     spawn=None,
@@ -3335,7 +3503,9 @@ def live_run_real(
     _ar_agent, _ar_model = _role_agent_model(
         dispatch.ROLE_ASSEMBLY_RESOLVE, agent, model, role_agents, role_models
     )
-    assembly_resolve_spawn_fn = verify_module._make_live_spawn(_ar_model, timeout, agent=_ar_agent)
+    assembly_resolve_spawn_fn = verify_module._make_live_spawn(
+        _ar_model, timeout, agent=_ar_agent
+    )
     spec_id, tasks = taskformats.load_spec(str(repo / spec_rel))
     tasks = apply_run_plan(repo, spec_rel, spec_id, tasks)
     for t in tasks:
@@ -3353,7 +3523,9 @@ def live_run_real(
         # as satisfied. Dropping them (the old behaviour) made every dependent
         # un-runnable because its deps were no longer present/done.
         if "completed" not in coordinator.DONE:
-            raise RuntimeError("coordinator.DONE missing 'completed'; --only pre-mark unsafe")
+            raise RuntimeError(
+                "coordinator.DONE missing 'completed'; --only pre-mark unsafe"
+            )
         for t in tasks:
             if t["id"] not in keep:
                 # Mark as "completed" (not "done") so deliverable_subset excludes these —
@@ -3406,7 +3578,10 @@ def live_run_real(
     def _publish_actives() -> None:
         if out_cassette:
             progress.write_actives(
-                out_cassette, run_id=run_id, spec_id=spec_id, actives=list(actives.values())
+                out_cassette,
+                run_id=run_id,
+                spec_id=spec_id,
+                actives=list(actives.values()),
             )
 
     # Resume: replay an existing journal so completed roles aren't re-spawned.
@@ -3418,7 +3593,9 @@ def live_run_real(
         try:
             journal = json.loads(Path(out_cassette).read_text())
         except (OSError, json.JSONDecodeError) as e:
-            print(f"{_ts()} RESUME: journal {out_cassette} unreadable ({e}); starting fresh")
+            print(
+                f"{_ts()} RESUME: journal {out_cassette} unreadable ({e}); starting fresh"
+            )
         else:
             entries = reconcile_from_journal(tasks, journal)
             foreign_ids = journal_foreign_task_ids(entries, tasks)
@@ -3445,7 +3622,9 @@ def live_run_real(
     # every resume of an existing run.
     validate_task_metadata(tasks)
 
-    _budget_stopped_at: list[float | None] = [None]  # list so nested def can mutate; None = not set
+    _budget_stopped_at: list[float | None] = [
+        None
+    ]  # list so nested def can mutate; None = not set
 
     def record() -> None:
         if out_cassette:
@@ -3515,7 +3694,9 @@ def live_run_real(
             bootstrap_worktree(wt, bootstrap_cmd, required=bool(bootstrap_cmd))
         else:
             start, _ = dependency_start_ref(repo, spec_id, task, by_id)
-            branch = _git(wt, "rev-parse", "--abbrev-ref", "HEAD", check=False).stdout.strip()
+            branch = _git(
+                wt, "rev-parse", "--abbrev-ref", "HEAD", check=False
+            ).stdout.strip()
             expected_branch = f"{spec_id}/{task['id'].lower()}"
             if branch != expected_branch:
                 raise WorktreeAddError(
@@ -3530,9 +3711,7 @@ def live_run_real(
             )
             if repair_events or drift_events:
                 with state_lock:
-                    entries.extend([
-                        {**e, "task": task["id"]} for e in repair_events
-                    ])
+                    entries.extend([{**e, "task": task["id"]} for e in repair_events])
                     entries.extend(drift_events)
                     record()
             _require_task_file(wt, spec_rel, task["id"])
@@ -3637,7 +3816,8 @@ def live_run_real(
             _eff_timeout = task.get("timeout") or getattr(spawn, "timeout", "?")
             _override_marker = (
                 " [task-override]"
-                if isinstance(_eff_timeout, int) and _eff_timeout != getattr(spawn, "timeout", None)
+                if isinstance(_eff_timeout, int)
+                and _eff_timeout != getattr(spawn, "timeout", None)
                 else ""
             )
             print(
@@ -3660,7 +3840,11 @@ def live_run_real(
                 with state_lock:
                     entries.append(
                         _journal_failure_entry(
-                            task, role, f"{task['id']}/{role} timed out after {limit}s", t0, t1
+                            task,
+                            role,
+                            f"{task['id']}/{role} timed out after {limit}s",
+                            t0,
+                            t1,
                         )
                     )
                     record()
@@ -3678,7 +3862,9 @@ def live_run_real(
                 rep = salvage_report(role, task, wt, pre_sha)
                 if rep is None:
                     t1 = time.time()
-                    terminal_status = "retryable" if role == dispatch.ROLE_IMPLEMENT else "failed"
+                    terminal_status = (
+                        "retryable" if role == dispatch.ROLE_IMPLEMENT else "failed"
+                    )
                     with state_lock:
                         entries.append(
                             _journal_failure_entry(
@@ -3703,12 +3889,17 @@ def live_run_real(
             # Adaptive read-widening: when review reports insufficient context, stage
             # the missing items so the next fix dispatch gets them in its prompt.
             # Never widen on sufficient/too_much — too_much means trim, not add.
-            if role == dispatch.ROLE_REVIEW and rep.get("context_quality") == "insufficient":
+            if (
+                role == dispatch.ROLE_REVIEW
+                and rep.get("context_quality") == "insufficient"
+            ):
                 mr = rep.get("missing_context") or []
                 if mr:
                     task["_extra_reads"] = [str(p) for p in mr]
             scope_files = (
-                _scope_escalation_files(task, rep, wt, by_id) if role == dispatch.ROLE_FIX else []
+                _scope_escalation_files(task, rep, wt, by_id)
+                if role == dispatch.ROLE_FIX
+                else []
             )
             if scope_files:
                 task["_scope_escalated"] = True
@@ -3731,12 +3922,15 @@ def live_run_real(
             if scope_files:
                 task["status"] = new = "fixing"
                 print(
-                    f"{_ts()}   ↻ {task['id']} fix scope widened once: " f"{', '.join(scope_files)}"
+                    f"{_ts()}   ↻ {task['id']} fix scope widened once: "
+                    f"{', '.join(scope_files)}"
                 )
-            extra = f" [{rep.get('review_status')}]" if role == dispatch.ROLE_REVIEW else ""
+            extra = (
+                f" [{rep.get('review_status')}]" if role == dispatch.ROLE_REVIEW else ""
+            )
             print(
                 f"{_ts()}   ✓ {task['id']} {role:9} {old:12} -> {new}{extra}  "
-                f"{progress._fmt_dur(t1 - t0)}  (sha {str(rep.get('head_sha',''))[:8]})"
+                f"{progress._fmt_dur(t1 - t0)}  (sha {str(rep.get('head_sha', ''))[:8]})"
             )
 
     def _safe_drive(task: dict) -> None:
@@ -3750,7 +3944,9 @@ def live_run_real(
             with state_lock:
                 task["status"] = "failed"
                 entries.append(
-                    _journal_failure_entry(task, "drive", f"drive crashed: {e!r}", now, now)
+                    _journal_failure_entry(
+                        task, "drive", f"drive crashed: {e!r}", now, now
+                    )
                 )
                 record()
                 actives.pop(task["id"], None)
@@ -3785,9 +3981,13 @@ def live_run_real(
             while not _stop_emitter.wait(progress_interval):
                 try:
                     with state_lock:
-                        done_ct = sum(1 for t in tasks if t.get("status") in coordinator.DONE)
+                        done_ct = sum(
+                            1 for t in tasks if t.get("status") in coordinator.DONE
+                        )
                         in_flight = list(actives.values())
-                    current = ", ".join(a["task"] for a in in_flight) if in_flight else "—"
+                    current = (
+                        ", ".join(a["task"] for a in in_flight) if in_flight else "—"
+                    )
                     elapsed = progress._fmt_dur(time.time() - run_start)
                     print(
                         f"{_ts()} PROGRESS: {done_ct}/{len(tasks)} done"
@@ -3797,7 +3997,9 @@ def live_run_real(
                 except Exception:
                     pass
 
-        _emitter = threading.Thread(target=_emit_progress, daemon=True, name="progress-emitter")
+        _emitter = threading.Thread(
+            target=_emit_progress, daemon=True, name="progress-emitter"
+        )
         _emitter.start()
 
     while True:
@@ -3887,13 +4089,20 @@ def live_run_real(
                 if waiting_on and not blocked_by:
                     continue
                 if blocked_by:
-                    reason = f"blocked by failed prerequisite(s): {', '.join(blocked_by)}"
+                    reason = (
+                        f"blocked by failed prerequisite(s): {', '.join(blocked_by)}"
+                    )
                     now = time.time()
                     with state_lock:
                         task["status"] = "failed"
                         entries.append(
                             _journal_failure_entry(
-                                task, "dependency-gate", reason, now, now, blocked_by=blocked_by
+                                task,
+                                "dependency-gate",
+                                reason,
+                                now,
+                                now,
+                                blocked_by=blocked_by,
                             )
                         )
                         record()
@@ -3915,7 +4124,9 @@ def live_run_real(
         )
 
     done = sum(1 for t in tasks if t["status"] in coordinator.DONE)
-    print(f"{_ts()} LIVE RUN DONE: {done}/{len(tasks)} tasks done; {len(entries)} cassette entries")
+    print(
+        f"{_ts()} LIVE RUN DONE: {done}/{len(tasks)} tasks done; {len(entries)} cassette entries"
+    )
     if out_cassette:
         print(f"cassette: {out_cassette}")
     return {
@@ -3944,7 +4155,7 @@ def full_real(
     fallback_agent: str | None = None,
     tier_map: dict | None = None,
     purpose_tier_map: dict | None = None,
-    fallback_chain: "list[str] | None" = None,
+    fallback_chain: list[str] | None = None,
     effort: str | None = None,
     run_budget: int | None = None,
     re_integrate: bool = False,
@@ -3956,7 +4167,7 @@ def full_real(
     pr_pacing_wait: int = 0,
     route: str | None = None,
     gates: str = "",
-    migration_patterns: "list[str] | None" = None,
+    migration_patterns: list[str] | None = None,
 ) -> dict:
     """End-to-end on a REAL repo (the public entry); see `_full_real_inner` for the
     full pipeline doc.
@@ -3974,7 +4185,13 @@ def full_real(
         _lock = RunLock(journal_path).acquire()
     except RunLockHeld as e:
         print(f"{_ts()} ABORT (run lock held by another run for this spec): {e}")
-        return {"group_prs": [], "final": None, "quarantined": {}, "merged": [], "aborted": str(e)}
+        return {
+            "group_prs": [],
+            "final": None,
+            "quarantined": {},
+            "merged": [],
+            "aborted": str(e),
+        }
     try:
         return _full_real_inner(
             repo_path,
@@ -4026,7 +4243,7 @@ def _dispatch_pending_tail(
     fallback_agent: str | None,
     tier_map: dict | None,
     purpose_tier_map: dict | None,
-    fallback_chain: "list[str] | None",
+    fallback_chain: list[str] | None,
     effort: str | None,
     run_budget: int | None,
     bootstrap_cmd: str | None = None,
@@ -4119,10 +4336,10 @@ def _pipeline_scheduler(
     fallback_agent: str | None = None,
     tier_map: dict | None = None,
     purpose_tier_map: dict | None = None,
-    fallback_chain: "list[str] | None" = None,
+    fallback_chain: list[str] | None = None,
     effort: str | None = None,
     re_integrate: bool = False,
-    migration_patterns: "list[str] | None" = None,
+    migration_patterns: list[str] | None = None,
     # Injectable seams (default to production implementations)
     _spawn=None,
     _integrate_one=None,
@@ -4156,9 +4373,9 @@ def _pipeline_scheduler(
     callback through the integrate_one seam.
     """
     model = model or _default_model_for_agent(agent)
+    from ..router.gitnexus_preflight import check as gitnexus_check
     from . import integrate as integrate_module
     from . import verify as verify_module
-    from ..router.gitnexus_preflight import check as gitnexus_check
 
     gitnexus_capability = gitnexus_check(repo)
     role_models = _effective_role_models(agent, role_models)
@@ -4176,7 +4393,9 @@ def _pipeline_scheduler(
             _peek_journal = json.loads(Path(journal_path).read_text())
             _peek_tasks = copy.deepcopy(tasks)
             reconcile_from_journal(_peek_tasks, _peek_journal)
-            pre_only_done |= {t["id"] for t in _peek_tasks if t.get("status") in coordinator.DONE}
+            pre_only_done |= {
+                t["id"] for t in _peek_tasks if t.get("status") in coordinator.DONE
+            }
         except (OSError, json.JSONDecodeError):
             pass  # best-effort; the real resume block's own error handling still applies
     for t in tasks:
@@ -4253,7 +4472,9 @@ def _pipeline_scheduler(
     if hasattr(spawn_fn, "by_id"):
         spawn_fn.by_id = by_id
     if hasattr(spawn_fn, "external_deps_by_ref"):
-        spawn_fn.external_deps_by_ref = build_external_deps_by_ref(repo, tasks, spec_rel)
+        spawn_fn.external_deps_by_ref = build_external_deps_by_ref(
+            repo, tasks, spec_rel
+        )
     integrate_one_fn = (
         _integrate_one if _integrate_one is not None else integrate_module.integrate_one
     )
@@ -4275,9 +4496,12 @@ def _pipeline_scheduler(
                 if _paced_prev:
                     prev_url = _paced_prev[-1]
                     print(
-                        f"{_ts()} PACE waiting on PR checks " f"(max {pr_pacing_wait}s): {prev_url}"
+                        f"{_ts()} PACE waiting on PR checks "
+                        f"(max {pr_pacing_wait}s): {prev_url}"
                     )
-                    outcome = integrate_module._wait_for_pr_checks(repo, prev_url, pr_pacing_wait)
+                    outcome = integrate_module._wait_for_pr_checks(
+                        repo, prev_url, pr_pacing_wait
+                    )
                     print(f"{_ts()} PACE {outcome}: {prev_url}")
                 result = _unpaced_integrate_one(*a, **kw)
                 if result is not None:
@@ -4294,7 +4518,7 @@ def _pipeline_scheduler(
         else verify_module._make_live_spawn(_ar_model, timeout, agent=_ar_agent)
     )
 
-    def _default_make_verifier() -> "verify_module.Verifier":
+    def _default_make_verifier() -> verify_module.Verifier:
         resolve_spawn, ci_fix_spawn = _verifier_role_spawns(
             agent, model, timeout, role_agents, role_models
         )
@@ -4313,7 +4537,9 @@ def _pipeline_scheduler(
             spec_rel=spec_rel,  # tells the deny-list which spec root to guard
         )
 
-    make_verifier_fn = _make_verifier if _make_verifier is not None else _default_make_verifier
+    make_verifier_fn = (
+        _make_verifier if _make_verifier is not None else _default_make_verifier
+    )
 
     # iv_lock: serializes all shared mutable state (merged/quarantined/group_branch)
     # AND shared .git registry mutations (worktree add/remove, branch delete, prune)
@@ -4372,7 +4598,10 @@ def _pipeline_scheduler(
                     with iv_lock:
                         quarantined[name] = f"base group '{dep}' quarantined"
                     _record_group_fn(
-                        name, "", f"{run_id}/{name}", "QUARANTINED",
+                        name,
+                        "",
+                        f"{run_id}/{name}",
+                        "QUARANTINED",
                         integrate_module.QUARANTINE_DEPENDENCY_QUARANTINED,
                     )
                     return
@@ -4389,7 +4618,9 @@ def _pipeline_scheduler(
                 # Already integrated but not merged; restore branch ref for verify.
                 with iv_lock:
                     if name not in group_branch:
-                        candidate, reason = _resolve_journaled_head_branch(name, journal_rec, run_id)
+                        candidate, reason = _resolve_journaled_head_branch(
+                            name, journal_rec, run_id
+                        )
                         if reason:
                             quarantined[name] = reason
                         else:
@@ -4397,7 +4628,10 @@ def _pipeline_scheduler(
                     prs.append((name, base, journal_rec.get("pr_url")))
                 if name in quarantined:
                     _record_group_fn(
-                        name, "", journal_rec.get("head_branch", ""), "QUARANTINED",
+                        name,
+                        "",
+                        journal_rec.get("head_branch", ""),
+                        "QUARANTINED",
                         integrate_module.QUARANTINE_INTEGRATION_ERROR,
                     )
                     print(f"{_ts()}   !! GROUP [{name}] {quarantined[name]}")
@@ -4409,7 +4643,8 @@ def _pipeline_scheduler(
                     integrate_kwargs = {
                         "_record_group": _record_group_fn,
                         "git_lock": iv_lock,
-                        "strip_spec_folder": not g.get("depends_on") and g["name"] != _spec_carrier,
+                        "strip_spec_folder": not g.get("depends_on")
+                        and g["name"] != _spec_carrier,
                         "smoke_cmd": smoke_cmd,
                         "assembly_resolve_spawn": assembly_resolve_spawn_fn,
                     }
@@ -4440,7 +4675,10 @@ def _pipeline_scheduler(
                     with iv_lock:
                         quarantined[name] = f"integrate exception: {exc!r}"
                     _record_group_fn(
-                        name, "", f"{run_id}/{name}", "QUARANTINED",
+                        name,
+                        "",
+                        f"{run_id}/{name}",
+                        "QUARANTINED",
                         integrate_module.QUARANTINE_INTEGRATION_ERROR,
                         quarantine_detail=quarantined[name],
                     )
@@ -4470,7 +4708,9 @@ def _pipeline_scheduler(
                 _group_phase_map[name] = "verifying"
             _emit_group_phases()
             status2 = {t["id"]: t.get("status", "pending") for t in tasks}
-            delivered = {name: coordinator.deliverable_subset(g["tasks"], tasks, status2)[0]}
+            delivered = {
+                name: coordinator.deliverable_subset(g["tasks"], tasks, status2)[0]
+            }
             verifier = make_verifier_fn()
             try:
                 verifier.verify_one(
@@ -4487,7 +4727,10 @@ def _pipeline_scheduler(
                 with iv_lock:
                     quarantined[name] = f"verify exception: {exc!r}"
                 _record_group_fn(
-                    name, "", group_branch.get(name, f"{run_id}/{name}"), "QUARANTINED",
+                    name,
+                    "",
+                    group_branch.get(name, f"{run_id}/{name}"),
+                    "QUARANTINED",
                     integrate_module.QUARANTINE_INTEGRATION_ERROR,
                     quarantine_detail=quarantined[name],
                 )
@@ -4511,7 +4754,10 @@ def _pipeline_scheduler(
                     with state_lock:
                         pr_url = groups_journal.get(name, {}).get("pr_url", "")
                     _record_group_fn(
-                        name, pr_url, group_branch.get(name, f"{run_id}/{name}"), "MERGED"
+                        name,
+                        pr_url,
+                        group_branch.get(name, f"{run_id}/{name}"),
+                        "MERGED",
                     )
                 elif name in armed:
                     with state_lock:
@@ -4530,7 +4776,10 @@ def _pipeline_scheduler(
                     # pipeline-mode resume sees QUARANTINED instead of replaying the
                     # stale pre-verify journal record.
                     _record_group_fn(
-                        name, "", group_branch.get(name, f"{run_id}/{name}"), "QUARANTINED",
+                        name,
+                        "",
+                        group_branch.get(name, f"{run_id}/{name}"),
+                        "QUARANTINED",
                         integrate_module.QUARANTINE_INTEGRATION_ERROR,
                     )
 
@@ -4545,7 +4794,9 @@ def _pipeline_scheduler(
     wt_base = repo.parent / f"{repo.name}-worktrees"
     wt_base.mkdir(parents=True, exist_ok=True)
     state_lock = threading.Lock()
-    git_lock = iv_lock  # shared registry lock: same object as iv_lock (AC-012 / TASK-005)
+    git_lock = (
+        iv_lock  # shared registry lock: same object as iv_lock (AC-012 / TASK-005)
+    )
     actives: dict = {}
     entries: list = []
     journaled_heads: dict[str, str] = {}
@@ -4572,9 +4823,12 @@ def _pipeline_scheduler(
             _reset_journal = {}
         if _clear_integration_state(_reset_journal):
             progress.atomic_write_text(
-                journal_path, json.dumps(_reset_journal, indent=2, sort_keys=True) + "\n"
+                journal_path,
+                json.dumps(_reset_journal, indent=2, sort_keys=True) + "\n",
             )
-            print(f"{_ts()} RE-INTEGRATE: cleared integrate_complete + group records; rebuilding")
+            print(
+                f"{_ts()} RE-INTEGRATE: cleared integrate_complete + group records; rebuilding"
+            )
 
     if resume and Path(journal_path).exists():
         try:
@@ -4592,16 +4846,22 @@ def _pipeline_scheduler(
             journaled_heads.update(_journaled_task_heads(entries))
             groups_journal.update(jdata.get("groups", {}))
             done_ids = [t["id"] for t in tasks if t["status"] in coordinator.DONE]
-            inflight_ids = [t["id"] for t in tasks if t["status"] in coordinator.IN_FLIGHT]
+            inflight_ids = [
+                t["id"] for t in tasks if t["status"] in coordinator.IN_FLIGHT
+            ]
             print(
                 f"{_ts()} PIPELINE RESUME: {len(entries)} journal entries -- "
                 f"done: {', '.join(done_ids) or '-'}; "
                 f"in-flight: {', '.join(inflight_ids) or '-'}"
             )
             _resume_drift_report(repo, base, spec_id, tasks)
-            _resume_quarantine_staleness_warning(repo, base, spec_id, groups, groups_journal)
+            _resume_quarantine_staleness_warning(
+                repo, base, spec_id, groups, groups_journal
+            )
         except (OSError, json.JSONDecodeError) as exc:
-            print(f"{_ts()} PIPELINE RESUME: journal unreadable ({exc}); starting fresh")
+            print(
+                f"{_ts()} PIPELINE RESUME: journal unreadable ({exc}); starting fresh"
+            )
 
     # Validate AFTER reconcile so only genuinely-undispatched (`pending`) tasks are
     # checked -- a resume replays the journal first (see live_run_real for rationale).
@@ -4620,10 +4880,16 @@ def _pipeline_scheduler(
         if _budget_stopped_at[0] is not None:
             jdict["budget_stopped_at"] = _budget_stopped_at[0]
         _preserve_plan_pin(journal_path, jdict)
-        progress.atomic_write_text(journal_path, json.dumps(jdict, indent=2, sort_keys=True) + "\n")
+        progress.atomic_write_text(
+            journal_path, json.dumps(jdict, indent=2, sort_keys=True) + "\n"
+        )
 
     def _record_group_fn(
-        name: str, pr_url: str, head_branch: str, state: str, quarantine_reason: str = "",
+        name: str,
+        pr_url: str,
+        head_branch: str,
+        state: str,
+        quarantine_reason: str = "",
         quarantine_detail: str = "",
     ) -> None:
         """Serialize one group's integrate result under state_lock (AC-015 / TASK-006)."""
@@ -4681,7 +4947,9 @@ def _pipeline_scheduler(
             bootstrap_worktree(wt, bootstrap_cmd, required=bool(bootstrap_cmd))
         else:
             start, _ = dependency_start_ref(repo, spec_id, task, by_id)
-            branch = _git(wt, "rev-parse", "--abbrev-ref", "HEAD", check=False).stdout.strip()
+            branch = _git(
+                wt, "rev-parse", "--abbrev-ref", "HEAD", check=False
+            ).stdout.strip()
             expected_branch = f"{spec_id}/{task['id'].lower()}"
             if branch != expected_branch:
                 raise WorktreeAddError(
@@ -4696,9 +4964,7 @@ def _pipeline_scheduler(
             )
             if repair_events or drift_events:
                 with state_lock:
-                    entries.extend([
-                        {**e, "task": task["id"]} for e in repair_events
-                    ])
+                    entries.extend([{**e, "task": task["id"]} for e in repair_events])
                     entries.extend(drift_events)
                     _record()
             _require_task_file(wt, spec_rel, task["id"])
@@ -4777,7 +5043,9 @@ def _pipeline_scheduler(
                 t1 = time.time()
                 with state_lock:
                     entries.append(
-                        _journal_failure_entry(task, role, f"{task['id']}/{role} timed out", t0, t1)
+                        _journal_failure_entry(
+                            task, role, f"{task['id']}/{role} timed out", t0, t1
+                        )
                     )
                     _record()
                     task["status"] = "failed"
@@ -4790,7 +5058,9 @@ def _pipeline_scheduler(
                 rep = salvage_report(role, task, wt, pre_sha)
                 if rep is None:
                     t1 = time.time()
-                    terminal_status = "retryable" if role == dispatch.ROLE_IMPLEMENT else "failed"
+                    terminal_status = (
+                        "retryable" if role == dispatch.ROLE_IMPLEMENT else "failed"
+                    )
                     with state_lock:
                         entries.append(
                             _journal_failure_entry(
@@ -4805,16 +5075,23 @@ def _pipeline_scheduler(
                         _record()
                         task["status"] = "failed"
                         actives.pop(task["id"], None)
-                    print(f"{_ts()}   !! {task['id']}/{role} report parse FAILED: {exc}")
+                    print(
+                        f"{_ts()}   !! {task['id']}/{role} report parse FAILED: {exc}"
+                    )
                     break
             # Adaptive read-widening: when review reports insufficient context, stage
             # the missing items so the next fix dispatch gets them in its prompt.
-            if role == dispatch.ROLE_REVIEW and rep.get("context_quality") == "insufficient":
+            if (
+                role == dispatch.ROLE_REVIEW
+                and rep.get("context_quality") == "insufficient"
+            ):
                 mr = rep.get("missing_context") or []
                 if mr:
                     task["_extra_reads"] = [str(p) for p in mr]
             scope_files = (
-                _scope_escalation_files(task, rep, wt, by_id) if role == dispatch.ROLE_FIX else []
+                _scope_escalation_files(task, rep, wt, by_id)
+                if role == dispatch.ROLE_FIX
+                else []
             )
             if scope_files:
                 task["_scope_escalated"] = True
@@ -4836,7 +5113,8 @@ def _pipeline_scheduler(
             if scope_files:
                 task["status"] = "fixing"
                 print(
-                    f"{_ts()}   ↻ {task['id']} fix scope widened once: " f"{', '.join(scope_files)}"
+                    f"{_ts()}   ↻ {task['id']} fix scope widened once: "
+                    f"{', '.join(scope_files)}"
                 )
 
     def _safe_drive(task: dict) -> None:
@@ -4848,7 +5126,9 @@ def _pipeline_scheduler(
             with state_lock:
                 task["status"] = "failed"
                 entries.append(
-                    _journal_failure_entry(task, "drive", f"drive crashed: {exc!r}", now, now)
+                    _journal_failure_entry(
+                        task, "drive", f"drive crashed: {exc!r}", now, now
+                    )
                 )
                 _record()
                 actives.pop(task["id"], None)
@@ -4901,7 +5181,9 @@ def _pipeline_scheduler(
             print(f"{_ts()} PIPELINE TICK {tick}: {ids_str}")
             _safe_drive(by_id[frontier[0]["id"]])
         else:
-            print(f"{_ts()} PIPELINE TICK {tick} [parallel x{len(frontier)}]: {ids_str}")
+            print(
+                f"{_ts()} PIPELINE TICK {tick} [parallel x{len(frontier)}]: {ids_str}"
+            )
             with ThreadPoolExecutor(max_workers=len(frontier)) as ex:
                 futs = [ex.submit(_safe_drive, by_id[ft["id"]]) for ft in frontier]
                 for fut in futs:
@@ -4925,13 +5207,19 @@ def _pipeline_scheduler(
         if gname not in dispatched_groups:
             if budget_exceeded:
                 reason = _quarantine_reason_with_diagnosis(
-                    "fan-out incomplete (run budget exceeded)", g, by_id, terminal_statuses
+                    "fan-out incomplete (run budget exceeded)",
+                    g,
+                    by_id,
+                    terminal_statuses,
                 )
                 with iv_lock:
                     quarantined[gname] = reason
                     _group_phase_map.pop(gname, None)
                 _record_group_fn(
-                    gname, "", f"{run_id}/{gname}", "QUARANTINED",
+                    gname,
+                    "",
+                    f"{run_id}/{gname}",
+                    "QUARANTINED",
                     integrate_module.QUARANTINE_BUDGET_EXHAUSTED,
                 )
                 group_done_events[gname].set()
@@ -4946,13 +5234,19 @@ def _pipeline_scheduler(
                 # Non-terminal: fan-out never completed their tasks. Quarantine and
                 # fire the event so any dependent IV threads don't deadlock.
                 reason = _quarantine_reason_with_diagnosis(
-                    "fan-out incomplete (run budget or error)", g, by_id, terminal_statuses
+                    "fan-out incomplete (run budget or error)",
+                    g,
+                    by_id,
+                    terminal_statuses,
                 )
                 with iv_lock:
                     quarantined[gname] = reason
                     _group_phase_map.pop(gname, None)
                 _record_group_fn(
-                    gname, "", f"{run_id}/{gname}", "QUARANTINED",
+                    gname,
+                    "",
+                    f"{run_id}/{gname}",
+                    "QUARANTINED",
                     integrate_module.QUARANTINE_TASK_FAILURE,
                 )
                 group_done_events[gname].set()
@@ -4965,7 +5259,9 @@ def _pipeline_scheduler(
 
     if quarantined:
         reasons = ", ".join(f"{k}: {v}" for k, v in quarantined.items())
-        print(f"{_ts()} NOTE: {len(quarantined)} group(s) quarantined for human review: {reasons}")
+        print(
+            f"{_ts()} NOTE: {len(quarantined)} group(s) quarantined for human review: {reasons}"
+        )
     migration_warning = _format_migration_quarantine_warning(
         groups, tasks, migration_patterns, quarantined
     )
@@ -5103,7 +5399,7 @@ def _full_real_inner(
     fallback_agent: str | None = None,
     tier_map: dict | None = None,
     purpose_tier_map: dict | None = None,
-    fallback_chain: "list[str] | None" = None,
+    fallback_chain: list[str] | None = None,
     effort: str | None = None,
     re_integrate: bool = False,
     smoke_cmd: str | None = None,
@@ -5114,7 +5410,7 @@ def _full_real_inner(
     pr_pacing_wait: int = 0,
     route: str | None = None,
     gates: str = "",
-    migration_patterns: "list[str] | None" = None,
+    migration_patterns: list[str] | None = None,
 ) -> dict:
     """End-to-end on a REAL repo: fan-out -> integrate -> grouped PRs into base branch.
 
@@ -5158,13 +5454,14 @@ def _full_real_inner(
     foreground timeout. If killed, the journal makes the next run resumable.
     """
     model = model or _default_model_for_agent(agent)
-    from . import integrate
-    from . import verify
+    from . import integrate, verify
 
     repo = Path(repo_path).resolve()
     current = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
     if current != base:
-        print(f"{_ts()} WARNING: repo is on '{current}', expected '{base}'. Proceeding anyway.")
+        print(
+            f"{_ts()} WARNING: repo is on '{current}', expected '{base}'. Proceeding anyway."
+        )
 
     # Pre-integrate freshness: fetch + ff-only the local base ref before the
     # first integrate_one of this run/resume (brief 20260723-171500).
@@ -5187,8 +5484,12 @@ def _full_real_inner(
         """
         for _qname in quarantined_names:
             integrate._write_group_journal(
-                journal_path, _qname, "", group_branch.get(_qname, f"{run_id_fallback}/{_qname}"),
-                "QUARANTINED", integrate.QUARANTINE_INTEGRATION_ERROR,
+                journal_path,
+                _qname,
+                "",
+                group_branch.get(_qname, f"{run_id_fallback}/{_qname}"),
+                "QUARANTINED",
+                integrate.QUARANTINE_INTEGRATION_ERROR,
             )
 
     # Foreign-journal guard, fired directly in _full_real_inner's own resume
@@ -5223,7 +5524,9 @@ def _full_real_inner(
     if from_verify:
         journal_file = Path(journal_path)
         if not journal_file.exists():
-            print(f"{_ts()} ERROR: --from-verify requires an existing journal at {journal_path}")
+            print(
+                f"{_ts()} ERROR: --from-verify requires an existing journal at {journal_path}"
+            )
             return {"group_prs": [], "final": None, "quarantined": {}, "merged": []}
         try:
             journal = json.loads(journal_file.read_text())
@@ -5235,7 +5538,9 @@ def _full_real_inner(
         for t in tasks:
             t["status"], t["retry_count"] = "done", 0
 
-        groups = coordinator.plan_groups(tasks, migration_patterns=migration_patterns or ())
+        groups = coordinator.plan_groups(
+            tasks, migration_patterns=migration_patterns or ()
+        )
 
         # Reconstruct group_branch from journal's per-group integrate records.
         # Passing `groups` lets a stale parent group -- every task it ever
@@ -5251,7 +5556,8 @@ def _full_real_inner(
         print("=== VERIFY (from journal, skipping fan-out + integrate) ===")
         status = {t["id"]: t.get("status", "done") for t in tasks}
         delivered = {
-            g["name"]: coordinator.deliverable_subset(g["tasks"], tasks, status)[0] for g in groups
+            g["name"]: coordinator.deliverable_subset(g["tasks"], tasks, status)[0]
+            for g in groups
         }
         resolve_spawn, ci_fix_spawn = _verifier_role_spawns(
             agent, model, timeout, role_agents, role_models
@@ -5274,7 +5580,9 @@ def _full_real_inner(
             declared_files=coordinator.declared_files_by_group(groups, tasks),
         )
         quarantined = {**from_verify_quarantined, **vres.get("quarantined", {})}
-        _persist_newly_quarantined(vres.get("quarantined", {}), journal.get("run_id", "unknown"))
+        _persist_newly_quarantined(
+            vres.get("quarantined", {}), journal.get("run_id", "unknown")
+        )
         _record_verify_outcomes(
             journal_path, vres, group_branch, journal.get("run_id", "unknown")
         )
@@ -5283,12 +5591,16 @@ def _full_real_inner(
         automerge_evidence = vres.get("automerge_evidence", {})
         progress.append_safety_net_events(
             journal_path,
-            _safety_net_events_from_preflight_fallbacks(vres.get("preflight_fallbacks", {})),
+            _safety_net_events_from_preflight_fallbacks(
+                vres.get("preflight_fallbacks", {})
+            ),
         )
 
         if quarantined:
             reasons = ", ".join(f"{k}: {v}" for k, v in quarantined.items())
-            print(f"NOTE: {len(quarantined)} group(s) quarantined for human review: {reasons}")
+            print(
+                f"NOTE: {len(quarantined)} group(s) quarantined for human review: {reasons}"
+            )
         migration_warning = _format_migration_quarantine_warning(
             groups, tasks, migration_patterns, quarantined
         )
@@ -5314,7 +5626,8 @@ def _full_real_inner(
         print("=== FULL RUN COMPLETE ===")
         return {
             "group_prs": [
-                (name, base, journal_groups.get(name, {}).get("pr_url")) for name in journal_groups
+                (name, base, journal_groups.get(name, {}).get("pr_url"))
+                for name in journal_groups
             ],
             "final": None,
             "quarantined": quarantined,
@@ -5420,7 +5733,7 @@ def _parse_tier_map(spec: str | None) -> dict | None:
     return out or None
 
 
-def _parse_fallback_chain(spec: str | None) -> "list[str] | None":
+def _parse_fallback_chain(spec: str | None) -> list[str] | None:
     """Parse `--fallback-chain`'s ordered comma-separated agent list."""
     chain = [a.strip() for a in (spec or "").split(",") if a.strip()]
     return chain or None
@@ -5503,14 +5816,16 @@ def main(argv=None) -> int:
     # exited -- making the log look empty (0 lines) while the run is healthy.
     # Force line buffering so every print is observable in the polled log.
     try:
-        getattr(sys.stdout, "reconfigure")(line_buffering=True)
-        getattr(sys.stderr, "reconfigure")(line_buffering=True)
+        sys.stdout.reconfigure(line_buffering=True)
+        sys.stderr.reconfigure(line_buffering=True)
     except (AttributeError, ValueError):
         pass
     p = argparse.ArgumentParser(description="Live spawn via a headless agent CLI")
     sub = p.add_subparsers(dest="cmd", required=True)
     sm = sub.add_parser("smoke")
-    sm.add_argument("--agent", choices=sorted(spawnlib.SUPPORTED_AGENTS), default=DEFAULT_AGENT)
+    sm.add_argument(
+        "--agent", choices=sorted(spawnlib.SUPPORTED_AGENTS), default=DEFAULT_AGENT
+    )
     sm.add_argument("--model", default=None)
     ip = sub.add_parser("instantiate")
     ip.add_argument("--dest", default=str(DEFAULT_DEST))
@@ -5522,15 +5837,22 @@ def main(argv=None) -> int:
     lr = sub.add_parser("live-run")
     lr.add_argument("--dest", default=str(DEFAULT_DEST))
     lr.add_argument(
-        "--out", default=str(_SKILL / ".fixtures" / "sample-spec" / "cassette.live.json")
+        "--out",
+        default=str(_SKILL / ".fixtures" / "sample-spec" / "cassette.live.json"),
     )
     lr.add_argument("--max-workers", type=int, default=2)
     lr.add_argument("--only", default=None, help="comma-separated task IDs subset")
     lr.add_argument("--with-tail", action="store_true")
-    lr.add_argument("--agent", choices=sorted(spawnlib.SUPPORTED_AGENTS), default=DEFAULT_AGENT)
+    lr.add_argument(
+        "--agent", choices=sorted(spawnlib.SUPPORTED_AGENTS), default=DEFAULT_AGENT
+    )
     lr.add_argument("--model", default=None)
-    fu = sub.add_parser("full", help="End-to-end: fan-out -> integrate -> grouped PRs -> tail")
-    fu.add_argument("--agent", choices=sorted(spawnlib.SUPPORTED_AGENTS), default=DEFAULT_AGENT)
+    fu = sub.add_parser(
+        "full", help="End-to-end: fan-out -> integrate -> grouped PRs -> tail"
+    )
+    fu.add_argument(
+        "--agent", choices=sorted(spawnlib.SUPPORTED_AGENTS), default=DEFAULT_AGENT
+    )
     fu.add_argument("--model", default=None)
     fu.add_argument("--sandbox", default="behindthedash/orch-sandbox")
     fu.add_argument("--keep-prs", action="store_true")
@@ -5546,13 +5868,16 @@ def main(argv=None) -> int:
     lrr.add_argument("--max-workers", type=int, default=2)
     lrr.add_argument("--only", default=None, help="Comma-separated task IDs subset")
     lrr.add_argument("--with-tail", action="store_true")
-    lrr.add_argument("--agent", choices=sorted(spawnlib.SUPPORTED_AGENTS), default=DEFAULT_AGENT)
+    lrr.add_argument(
+        "--agent", choices=sorted(spawnlib.SUPPORTED_AGENTS), default=DEFAULT_AGENT
+    )
     lrr.add_argument("--model", default=None)
     lrr.add_argument(
         "--timeout",
         type=int,
         default=WORKER_TIMEOUT_DEFAULT,
-        help="Per-worker claude -p timeout in seconds " "(default: $ORCH_WORKER_TIMEOUT or 1800)",
+        help="Per-worker claude -p timeout in seconds "
+        "(default: $ORCH_WORKER_TIMEOUT or 1800)",
     )
     lrr.add_argument(
         "--resume",
@@ -5574,7 +5899,9 @@ def main(argv=None) -> int:
     )
     stt.add_argument("--repo", required=True, help="Absolute path to the real git repo")
     stt.add_argument(
-        "--spec", required=True, help="Spec folder relative to repo root, e.g. docs/specs/008-foo"
+        "--spec",
+        required=True,
+        help="Spec folder relative to repo root, e.g. docs/specs/008-foo",
     )
     usg = sub.add_parser(
         "usage",
@@ -5582,10 +5909,13 @@ def main(argv=None) -> int:
     )
     usg.add_argument("--repo", required=True, help="Absolute path to the real git repo")
     usg.add_argument(
-        "--spec", required=True, help="Spec folder relative to repo root, e.g. docs/specs/008-foo"
+        "--spec",
+        required=True,
+        help="Spec folder relative to repo root, e.g. docs/specs/008-foo",
     )
     fr = sub.add_parser(
-        "full-real", help="End-to-end on a real repo: fan-out -> integrate -> grouped PRs"
+        "full-real",
+        help="End-to-end on a real repo: fan-out -> integrate -> grouped PRs",
     )
     fr.add_argument("--repo", required=True, help="Absolute path to the real git repo")
     fr.add_argument(
@@ -5594,10 +5924,14 @@ def main(argv=None) -> int:
         help="Spec folder relative to repo root, e.g. docs/specs/008-image-route",
     )
     fr.add_argument(
-        "--remote", default="origin", help="Git remote to push branches and open PRs against"
+        "--remote",
+        default="origin",
+        help="Git remote to push branches and open PRs against",
     )
     fr.add_argument("--base", default="dev", help="Base branch for PRs (default: dev)")
-    fr.add_argument("--agent", choices=sorted(spawnlib.SUPPORTED_AGENTS), default=DEFAULT_AGENT)
+    fr.add_argument(
+        "--agent", choices=sorted(spawnlib.SUPPORTED_AGENTS), default=DEFAULT_AGENT
+    )
     fr.add_argument(
         "--fallback-agent",
         choices=sorted(spawnlib.SUPPORTED_AGENTS),
@@ -5627,7 +5961,8 @@ def main(argv=None) -> int:
         "--timeout",
         type=int,
         default=WORKER_TIMEOUT_DEFAULT,
-        help="Per-worker claude -p timeout in seconds " "(default: $ORCH_WORKER_TIMEOUT or 1800)",
+        help="Per-worker claude -p timeout in seconds "
+        "(default: $ORCH_WORKER_TIMEOUT or 1800)",
     )
     fr.add_argument(
         "--fresh",
@@ -5834,7 +6169,9 @@ def main(argv=None) -> int:
         help="Check whether pending impl tasks have their declared files already present",
     )
     pc.add_argument("--repo", required=True, help="Absolute path to the real git repo")
-    pc.add_argument("spec", help="Spec folder relative to repo root, e.g. docs/specs/008-foo")
+    pc.add_argument(
+        "spec", help="Spec folder relative to repo root, e.g. docs/specs/008-foo"
+    )
     sk = sub.add_parser(
         "skip",
         help="Mark stuck task(s) escalated in the run journal so the next full-real "
@@ -5842,10 +6179,14 @@ def main(argv=None) -> int:
     )
     sk.add_argument("--repo", required=True, help="Absolute path to the real git repo")
     sk.add_argument(
-        "--spec", required=True, help="Spec folder relative to repo root, e.g. docs/specs/008-foo"
+        "--spec",
+        required=True,
+        help="Spec folder relative to repo root, e.g. docs/specs/008-foo",
     )
     sk.add_argument("--tasks", required=True, help="Comma-separated task IDs to skip")
-    sk.add_argument("--reason", default="manually skipped", help="Note recorded on each skip")
+    sk.add_argument(
+        "--reason", default="manually skipped", help="Note recorded on each skip"
+    )
     ct = sub.add_parser(
         "clear-task",
         help="Surgically remove a task's failed/escalated journal entries (cascading to "
@@ -5854,7 +6195,9 @@ def main(argv=None) -> int:
     )
     ct.add_argument("--repo", required=True, help="Absolute path to the real git repo")
     ct.add_argument(
-        "--spec", required=True, help="Spec folder relative to repo root, e.g. docs/specs/008-foo"
+        "--spec",
+        required=True,
+        help="Spec folder relative to repo root, e.g. docs/specs/008-foo",
     )
     ct.add_argument("--tasks", required=True, help="Comma-separated task IDs to clear")
 
@@ -5862,7 +6205,8 @@ def main(argv=None) -> int:
     if getattr(args, "model", None) is None:
         args.model = _default_model_for_agent(getattr(args, "agent", DEFAULT_AGENT))
     role_models = _effective_role_models(
-        getattr(args, "agent", DEFAULT_AGENT), _parse_model_map(getattr(args, "model_map", None))
+        getattr(args, "agent", DEFAULT_AGENT),
+        _parse_model_map(getattr(args, "model_map", None)),
     )
     role_agents = _parse_model_map(getattr(args, "role_agent_map", None))
     tier_map = _parse_tier_map(getattr(args, "tier_map", None))

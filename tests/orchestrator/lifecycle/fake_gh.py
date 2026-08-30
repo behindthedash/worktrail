@@ -46,7 +46,8 @@ def _save(p, state):
 def _branch_sha(remote: str, branch: str) -> str:
     out = subprocess.run(
         ["git", "-C", remote, "rev-parse", f"refs/heads/{branch}"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     return out.stdout.strip()
 
@@ -117,12 +118,18 @@ def _dispatch(argv) -> int:
             head = argv[argv.index("--head") + 1]
         else:  # gh infers head from the current branch; harness always passes cwd's branch
             head = subprocess.run(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True,
+                text=True,
             ).stdout.strip()
         n = state["next_number"]
         state["next_number"] = n + 1
-        pr = {"number": n, "url": f"https://fake.local/pr/{n}", "state": "OPEN",
-              "checks": "SUCCESS"}
+        pr = {
+            "number": n,
+            "url": f"https://fake.local/pr/{n}",
+            "state": "OPEN",
+            "checks": "SUCCESS",
+        }
         state["prs"][head] = pr
         _save(p, state)
         print(pr["url"])
@@ -161,39 +168,62 @@ def _dispatch(argv) -> int:
         # sibling's work — the exact class of shortcut this harness exists to
         # avoid.
         import tempfile
+
         with tempfile.TemporaryDirectory() as scratch:
             clone = Path(scratch) / "clone"
             subprocess.run(
                 ["git", "clone", "-q", state["remote"], str(clone)],
-                check=True, capture_output=True,
+                check=True,
+                capture_output=True,
             )
-            subprocess.run(["git", "-C", str(clone), "config", "user.email", "gh@fake"],
-                           check=True)
-            subprocess.run(["git", "-C", str(clone), "config", "user.name", "fake gh"],
-                           check=True)
-            subprocess.run(["git", "-C", str(clone), "checkout", "-q", state["base"]],
-                           check=True, capture_output=True)
+            subprocess.run(
+                ["git", "-C", str(clone), "config", "user.email", "gh@fake"], check=True
+            )
+            subprocess.run(
+                ["git", "-C", str(clone), "config", "user.name", "fake gh"], check=True
+            )
+            subprocess.run(
+                ["git", "-C", str(clone), "checkout", "-q", state["base"]],
+                check=True,
+                capture_output=True,
+            )
             m = subprocess.run(
                 ["git", "-C", str(clone), "merge", "--squash", "-q", sha],
-                capture_output=True, text=True,
+                capture_output=True,
+                text=True,
             )
             if m.returncode != 0:
                 print(f"merge conflict merging {branch}: {m.stderr}", file=sys.stderr)
                 return 1
             subprocess.run(
-                ["git", "-C", str(clone), "commit", "-q",
-                 "-m", f"Merge PR #{pr['number']} ({branch})"],
-                check=True, capture_output=True,
+                [
+                    "git",
+                    "-C",
+                    str(clone),
+                    "commit",
+                    "-q",
+                    "-m",
+                    f"Merge PR #{pr['number']} ({branch})",
+                ],
+                check=True,
+                capture_output=True,
             )
             subprocess.run(
                 ["git", "-C", str(clone), "push", "-q", "origin", state["base"]],
-                check=True, capture_output=True,
+                check=True,
+                capture_output=True,
             )
         pr["state"] = "MERGED"
         if "--delete-branch" in argv:
             subprocess.run(
-                ["git", "-C", state["remote"], "update-ref", "-d",
-                 f"refs/heads/{branch}"],
+                [
+                    "git",
+                    "-C",
+                    state["remote"],
+                    "update-ref",
+                    "-d",
+                    f"refs/heads/{branch}",
+                ],
                 check=False,
             )
         _save(p, state)
@@ -203,12 +233,16 @@ def _dispatch(argv) -> int:
         return 0
 
     if argv[0] == "repo" and argv[1] == "view":
-        print(json.dumps({
-            "mergeCommitAllowed": False,
-            "squashMergeAllowed": True,
-            "rebaseMergeAllowed": False,
-            "autoMergeAllowed": False,
-        }))
+        print(
+            json.dumps(
+                {
+                    "mergeCommitAllowed": False,
+                    "squashMergeAllowed": True,
+                    "rebaseMergeAllowed": False,
+                    "autoMergeAllowed": False,
+                }
+            )
+        )
         return 0
 
     if argv[0] == "run":  # gh run list/view — no CI runs in the harness
@@ -218,14 +252,20 @@ def _dispatch(argv) -> int:
     if argv[0] == "api":
         endpoint = argv[1] if len(argv) > 1 else ""
         if "/rules/branches/" in endpoint:
-            print(json.dumps([
-                {
-                    "type": "required_status_checks",
-                    "parameters": {
-                        "required_status_checks": [{"context": "Lint, Test & Build"}]
-                    },
-                }
-            ]))
+            print(
+                json.dumps(
+                    [
+                        {
+                            "type": "required_status_checks",
+                            "parameters": {
+                                "required_status_checks": [
+                                    {"context": "Lint, Test & Build"}
+                                ]
+                            },
+                        }
+                    ]
+                )
+            )
             return 0
         if endpoint.startswith("repos/") and endpoint.count("/") == 2:
             print(json.dumps({"allow_auto_merge": True}))

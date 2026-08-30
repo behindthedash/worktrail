@@ -26,18 +26,19 @@ Pure filesystem check, no live I/O boundary -- unlike `check_resumable_state.py`
 there is no `gh` lookup here, so `checked=True`
 whenever the worktree path itself is reachable.
 """
+
 from __future__ import annotations
 
 import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 REQUIRED_ARTIFACTS = ("proposal.md", "design.md", "tasks.md")
 
 
-def check(worktree: Path, change_id: str) -> Dict[str, Any]:
+def check(worktree: Path, change_id: str) -> dict[str, Any]:
     """Does `<worktree>/openspec/changes/<change_id>/` already carry partial
     artifacts from an interrupted openspec-propose spawn?
 
@@ -59,7 +60,7 @@ def check(worktree: Path, change_id: str) -> Dict[str, Any]:
     normally into the empty directory.
     """
     worktree = Path(worktree)
-    result: Dict[str, Any] = {
+    result: dict[str, Any] = {
         "checked": False,
         "exists": False,
         "present": [],
@@ -92,7 +93,8 @@ def check(worktree: Path, change_id: str) -> Dict[str, Any]:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--worktree", required=True,
+        "--worktree",
+        required=True,
         help="the change worktree path (the --cwd passed to worktrail-skill-dispatch)",
     )
     parser.add_argument("--change-id", required=True)
@@ -110,7 +112,9 @@ def main(argv=None) -> int:
             f"missing={res['missing']} -- dispatch /opsx:update, not /opsx:propose"
         )
     else:
-        print("not resumable: no partial artifacts found; safe to run a fresh openspec-propose")
+        print(
+            "not resumable: no partial artifacts found; safe to run a fresh openspec-propose"
+        )
     return 0
 
 

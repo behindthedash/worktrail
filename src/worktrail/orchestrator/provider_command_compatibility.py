@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import argparse
 import subprocess
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Sequence, Tuple
 
 from worktrail.drain.drain import build_command as build_drain_command
 from worktrail.router.cluster_detect import _AGENT_VERIFY_CMD
@@ -14,7 +14,6 @@ from worktrail.router.skill_dispatch import build_command as build_skill_command
 from worktrail.runtime.selection import Cell
 
 from .spawnlib import build_cmd as build_spawn_command
-
 
 PROVIDERS = ("claude", "codex", "opencode")
 DEFAULT_TIMEOUT = 10.0
@@ -30,10 +29,10 @@ class ProbeResult:
     detail: str
 
 
-def command_matrix() -> Dict[Tuple[str, str], List[str]]:
+def command_matrix() -> dict[tuple[str, str], list[str]]:
     """Return representative argv for every built-in headless dispatch surface."""
     cwd = str(Path.cwd())
-    commands: Dict[Tuple[str, str], List[str]] = {}
+    commands: dict[tuple[str, str], list[str]] = {}
     for provider in PROVIDERS:
         commands[(provider, "cluster-detect")] = _AGENT_VERIFY_CMD[provider](_PROMPT)
         commands[(provider, "drain")] = build_drain_command(provider, [])
@@ -64,9 +63,9 @@ def _detail(stdout: str, stderr: str) -> str:
     return combined or "provider returned no help output"
 
 
-def probe_all(timeout: float = DEFAULT_TIMEOUT) -> List[ProbeResult]:
+def probe_all(timeout: float = DEFAULT_TIMEOUT) -> list[ProbeResult]:
     """Ask each installed provider parser to validate generated argv via ``--help``."""
-    results: List[ProbeResult] = []
+    results: list[ProbeResult] = []
     for (provider, surface), command in sorted(command_matrix().items()):
         try:
             completed = subprocess.run(
@@ -81,7 +80,13 @@ def probe_all(timeout: float = DEFAULT_TIMEOUT) -> List[ProbeResult]:
             continue
         detail = _detail(completed.stdout, completed.stderr)
         results.append(
-            ProbeResult(provider, surface, completed.returncode == 0, completed.returncode, detail)
+            ProbeResult(
+                provider,
+                surface,
+                completed.returncode == 0,
+                completed.returncode,
+                detail,
+            )
         )
     return results
 

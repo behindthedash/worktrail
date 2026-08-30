@@ -23,15 +23,18 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import coordinator  # noqa: E402
-from worktrail.orchestrator import integrate  # noqa: E402
-from worktrail.orchestrator import live  # noqa: E402
-from worktrail.orchestrator import spawnlib  # noqa: E402
-from worktrail.router import policy  # noqa: E402
+from worktrail.orchestrator import (
+    coordinator,
+    integrate,
+    live,
+)
+from worktrail.router import policy
 
 
 def _git(repo, *args):
-    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True
+    )
 
 
 def _init_repo(root: Path, task_md: str | None = None) -> Path:
@@ -50,7 +53,9 @@ def _init_repo(root: Path, task_md: str | None = None) -> Path:
     return repo
 
 
-def _write_sibling_task_file(repo, sibling_spec_id, sibling_task_id, status="completed"):
+def _write_sibling_task_file(
+    repo, sibling_spec_id, sibling_task_id, status="completed"
+):
     """Materialize a sibling spec's task file so `resolve_external_dependency`
     reports the reference as satisfied (read-only filesystem check, no git)."""
     td = Path(repo) / "docs" / "specs" / sibling_spec_id / "tasks"
@@ -132,7 +137,8 @@ class ParseModelMap(unittest.TestCase):
 
     def test_skips_malformed(self):
         self.assertEqual(
-            live._parse_model_map("implement=sonnet,garbage,=x,y="), {"implement": "sonnet"}
+            live._parse_model_map("implement=sonnet,garbage,=x,y="),
+            {"implement": "sonnet"},
         )
 
     def test_codex_default_role_models_use_mini_model(self):
@@ -152,9 +158,13 @@ class ParseModelMap(unittest.TestCase):
         self.assertIs(live._effective_role_models("codex", role_models), role_models)
 
     def test_detect_default_agent_prefers_overrides_then_codex_host(self):
-        with patch.dict(os.environ, {"GO_AGENT_CLI": "claude", "CODEX_CI": "1"}, clear=True):
+        with patch.dict(
+            os.environ, {"GO_AGENT_CLI": "claude", "CODEX_CI": "1"}, clear=True
+        ):
             self.assertEqual(live._detect_default_agent(), "claude")
-        with patch.dict(os.environ, {"ORCH_AGENT": "claude", "CODEX_THREAD_ID": "t"}, clear=True):
+        with patch.dict(
+            os.environ, {"ORCH_AGENT": "claude", "CODEX_THREAD_ID": "t"}, clear=True
+        ):
             self.assertEqual(live._detect_default_agent(), "claude")
         with patch.dict(os.environ, {"CODEX_CI": "1"}, clear=True):
             self.assertEqual(live._detect_default_agent(), "codex")
@@ -164,7 +174,9 @@ class ParseModelMap(unittest.TestCase):
     def test_detect_default_agent_uses_explicit_opencode_parent_marker(self):
         with patch.dict(os.environ, {"OPENCODE_PARENT": "1"}, clear=True):
             self.assertEqual(live._detect_default_agent(), "opencode")
-        with patch.dict(os.environ, {"OPENCODE_PARENT": "1", "GO_AGENT_CLI": "claude"}, clear=True):
+        with patch.dict(
+            os.environ, {"OPENCODE_PARENT": "1", "GO_AGENT_CLI": "claude"}, clear=True
+        ):
             self.assertEqual(live._detect_default_agent(), "claude")
 
     def test_detect_default_agent_rejects_unsupported_override(self):
@@ -192,7 +204,9 @@ class DefaultModelSelection(unittest.TestCase):
             "gpt-5.4-mini",
         )
         self.assertEqual(
-            live.LiveSpawn("001-x", "docs/specs/001-x/", agent="codex", model="sonnet").model,
+            live.LiveSpawn(
+                "001-x", "docs/specs/001-x/", agent="codex", model="sonnet"
+            ).model,
             "sonnet",
         )
 
@@ -212,13 +226,17 @@ class DefaultModelSelection(unittest.TestCase):
                 "      model: opencode/deepseek-v4-flash-free\n"
                 "default_tier: t2-build\n"
             )
-            with patch.dict(os.environ, {"GO_ROUTING_FILE": str(routing_file)}, clear=True):
+            with patch.dict(
+                os.environ, {"GO_ROUTING_FILE": str(routing_file)}, clear=True
+            ):
                 self.assertEqual(
                     live._default_model_for_agent("opencode"),
                     "opencode/deepseek-v4-flash-free",
                 )
                 self.assertEqual(
-                    live.LiveSpawn("001-x", "docs/specs/001-x/", agent="opencode").model,
+                    live.LiveSpawn(
+                        "001-x", "docs/specs/001-x/", agent="opencode"
+                    ).model,
                     "opencode/deepseek-v4-flash-free",
                 )
 
@@ -274,7 +292,9 @@ class DefaultModelSelection(unittest.TestCase):
                 "      model: opus\n"
                 "default_tier: t2-build\n"
             )
-            with patch.dict(os.environ, {"GO_ROUTING_FILE": str(routing_file)}, clear=True):
+            with patch.dict(
+                os.environ, {"GO_ROUTING_FILE": str(routing_file)}, clear=True
+            ):
                 with self.assertRaises(policy.OperatorConfigError) as ctx:
                     live._default_model_for_agent("codex")
                 self.assertIn("codex", str(ctx.exception))
@@ -300,7 +320,9 @@ class SetTaskStatus(unittest.TestCase):
     def test_flips_only_status(self):
         with tempfile.TemporaryDirectory() as tmp:
             f = Path(tmp) / "TASK-001.md"
-            f.write_text("---\nid: TASK-001\nstatus: pending\ntitle: x\n---\n\nbody line\n")
+            f.write_text(
+                "---\nid: TASK-001\nstatus: pending\ntitle: x\n---\n\nbody line\n"
+            )
             self.assertTrue(live.set_task_status_completed(f))
             txt = f.read_text()
             self.assertIn("status: completed", txt)
@@ -389,7 +411,9 @@ class AddStackedWorktreeCrossSpecFallback(unittest.TestCase):
                 "external_deps": [f"{sibling_spec}/TASK-036"],
             }
             wt = Path(tmp) / "wt"
-            live.add_stacked_worktree(repo, "001-x", task, {"TASK-002": task}, wt)  # must not raise
+            live.add_stacked_worktree(
+                repo, "001-x", task, {"TASK-002": task}, wt
+            )  # must not raise
             self.assertTrue(wt.exists())
             head = subprocess.run(
                 ["git", "-C", str(wt), "rev-parse", "--abbrev-ref", "HEAD"],
@@ -416,7 +440,9 @@ class SalvageReport(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             _, wt = self._worktree(tmp)
             pre = live._git(wt, "rev-parse", "HEAD").stdout.strip()
-            self.assertIsNone(live.salvage_report("implement", {"id": "TASK-001"}, wt, pre))
+            self.assertIsNone(
+                live.salvage_report("implement", {"id": "TASK-001"}, wt, pre)
+            )
 
     def test_commit_present_is_salvaged(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -434,7 +460,9 @@ class SalvageReport(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             _, wt = self._worktree(tmp)
             pre = "deadbeef"
-            self.assertIsNone(live.salvage_report("review", {"id": "TASK-001"}, wt, pre))
+            self.assertIsNone(
+                live.salvage_report("review", {"id": "TASK-001"}, wt, pre)
+            )
 
 
 class ReviewerIndependence(unittest.TestCase):
@@ -466,7 +494,9 @@ class ReviewerIndependence(unittest.TestCase):
             routing_path = os.environ.get("WORKTRAIL_ROUTING_FILE")
             self.captured = {
                 "extra_args": extra_args,
-                "routing_text": Path(routing_path).read_text(encoding="utf-8") if routing_path else None,
+                "routing_text": Path(routing_path).read_text(encoding="utf-8")
+                if routing_path
+                else None,
             }
             return (
                 '```json\n{"task":"TASK-001","step":"review","status":"success",'
@@ -520,7 +550,9 @@ class CleanupInPython(unittest.TestCase):
                 wt,
             )
             head_before = subprocess.run(
-                ["git", "-C", str(wt), "rev-parse", "HEAD"], capture_output=True, text=True
+                ["git", "-C", str(wt), "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
             ).stdout.strip()
 
             rep = live.cleanup_task_in_python(wt, "TASK-001")
@@ -530,11 +562,15 @@ class CleanupInPython(unittest.TestCase):
             self.assertIn("status: reviewing", tf.read_text())
             self.assertNotIn("status: completed", tf.read_text())
             head_after = subprocess.run(
-                ["git", "-C", str(wt), "rev-parse", "HEAD"], capture_output=True, text=True
+                ["git", "-C", str(wt), "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
             ).stdout.strip()
             self.assertEqual(head_before, head_after, "cleanup must add no commit")
             porcelain = subprocess.run(
-                ["git", "-C", str(wt), "status", "--porcelain"], capture_output=True, text=True
+                ["git", "-C", str(wt), "status", "--porcelain"],
+                capture_output=True,
+                text=True,
             ).stdout.strip()
             self.assertEqual(porcelain, "", "cleanup must leave the worktree clean")
 
@@ -545,7 +581,8 @@ class WriteGroupTaskStatus(unittest.TestCase):
 
     def _repo_with_tasks(self, tmp):
         repo = _init_repo(
-            Path(tmp), task_md="---\nid: TASK-001\nstatus: reviewing\n---\n- [ ] do it\n"
+            Path(tmp),
+            task_md="---\nid: TASK-001\nstatus: reviewing\n---\n- [ ] do it\n",
         )
         second = repo / "docs" / "specs" / "001-x" / "tasks" / "TASK-002.md"
         second.write_text("---\nid: TASK-002\nstatus: reviewing\n---\n- [ ] other\n")
@@ -557,7 +594,9 @@ class WriteGroupTaskStatus(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._repo_with_tasks(tmp)
             head_before = subprocess.run(
-                ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True
+                ["git", "-C", str(repo), "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
             ).stdout.strip()
 
             integrate._write_group_task_status(
@@ -574,17 +613,31 @@ class WriteGroupTaskStatus(unittest.TestCase):
             # branches touch disjoint files and cannot add/add conflict.
             self.assertIn("status: reviewing", (base / "TASK-002.md").read_text())
 
-            log = subprocess.run(
-                ["git", "-C", str(repo), "log", "--oneline", f"{head_before}..HEAD"],
-                capture_output=True, text=True,
-            ).stdout.strip().splitlines()
+            log = (
+                subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(repo),
+                        "log",
+                        "--oneline",
+                        f"{head_before}..HEAD",
+                    ],
+                    capture_output=True,
+                    text=True,
+                )
+                .stdout.strip()
+                .splitlines()
+            )
             self.assertEqual(len(log), 1, f"expected exactly one commit, got {log}")
 
     def test_no_commit_when_no_task_is_completed(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._repo_with_tasks(tmp)
             head_before = subprocess.run(
-                ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True
+                ["git", "-C", str(repo), "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
             ).stdout.strip()
 
             integrate._write_group_task_status(
@@ -595,7 +648,9 @@ class WriteGroupTaskStatus(unittest.TestCase):
             )
 
             head_after = subprocess.run(
-                ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True
+                ["git", "-C", str(repo), "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
             ).stdout.strip()
             self.assertEqual(head_before, head_after)
 
@@ -629,9 +684,12 @@ class WriteGroupTaskStatus(unittest.TestCase):
             self.assertIn("- [x] 1.1 do it", tasks_md.read_text())
             log = subprocess.run(
                 ["git", "-C", str(repo), "log", "-1", "--oneline"],
-                capture_output=True, text=True, check=True,
+                capture_output=True,
+                text=True,
+                check=True,
             ).stdout
             self.assertIn("mark 1 task(s) completed", log)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -19,6 +19,7 @@ temporary inlined duplicate of QueueTestBase pending this exact move).
 
 Run: python3 -m pytest tests/router/test_check_spec_collision_e2e.py -q
 """
+
 from __future__ import annotations
 
 import os
@@ -28,8 +29,9 @@ from pathlib import Path
 
 from worktrail.router import check_spec_collision as csc
 from worktrail.workqueue import work_queue as wq
-from .test_check_spec_collision import _git, _init_repo, _make_spec, _make_task, _write
+
 from ..workqueue.test_work_queue import QueueTestBase
+from .test_check_spec_collision import _git, _init_repo, _make_spec, _make_task, _write
 
 
 def _make_picked_brief(picked_dir: Path, name: str, focus: str) -> Path:
@@ -182,7 +184,9 @@ class TestBrainstormSourcedNoBriefInvariant(unittest.TestCase):
         # exist anywhere -- proving check()/verify() have no dependency on
         # work-queue state at all.
         with tempfile.TemporaryDirectory() as empty_queue_home:
-            os.environ["WORK_QUEUE_DIR"] = str(Path(empty_queue_home) / "does-not-exist-yet")
+            os.environ["WORK_QUEUE_DIR"] = str(
+                Path(empty_queue_home) / "does-not-exist-yet"
+            )
 
             checked = csc.check(Path(repo))
             self.assertTrue(checked["checked"])

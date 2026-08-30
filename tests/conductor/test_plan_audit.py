@@ -52,7 +52,8 @@ def _plan(spec_id: str, **files_by_task: list) -> runplan.RunPlan:
         fingerprint="deadbeef",
         source=runplan.SOURCE_COMPILED,
         tasks=tuple(
-            runplan.TaskPlan(id=tid, files=tuple(files)) for tid, files in files_by_task.items()
+            runplan.TaskPlan(id=tid, files=tuple(files))
+            for tid, files in files_by_task.items()
         ),
     )
 
@@ -149,9 +150,15 @@ def test_the_cli_reports_a_clean_run_with_no_mismatches(tmp_path, capsys):
     def spawn(prompt, cwd, timeout, log):
         import json
 
-        return "```json\n" + json.dumps({"tasks": [{"id": "1.1", "files": ["src/a.py"], "deps": []}]}) + "\n```\n"
+        return (
+            "```json\n"
+            + json.dumps({"tasks": [{"id": "1.1", "files": ["src/a.py"], "deps": []}]})
+            + "\n```\n"
+        )
 
-    conductor_compile.compile_run_plan(d, tasks, spec_id=spec_id, repo=repo, spawn=spawn)
+    conductor_compile.compile_run_plan(
+        d, tasks, spec_id=spec_id, repo=repo, spawn=spawn
+    )
     _make_task_branch(repo, spec_id, "1.1", "src/a.py")
 
     rc = plan_audit.main([str(d), "main"])
@@ -176,9 +183,15 @@ def test_the_cli_json_output_reports_a_mismatch(tmp_path, capsys):
     def spawn(prompt, cwd, timeout, log):
         import json
 
-        return "```json\n" + json.dumps({"tasks": [{"id": "1.1", "files": ["src/a.py"], "deps": []}]}) + "\n```\n"
+        return (
+            "```json\n"
+            + json.dumps({"tasks": [{"id": "1.1", "files": ["src/a.py"], "deps": []}]})
+            + "\n```\n"
+        )
 
-    conductor_compile.compile_run_plan(d, tasks, spec_id=spec_id, repo=repo, spawn=spawn)
+    conductor_compile.compile_run_plan(
+        d, tasks, spec_id=spec_id, repo=repo, spawn=spawn
+    )
     _make_task_branch(repo, spec_id, "1.1", "src/a.py", "src/unexpected.py")
 
     rc = plan_audit.main([str(d), "main", "--json"])

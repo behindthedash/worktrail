@@ -1,12 +1,19 @@
 """Tests for `select_cell()` / `Cell` (design D3). Run: python3 -m pytest tests/runtime/test_selection.py"""
+
 import pytest
 
 from worktrail.runtime.selection import Cell, NoExecutionTarget, select_cell
 
 
 def _routing(targets, tiers):
-    return {"targets": targets, "tiers": tiers, "roles": {}, "purposes": {},
-            "default_tier": None, "drain": {}}
+    return {
+        "targets": targets,
+        "tiers": tiers,
+        "roles": {},
+        "purposes": {},
+        "default_tier": None,
+        "drain": {},
+    }
 
 
 def _target(harness, pool="subscription", api_opt_in=False, auth=None):
@@ -18,12 +25,16 @@ def _cell(model, effort=None):
 
 
 def _deny_all(target, model, now=None):
-    return False, {"failure_class": "billing", "retry_after": "2026-08-28T00:00:00+00:00"}
+    return False, {
+        "failure_class": "billing",
+        "retry_after": "2026-08-28T00:00:00+00:00",
+    }
 
 
 def _available_only_for(*names):
     def check(target, model, now=None):
         return target in names, {"failure_class": "transport", "retry_after": "later"}
+
     return check
 
 
@@ -35,11 +46,13 @@ class TestPreferReorder:
                 "codex-sub": _target("codex"),
                 "opencode-free": _target("opencode", pool="free"),
             },
-            tiers={"t1-deep": {
-                "claude-sub": _cell("opus"),
-                "codex-sub": _cell("gpt-5"),
-                "opencode-free": _cell("zen/free"),
-            }},
+            tiers={
+                "t1-deep": {
+                    "claude-sub": _cell("opus"),
+                    "codex-sub": _cell("gpt-5"),
+                    "opencode-free": _cell("zen/free"),
+                }
+            },
         )
         with pytest.raises(NoExecutionTarget) as excinfo:
             select_cell(routing, "t1-deep", prefer="opencode-free", capacity=_deny_all)
@@ -66,16 +79,27 @@ class TestPreferReorder:
                 "claude-sub": _target("claude"),
                 "codex-sub": _target("codex"),
             },
-            tiers={"t1-deep": {
-                "claude-sub": _cell("opus"),
-                "codex-sub": _cell("gpt-5"),
-            }},
+            tiers={
+                "t1-deep": {
+                    "claude-sub": _cell("opus"),
+                    "codex-sub": _cell("gpt-5"),
+                }
+            },
         )
         cell = select_cell(
-            routing, "t1-deep", prefer="codex-sub",
-            capacity=_available_only_for("claude-sub", "codex-sub"))
-        assert cell == Cell(target="codex-sub", harness="codex", model="gpt-5",
-                             effort=None, pool="subscription", auth=None)
+            routing,
+            "t1-deep",
+            prefer="codex-sub",
+            capacity=_available_only_for("claude-sub", "codex-sub"),
+        )
+        assert cell == Cell(
+            target="codex-sub",
+            harness="codex",
+            model="gpt-5",
+            effort=None,
+            pool="subscription",
+            auth=None,
+        )
 
 
 class TestApiOptInSkip:
@@ -85,26 +109,42 @@ class TestApiOptInSkip:
                 "openrouter": _target("opencode", pool="api", api_opt_in=False),
                 "codex-sub": _target("codex"),
             },
-            tiers={"t1-deep": {
-                "openrouter": _cell("zen"),
-                "codex-sub": _cell("gpt-5"),
-            }},
+            tiers={
+                "t1-deep": {
+                    "openrouter": _cell("zen"),
+                    "codex-sub": _cell("gpt-5"),
+                }
+            },
         )
-        cell = select_cell(routing, "t1-deep", capacity=_available_only_for("openrouter", "codex-sub"))
+        cell = select_cell(
+            routing, "t1-deep", capacity=_available_only_for("openrouter", "codex-sub")
+        )
         # openrouter has capacity but is never attempted -- codex-sub wins.
         assert cell.target == "codex-sub"
 
     def test_api_pool_target_with_opt_in_is_attempted(self):
         routing = _routing(
             targets={
-                "claude-api": _target("claude", pool="api", api_opt_in=True,
-                                       auth={"env": "ANTHROPIC_API_KEY"}),
+                "claude-api": _target(
+                    "claude",
+                    pool="api",
+                    api_opt_in=True,
+                    auth={"env": "ANTHROPIC_API_KEY"},
+                ),
             },
             tiers={"t1-deep": {"claude-api": _cell("opus", effort="high")}},
         )
-        cell = select_cell(routing, "t1-deep", capacity=_available_only_for("claude-api"))
-        assert cell == Cell(target="claude-api", harness="claude", model="opus",
-                             effort="high", pool="api", auth={"env": "ANTHROPIC_API_KEY"})
+        cell = select_cell(
+            routing, "t1-deep", capacity=_available_only_for("claude-api")
+        )
+        assert cell == Cell(
+            target="claude-api",
+            harness="claude",
+            model="opus",
+            effort="high",
+            pool="api",
+            auth={"env": "ANTHROPIC_API_KEY"},
+        )
 
 
 class TestMissingCell:
@@ -120,7 +160,9 @@ class TestMissingCell:
             },
         )
         # claude-sub has no cell in t1-deep -- can't serve this tier at all.
-        cell = select_cell(routing, "t1-deep", capacity=_available_only_for("claude-sub", "codex-sub"))
+        cell = select_cell(
+            routing, "t1-deep", capacity=_available_only_for("claude-sub", "codex-sub")
+        )
         assert cell.target == "codex-sub"
 
     def test_row_absent_entirely_raises_no_execution_target(self):
@@ -129,7 +171,9 @@ class TestMissingCell:
             tiers={"t4-trivia": {"claude-sub": _cell("haiku")}},
         )
         with pytest.raises(NoExecutionTarget) as excinfo:
-            select_cell(routing, "unknown-tier", capacity=_available_only_for("claude-sub"))
+            select_cell(
+                routing, "unknown-tier", capacity=_available_only_for("claude-sub")
+            )
         assert excinfo.value.attempted == ()
 
 
@@ -140,17 +184,24 @@ class TestSoftHarnessExclusion:
                 "claude-sub": _target("claude"),
                 "codex-sub": _target("codex"),
             },
-            tiers={"t1-deep": {
-                "claude-sub": _cell("opus"),
-                "codex-sub": _cell("gpt-5"),
-            }},
+            tiers={
+                "t1-deep": {
+                    "claude-sub": _cell("opus"),
+                    "codex-sub": _cell("gpt-5"),
+                }
+            },
         )
         with pytest.raises(NoExecutionTarget) as excinfo:
-            select_cell(routing, "t1-deep", exclude_harness="claude", capacity=_deny_all)
+            select_cell(
+                routing, "t1-deep", exclude_harness="claude", capacity=_deny_all
+            )
         # codex-sub (declared second) is attempted before claude-sub, the
         # excluded harness -- but claude-sub is still attempted (soft, not
         # a hard drop).
-        assert [item[0] for item in excinfo.value.attempted] == ["codex-sub", "claude-sub"]
+        assert [item[0] for item in excinfo.value.attempted] == [
+            "codex-sub",
+            "claude-sub",
+        ]
 
     def test_excluded_harness_still_wins_as_last_resort(self):
         routing = _routing(
@@ -158,14 +209,20 @@ class TestSoftHarnessExclusion:
                 "claude-sub": _target("claude"),
                 "codex-sub": _target("codex"),
             },
-            tiers={"t1-deep": {
-                "claude-sub": _cell("opus"),
-                "codex-sub": _cell("gpt-5"),
-            }},
+            tiers={
+                "t1-deep": {
+                    "claude-sub": _cell("opus"),
+                    "codex-sub": _cell("gpt-5"),
+                }
+            },
         )
         # Only the excluded harness's target has capacity.
-        cell = select_cell(routing, "t1-deep", exclude_harness="claude",
-                            capacity=_available_only_for("claude-sub"))
+        cell = select_cell(
+            routing,
+            "t1-deep",
+            exclude_harness="claude",
+            capacity=_available_only_for("claude-sub"),
+        )
         assert cell.target == "claude-sub"
 
 
@@ -176,10 +233,12 @@ class TestExhaustion:
                 "claude-sub": _target("claude"),
                 "codex-sub": _target("codex"),
             },
-            tiers={"t1-deep": {
-                "claude-sub": _cell("opus"),
-                "codex-sub": _cell("gpt-5"),
-            }},
+            tiers={
+                "t1-deep": {
+                    "claude-sub": _cell("opus"),
+                    "codex-sub": _cell("gpt-5"),
+                }
+            },
         )
         with pytest.raises(NoExecutionTarget) as excinfo:
             select_cell(routing, "t1-deep", capacity=_deny_all)
@@ -196,10 +255,12 @@ class TestExhaustion:
                 "claude-sub": _target("claude"),
                 "codex-sub": _target("codex"),
             },
-            tiers={"t1-deep": {
-                "claude-sub": _cell("opus"),
-                "codex-sub": _cell("gpt-5"),
-            }},
+            tiers={
+                "t1-deep": {
+                    "claude-sub": _cell("opus"),
+                    "codex-sub": _cell("gpt-5"),
+                }
+            },
         )
         cell = select_cell(routing, "t1-deep", capacity=None)
         assert cell.target == "claude-sub"

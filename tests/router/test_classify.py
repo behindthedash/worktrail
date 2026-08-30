@@ -5,6 +5,7 @@ The cassette (cassettes/routing_cassette.json) is the adverse-effect gate for
 Route J (workflow) changes: any change to GO's routing must keep it green.
 Run: python3 test_classify.py
 """
+
 import json
 import unittest
 from pathlib import Path
@@ -17,7 +18,11 @@ from worktrail.router.classify import (
     protected_operations,
 )
 
-CASSETTE = Path(_classify_mod.__file__).resolve().parent / "cassettes" / "routing_cassette.json"
+CASSETTE = (
+    Path(_classify_mod.__file__).resolve().parent
+    / "cassettes"
+    / "routing_cassette.json"
+)
 
 
 class TestRoutingCassette(unittest.TestCase):
@@ -28,25 +33,36 @@ class TestRoutingCassette(unittest.TestCase):
         self.assertGreaterEqual(len(data["scenarios"]), 20)
         for sc in data["scenarios"]:
             with self.subTest(scenario=sc["id"]):
-                result = classify(sc["request"], state=sc.get("state"),
-                                   handoff_route=sc.get("handoff_route"),
-                                   pr_states=sc.get("pr_states"),
-                                   resumable_state=sc.get("resumable_state"))
+                result = classify(
+                    sc["request"],
+                    state=sc.get("state"),
+                    handoff_route=sc.get("handoff_route"),
+                    pr_states=sc.get("pr_states"),
+                    resumable_state=sc.get("resumable_state"),
+                )
                 exp = sc["expect"]
                 if "route" in exp:
-                    self.assertEqual(result["route"], exp["route"],
-                                     f"{sc['id']}: {result['reason']}")
+                    self.assertEqual(
+                        result["route"], exp["route"], f"{sc['id']}: {result['reason']}"
+                    )
                 if "risk" in exp:
                     self.assertEqual(result["risk"], exp["risk"], sc["id"])
                 if "confidence" in exp:
-                    self.assertEqual(result["confidence"], exp["confidence"],
-                                     f"{sc['id']}: {result['reason']}")
+                    self.assertEqual(
+                        result["confidence"],
+                        exp["confidence"],
+                        f"{sc['id']}: {result['reason']}",
+                    )
                 if "route_source" in exp:
-                    self.assertEqual(result["route_source"], exp["route_source"],
-                                     f"{sc['id']}: {result['reason']}")
+                    self.assertEqual(
+                        result["route_source"],
+                        exp["route_source"],
+                        f"{sc['id']}: {result['reason']}",
+                    )
                 if "ambiguous_between" in exp:
-                    self.assertEqual(result["ambiguous_between"],
-                                     exp["ambiguous_between"], sc["id"])
+                    self.assertEqual(
+                        result["ambiguous_between"], exp["ambiguous_between"], sc["id"]
+                    )
                     self.assertTrue(result["question"], sc["id"])
                 if "secondary_includes" in exp:
                     for r in exp["secondary_includes"]:
@@ -70,8 +86,7 @@ class TestOverridesAndSignals(unittest.TestCase):
         self.assertEqual(r["confidence"], "high")
 
     def test_handoff_recommended_route_boosts(self):
-        r = classify("retry support for payments processing queue",
-                     handoff_route="C")
+        r = classify("retry support for payments processing queue", handoff_route="C")
         self.assertEqual(r["route"], "C")
 
     def test_handoff_route_invalid_letter_ignored(self):
@@ -82,8 +97,9 @@ class TestOverridesAndSignals(unittest.TestCase):
         # Reproduces the 20260717-091439 incident: a spurious low-signal hit
         # for another route must not beat an explicit brief recommendation
         # when auto mode has no human present to catch it.
-        r = classify("Extend the unit test suite for a platform component",
-                     handoff_route="H")
+        r = classify(
+            "Extend the unit test suite for a platform component", handoff_route="H"
+        )
         self.assertEqual(r["route"], "H")
         self.assertEqual(r["confidence"], "medium")
         self.assertEqual(r["route_source"], "handoff-recommended-override")
@@ -101,7 +117,8 @@ class TestOverridesAndSignals(unittest.TestCase):
         r = classify(
             "a small explicit-gh-path-resolution fix to dependabot-pullhook-"
             "dispatch.py classifier subprocess call",
-            handoff_route="B")
+            handoff_route="B",
+        )
         self.assertEqual(r["route"], "J")
         self.assertEqual(r["confidence"], "medium")
         self.assertEqual(r["route_source"], "classifier")
@@ -110,15 +127,16 @@ class TestOverridesAndSignals(unittest.TestCase):
         # A high-confidence organic disagreement is a signal worth a fresh
         # look, not a silent override — repo state may have drifted since
         # the brief's recommended-route was written.
-        r = classify("I have an idea — what if contributors could earn badges?",
-                     handoff_route="H")
+        r = classify(
+            "I have an idea — what if contributors could earn badges?",
+            handoff_route="H",
+        )
         self.assertEqual(r["confidence"], "high")
         self.assertEqual(r["route"], "A")
         self.assertEqual(r["route_source"], "classifier")
 
     def test_handoff_route_agreement_reports_classifier_source(self):
-        r = classify("retry support for payments processing queue",
-                     handoff_route="C")
+        r = classify("retry support for payments processing queue", handoff_route="C")
         self.assertEqual(r["route"], "C")
         self.assertEqual(r["route_source"], "classifier")
 
@@ -141,18 +159,18 @@ class TestOverridesAndSignals(unittest.TestCase):
         # At dispatch time (handoff_route supplied), the zero-signal default
         # must still be overridable like any other low-confidence pick --
         # only brief-creation-time stamping (no handoff_route) is suppressed.
-        r = classify("Standardize the shared helper used by two call sites",
-                     handoff_route="H")
+        r = classify(
+            "Standardize the shared helper used by two call sites", handoff_route="H"
+        )
         self.assertEqual(r["route"], "H")
         self.assertEqual(r["route_source"], "handoff-recommended-override")
 
     def test_state_demotes_implementation_without_spec(self):
-        with_spec = classify("implement the new widget",
-                             state={"active_specs": 1})
-        without = classify("implement the new widget",
-                           state={"active_specs": 0})
+        with_spec = classify("implement the new widget", state={"active_specs": 1})
+        without = classify("implement the new widget", state={"active_specs": 0})
         self.assertGreaterEqual(
-            with_spec["scores"].get("D", 0), without["scores"].get("D", 0) + 2)
+            with_spec["scores"].get("D", 0), without["scores"].get("D", 0) + 2
+        )
 
     def test_empty_request_defaults_to_dashboard(self):
         r = classify("")
@@ -167,8 +185,10 @@ class TestOverridesAndSignals(unittest.TestCase):
         # "investigation" (noun) previously missed the "investigate" (verb-only)
         # signal entirely, so an explicitly investigation-framed brief scored a
         # wrong-but-plausible route instead of I.
-        r = classify("This is a 'Needs investigation' item. Do not fix findings "
-                     "in this brief. Recommend per-repo follow-up briefs.")
+        r = classify(
+            "This is a 'Needs investigation' item. Do not fix findings "
+            "in this brief. Recommend per-repo follow-up briefs."
+        )
         self.assertEqual(r["route"], "I")
         self.assertEqual(r["confidence"], "high")
 
@@ -176,15 +196,19 @@ class TestOverridesAndSignals(unittest.TestCase):
         # Guards against over-correcting toward I: a passing "investigate"
         # mention should not outrank a request with an already-known cause
         # and an explicit fix ask.
-        r = classify("The crash is caused by a missing null check. Fix it; "
-                     "no need to investigate further.")
+        r = classify(
+            "The crash is caused by a missing null check. Fix it; "
+            "no need to investigate further."
+        )
         self.assertEqual(r["route"], "F")
 
     def test_classify_py_self_reference_routes_to_workflow_evolution(self):
-        r = classify("classify.py never scores Route I (Investigation) as a "
-                     "candidate, causing medium-confidence misroutes into "
-                     "spec-authoring/defect-repair pipelines for explicitly "
-                     "investigation-framed requests")
+        r = classify(
+            "classify.py never scores Route I (Investigation) as a "
+            "candidate, causing medium-confidence misroutes into "
+            "spec-authoring/defect-repair pipelines for explicitly "
+            "investigation-framed requests"
+        )
         self.assertEqual(r["route"], "J")
 
     def test_ci_repair_forces_continue_route(self):
@@ -226,8 +250,9 @@ class TestOverridesAndSignals(unittest.TestCase):
     def test_other_ci_repair_signals_unaffected_by_pr_states(self):
         # pr_states only suppresses the pr-repair label; a real CI-failure
         # phrase with no PR citation must still force Route E.
-        r = classify("the bug is that CI is broken on my branch",
-                     pr_states={"68": "MERGED"})
+        r = classify(
+            "the bug is that CI is broken on my branch", pr_states={"68": "MERGED"}
+        )
         self.assertEqual(r["route"], "E")
 
 
@@ -282,14 +307,17 @@ class TestResumableState(unittest.TestCase):
         self.assertEqual(r_none, r_default)
 
     def test_zero_signal_text_does_not_default_to_e_when_not_resumable(self):
-        r = classify("Standardize the shared helper used by two call sites",
-                     resumable_state=False)
+        r = classify(
+            "Standardize the shared helper used by two call sites",
+            resumable_state=False,
+        )
         self.assertNotEqual(r["route"], "E")
         self.assertNotEqual(r["route_source"], "no-signal-default")
 
     def test_zero_signal_text_still_defaults_to_e_without_the_check(self):
-        r = classify("Standardize the shared helper used by two call sites",
-                     resumable_state=None)
+        r = classify(
+            "Standardize the shared helper used by two call sites", resumable_state=None
+        )
         self.assertEqual(r["route"], "E")
         self.assertEqual(r["route_source"], "no-signal-default")
 
@@ -319,19 +347,24 @@ class TestEpicWordIntent(unittest.TestCase):
         self.assertNotIn("B", r["scores"])
 
     def test_genuine_epic_planning_request_still_scores_b(self):
-        r = classify("Plan an epic: a donor management platform with several "
-                      "features delivered across phases")
+        r = classify(
+            "Plan an epic: a donor management platform with several "
+            "features delivered across phases"
+        )
         self.assertEqual(r["route"], "B")
         self.assertEqual(r["confidence"], "high")
 
     def test_break_down_into_epic_phrasing_scores_b(self):
-        r = classify("Break this down into an epic with several independently "
-                      "valuable features")
+        r = classify(
+            "Break this down into an epic with several independently valuable features"
+        )
         self.assertIn("B", r["scores"])
 
     def test_create_epic_for_phrasing_scores_b(self):
-        r = classify("Create an epic for the donor portal covering signup, "
-                      "payments, and reporting")
+        r = classify(
+            "Create an epic for the donor portal covering signup, "
+            "payments, and reporting"
+        )
         self.assertIn("B", r["scores"])
 
 
@@ -357,19 +390,22 @@ class TestRefactorWordIntent(unittest.TestCase):
         self.assertNotIn("refactor-word", hits["H"])
 
     def test_imperative_refactor_request_still_scores_h(self):
-        r = classify("Refactor the email module to extract a shared client — "
-                      "no behavior change")
+        r = classify(
+            "Refactor the email module to extract a shared client — no behavior change"
+        )
         self.assertEqual(r["route"], "H")
         self.assertEqual(r["confidence"], "high")
 
     def test_refactor_the_x_to_y_phrasing_scores_h(self):
-        hits = _score_routes("Please refactor the payments module to remove "
-                              "the duplicated retry logic")[1]
+        hits = _score_routes(
+            "Please refactor the payments module to remove the duplicated retry logic"
+        )[1]
         self.assertIn("refactor-word", hits["H"])
 
     def test_should_refactor_phrasing_scores_h(self):
-        hits = _score_routes("We should refactor the auth middleware before "
-                              "the next release")[1]
+        hits = _score_routes(
+            "We should refactor the auth middleware before the next release"
+        )[1]
         self.assertIn("refactor-word", hits["H"])
 
 
@@ -426,8 +462,7 @@ class TestChangeFromToIntent(unittest.TestCase):
         self.assertIn("from-to", hits["G"])
 
     def test_should_change_from_to_phrasing_scores_g(self):
-        hits = _score_routes("We should change the default timeout from 30s "
-                              "to 60s")[1]
+        hits = _score_routes("We should change the default timeout from 30s to 60s")[1]
         self.assertIn("from-to", hits["G"])
 
 
@@ -440,8 +475,7 @@ class TestSpecIdCitationGuard(unittest.TestCase):
     (?<!#) guard (20260821-225442)."""
 
     def test_hyphenated_pr_citation_does_not_score_spec_id(self):
-        hits = _score_routes(
-            "This mirrors the guard from PR #617-style fixes")[1]
+        hits = _score_routes("This mirrors the guard from PR #617-style fixes")[1]
         self.assertNotIn("spec-id", hits["D"])
 
     def test_hyphenated_issue_citation_does_not_score_spec_id(self):
@@ -500,6 +534,7 @@ class TestCitedPrStates(unittest.TestCase):
 
     def test_no_repo_returns_empty(self):
         from worktrail.router.classify import cited_pr_states
+
         self.assertEqual(cited_pr_states("PR #68 is broken", None), {})
 
     def test_no_cited_pr_returns_empty_without_calling_runner(self):
@@ -523,7 +558,9 @@ class TestCitedPrStates(unittest.TestCase):
             calls.append(cmd)
             return _Result()
 
-        states = cited_pr_states("PR #68 is broken and needs fixing", Path("."), _runner)
+        states = cited_pr_states(
+            "PR #68 is broken and needs fixing", Path("."), _runner
+        )
         self.assertEqual(states, {"68": "MERGED"})
         self.assertEqual(calls[0][:3], ["gh", "pr", "view"])
 
@@ -534,7 +571,9 @@ class TestCitedPrStates(unittest.TestCase):
             returncode = 1
             stdout = ""
 
-        states = cited_pr_states("PR #68 is broken", Path("."), lambda *a, **kw: _Result())
+        states = cited_pr_states(
+            "PR #68 is broken", Path("."), lambda *a, **kw: _Result()
+        )
         self.assertEqual(states, {})
 
     def test_runner_exception_is_fail_open(self):
@@ -552,7 +591,9 @@ class TestRiskAndProtection(unittest.TestCase):
         self.assertEqual(classify_risk("update the readme docs")[0], "low")
         self.assertEqual(classify_risk("change the public api endpoint")[0], "medium")
         self.assertEqual(classify_risk("add a login permission check")[0], "high")
-        self.assertEqual(classify_risk("rotate the stripe billing secrets")[0], "critical")
+        self.assertEqual(
+            classify_risk("rotate the stripe billing secrets")[0], "critical"
+        )
 
     def test_highest_tier_wins(self):
         risk, labels = classify_risk("docs for the billing migration")
@@ -560,15 +601,17 @@ class TestRiskAndProtection(unittest.TestCase):
         self.assertTrue(any(l.startswith("critical:") for l in labels))
 
     def test_protected_operations(self):
-        self.assertIn("destructive-migration",
-                      protected_operations("drop table users"))
-        self.assertIn("auth-weakening",
-                      protected_operations("bypass auth checks for testing"))
+        self.assertIn("destructive-migration", protected_operations("drop table users"))
+        self.assertIn(
+            "auth-weakening", protected_operations("bypass auth checks for testing")
+        )
         self.assertEqual(protected_operations("add a tooltip"), [])
 
     def test_protected_implies_gates(self):
-        r = classify("implement spec 002-x and drop the old_events table",
-                     state={"active_specs": 1})
+        r = classify(
+            "implement spec 002-x and drop the old_events table",
+            state={"active_specs": 1},
+        )
         self.assertIn("require_human_approval", r["gates"])
         self.assertIn("never_automerge", r["gates"])
 
@@ -580,9 +623,20 @@ class TestRiskAndProtection(unittest.TestCase):
 class TestCompletionContract(unittest.TestCase):
     def test_result_shape(self):
         r = classify("add a feature")
-        for key in ("route", "route_name", "secondary", "risk", "gates",
-                    "confidence", "ambiguous_between", "question", "reason",
-                    "scores", "protected_operations", "risk_signals"):
+        for key in (
+            "route",
+            "route_name",
+            "secondary",
+            "risk",
+            "gates",
+            "confidence",
+            "ambiguous_between",
+            "question",
+            "reason",
+            "scores",
+            "protected_operations",
+            "risk_signals",
+        ):
             self.assertIn(key, r)
         self.assertIn(r["route"], "ABCDEFGHIJ")
         self.assertIn(r["risk"], ("low", "medium", "high", "critical"))

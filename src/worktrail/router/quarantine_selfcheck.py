@@ -17,6 +17,7 @@ Usage:
   quarantine_selfcheck.py --repo /path/to/repo [--json]
   quarantine_selfcheck.py --repos-root ~/projects [--json]   # sweep every repo
 """
+
 from __future__ import annotations
 
 import argparse
@@ -25,7 +26,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from worktrail.orchestrator.coordinator import plan_groups
 from worktrail.orchestrator.integrate import QUARANTINE_BUDGET_EXHAUSTED
@@ -33,7 +34,7 @@ from worktrail.orchestrator.integrate import QUARANTINE_BUDGET_EXHAUSTED
 from .policy_selfcheck import discover_repo_names
 
 
-def _group_files(repo: Path, spec_id: str, group_name: str) -> Optional[List[str]]:
+def _group_files(repo: Path, spec_id: str, group_name: str) -> list[str] | None:
     """Recompute a group's file set from the cached RunPlan, not the journal.
 
     The journal only records the group name a QUARANTINED task landed in at
@@ -68,7 +69,7 @@ def _group_files(repo: Path, spec_id: str, group_name: str) -> Optional[List[str
     return None
 
 
-def _files_on_base(repo: Path, files: List[str], base: str = "") -> bool:
+def _files_on_base(repo: Path, files: list[str], base: str = "") -> bool:
     """Whether every path in `files` still exists on `base` (or the current branch).
 
     A group that reconciled to `QUARANTINED` in the run journal may simply
@@ -98,7 +99,7 @@ def _files_on_base(repo: Path, files: List[str], base: str = "") -> bool:
     return True
 
 
-def _merged_pr_matching(repo: Path, files: List[str]) -> Optional[str]:
+def _merged_pr_matching(repo: Path, files: list[str]) -> str | None:
     """URL of the newest merged PR whose changed-file set is a superset of `files`.
 
     Mirrors `reconcile_pr_labels.py`'s `_open_prs()` subprocess pattern: never
@@ -108,9 +109,21 @@ def _merged_pr_matching(repo: Path, files: List[str]) -> Optional[str]:
     """
     try:
         result = subprocess.run(
-            ["gh", "pr", "list", "--state", "merged",
-             "--json", "url,files", "--limit", "50"],
-            capture_output=True, text=True, timeout=30, cwd=str(repo),
+            [
+                "gh",
+                "pr",
+                "list",
+                "--state",
+                "merged",
+                "--json",
+                "url,files",
+                "--limit",
+                "50",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=str(repo),
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -127,7 +140,9 @@ def _merged_pr_matching(repo: Path, files: List[str]) -> Optional[str]:
         pr_files = pr.get("files")
         if not isinstance(pr_files, list):
             continue
-        changed = {f.get("path") for f in pr_files if isinstance(f, dict) and f.get("path")}
+        changed = {
+            f.get("path") for f in pr_files if isinstance(f, dict) and f.get("path")
+        }
         if wanted <= changed:
             return pr.get("url")
     return None
@@ -143,14 +158,14 @@ def _iter_journal_files(worktrees_dir: Path):
 
 
 def _spec_id_from_journal_path(path: Path) -> str:
-    return path.stem[len("run-"):] if path.stem.startswith("run-") else path.stem
+    return path.stem.removeprefix("run-")
 
 
 def _age_days(path: Path) -> float:
     return max(0.0, (time.time() - path.stat().st_mtime) / 86400.0)
 
 
-def reconcile_finding(repo: Path, finding: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def reconcile_finding(repo: Path, finding: dict[str, Any]) -> dict[str, Any] | None:
     """Attempt to auto-resolve a raw QUARANTINED finding.
 
     Tries base-branch file presence first (cheap, no network), then a
@@ -179,7 +194,7 @@ def reconcile_finding(repo: Path, finding: Dict[str, Any]) -> Optional[Dict[str,
     return None
 
 
-def check_repo(repo: Path) -> Dict[str, Any]:
+def check_repo(repo: Path) -> dict[str, Any]:
     """Findings for every run journal in one repo. Empty `findings` = clean.
 
     `findings` holds only unreconciled QUARANTINED groups needing human
@@ -191,9 +206,12 @@ def check_repo(repo: Path) -> Dict[str, Any]:
     human-triage path.
     """
     repo = Path(repo)
-    result: Dict[str, Any] = {
-        "repo": repo.name, "path": str(repo),
-        "findings": [], "reconciled": [], "resumable": [],
+    result: dict[str, Any] = {
+        "repo": repo.name,
+        "path": str(repo),
+        "findings": [],
+        "reconciled": [],
+        "resumable": [],
     }
     worktrees_dir = repo.parent / f"{repo.name}-worktrees"
     if not worktrees_dir.is_dir():
@@ -234,7 +252,7 @@ def check_repo(repo: Path) -> Dict[str, Any]:
     return result
 
 
-def sweep(repos_root: Path) -> List[Dict[str, Any]]:
+def sweep(repos_root: Path) -> list[dict[str, Any]]:
     """check_repo() for every repo under `repos_root` that has findings."""
     names = discover_repo_names(repos_root)
     results = []
@@ -245,7 +263,7 @@ def sweep(repos_root: Path) -> List[Dict[str, Any]]:
     return results
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--repo", help="single repo to check")
     p.add_argument("--repos-root", help="sweep every repo under this directory")
@@ -270,7 +288,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(json.dumps({"results": results, "flagged": len(flagged)}, indent=2))
     else:
         if not flagged and not resumable_repos:
-            print(f"quarantine_selfcheck: {len(results)} repo(s) checked, no QUARANTINED groups")
+            print(
+                f"quarantine_selfcheck: {len(results)} repo(s) checked, no QUARANTINED groups"
+            )
         for r in flagged:
             print(f"{r['repo']}:")
             for f in r["findings"]:
@@ -281,7 +301,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         for r in resumable_repos:
             print(f"{r['repo']} (resumable, no action needed -- re-run full-real):")
             for f in r["resumable"]:
-                print(f"  spec={f['spec_id']} group={f['group']} age_days={f['age_days']:.1f}")
+                print(
+                    f"  spec={f['spec_id']} group={f['group']} age_days={f['age_days']:.1f}"
+                )
     return 1 if flagged else 0
 
 

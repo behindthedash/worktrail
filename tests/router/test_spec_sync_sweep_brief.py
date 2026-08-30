@@ -14,7 +14,6 @@ from pathlib import Path
 from worktrail.router.spec_sync_sweep_brief import file_drift_brief
 from worktrail.shared.brief_frontmatter import read_frontmatter, validate_brief
 
-
 MULTI_FINDINGS = [
     {"spec": "010-alpha", "reason": "task file missing from tasks/"},
     {"spec": "010-alpha", "reason": "status regressed from done to pending"},

@@ -29,9 +29,11 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import coordinator  # noqa: E402
-from worktrail.orchestrator import dispatch  # noqa: E402
-from worktrail.orchestrator import live  # noqa: E402
+from worktrail.orchestrator import (
+    coordinator,
+    dispatch,
+    live,
+)
 
 
 def _git(repo, *args):
@@ -59,7 +61,9 @@ def _branch_with_file(repo, branch, fname, content, start="HEAD"):
     _git(repo, "checkout", "-q", base)
 
 
-def _write_sibling_task_file(repo, sibling_spec_id, sibling_task_id, status="completed"):
+def _write_sibling_task_file(
+    repo, sibling_spec_id, sibling_task_id, status="completed"
+):
     """Materialize a sibling spec's task file so `resolve_external_dependency`
     reports the reference as satisfied (read-only filesystem check, no git)."""
     td = Path(repo) / "docs" / "specs" / sibling_spec_id / "tasks"
@@ -84,34 +88,47 @@ class DeliverableSubset(unittest.TestCase):
         # The headline regression: a clean dependency chain delivers as ONE PR
         # (no quarantine), so the consumer + its test land together.
         status = {t["id"]: "done" for t in self.CHAIN}
-        deliverable, dropped = coordinator.deliverable_subset(self.GROUP, self.CHAIN, status)
+        deliverable, dropped = coordinator.deliverable_subset(
+            self.GROUP, self.CHAIN, status
+        )
         self.assertEqual(deliverable, self.GROUP)
         self.assertEqual(dropped, [])
 
     def test_failed_test_task_split_out_consumer_still_ships(self):
         status = {"TASK-001": "done", "TASK-002": "done", "TASK-003": "failed"}
-        deliverable, dropped = coordinator.deliverable_subset(self.GROUP, self.CHAIN, status)
+        deliverable, dropped = coordinator.deliverable_subset(
+            self.GROUP, self.CHAIN, status
+        )
         self.assertEqual(deliverable, ["TASK-001", "TASK-002"])
         self.assertEqual(dropped, ["TASK-003"])
 
     def test_failed_root_drops_everything_downstream(self):
         # If the helper itself failed, nothing in the chain is shippable.
         status = {"TASK-001": "failed", "TASK-002": "done", "TASK-003": "done"}
-        deliverable, dropped = coordinator.deliverable_subset(self.GROUP, self.CHAIN, status)
+        deliverable, dropped = coordinator.deliverable_subset(
+            self.GROUP, self.CHAIN, status
+        )
         self.assertEqual(deliverable, [])
         self.assertEqual(dropped, self.GROUP)
 
     def test_independent_sibling_survives_a_failed_task(self):
         tasks = self.CHAIN + [{"id": "TASK-009", "deps": []}]  # independent
         group = self.GROUP + ["TASK-009"]
-        status = {"TASK-001": "done", "TASK-002": "done", "TASK-003": "failed", "TASK-009": "done"}
+        status = {
+            "TASK-001": "done",
+            "TASK-002": "done",
+            "TASK-003": "failed",
+            "TASK-009": "done",
+        }
         deliverable, dropped = coordinator.deliverable_subset(group, tasks, status)
         self.assertEqual(deliverable, ["TASK-001", "TASK-002", "TASK-009"])
         self.assertEqual(dropped, ["TASK-003"])
 
     def test_escalated_treated_like_failed(self):
         status = {"TASK-001": "done", "TASK-002": "escalated", "TASK-003": "done"}
-        deliverable, dropped = coordinator.deliverable_subset(self.GROUP, self.CHAIN, status)
+        deliverable, dropped = coordinator.deliverable_subset(
+            self.GROUP, self.CHAIN, status
+        )
         # consumer escalated -> consumer AND its dependent test both drop
         self.assertEqual(deliverable, ["TASK-001"])
         self.assertEqual(dropped, ["TASK-002", "TASK-003"])
@@ -135,7 +152,9 @@ class DependencyStacking(unittest.TestCase):
 
     def test_root_task_starts_from_head(self):
         by_id = {"TASK-001": {"id": "TASK-001", "deps": []}}
-        ref, extra = live.dependency_start_ref(self.repo, self.spec, by_id["TASK-001"], by_id)
+        ref, extra = live.dependency_start_ref(
+            self.repo, self.spec, by_id["TASK-001"], by_id
+        )
         self.assertEqual((ref, extra), ("HEAD", []))
 
     def test_dependent_starts_from_dependency_branch(self):
@@ -144,7 +163,9 @@ class DependencyStacking(unittest.TestCase):
             "TASK-001": {"id": "TASK-001", "deps": []},
             "TASK-002": {"id": "TASK-002", "deps": ["TASK-001"]},
         }
-        ref, extra = live.dependency_start_ref(self.repo, self.spec, by_id["TASK-002"], by_id)
+        ref, extra = live.dependency_start_ref(
+            self.repo, self.spec, by_id["TASK-002"], by_id
+        )
         self.assertEqual(ref, f"{self.spec}/task-001")
         self.assertEqual(extra, [])
 
@@ -154,7 +175,9 @@ class DependencyStacking(unittest.TestCase):
             "TASK-001": {"id": "TASK-001", "deps": []},
             "TASK-002": {"id": "TASK-002", "deps": ["TASK-001"]},
         }
-        ref, extra = live.dependency_start_ref(self.repo, self.spec, by_id["TASK-002"], by_id)
+        ref, extra = live.dependency_start_ref(
+            self.repo, self.spec, by_id["TASK-002"], by_id
+        )
         self.assertEqual((ref, extra), ("HEAD", []))
 
     def test_chain_worktree_carries_helper_and_consumer(self):
@@ -180,7 +203,8 @@ class DependencyStacking(unittest.TestCase):
         wt2 = wt_base / "task-002"
         live.add_stacked_worktree(self.repo, self.spec, by_id["TASK-002"], by_id, wt2)
         self.assertTrue(
-            (wt2 / "helper.py").exists(), "consumer worktree did not stack on its helper dependency"
+            (wt2 / "helper.py").exists(),
+            "consumer worktree did not stack on its helper dependency",
         )
         (wt2 / "consumer.py").write_text("from helper import helper\nhelper()\n")
         _git(wt2, "add", "-A")
@@ -207,7 +231,8 @@ class DependencyStacking(unittest.TestCase):
         live.add_stacked_worktree(self.repo, self.spec, by_id["TASK-006"], by_id, wt6)
         self.assertTrue((wt6 / "a.py").exists())
         self.assertTrue(
-            (wt6 / "b.py").exists(), "sibling dependency was not merged into the worktree"
+            (wt6 / "b.py").exists(),
+            "sibling dependency was not merged into the worktree",
         )
 
     # ----------------------------------------------------------------- #
@@ -229,7 +254,9 @@ class DependencyStacking(unittest.TestCase):
                 "external_deps": [f"{sibling_spec}/TASK-036"],
             }
         }
-        ref, extra = live.dependency_start_ref(self.repo, self.spec, by_id["TASK-002"], by_id)
+        ref, extra = live.dependency_start_ref(
+            self.repo, self.spec, by_id["TASK-002"], by_id
+        )
         self.assertEqual(ref, f"{sibling_spec}/task-036")
         self.assertEqual(extra, [])
 
@@ -247,7 +274,9 @@ class DependencyStacking(unittest.TestCase):
                 "external_deps": [f"{sibling_spec}/TASK-036"],
             }
         }
-        ref, extra = live.dependency_start_ref(self.repo, self.spec, by_id["TASK-002"], by_id)
+        ref, extra = live.dependency_start_ref(
+            self.repo, self.spec, by_id["TASK-002"], by_id
+        )
         self.assertEqual(
             (ref, extra),
             ("HEAD", []),
@@ -267,7 +296,9 @@ class DependencyStacking(unittest.TestCase):
                 "external_deps": [f"{sibling_spec}/TASK-036"],
             }
         }
-        ref, extra = live.dependency_start_ref(self.repo, self.spec, by_id["TASK-002"], by_id)
+        ref, extra = live.dependency_start_ref(
+            self.repo, self.spec, by_id["TASK-002"], by_id
+        )
         self.assertEqual((ref, extra), ("HEAD", []))
 
     def test_mixed_same_spec_and_cross_spec_deps_both_merged(self):
@@ -338,7 +369,11 @@ class DependencyStacking(unittest.TestCase):
         dependent dispatch: its commit IS in the stacked worktree's ancestry,
         so the declared-vs-actual mismatch downgrades to a WARN, not a raise."""
         by_id = {
-            "TASK-001": {"id": "TASK-001", "deps": [], "files": ["helper_v1.py"]},  # declared name
+            "TASK-001": {
+                "id": "TASK-001",
+                "deps": [],
+                "files": ["helper_v1.py"],
+            },  # declared name
             "TASK-002": {"id": "TASK-002", "deps": ["TASK-001"]},
         }
         wt1 = Path(self.tmp) / "wt1"
@@ -352,7 +387,8 @@ class DependencyStacking(unittest.TestCase):
         wt2 = Path(self.tmp) / "wt2"
         live.add_stacked_worktree(self.repo, self.spec, by_id["TASK-002"], by_id, wt2)
         self.assertFalse(
-            (wt2 / "helper_v1.py").exists(), "test setup should reproduce the declared path missing"
+            (wt2 / "helper_v1.py").exists(),
+            "test setup should reproduce the declared path missing",
         )
         # must not raise, and must return the structured event so callers can
         # journal it for cross-run aggregation (safety_net_report.py)
@@ -424,7 +460,9 @@ class DependencyStacking(unittest.TestCase):
         with self.assertRaises(live.WorktreeMissingDependencyFileError):
             live._require_dependency_files(wt2, by_id["TASK-002"], by_id)
 
-    def test_require_dependency_files_fresh_run_no_head_sha_warns_for_completed_dep(self):
+    def test_require_dependency_files_fresh_run_no_head_sha_warns_for_completed_dep(
+        self,
+    ):
         """Brief 20260808-132549: on a `--fresh` run (no journal), a
         pre-completed dependency never gets a `head_sha` populated (frontmatter
         carries no commit SHAs), so the ancestor-check WARN fallback could never
@@ -449,7 +487,9 @@ class DependencyStacking(unittest.TestCase):
 
         wt2 = Path(self.tmp) / "wt2"
         live.add_stacked_worktree(self.repo, self.spec, by_id["TASK-002"], by_id, wt2)
-        events = live._require_dependency_files(wt2, by_id["TASK-002"], by_id)  # must not raise
+        events = live._require_dependency_files(
+            wt2, by_id["TASK-002"], by_id
+        )  # must not raise
         self.assertEqual(len(events), 1)
         event = events[0]
         self.assertEqual(event["event"], "dependency_file_drift")
@@ -457,7 +497,9 @@ class DependencyStacking(unittest.TestCase):
         self.assertEqual(event["declared_path"], "missing_file.py")
         self.assertIsNone(event["dep_head_sha"])
 
-    def test_require_dependency_files_fresh_run_no_head_sha_still_raises_for_in_run_dep(self):
+    def test_require_dependency_files_fresh_run_no_head_sha_still_raises_for_in_run_dep(
+        self,
+    ):
         """The WARN downgrade for a missing `head_sha` must stay scoped to
         already-completed dependencies. A dependency this run is actively
         driving (no DONE-like status yet) has no trusted "merged before this
@@ -488,7 +530,12 @@ class DependencyStacking(unittest.TestCase):
 # --------------------------------------------------------------------------- #
 class CleanupFormatGating(unittest.TestCase):
     def _cleanup_prompt(self):
-        task = {"id": "TASK-002", "deps": [], "files": ["src/route.ts"], "status": "cleaning"}
+        task = {
+            "id": "TASK-002",
+            "deps": [],
+            "files": ["src/route.ts"],
+            "status": "cleaning",
+        }
         ctx = {
             "spec_id": "010-feature",
             "spec_folder": "docs/specs/010-feature/",
@@ -525,7 +572,13 @@ class TailTaskNoopScope(unittest.TestCase):
 
     def test_tail_kind_empty_files_gets_explicit_noop_scope(self):
         for kind in ("e2e", "cleanup"):
-            task = {"id": "TASK-002", "deps": [], "files": [], "kind": kind, "status": "cleaning"}
+            task = {
+                "id": "TASK-002",
+                "deps": [],
+                "files": [],
+                "kind": kind,
+                "status": "cleaning",
+            }
             p = dispatch.build_worker_prompt(dispatch.ROLE_CLEANUP, task, self._ctx())
             self.assertNotIn("(see task file)", p)
             self.assertIn("verification-only", p)
@@ -545,7 +598,13 @@ class TailTaskNoopScope(unittest.TestCase):
             self.assertNotIn("verification-only", p)
 
     def test_non_tail_kind_empty_files_keeps_existing_fallback(self):
-        task = {"id": "TASK-002", "deps": [], "files": [], "kind": "implement", "status": "cleaning"}
+        task = {
+            "id": "TASK-002",
+            "deps": [],
+            "files": [],
+            "kind": "implement",
+            "status": "cleaning",
+        }
         p = dispatch.build_worker_prompt(dispatch.ROLE_CLEANUP, task, self._ctx())
         self.assertIn("(see task file)", p)
         self.assertNotIn("verification-only", p)

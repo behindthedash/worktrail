@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import live  # noqa: E402
+from worktrail.orchestrator import live
 
 
 class JournalForeignTaskIdsAllMatchTest(unittest.TestCase):
@@ -169,14 +169,20 @@ class FullRealInnerForeignJournalRaisesTest(unittest.TestCase):
             fake_git = MagicMock()
             fake_git.stdout = "dev"
 
-            with patch("worktrail.orchestrator.live._git", return_value=fake_git), patch(
-                "worktrail.orchestrator.live.journal_path_for", return_value=journal_path
-            ), patch(
-                "worktrail.orchestrator.live.taskformats.load_spec",
-                return_value=("spec-id", current_tasks),
-            ), patch(
-                "worktrail.orchestrator.live.live_run_real"
-            ) as mock_live_run_real:
+            with (
+                patch("worktrail.orchestrator.live._git", return_value=fake_git),
+                patch(
+                    "worktrail.orchestrator.live.journal_path_for",
+                    return_value=journal_path,
+                ),
+                patch(
+                    "worktrail.orchestrator.live.taskformats.load_spec",
+                    return_value=("spec-id", current_tasks),
+                ),
+                patch(
+                    "worktrail.orchestrator.live.live_run_real"
+                ) as mock_live_run_real,
+            ):
                 with self.assertRaises(RuntimeError) as ctx:
                     live._full_real_inner("/tmp/fake-repo", spec_rel, resume=True)
 
@@ -186,7 +192,9 @@ class FullRealInnerForeignJournalRaisesTest(unittest.TestCase):
     def test_foreign_task_id_raises_runtime_error_naming_id_journal_and_spec(self):
         spec_rel = "docs/specs/spec-path-task-crosscheck"
         message, journal_path = self._run_and_capture_error(
-            journal_entries=[{"task": "9.9", "role": "implement", "report": {"head_sha": "deadbee"}}],
+            journal_entries=[
+                {"task": "9.9", "role": "implement", "report": {"head_sha": "deadbee"}}
+            ],
             current_tasks=[{"id": "1.1", "status": "pending"}],
             spec_rel=spec_rel,
         )
@@ -201,7 +209,11 @@ class FullRealInnerForeignJournalRaisesTest(unittest.TestCase):
         message, _ = self._run_and_capture_error(
             journal_entries=[
                 {"task": "9.9", "role": "implement", "report": {"head_sha": "deadbee"}},
-                {"task": "9.10", "role": "implement", "report": {"head_sha": "feedbee"}},
+                {
+                    "task": "9.10",
+                    "role": "implement",
+                    "report": {"head_sha": "feedbee"},
+                },
             ],
             current_tasks=[{"id": "1.1", "status": "pending"}],
             spec_rel=spec_rel,
@@ -245,7 +257,11 @@ class FullRealInnerFreshDiscardsForeignJournalTest(unittest.TestCase):
                 json.dump(
                     {
                         "entries": [
-                            {"task": "9.9", "role": "implement", "report": {"head_sha": "deadbee"}}
+                            {
+                                "task": "9.9",
+                                "role": "implement",
+                                "report": {"head_sha": "deadbee"},
+                            }
                         ]
                     },
                     f,
@@ -257,20 +273,30 @@ class FullRealInnerFreshDiscardsForeignJournalTest(unittest.TestCase):
 
             current_tasks = [{"id": "1.1", "status": "pending"}]
 
-            with patch(
-                "worktrail.orchestrator.live._git", return_value=fake_git
-            ), patch(
-                "worktrail.orchestrator.live.journal_path_for", return_value=journal_path
-            ), patch(
-                "worktrail.orchestrator.live.taskformats.load_spec",
-                return_value=("spec-id", current_tasks),
-            ), patch(
-                "worktrail.orchestrator.live._pipeline_scheduler",
-                return_value={"group_prs": [], "final": None, "quarantined": {}, "merged": []},
-            ) as mock_sched, patch(
-                "worktrail.orchestrator.live.read_or_create_run_id", return_value="full-fresh-test"
-            ), patch(
-                "worktrail.orchestrator.live.progress"
+            with (
+                patch("worktrail.orchestrator.live._git", return_value=fake_git),
+                patch(
+                    "worktrail.orchestrator.live.journal_path_for",
+                    return_value=journal_path,
+                ),
+                patch(
+                    "worktrail.orchestrator.live.taskformats.load_spec",
+                    return_value=("spec-id", current_tasks),
+                ),
+                patch(
+                    "worktrail.orchestrator.live._pipeline_scheduler",
+                    return_value={
+                        "group_prs": [],
+                        "final": None,
+                        "quarantined": {},
+                        "merged": [],
+                    },
+                ) as mock_sched,
+                patch(
+                    "worktrail.orchestrator.live.read_or_create_run_id",
+                    return_value="full-fresh-test",
+                ),
+                patch("worktrail.orchestrator.live.progress"),
             ):
                 try:
                     live._full_real_inner(
@@ -280,7 +306,9 @@ class FullRealInnerFreshDiscardsForeignJournalTest(unittest.TestCase):
                     )
                 except RuntimeError as e:
                     if "not present in --spec" in str(e):
-                        self.fail(f"--fresh re-run must not raise the foreign-journal guard: {e}")
+                        self.fail(
+                            f"--fresh re-run must not raise the foreign-journal guard: {e}"
+                        )
                     # any other RuntimeError from the mocked-out environment is
                     # not what this test cares about
                 except Exception:

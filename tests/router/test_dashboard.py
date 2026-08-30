@@ -20,11 +20,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from worktrail.conductor import compile as runplan_compile
+from worktrail.conductor import runplan
 from worktrail.router import dashboard
 from worktrail.router.policy import load_policy, resolve_routing
 from worktrail.runtime.selection import select_cell
-from worktrail.conductor import compile as runplan_compile
-from worktrail.conductor import runplan
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -78,9 +78,15 @@ def _add_change_tasks(spec_dir: Path, slug: str, tasks: list[tuple[str, ...]]) -
 
 SPEC_MIN = "# Feature Specification: X\n\n**ID**: 001-x\n\n## Summary\nstuff\n"
 SPEC_CLARIFIED = SPEC_MIN + "\n## Clarifications\n### Session 2026-05-29\n- Q/A\n"
-SPEC_MARKERS = SPEC_MIN + "\n## Requirements\n- [NEEDS CLARIFICATION: which auth flow?]\n"
-SPEC_BACKFILL = "# Feature: X\n\n**Status**: Backfill\n\n## Summary\ndocumented after.\n"
-SPEC_IMPLEMENTED = "# Feature: X\n\n**Status**: Implemented\n\n## Summary\nall merged.\n"
+SPEC_MARKERS = (
+    SPEC_MIN + "\n## Requirements\n- [NEEDS CLARIFICATION: which auth flow?]\n"
+)
+SPEC_BACKFILL = (
+    "# Feature: X\n\n**Status**: Backfill\n\n## Summary\ndocumented after.\n"
+)
+SPEC_IMPLEMENTED = (
+    "# Feature: X\n\n**Status**: Implemented\n\n## Summary\nall merged.\n"
+)
 
 
 class StateMachine(unittest.TestCase):
@@ -167,13 +173,20 @@ class StateMachine(unittest.TestCase):
 
     def test_pending_tasks_route_to_orchestrator(self):
         r = self.stage(
-            spec_body=SPEC_CLARIFIED, tasks=[("TASK-001", "completed"), ("TASK-002", "pending")]
+            spec_body=SPEC_CLARIFIED,
+            tasks=[("TASK-001", "completed"), ("TASK-002", "pending")],
         )
         self.assertEqual(r["stage"], "ready-to-implement")
         self.assertEqual(r["next_action"], "orchestrator")
         self.assertEqual(
             r["tasks"],
-            {"total": 2, "completed": 1, "pending": 1, "pending_impl": 1, "pending_tail": 0},
+            {
+                "total": 2,
+                "completed": 1,
+                "pending": 1,
+                "pending_impl": 1,
+                "pending_tail": 0,
+            },
         )
 
     def test_tasks_dominate_unrecognized_spec(self):
@@ -184,7 +197,9 @@ class StateMachine(unittest.TestCase):
         (d / "user-request.md").write_text("# User Request\n")
         td = d / "tasks"
         td.mkdir()
-        (td / "TASK-001.md").write_text("---\nid: TASK-001\nstatus: pending\nkind: impl\n---\n")
+        (td / "TASK-001.md").write_text(
+            "---\nid: TASK-001\nstatus: pending\nkind: impl\n---\n"
+        )
         r = dashboard.detect_stage(d)
         self.assertEqual(r["stage"], "ready-to-implement")
 
@@ -326,7 +341,11 @@ class StateMachine(unittest.TestCase):
     def test_complete_when_journal_lacks_integrate_complete(self):
         # Journal exists but integrate_complete not set → unchanged behavior
         spec_dir = _spec(
-            self.root / "004-journal-no-integrate-complete" / "docs" / "specs" / "004-journal-no-integrate-complete",
+            self.root
+            / "004-journal-no-integrate-complete"
+            / "docs"
+            / "specs"
+            / "004-journal-no-integrate-complete",
             spec_body=SPEC_CLARIFIED,
             tasks=[("TASK-001", "completed")],
             synced_kg=True,
@@ -369,7 +388,9 @@ class StateMachine(unittest.TestCase):
         journal_dir = repo.parent / f"{repo.name}-worktrees"
         journal_dir.mkdir(parents=True, exist_ok=True)
         journal_path = journal_dir / f"run-{spec_dir.name}.json"
-        journal_path.write_text('{"run_id": "full-2222222222", "integrate_complete": true}')
+        journal_path.write_text(
+            '{"run_id": "full-2222222222", "integrate_complete": true}'
+        )
         r = dashboard.detect_stage(spec_dir)
         self.assertEqual(r["stage"], "complete")
         self.assertIn("PR", r["next_action"])
@@ -392,7 +413,9 @@ class StateMachine(unittest.TestCase):
         repo = spec_dir.parent.parent.parent
         status_dir = repo.parent / f"{repo.name}-worktrees"
         status_dir.mkdir(parents=True, exist_ok=True)
-        (status_dir / f"run-{spec_dir.name}.status.json").write_text(json.dumps(payload))
+        (status_dir / f"run-{spec_dir.name}.status.json").write_text(
+            json.dumps(payload)
+        )
 
     # All groups merged, but the journal records held-out tail (e2e/cleanup) tasks.
     _JOURNAL_TAIL = """
@@ -412,8 +435,11 @@ class StateMachine(unittest.TestCase):
         # NOT ready-to-implement (the old loop bug), and surfaces the recorded ids.
         spec_dir = self._spec_with_journal(
             "010-tail",
-            [("TASK-001", "completed"), ("TASK-022", "pending", "e2e"),
-             ("TASK-023", "pending", "cleanup")],
+            [
+                ("TASK-001", "completed"),
+                ("TASK-022", "pending", "e2e"),
+                ("TASK-023", "pending", "cleanup"),
+            ],
             self._JOURNAL_TAIL,
         )
         r = dashboard.detect_stage(spec_dir)
@@ -429,8 +455,11 @@ class StateMachine(unittest.TestCase):
         # when tail tasks are also pending (pending_impl > 0 dominates).
         spec_dir = self._spec_with_journal(
             "011-impl-and-tail",
-            [("TASK-001", "completed"), ("TASK-002", "pending"),
-             ("TASK-022", "pending", "e2e")],
+            [
+                ("TASK-001", "completed"),
+                ("TASK-002", "pending"),
+                ("TASK-022", "pending", "e2e"),
+            ],
             self._JOURNAL_TAIL,
         )
         r = dashboard.detect_stage(spec_dir)
@@ -489,7 +518,13 @@ class StateMachine(unittest.TestCase):
         self.assertIn("TASK-CHG-002", r["next_action"])
         self.assertEqual(
             r["tasks"],
-            {"total": 3, "completed": 2, "pending": 1, "pending_impl": 0, "pending_tail": 1},
+            {
+                "total": 3,
+                "completed": 2,
+                "pending": 1,
+                "pending_impl": 0,
+                "pending_tail": 1,
+            },
         )
 
     def test_implemented_header_defers_to_pending_change_tail(self):
@@ -514,7 +549,8 @@ class StateMachine(unittest.TestCase):
         # All tasks completed, no knowledge-graph.json -> sync never ran -> surface sync
         # as the next action before the spec is closed out (else the KG silently drifts).
         r = self.stage(
-            spec_body=SPEC_CLARIFIED, tasks=[("TASK-001", "completed"), ("TASK-002", "completed")]
+            spec_body=SPEC_CLARIFIED,
+            tasks=[("TASK-001", "completed"), ("TASK-002", "completed")],
         )
         self.assertEqual(r["stage"], "sync-pending")
         self.assertIn("sync", r["next_action"])
@@ -595,9 +631,7 @@ class ScanFiltering(unittest.TestCase):
             _spec(root / "001-legacy", spec_body=SPEC_MIN)
             change = repo / "openspec" / "changes" / "add-export"
             change.mkdir(parents=True)
-            (change / "tasks.md").write_text(
-                "## 1. Export\n\n- [ ] 1.1 Add exporter\n"
-            )
+            (change / "tasks.md").write_text("## 1. Export\n\n- [ ] 1.1 Add exporter\n")
             rows = dashboard.scan(root)
             assert [row["id"] for row in rows] == ["001-legacy", "add-export"]
             openspec = rows[1]
@@ -626,22 +660,24 @@ class ScanFiltering(unittest.TestCase):
             repo = Path(tmp)
             change = repo / "openspec" / "changes" / "add-export"
             change.mkdir(parents=True)
-            (change / "tasks.md").write_text(
-                "## 1. Export\n\n- [x] 1.1 Add exporter\n"
-            )
+            (change / "tasks.md").write_text("## 1. Export\n\n- [x] 1.1 Add exporter\n")
             journal_dir = repo.parent / f"{repo.name}-worktrees"
             journal_dir.mkdir(parents=True, exist_ok=True)
-            (journal_dir / "run-add-export.json").write_text(json.dumps({
-                "run_id": "full-1234567890",
-                "integrate_complete": True,
-                "groups": {
-                    "base": {
-                        "pr_url": "https://github.com/test/repo/pull/1",
-                        "head_branch": "full-1234567890/base",
-                        "state": "OPEN",
-                    },
-                },
-            }))
+            (journal_dir / "run-add-export.json").write_text(
+                json.dumps(
+                    {
+                        "run_id": "full-1234567890",
+                        "integrate_complete": True,
+                        "groups": {
+                            "base": {
+                                "pr_url": "https://github.com/test/repo/pull/1",
+                                "head_branch": "full-1234567890/base",
+                                "state": "OPEN",
+                            },
+                        },
+                    }
+                )
+            )
             rows = dashboard.scan(repo / "docs" / "specs")
             self.assertEqual([r["id"] for r in rows], ["add-export"])
             self.assertEqual(rows[0]["stage"], "verify-pending")
@@ -652,22 +688,24 @@ class ScanFiltering(unittest.TestCase):
             repo = Path(tmp)
             change = repo / "openspec" / "changes" / "add-export"
             change.mkdir(parents=True)
-            (change / "tasks.md").write_text(
-                "## 1. Export\n\n- [x] 1.1 Add exporter\n"
-            )
+            (change / "tasks.md").write_text("## 1. Export\n\n- [x] 1.1 Add exporter\n")
             journal_dir = repo.parent / f"{repo.name}-worktrees"
             journal_dir.mkdir(parents=True, exist_ok=True)
-            (journal_dir / "run-add-export.json").write_text(json.dumps({
-                "run_id": "full-9999999999",
-                "integrate_complete": True,
-                "groups": {
-                    "base": {
-                        "pr_url": "https://github.com/test/repo/pull/10",
-                        "head_branch": "full-9999999999/base",
-                        "state": "MERGED",
-                    },
-                },
-            }))
+            (journal_dir / "run-add-export.json").write_text(
+                json.dumps(
+                    {
+                        "run_id": "full-9999999999",
+                        "integrate_complete": True,
+                        "groups": {
+                            "base": {
+                                "pr_url": "https://github.com/test/repo/pull/10",
+                                "head_branch": "full-9999999999/base",
+                                "state": "MERGED",
+                            },
+                        },
+                    }
+                )
+            )
             rows = dashboard.scan(repo / "docs" / "specs")
             self.assertEqual(rows[0]["stage"], "complete")
 
@@ -681,7 +719,9 @@ class OpenSpecSyncPending(unittest.TestCase):
         self.canonical = self.repo / "openspec" / "specs" / "export" / "spec.md"
         self.delta.parent.mkdir(parents=True)
         self.canonical.parent.mkdir(parents=True)
-        (self.change / "tasks.md").write_text("## 1. Export\n\n- [x] 1.1 Update exporter\n")
+        (self.change / "tasks.md").write_text(
+            "## 1. Export\n\n- [x] 1.1 Update exporter\n"
+        )
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -746,14 +786,22 @@ class OpenSpecSyncPending(unittest.TestCase):
         self.assertEqual(result["stage"], "complete")
 
     def test_verify_pending_precedes_sync_pending(self):
-        self.delta.write_text("## ADDED Requirements\n\n### Requirement: Missing export\n")
+        self.delta.write_text(
+            "## ADDED Requirements\n\n### Requirement: Missing export\n"
+        )
         self.canonical.write_text("# Export\n")
         journal_dir = self.repo.parent / f"{self.repo.name}-worktrees"
         journal_dir.mkdir()
-        (journal_dir / "run-update-export.json").write_text(json.dumps({
-            "integrate_complete": True,
-            "groups": {"base": {"pr_url": "https://example.test/1", "state": "OPEN"}},
-        }))
+        (journal_dir / "run-update-export.json").write_text(
+            json.dumps(
+                {
+                    "integrate_complete": True,
+                    "groups": {
+                        "base": {"pr_url": "https://example.test/1", "state": "OPEN"}
+                    },
+                }
+            )
+        )
 
         result = dashboard._safe_detect_openspec(self.change)
 
@@ -801,7 +849,9 @@ class OpenSpecStaleBookkeeping(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("shipped\n")
         subprocess.run(["git", "-C", str(self.repo), "add", *files], check=True)
-        subprocess.run(["git", "-C", str(self.repo), "commit", "-qm", "ship"], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo), "commit", "-qm", "ship"], check=True
+        )
 
     def test_cached_shipped_scope_is_stale_bookkeeping(self):
         change = self._change()
@@ -891,7 +941,11 @@ class OpenSpecDeltaDrift(unittest.TestCase):
     def _commit_at(self, paths: list[Path], message: str, timestamp: int) -> None:
         rel = [str(p.relative_to(self.repo)) for p in paths]
         subprocess.run(["git", "-C", str(self.repo), "add", *rel], check=True)
-        env = dict(os.environ, GIT_AUTHOR_DATE=str(timestamp), GIT_COMMITTER_DATE=str(timestamp))
+        env = dict(
+            os.environ,
+            GIT_AUTHOR_DATE=str(timestamp),
+            GIT_COMMITTER_DATE=str(timestamp),
+        )
         subprocess.run(
             ["git", "-C", str(self.repo), "commit", "-qm", message],
             check=True,
@@ -932,12 +986,22 @@ class OpenSpecDeltaDrift(unittest.TestCase):
             with self.subTest(label=label):
                 archived_id = f"2026-01-0{index + 1}-rework-export-{label}"
                 archived = (
-                    self.repo / "openspec" / "changes" / "archive" / archived_id
-                    / "specs" / "export" / "spec.md"
+                    self.repo
+                    / "openspec"
+                    / "changes"
+                    / "archive"
+                    / archived_id
+                    / "specs"
+                    / "export"
+                    / "spec.md"
                 )
                 archived.parent.mkdir(parents=True)
                 archived.write_text(archived_body)
-                self._commit_at([archived], f"archived change delta ({label})", 1_000_000_100 + index)
+                self._commit_at(
+                    [archived],
+                    f"archived change delta ({label})",
+                    1_000_000_100 + index,
+                )
 
                 drift = dashboard._openspec_delta_drift(change, self.repo)
 
@@ -958,10 +1022,23 @@ class OpenSpecDeltaDrift(unittest.TestCase):
         delta = change / "specs" / "export" / "spec.md"
         delta.parent.mkdir(parents=True)
         delta.write_text("## MODIFIED Requirements\n\n### Requirement: Foo\n")
-        self._commit_at([delta, change / "proposal.md", change / "tasks.md"], "open change", 1_000_000_000)
+        self._commit_at(
+            [delta, change / "proposal.md", change / "tasks.md"],
+            "open change",
+            1_000_000_000,
+        )
 
         archived_id = "2026-01-01-rework-export"
-        archived = self.repo / "openspec" / "changes" / "archive" / archived_id / "specs" / "export" / "spec.md"
+        archived = (
+            self.repo
+            / "openspec"
+            / "changes"
+            / "archive"
+            / archived_id
+            / "specs"
+            / "export"
+            / "spec.md"
+        )
         archived.parent.mkdir(parents=True)
         archived.write_text("## MODIFIED Requirements\n\n### Requirement: Foo\n")
         self._commit_at([archived], "archived change", 1_000_000_100)
@@ -970,7 +1047,13 @@ class OpenSpecDeltaDrift(unittest.TestCase):
 
         self.assertEqual(
             result.get("delta_drift"),
-            [{"requirement": "Foo", "capability": "export", "archived_change_id": archived_id}],
+            [
+                {
+                    "requirement": "Foo",
+                    "capability": "export",
+                    "archived_change_id": archived_id,
+                }
+            ],
         )
 
     def test_archived_sibling_before_open_delta_reports_no_drift(self):
@@ -980,8 +1063,14 @@ class OpenSpecDeltaDrift(unittest.TestCase):
 
         archived_id = "2026-01-01-rework-export"
         archived = (
-            self.repo / "openspec" / "changes" / "archive" / archived_id
-            / "specs" / "export" / "spec.md"
+            self.repo
+            / "openspec"
+            / "changes"
+            / "archive"
+            / archived_id
+            / "specs"
+            / "export"
+            / "spec.md"
         )
         archived.parent.mkdir(parents=True)
         archived.write_text("## MODIFIED Requirements\n\n### Requirement: Foo\n")
@@ -1002,8 +1091,14 @@ class OpenSpecDeltaDrift(unittest.TestCase):
 
         archived_id = "2026-01-01-rework-export"
         archived = (
-            self.repo / "openspec" / "changes" / "archive" / archived_id
-            / "specs" / "export" / "spec.md"
+            self.repo
+            / "openspec"
+            / "changes"
+            / "archive"
+            / archived_id
+            / "specs"
+            / "export"
+            / "spec.md"
         )
         archived.parent.mkdir(parents=True)
         archived.write_text("## MODIFIED Requirements\n\n### Requirement: Foo\n")
@@ -1030,13 +1125,21 @@ class OpenSpecDeltaDrift(unittest.TestCase):
         complete must still report that same stage once a drift finding is
         attached (spec modified-requirement-drift-detection)."""
 
-        def _drift(change: Path, capability: str, archived_id: str) -> tuple[Path, Path]:
+        def _drift(
+            change: Path, capability: str, archived_id: str
+        ) -> tuple[Path, Path]:
             delta = change / "specs" / capability / "spec.md"
             delta.parent.mkdir(parents=True)
             delta.write_text("## MODIFIED Requirements\n\n### Requirement: Foo\n")
             archived = (
-                self.repo / "openspec" / "changes" / "archive" / archived_id
-                / "specs" / capability / "spec.md"
+                self.repo
+                / "openspec"
+                / "changes"
+                / "archive"
+                / archived_id
+                / "specs"
+                / capability
+                / "spec.md"
             )
             archived.parent.mkdir(parents=True)
             archived.write_text("## MODIFIED Requirements\n\n### Requirement: Foo\n")
@@ -1046,8 +1149,12 @@ class OpenSpecDeltaDrift(unittest.TestCase):
             change = self.repo / "openspec" / "changes" / "update-export-ready"
             change.mkdir(parents=True)
             (change / "proposal.md").write_text("# Update exporter\n")
-            (change / "tasks.md").write_text("## 1. Export\n\n- [ ] 1.1 Update exporter\n")
-            delta, archived = _drift(change, "export-ready", "2026-01-01-rework-export-ready")
+            (change / "tasks.md").write_text(
+                "## 1. Export\n\n- [ ] 1.1 Update exporter\n"
+            )
+            delta, archived = _drift(
+                change, "export-ready", "2026-01-01-rework-export-ready"
+            )
             self._commit_at(
                 [change / "proposal.md", change / "tasks.md", delta],
                 "open change ready",
@@ -1060,15 +1167,25 @@ class OpenSpecDeltaDrift(unittest.TestCase):
             self.assertEqual(result["stage"], "ready-to-implement")
             self.assertEqual(
                 result.get("delta_drift"),
-                [{"requirement": "Foo", "capability": "export-ready", "archived_change_id": "2026-01-01-rework-export-ready"}],
+                [
+                    {
+                        "requirement": "Foo",
+                        "capability": "export-ready",
+                        "archived_change_id": "2026-01-01-rework-export-ready",
+                    }
+                ],
             )
 
         with self.subTest(stage="stale-bookkeeping"):
             change = self.repo / "openspec" / "changes" / "update-export-stale"
             change.mkdir(parents=True)
             (change / "proposal.md").write_text("# Update exporter\n")
-            (change / "tasks.md").write_text("## 1. Export\n\n- [ ] 1.1 Update exporter\n")
-            delta, archived = _drift(change, "export-stale", "2026-01-01-rework-export-stale")
+            (change / "tasks.md").write_text(
+                "## 1. Export\n\n- [ ] 1.1 Update exporter\n"
+            )
+            delta, archived = _drift(
+                change, "export-stale", "2026-01-01-rework-export-stale"
+            )
             self._commit_at(
                 [change / "proposal.md", change / "tasks.md", delta],
                 "open change stale",
@@ -1086,15 +1203,25 @@ class OpenSpecDeltaDrift(unittest.TestCase):
             self.assertEqual(result["stage"], "stale-bookkeeping")
             self.assertEqual(
                 result.get("delta_drift"),
-                [{"requirement": "Foo", "capability": "export-stale", "archived_change_id": "2026-01-01-rework-export-stale"}],
+                [
+                    {
+                        "requirement": "Foo",
+                        "capability": "export-stale",
+                        "archived_change_id": "2026-01-01-rework-export-stale",
+                    }
+                ],
             )
 
         with self.subTest(stage="complete"):
             change = self.repo / "openspec" / "changes" / "update-export-complete"
             change.mkdir(parents=True)
             (change / "proposal.md").write_text("# Update exporter\n")
-            (change / "tasks.md").write_text("## 1. Export\n\n- [x] 1.1 Update exporter\n")
-            delta, archived = _drift(change, "export-complete", "2026-01-01-rework-export-complete")
+            (change / "tasks.md").write_text(
+                "## 1. Export\n\n- [x] 1.1 Update exporter\n"
+            )
+            delta, archived = _drift(
+                change, "export-complete", "2026-01-01-rework-export-complete"
+            )
             canonical = self.repo / "openspec" / "specs" / "export-complete" / "spec.md"
             canonical.parent.mkdir(parents=True)
             canonical.write_text("### Requirement: Foo\n")
@@ -1110,7 +1237,13 @@ class OpenSpecDeltaDrift(unittest.TestCase):
             self.assertEqual(result["stage"], "complete")
             self.assertEqual(
                 result.get("delta_drift"),
-                [{"requirement": "Foo", "capability": "export-complete", "archived_change_id": "2026-01-01-rework-export-complete"}],
+                [
+                    {
+                        "requirement": "Foo",
+                        "capability": "export-complete",
+                        "archived_change_id": "2026-01-01-rework-export-complete",
+                    }
+                ],
             )
 
 
@@ -1158,8 +1291,10 @@ class SpecFileDiscovery(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_dated_wins_newest(self):
-        self.assertEqual(self._found(["2026-05-29--x.md", "2026-06-14--x.md", "spec.md"]),
-                         "2026-06-14--x.md")
+        self.assertEqual(
+            self._found(["2026-05-29--x.md", "2026-06-14--x.md", "spec.md"]),
+            "2026-06-14--x.md",
+        )
 
     def test_plain_spec_md_recognized(self):
         # The live bug: spec.md folders were mislabeled empty/brainstorm.
@@ -1172,15 +1307,27 @@ class SpecFileDiscovery(unittest.TestCase):
     def test_review_substring_midname_not_excluded(self):
         # Regression: a dated spec whose name contains "-review-" mid-string must be
         # recognized (this mislabeled spec 004 as empty under substring matching).
-        self.assertEqual(self._found(["2026-05-31--orchestrator-review-writer-path.md"]),
-                         "2026-05-31--orchestrator-review-writer-path.md")
+        self.assertEqual(
+            self._found(["2026-05-31--orchestrator-review-writer-path.md"]),
+            "2026-05-31--orchestrator-review-writer-path.md",
+        )
 
     def test_auxiliaries_never_chosen(self):
         # Only auxiliary files present -> no spec doc.
-        d = self._dir(["user-request.md", "data-model.md", "decision-log.md",
-                       "traceability-matrix.md", "2026-06-09--x--tasks.md",
-                       "TASK-001-review.md", "2026-05-30--technical-plan.md",
-                       "brainstorming-notes.md", "spec-check.md", "TASKS.md"])
+        d = self._dir(
+            [
+                "user-request.md",
+                "data-model.md",
+                "decision-log.md",
+                "traceability-matrix.md",
+                "2026-06-09--x--tasks.md",
+                "TASK-001-review.md",
+                "2026-05-30--technical-plan.md",
+                "brainstorming-notes.md",
+                "spec-check.md",
+                "TASKS.md",
+            ]
+        )
         self.assertIsNone(dashboard.find_spec_file(d))
 
     def test_ambiguous_reference_docs_not_guessed_as_spec(self):
@@ -1191,10 +1338,16 @@ class SpecFileDiscovery(unittest.TestCase):
         # tie-break, misrouting the folder to spec-to-tasks instead of unspecd.
         # With 2+ candidates tied at the lowest rank, none of them carries any
         # naming-convention evidence of being the real spec -- refuse to guess.
-        d = self._dir(["user-request.md", "architecture-diagram.md",
-                       "implementation-checklist.md", "world_id_executive_summary.md",
-                       "world_id_integration_assessment.md",
-                       "world_id_technical_implementation.md"])
+        d = self._dir(
+            [
+                "user-request.md",
+                "architecture-diagram.md",
+                "implementation-checklist.md",
+                "world_id_executive_summary.md",
+                "world_id_integration_assessment.md",
+                "world_id_technical_implementation.md",
+            ]
+        )
         self.assertIsNone(dashboard.find_spec_file(d))
 
     def test_single_unconventional_name_still_recognized(self):
@@ -1269,8 +1422,7 @@ class ReposScan(unittest.TestCase):
             a = self._repo(parent, "repo-a")
             _spec(a / "docs" / "specs" / "001-x", spec_body=SPEC_MIN)  # needs-tasks
             self._repo(parent, "repo-c")
-            out = dashboard.render_dashboard(dashboard.scan_repos(parent),
-                                             None, [], [])
+            out = dashboard.render_dashboard(dashboard.scan_repos(parent), None, [], [])
             self.assertIn("📋 Active work", out)
             self.assertIn("Needs tasking", out)
             self.assertIn("repo-a 001-x", out)
@@ -1283,17 +1435,27 @@ class ReposScan(unittest.TestCase):
 
     def test_render_dashboard_surfaces_all_provider_capacity_gate(self):
         out = dashboard.render_dashboard(
-            [], None, [], [], capacity={
+            [],
+            None,
+            [],
+            [],
+            capacity={
                 "configured": ["claude:sonnet", "opencode:safe/model"],
                 "gated": [
-                    {"provider": "claude:sonnet", "failure_class": "transport",
-                     "retry_after": "2026-07-20T21:00:00+00:00"},
-                    {"provider": "opencode:safe/model", "failure_class": "auth",
-                     "retry_after": "2026-07-20T22:00:00+00:00"},
+                    {
+                        "provider": "claude:sonnet",
+                        "failure_class": "transport",
+                        "retry_after": "2026-07-20T21:00:00+00:00",
+                    },
+                    {
+                        "provider": "opencode:safe/model",
+                        "failure_class": "auth",
+                        "retry_after": "2026-07-20T22:00:00+00:00",
+                    },
                 ],
                 "all_gated": True,
                 "retry_after": "2026-07-20T21:00:00+00:00",
-            }
+            },
         )
         self.assertIn("Headless capacity blocked", out)
         self.assertIn("transport", out)
@@ -1301,16 +1463,22 @@ class ReposScan(unittest.TestCase):
 
     def test_render_dashboard_names_gated_cell_as_target_model_class_retry(self):
         out = dashboard.render_dashboard(
-            [], None, [], [], capacity={
+            [],
+            None,
+            [],
+            [],
+            capacity={
                 "configured": ["claude-sub:claude-opus-4"],
                 "gated": [
-                    {"provider": "claude-sub:claude-opus-4",
-                     "failure_class": "model_unavailable",
-                     "retry_after": "2026-07-20T21:00:00+00:00"},
+                    {
+                        "provider": "claude-sub:claude-opus-4",
+                        "failure_class": "model_unavailable",
+                        "retry_after": "2026-07-20T21:00:00+00:00",
+                    },
                 ],
                 "all_gated": False,
                 "retry_after": "2026-07-20T21:00:00+00:00",
-            }
+            },
         )
         self.assertIn(
             "claude-sub:claude-opus-4 (model_unavailable, retry 2026-07-20T21:00:00+00:00)",
@@ -1341,7 +1509,11 @@ class ReposScan(unittest.TestCase):
 
     def test_render_dashboard_surfaces_postmerge_check_failures(self):
         out = dashboard.render_dashboard(
-            [], None, [], [], postmerge_check_failures={
+            [],
+            None,
+            [],
+            [],
+            postmerge_check_failures={
                 "repos_flagged": 1,
                 "prs_flagged": 1,
                 "flagged": [
@@ -1352,18 +1524,27 @@ class ReposScan(unittest.TestCase):
                         "merged_at": "2026-08-01T00:00:00Z",
                     },
                 ],
-            }
+            },
         )
         self.assertIn("Post-merge check failures", out)
         self.assertIn("repo-a#42", out)
 
     def test_render_dashboard_omits_postmerge_line_when_empty(self):
         out = dashboard.render_dashboard(
-            [], None, [], [],
-            postmerge_check_failures={"repos_flagged": 0, "prs_flagged": 0, "flagged": []},
+            [],
+            None,
+            [],
+            [],
+            postmerge_check_failures={
+                "repos_flagged": 0,
+                "prs_flagged": 0,
+                "flagged": [],
+            },
         )
         self.assertNotIn("Post-merge check failures", out)
-        out_none = dashboard.render_dashboard([], None, [], [], postmerge_check_failures=None)
+        out_none = dashboard.render_dashboard(
+            [], None, [], [], postmerge_check_failures=None
+        )
         self.assertNotIn("Post-merge check failures", out_none)
 
     def test_worktrees_reported_not_overlaid(self):
@@ -1375,7 +1556,9 @@ class ReposScan(unittest.TestCase):
             _spec(a / "docs" / "specs" / "001-x", spec_body=SPEC_BACKFILL)  # base: done
             wt = parent / "repo-a-worktrees" / "feature-x"
             (wt / ".git").mkdir(parents=True)
-            _spec(wt / "docs" / "specs" / "001-x", spec_body=SPEC_MIN)  # would be active
+            _spec(
+                wt / "docs" / "specs" / "001-x", spec_body=SPEC_MIN
+            )  # would be active
             rows = dashboard.scan_repos(parent)
             ra = next(r for r in rows if r["repo"] == "repo-a")
             self.assertEqual(ra["active"], 0)  # worktree state NOT overlaid
@@ -1392,12 +1575,12 @@ class ReposScan(unittest.TestCase):
             policy_dir = contaminated / ".worktrail"
             policy_dir.mkdir(parents=True)
             (policy_dir / "policy.yaml").write_text(
-                '# go conductor / parallel-orchestrator policy for repo-b.\n'
+                "# go conductor / parallel-orchestrator policy for repo-b.\n"
                 'pre_pr_cmd: "${REPO_B_VENV:-/home/x/projects/repo-b/.venv}/bin/pytest"\n'
             )
             (clean_sibling / ".worktrail").mkdir(parents=True)
             (clean_sibling / ".worktrail" / "policy.yaml").write_text(
-                '# go conductor / parallel-orchestrator policy for repo-b.\n'
+                "# go conductor / parallel-orchestrator policy for repo-b.\n"
                 'pre_pr_cmd: "${REPO_B_VENV:-/home/x/projects/repo-b/.venv}/bin/pytest"\n'
             )
             rows = dashboard.scan_repos(parent)
@@ -1494,7 +1677,9 @@ class ReposScan(unittest.TestCase):
             self.assertEqual(len(ra["journal_findings"]), 1)
             self.assertEqual(ra["journal_findings"][0]["kind"], "malformed-run-record")
             out = dashboard.render_dashboard(rows, None, [], [])
-            self.assertIn("🚩 Stranded runs (1): repo-a (go-corrupted: malformed-run-record)", out)
+            self.assertIn(
+                "🚩 Stranded runs (1): repo-a (go-corrupted: malformed-run-record)", out
+            )
 
     def test_quarantine_flags_line_omitted_when_no_findings(self):
         # No repo has a QUARANTINED group anywhere -- the rendered dashboard
@@ -1515,8 +1700,13 @@ class CategoryPickerAndRender(unittest.TestCase):
 
     @staticmethod
     def _spec_row(spec_id, stage, next_action="x"):
-        return {"id": spec_id, "stage": stage, "next_action": next_action,
-                "feature_summary": None, "tasks": None}
+        return {
+            "id": spec_id,
+            "stage": stage,
+            "next_action": next_action,
+            "feature_summary": None,
+            "tasks": None,
+        }
 
     # --- build_category_actions tests ---
 
@@ -1525,7 +1715,9 @@ class CategoryPickerAndRender(unittest.TestCase):
             self._spec_row("001", "ready-to-implement", "orchestrator"),
             self._spec_row("002", "needs-tasks", "spec-to-tasks"),
         ]
-        cats = dashboard.build_category_actions(None, rows, inflight=[], queue_briefs=[])
+        cats = dashboard.build_category_actions(
+            None, rows, inflight=[], queue_briefs=[]
+        )
         labels = [c["label"] for c in cats]
         self.assertTrue(any("Ready" in l for l in labels))
         self.assertTrue(any("Needs tasking" in l for l in labels))
@@ -1540,8 +1732,14 @@ class CategoryPickerAndRender(unittest.TestCase):
         self.assertEqual(cats[0]["category"], "new-work")
 
     def test_category_actions_workqueue_included_when_present(self):
-        brief = {"filename": "20260617-001.md", "focus": "fix login", "claimed_at": "2026-06-17T00:00:00"}
-        cats = dashboard.build_category_actions(None, [], inflight=[brief], queue_briefs=[])
+        brief = {
+            "filename": "20260617-001.md",
+            "focus": "fix login",
+            "claimed_at": "2026-06-17T00:00:00",
+        }
+        cats = dashboard.build_category_actions(
+            None, [], inflight=[brief], queue_briefs=[]
+        )
         self.assertTrue(any(c["category"] == "workqueue" for c in cats))
 
     def test_category_actions_caps_at_four(self):
@@ -1550,12 +1748,21 @@ class CategoryPickerAndRender(unittest.TestCase):
             self._spec_row("001", "ready-to-implement", "orchestrator"),
             self._spec_row("002", "needs-tasks", "spec-to-tasks"),
         ]
-        brief = {"filename": "20260617-001.md", "focus": "fix login", "claimed_at": "2026-06-17T00:00:00"}
-        cats = dashboard.build_category_actions(None, rows, inflight=[brief], queue_briefs=[])
+        brief = {
+            "filename": "20260617-001.md",
+            "focus": "fix login",
+            "claimed_at": "2026-06-17T00:00:00",
+        }
+        cats = dashboard.build_category_actions(
+            None, rows, inflight=[brief], queue_briefs=[]
+        )
         self.assertLessEqual(len(cats), 4)
 
     def test_category_actions_decisions_included_with_count(self):
-        decisions = [{"id": "dec-1", "question": "q1"}, {"id": "dec-2", "question": "q2"}]
+        decisions = [
+            {"id": "dec-1", "question": "q1"},
+            {"id": "dec-2", "question": "q2"},
+        ]
         cats = dashboard.build_category_actions(
             None, [], inflight=[], queue_briefs=[], open_decisions=decisions
         )
@@ -1591,7 +1798,11 @@ class CategoryPickerAndRender(unittest.TestCase):
             self._spec_row("001", "ready-to-implement", "orchestrator"),
             self._spec_row("002", "needs-tasks", "spec-to-tasks"),
         ]
-        brief = {"filename": "20260617-001.md", "focus": "fix login", "claimed_at": "2026-06-17T00:00:00"}
+        brief = {
+            "filename": "20260617-001.md",
+            "focus": "fix login",
+            "claimed_at": "2026-06-17T00:00:00",
+        }
         decisions = [{"id": "dec-1", "question": "q1"}]
         cats = dashboard.build_category_actions(
             None, rows, inflight=[brief], queue_briefs=[], open_decisions=decisions
@@ -1616,10 +1827,14 @@ class CategoryPickerAndRender(unittest.TestCase):
         self.assertTrue(all(i["stage"] in dashboard._READY_STAGES for i in ready))
 
     def test_category_items_needs_tasks_separated(self):
-        rows = [self._spec_row(f"00{i}", "needs-tasks", "spec-to-tasks") for i in range(6)]
+        rows = [
+            self._spec_row(f"00{i}", "needs-tasks", "spec-to-tasks") for i in range(6)
+        ]
         items = dashboard.build_category_items(None, rows, inflight=[], queue_briefs=[])
         self.assertLessEqual(len(items["needs-tasks"]), 4)
-        self.assertTrue(all(i["stage"] in dashboard._TASK_STAGES for i in items["needs-tasks"]))
+        self.assertTrue(
+            all(i["stage"] in dashboard._TASK_STAGES for i in items["needs-tasks"])
+        )
 
     def test_category_items_numbered_per_category(self):
         rows = [
@@ -1631,7 +1846,9 @@ class CategoryPickerAndRender(unittest.TestCase):
         self.assertEqual(items["needs-tasks"][0]["n"], 1)
 
     def test_category_items_new_work_always_present(self):
-        items = dashboard.build_category_items(None, [], inflight=[], queue_briefs=[], backlog_total=5)
+        items = dashboard.build_category_items(
+            None, [], inflight=[], queue_briefs=[], backlog_total=5
+        )
         self.assertTrue(len(items["new-work"]) >= 1)
         self.assertTrue(any(i["action"] == "brainstorm" for i in items["new-work"]))
         self.assertTrue(any(i["action"] == "see-backlog" for i in items["new-work"]))
@@ -1647,9 +1864,16 @@ class CategoryPickerAndRender(unittest.TestCase):
 
     def test_category_items_decisions_carry_dispatch_data(self):
         decisions = [
-            {"id": "dec-1", "question": "Should we use approach A or B?", "repo": "myrepo", "brief": "20260617-001"},
+            {
+                "id": "dec-1",
+                "question": "Should we use approach A or B?",
+                "repo": "myrepo",
+                "brief": "20260617-001",
+            },
         ]
-        items = dashboard.build_category_items(None, [], inflight=[], queue_briefs=[], open_decisions=decisions)
+        items = dashboard.build_category_items(
+            None, [], inflight=[], queue_briefs=[], open_decisions=decisions
+        )
         item = items["decisions"][0]
         self.assertEqual(item["type"], "decision")
         self.assertEqual(item["action"], "answer-decision")
@@ -1664,7 +1888,9 @@ class CategoryPickerAndRender(unittest.TestCase):
             {"id": "dec-1", "question": long_question},
             {"id": "dec-2", "question": None},
         ]
-        items = dashboard.build_category_items(None, [], inflight=[], queue_briefs=[], open_decisions=decisions)
+        items = dashboard.build_category_items(
+            None, [], inflight=[], queue_briefs=[], open_decisions=decisions
+        )
         labels = {i["id"]: i["label"] for i in items["decisions"]}
         self.assertEqual(labels["dec-1"], long_question[:60])
         self.assertEqual(len(labels["dec-1"]), 60)
@@ -1672,13 +1898,21 @@ class CategoryPickerAndRender(unittest.TestCase):
 
     def test_category_items_decisions_capped_at_four(self):
         decisions = [{"id": f"dec-{i}", "question": f"q{i}"} for i in range(6)]
-        items = dashboard.build_category_items(None, [], inflight=[], queue_briefs=[], open_decisions=decisions)
+        items = dashboard.build_category_items(
+            None, [], inflight=[], queue_briefs=[], open_decisions=decisions
+        )
         self.assertEqual(len(items["decisions"]), 4)
 
     def test_category_items_decisions_omitted_when_none_or_empty(self):
-        items_none = dashboard.build_category_items(None, [], inflight=[], queue_briefs=[], open_decisions=None)
-        items_empty = dashboard.build_category_items(None, [], inflight=[], queue_briefs=[], open_decisions=[])
-        items_default = dashboard.build_category_items(None, [], inflight=[], queue_briefs=[])
+        items_none = dashboard.build_category_items(
+            None, [], inflight=[], queue_briefs=[], open_decisions=None
+        )
+        items_empty = dashboard.build_category_items(
+            None, [], inflight=[], queue_briefs=[], open_decisions=[]
+        )
+        items_default = dashboard.build_category_items(
+            None, [], inflight=[], queue_briefs=[]
+        )
         self.assertNotIn("decisions", items_none)
         self.assertNotIn("decisions", items_empty)
         self.assertNotIn("decisions", items_default)
@@ -1705,13 +1939,15 @@ class CategoryPickerAndRender(unittest.TestCase):
                 "        model: sonnet\n"
                 "  default_tier: t2-build\n"
             )
-            briefs = [{
-                "filename": "queued.md",
-                "focus": "claim me",
-                "repo": str(repo),
-                "route": "B",
-                "risk": "medium",
-            }]
+            briefs = [
+                {
+                    "filename": "queued.md",
+                    "focus": "claim me",
+                    "repo": str(repo),
+                    "route": "B",
+                    "risk": "medium",
+                }
+            ]
             items = dashboard.build_category_items(None, [], [], briefs)
             policy = load_policy(repo)
             resolved = resolve_routing(policy)
@@ -1736,18 +1972,24 @@ class CategoryPickerAndRender(unittest.TestCase):
                 "        model: deepseek-v4-flash-free\n"
                 "  default_tier: t3-bulk\n"
             )
-            rows = [{
-                "repo": "repo-a",
-                "path": str(repo),
-                "active_specs": [{
-                    "id": "001",
-                    "stage": "ready-to-implement",
-                    "next_action": "orchestrator",
-                    "route": "C",
-                    "risk": "low",
-                }],
-            }]
-            items = dashboard.build_category_items(rows, None, inflight=[], queue_briefs=[])
+            rows = [
+                {
+                    "repo": "repo-a",
+                    "path": str(repo),
+                    "active_specs": [
+                        {
+                            "id": "001",
+                            "stage": "ready-to-implement",
+                            "next_action": "orchestrator",
+                            "route": "C",
+                            "risk": "low",
+                        }
+                    ],
+                }
+            ]
+            items = dashboard.build_category_items(
+                rows, None, inflight=[], queue_briefs=[]
+            )
             policy = load_policy(repo)
             resolved = resolve_routing(policy)
             expected = select_cell(resolved, resolved["default_tier"]).target
@@ -1757,32 +1999,52 @@ class CategoryPickerAndRender(unittest.TestCase):
         base_rows = [self._spec_row("001", "ready-to-implement", "orchestrator")]
         routed_rows = [dict(base_rows[0], route="B", risk="medium")]
         baseline = dashboard.render_dashboard(None, base_rows, [], [])
-        self.assertEqual(baseline, dashboard.render_dashboard(None, routed_rows, [], []))
+        self.assertEqual(
+            baseline, dashboard.render_dashboard(None, routed_rows, [], [])
+        )
 
     def test_planned_agent_load_failure_falls_back_without_raising(self):
-        brief = {"filename": "queued.md", "focus": "claim me", "route": "B", "risk": "medium"}
+        brief = {
+            "filename": "queued.md",
+            "focus": "claim me",
+            "route": "B",
+            "risk": "medium",
+        }
         if hasattr(dashboard._load_dashboard_policy, "cache_clear"):
             dashboard._load_dashboard_policy.cache_clear()
-        with mock.patch.object(dashboard, "_load_policy", side_effect=RuntimeError("boom")):
+        with mock.patch.object(
+            dashboard, "_load_policy", side_effect=RuntimeError("boom")
+        ):
             items = dashboard.build_category_items(None, [], [], [brief])
         self.assertIsNone(items["workqueue"][0]["planned-agent"])
 
     def test_render_collapses_large_backlog(self):
-        repo_rows = [{
-            "repo": "r", "path": "/r", "has_specs": True, "total": 5, "active": 0,
-            "active_ids": [], "active_specs": [],
-            "backlog": 44, "backlog_ids": [f"{i:03d}-x" for i in range(44)],
-            "worktrees": [],
-        }]
+        repo_rows = [
+            {
+                "repo": "r",
+                "path": "/r",
+                "has_specs": True,
+                "total": 5,
+                "active": 0,
+                "active_ids": [],
+                "active_specs": [],
+                "backlog": 44,
+                "backlog_ids": [f"{i:03d}-x" for i in range(44)],
+                "worktrees": [],
+            }
+        ]
         out = dashboard.render_dashboard(repo_rows, None, [], [])
         self.assertIn("Unspec'd backlog (44)", out)
         self.assertIn("… +42", out)  # count + first two, rest collapsed
 
     def test_render_shows_worktree_and_queue_sections(self):
         out = dashboard.render_dashboard(
-            None, [], inflight=[],
+            None,
+            [],
+            inflight=[],
             queue_briefs=[{"filename": "b.md", "focus": "fix the thing"}],
-            worktrees=["feature-a", "feature-b"])
+            worktrees=["feature-a", "feature-b"],
+        )
         self.assertIn("📥 Queued handoffs (1)", out)
         self.assertIn("fix the thing", out)
         self.assertIn("⚠️  Worktrees (2)", out)
@@ -1790,11 +2052,13 @@ class CategoryPickerAndRender(unittest.TestCase):
     def test_render_shows_stuck_run_header(self):
         out = dashboard.render_dashboard(
             None,
-            [self._spec_row(
-                "001",
-                "orchestrator-stuck",
-                "manual recovery — prior orchestrator run is stuck (fanout_failed)",
-            )],
+            [
+                self._spec_row(
+                    "001",
+                    "orchestrator-stuck",
+                    "manual recovery — prior orchestrator run is stuck (fanout_failed)",
+                )
+            ],
             inflight=[],
             queue_briefs=[],
         )
@@ -1806,8 +2070,10 @@ class CategoryPickerAndRender(unittest.TestCase):
     def test_render_action_hoisted_to_header_once(self):
         out = dashboard.render_dashboard(
             None,
-            [self._spec_row("001", "ready-to-implement", "orchestrator"),
-             self._spec_row("002", "ready-to-implement", "orchestrator")],
+            [
+                self._spec_row("001", "ready-to-implement", "orchestrator"),
+                self._spec_row("002", "ready-to-implement", "orchestrator"),
+            ],
             inflight=[],
             queue_briefs=[],
         )
@@ -1816,11 +2082,14 @@ class CategoryPickerAndRender(unittest.TestCase):
 
     def test_render_marks_blocked_queue_briefs(self):
         out = dashboard.render_dashboard(
-            None, [], inflight=[],
+            None,
+            [],
+            inflight=[],
             queue_briefs=[
                 {"filename": "a.md", "focus": "blocked one", "blocked": True},
                 {"filename": "b.md", "focus": "ready one"},
-            ])
+            ],
+        )
         self.assertIn("📥 Queued handoffs (2)", out)
         # Claimable briefs list first; blocked ones are flagged.
         self.assertLess(out.index("ready one"), out.index("blocked one"))
@@ -1839,11 +2108,14 @@ class CategoryPickerAndRender(unittest.TestCase):
         """A not-yet-due brief is listed (still visible) but tagged distinctly
         from [blocked], and sorts after claimable briefs (AC-004, REQ-CHG-005)."""
         out = dashboard.render_dashboard(
-            None, [], inflight=[],
+            None,
+            [],
+            inflight=[],
             queue_briefs=[
                 {"filename": "a.md", "focus": "watching one", "not_yet_due": True},
                 {"filename": "b.md", "focus": "ready one"},
-            ])
+            ],
+        )
         self.assertIn("📥 Queued handoffs (2)", out)
         self.assertLess(out.index("ready one"), out.index("watching one"))
         self.assertIn("watching one [watching]", out)
@@ -1871,10 +2143,16 @@ class CategoryPickerAndRender(unittest.TestCase):
 
     def test_picker_orders_by_stage_priority_before_id(self):
         """A stuck run must survive the ≤4 cap even with lexically-earlier ids."""
-        rows = [self._spec_row(f"{i:03d}-low", "sync-pending", "sync") for i in range(1, 5)]
-        rows.append(self._spec_row(
-            "050-stuck", "orchestrator-stuck",
-            "manual recovery — prior orchestrator run is stuck (fanout_failed)"))
+        rows = [
+            self._spec_row(f"{i:03d}-low", "sync-pending", "sync") for i in range(1, 5)
+        ]
+        rows.append(
+            self._spec_row(
+                "050-stuck",
+                "orchestrator-stuck",
+                "manual recovery — prior orchestrator run is stuck (fanout_failed)",
+            )
+        )
         items = dashboard.build_category_items(None, rows, [], [])
         ready_ids = [i["spec_id"] for i in items["ready"]]
         self.assertIn("050-stuck", ready_ids)
@@ -1945,9 +2223,14 @@ class CategoryPickerAndRender(unittest.TestCase):
     def test_category_items_inflight_before_cluster(self):
         """Inflight (resume) items keep priority over cluster items."""
         inflight = [{"filename": "resume-me.md", "claimed_at": "2026-06-01T00:00:00"}]
-        briefs = [{"filename": "b0.md", "focus": "x"}, {"filename": "b1.md", "focus": "y"}]
+        briefs = [
+            {"filename": "b0.md", "focus": "x"},
+            {"filename": "b1.md", "focus": "y"},
+        ]
         clusters = [{"members": ["b0", "b1"], "signals": [], "size": 2}]
-        items = dashboard.build_category_items(None, [], inflight, briefs, clusters=clusters)
+        items = dashboard.build_category_items(
+            None, [], inflight, briefs, clusters=clusters
+        )
         wq = items["workqueue"]
         self.assertEqual(wq[0]["type"], "inflight")
         self.assertEqual(wq[1]["type"], "cluster")
@@ -1979,7 +2262,9 @@ class CategoryPickerAndRender(unittest.TestCase):
             {"members": ["b4", "b5"], "signals": [], "size": 2},
             {"members": ["b6", "b7"], "signals": [], "size": 2},
         ]
-        items = dashboard.build_category_items(None, [], inflight, briefs, clusters=clusters)
+        items = dashboard.build_category_items(
+            None, [], inflight, briefs, clusters=clusters
+        )
         wq = items["workqueue"]
         self.assertLessEqual(len(wq), 4)
         cluster_items = [i for i in wq if i["type"] == "cluster"]
@@ -1992,7 +2277,10 @@ class CategoryPickerAndRender(unittest.TestCase):
     def test_category_items_cluster_only_queue_produces_no_queue_items(self):
         """A cluster whose members fully overlap an otherwise-empty
         queue_briefs list produces no individual type: queue item."""
-        briefs = [{"filename": "b0.md", "focus": "x"}, {"filename": "b1.md", "focus": "y"}]
+        briefs = [
+            {"filename": "b0.md", "focus": "x"},
+            {"filename": "b1.md", "focus": "y"},
+        ]
         clusters = [{"members": ["b0", "b1"], "signals": [], "size": 2}]
         items = dashboard.build_category_items(None, [], [], briefs, clusters=clusters)
         wq = items["workqueue"]
@@ -2037,7 +2325,11 @@ class RealFixture(unittest.TestCase):
         # (src/worktrail/.fixtures/), reused across orchestrator and router tests.
         fx = (
             Path(dashboard.__file__).resolve().parents[1]
-            / ".fixtures" / "sample-spec" / "docs" / "specs" / "001-url-shortener"
+            / ".fixtures"
+            / "sample-spec"
+            / "docs"
+            / "specs"
+            / "001-url-shortener"
         )
         if not fx.is_dir():
             self.skipTest("fixture not present")
@@ -2056,9 +2348,15 @@ class InflightBriefs(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def _brief(self, filename: str, status: str, claimed_at: str | None = None,
-               repo: str | None = None, focus_body: str | None = None,
-               batch_primary: str | None = None) -> None:
+    def _brief(
+        self,
+        filename: str,
+        status: str,
+        claimed_at: str | None = None,
+        repo: str | None = None,
+        focus_body: str | None = None,
+        batch_primary: str | None = None,
+    ) -> None:
         """Materialize a brief file with the given frontmatter and body."""
         fm_lines = [
             "---",
@@ -2091,10 +2389,19 @@ class InflightBriefs(unittest.TestCase):
 
     def test_mixed_picked_and_done(self):
         # Mixed -> only picked returned
-        self._brief("brief-done.md", status="done", claimed_at="2026-06-13T10:00:00Z",
-                    focus_body="This is done")
-        self._brief("brief-picked.md", status="picked", claimed_at="2026-06-13T11:00:00Z",
-                    repo="/home/test/repo", focus_body="This is in progress")
+        self._brief(
+            "brief-done.md",
+            status="done",
+            claimed_at="2026-06-13T10:00:00Z",
+            focus_body="This is done",
+        )
+        self._brief(
+            "brief-picked.md",
+            status="picked",
+            claimed_at="2026-06-13T11:00:00Z",
+            repo="/home/test/repo",
+            focus_body="This is in progress",
+        )
         result = dashboard.inflight_briefs(self.root)
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["filename"], "brief-picked.md")
@@ -2105,8 +2412,11 @@ class InflightBriefs(unittest.TestCase):
 
     def test_picked_brief_with_missing_claimed_at(self):
         # Picked brief without claimed-at field -> claimed_at: null
-        self._brief("brief-no-claimed.md", status="picked",
-                    focus_body="In progress but not claimed-at")
+        self._brief(
+            "brief-no-claimed.md",
+            status="picked",
+            focus_body="In progress but not claimed-at",
+        )
         result = dashboard.inflight_briefs(self.root)
         self.assertEqual(len(result), 1)
         self.assertIsNone(result[0]["claimed_at"])
@@ -2114,8 +2424,12 @@ class InflightBriefs(unittest.TestCase):
     def test_focus_extracted_from_first_non_blank_line(self):
         # focus is the first non-blank line after --- delimiter
         body = "\n\n\nFirst non-blank line\n\nSecond line"
-        self._brief("brief-focus.md", status="picked", claimed_at="2026-06-13T12:00:00Z",
-                    focus_body=body)
+        self._brief(
+            "brief-focus.md",
+            status="picked",
+            claimed_at="2026-06-13T12:00:00Z",
+            focus_body=body,
+        )
         result = dashboard.inflight_briefs(self.root)
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["focus"], "First non-blank line")
@@ -2123,8 +2437,7 @@ class InflightBriefs(unittest.TestCase):
     def test_focus_skips_markdown_headers(self):
         # focus skips header lines starting with #
         body = "# Header line\n\nActual content line"
-        self._brief("brief-header-skip.md", status="picked",
-                    focus_body=body)
+        self._brief("brief-header-skip.md", status="picked", focus_body=body)
         result = dashboard.inflight_briefs(self.root)
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["focus"], "Actual content line")
@@ -2153,13 +2466,18 @@ class InflightBriefs(unittest.TestCase):
         self._brief("m-brief.md", status="picked", focus_body="M")
         result = dashboard.inflight_briefs(self.root)
         self.assertEqual(len(result), 3)
-        self.assertEqual([r["filename"] for r in result],
-                         ["a-brief.md", "m-brief.md", "z-brief.md"])
+        self.assertEqual(
+            [r["filename"] for r in result], ["a-brief.md", "m-brief.md", "z-brief.md"]
+        )
 
     def test_repo_field_optional(self):
         # Picked brief without repo field -> repo: null
-        self._brief("brief-no-repo.md", status="picked", claimed_at="2026-06-13T10:00:00Z",
-                    focus_body="No repo field")
+        self._brief(
+            "brief-no-repo.md",
+            status="picked",
+            claimed_at="2026-06-13T10:00:00Z",
+            focus_body="No repo field",
+        )
         result = dashboard.inflight_briefs(self.root)
         self.assertEqual(len(result), 1)
         self.assertIsNone(result[0]["repo"])
@@ -2168,10 +2486,18 @@ class InflightBriefs(unittest.TestCase):
         # Companions of a still-picked primary disappear as rows; the primary
         # carries batched: N instead.
         self._brief("primary.md", status="picked", focus_body="Primary work")
-        self._brief("comp-a.md", status="picked", batch_primary="primary",
-                    focus_body="Companion A")
-        self._brief("comp-b.md", status="picked", batch_primary="primary",
-                    focus_body="Companion B")
+        self._brief(
+            "comp-a.md",
+            status="picked",
+            batch_primary="primary",
+            focus_body="Companion A",
+        )
+        self._brief(
+            "comp-b.md",
+            status="picked",
+            batch_primary="primary",
+            focus_body="Companion B",
+        )
         result = dashboard.inflight_briefs(self.root)
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["filename"], "primary.md")
@@ -2180,8 +2506,12 @@ class InflightBriefs(unittest.TestCase):
     def test_companion_of_done_primary_listed_standalone(self):
         # Primary already done -> its companion is real standalone in-flight work.
         self._brief("primary.md", status="done", focus_body="Primary work")
-        self._brief("comp-a.md", status="picked", batch_primary="primary",
-                    focus_body="Companion A")
+        self._brief(
+            "comp-a.md",
+            status="picked",
+            batch_primary="primary",
+            focus_body="Companion A",
+        )
         result = dashboard.inflight_briefs(self.root)
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["filename"], "comp-a.md")
@@ -2190,8 +2520,12 @@ class InflightBriefs(unittest.TestCase):
     def test_stale_batch_primary_listed_standalone(self):
         # batch-primary pointing at a brief that isn't in picked/ at all is
         # ignored -- the companion is listed normally.
-        self._brief("comp-a.md", status="picked", batch_primary="gone-primary",
-                    focus_body="Companion A")
+        self._brief(
+            "comp-a.md",
+            status="picked",
+            batch_primary="gone-primary",
+            focus_body="Companion A",
+        )
         result = dashboard.inflight_briefs(self.root)
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["filename"], "comp-a.md")
@@ -2211,14 +2545,22 @@ class InflightBriefs(unittest.TestCase):
 
     def test_fresh_claim_hidden(self):
         # Claimed 1h ago -> presumed actively owned by another session -> hidden.
-        self._brief("fresh.md", status="picked",
-                    claimed_at=self._iso_hours_ago(1), focus_body="Fresh work")
+        self._brief(
+            "fresh.md",
+            status="picked",
+            claimed_at=self._iso_hours_ago(1),
+            focus_body="Fresh work",
+        )
         self.assertEqual(dashboard.inflight_briefs(self.root), [])
 
     def test_stale_claim_shown_with_hours(self):
         # Claimed 72h ago -> past the 48h default -> shown, hours surfaced.
-        self._brief("stale.md", status="picked",
-                    claimed_at=self._iso_hours_ago(72), focus_body="Stalled work")
+        self._brief(
+            "stale.md",
+            status="picked",
+            claimed_at=self._iso_hours_ago(72),
+            focus_body="Stalled work",
+        )
         result = dashboard.inflight_briefs(self.root)
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["filename"], "stale.md")
@@ -2232,30 +2574,56 @@ class InflightBriefs(unittest.TestCase):
         self.assertIsNone(result[0]["hours_since_claim"])
 
     def test_unparseable_claimed_at_shown(self):
-        self._brief("bad-stamp.md", status="picked",
-                    claimed_at="not-a-timestamp", focus_body="Bad stamp")
+        self._brief(
+            "bad-stamp.md",
+            status="picked",
+            claimed_at="not-a-timestamp",
+            focus_body="Bad stamp",
+        )
         result = dashboard.inflight_briefs(self.root)
         self.assertEqual(len(result), 1)
 
     def test_stale_hours_zero_disables_filter(self):
-        self._brief("fresh.md", status="picked",
-                    claimed_at=self._iso_hours_ago(1), focus_body="Fresh work")
+        self._brief(
+            "fresh.md",
+            status="picked",
+            claimed_at=self._iso_hours_ago(1),
+            focus_body="Fresh work",
+        )
         result = dashboard.inflight_briefs(self.root, stale_hours=0)
         self.assertEqual(len(result), 1)
 
     def test_fresh_batch_hidden_entirely(self):
         # A freshly-claimed batch (primary + companion) produces no rows at all.
-        self._brief("primary.md", status="picked",
-                    claimed_at=self._iso_hours_ago(2), focus_body="Primary")
-        self._brief("comp-a.md", status="picked", batch_primary="primary",
-                    claimed_at=self._iso_hours_ago(2), focus_body="Companion")
+        self._brief(
+            "primary.md",
+            status="picked",
+            claimed_at=self._iso_hours_ago(2),
+            focus_body="Primary",
+        )
+        self._brief(
+            "comp-a.md",
+            status="picked",
+            batch_primary="primary",
+            claimed_at=self._iso_hours_ago(2),
+            focus_body="Companion",
+        )
         self.assertEqual(dashboard.inflight_briefs(self.root), [])
 
     def test_stale_batch_shown_as_one_row(self):
-        self._brief("primary.md", status="picked",
-                    claimed_at=self._iso_hours_ago(96), focus_body="Primary")
-        self._brief("comp-a.md", status="picked", batch_primary="primary",
-                    claimed_at=self._iso_hours_ago(96), focus_body="Companion")
+        self._brief(
+            "primary.md",
+            status="picked",
+            claimed_at=self._iso_hours_ago(96),
+            focus_body="Primary",
+        )
+        self._brief(
+            "comp-a.md",
+            status="picked",
+            batch_primary="primary",
+            claimed_at=self._iso_hours_ago(96),
+            focus_body="Companion",
+        )
         result = dashboard.inflight_briefs(self.root)
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["filename"], "primary.md")
@@ -2292,11 +2660,15 @@ class JSONOutput(unittest.TestCase):
 
             f = io.StringIO()
             with redirect_stdout(f):
-                dashboard.main([
-                    "--root", str(specs_dir),
-                    "--picked-dir", str(picked_dir),
-                    "--json"
-                ])
+                dashboard.main(
+                    [
+                        "--root",
+                        str(specs_dir),
+                        "--picked-dir",
+                        str(picked_dir),
+                        "--json",
+                    ]
+                )
             output = json.loads(f.getvalue())
 
             # Verify structure
@@ -2320,11 +2692,15 @@ class JSONOutput(unittest.TestCase):
 
             f = io.StringIO()
             with redirect_stdout(f):
-                dashboard.main([
-                    "--root", str(specs_dir),
-                    "--picked-dir", str(picked_dir),
-                    "--json"
-                ])
+                dashboard.main(
+                    [
+                        "--root",
+                        str(specs_dir),
+                        "--picked-dir",
+                        str(picked_dir),
+                        "--json",
+                    ]
+                )
             output = json.loads(f.getvalue())
 
             # Verify inflight is present but empty
@@ -2358,7 +2734,9 @@ class StaleBookkeeping(unittest.TestCase):
         (d / "2026-05-29--feature.md").write_text(SPEC_CLARIFIED)
         return d
 
-    def _task(self, spec_dir: Path, tid: str, status: str, files, kind: str = "impl") -> None:
+    def _task(
+        self, spec_dir: Path, tid: str, status: str, files, kind: str = "impl"
+    ) -> None:
         td = spec_dir / "tasks"
         td.mkdir(exist_ok=True)
         files_str = "[" + ", ".join(files) + "]"
@@ -2373,7 +2751,9 @@ class StaleBookkeeping(unittest.TestCase):
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text("shipped\n")
             subprocess.run(["git", "-C", str(self.repo), "add", f], check=True)
-        subprocess.run(["git", "-C", str(self.repo), "commit", "-qm", "ship"], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo), "commit", "-qm", "ship"], check=True
+        )
 
     def test_merged_files_pending_status_is_stale_bookkeeping(self):
         spec = self._spec_dir()
@@ -2390,7 +2770,9 @@ class StaleBookkeeping(unittest.TestCase):
     def test_missing_file_still_routes_to_orchestrator(self):
         # One file shipped, one never created -> genuinely unimplemented -> orchestrator.
         spec = self._spec_dir()
-        self._task(spec, "TASK-068-19", "pending", ["app/src/page.tsx", "app/src/missing.tsx"])
+        self._task(
+            spec, "TASK-068-19", "pending", ["app/src/page.tsx", "app/src/missing.tsx"]
+        )
         self._commit(["app/src/page.tsx"])
         r = dashboard.detect_stage(spec)
         self.assertEqual(r["stage"], "ready-to-implement")
@@ -2468,8 +2850,12 @@ class StaleBookkeeping(unittest.TestCase):
         for repo in (primary, sibling):
             repo.mkdir()
             subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t"], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+            subprocess.run(
+                ["git", "-C", str(repo), "config", "user.email", "t@t"], check=True
+            )
+            subprocess.run(
+                ["git", "-C", str(repo), "config", "user.name", "t"], check=True
+            )
 
         spec = primary / "docs" / "specs" / "001-cross-repo"
         spec.mkdir(parents=True)
@@ -2495,7 +2881,9 @@ class StaleBookkeeping(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("shipped\n")
             subprocess.run(["git", "-C", str(repo), "add", relative], check=True)
-            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "ship"], check=True)
+            subprocess.run(
+                ["git", "-C", str(repo), "commit", "-qm", "ship"], check=True
+            )
 
         result = dashboard.detect_stage(spec)
         self.assertEqual(result["stage"], "stale-bookkeeping")
@@ -2573,7 +2961,7 @@ class AutoPick(unittest.TestCase):
     def _brief(
         self,
         filename: str,
-        repo: "str | None",
+        repo: str | None,
         blocked: bool = False,
         not_yet_due: bool = False,
         recently_released: bool = False,
@@ -2642,13 +3030,16 @@ class AutoPick(unittest.TestCase):
         """A not-yet-due brief (next-check-after hasn't arrived) is skipped by
         auto-pick with a distinct reason, parallel to `blocked` (AC-002)."""
         briefs = [
-            self._brief("20260701-000000-watching.md", str(self.repo), not_yet_due=True),
+            self._brief(
+                "20260701-000000-watching.md", str(self.repo), not_yet_due=True
+            ),
             self._brief("20260710-000000-free.md", str(self.repo)),
         ]
         result = dashboard.auto_pick_brief(briefs)
         self.assertEqual(result["pick"]["id"], "20260710-000000-free")
         self.assertEqual(
-            result["skipped"], [{"id": "20260701-000000-watching", "reason": "not-yet-due"}]
+            result["skipped"],
+            [{"id": "20260701-000000-watching", "reason": "not-yet-due"}],
         )
 
     def test_recently_released_skipped_with_reason(self):
@@ -2656,7 +3047,9 @@ class AutoPick(unittest.TestCase):
         rather than immediately re-picked -- the claim/release race the field
         exists for (brief 20260714-120015)."""
         briefs = [
-            self._brief("20260701-000000-justfreed.md", str(self.repo), recently_released=True),
+            self._brief(
+                "20260701-000000-justfreed.md", str(self.repo), recently_released=True
+            ),
             self._brief("20260710-000000-free.md", str(self.repo)),
         ]
         result = dashboard.auto_pick_brief(briefs)
@@ -2669,7 +3062,9 @@ class AutoPick(unittest.TestCase):
     def test_no_repo_and_missing_repo_skipped(self):
         briefs = [
             self._brief("20260701-000000-norepo.md", None),
-            self._brief("20260702-000000-gone.md", str(self.root / "projects" / "gone")),
+            self._brief(
+                "20260702-000000-gone.md", str(self.root / "projects" / "gone")
+            ),
             self._brief("20260710-000000-ok.md", str(self.repo)),
         ]
         result = dashboard.auto_pick_brief(briefs)
@@ -2695,8 +3090,12 @@ class AutoPick(unittest.TestCase):
             self.assertIsNone(result["pick"])
             self.assertEqual(
                 result["skipped"],
-                [{"id": "20260701-000000-brief",
-                  "reason": "orchestrator-run-active:run-live.lock"}],
+                [
+                    {
+                        "id": "20260701-000000-brief",
+                        "reason": "orchestrator-run-active:run-live.lock",
+                    }
+                ],
             )
         finally:
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
@@ -2721,8 +3120,12 @@ class AutoPick(unittest.TestCase):
             self.assertIsNone(result["pick"])
             self.assertEqual(
                 result["skipped"],
-                [{"id": "20260701-000000-brief",
-                  "reason": "orchestrator-run-active:run-081-spec.lock"}],
+                [
+                    {
+                        "id": "20260701-000000-brief",
+                        "reason": "orchestrator-run-active:run-081-spec.lock",
+                    }
+                ],
             )
         finally:
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
@@ -2745,7 +3148,9 @@ class AutoPick(unittest.TestCase):
         literal string -- a brief that survives capture with a bare name
         (create_handoff.py does not normalize it) must still be auto-pickable."""
         briefs = [self._brief("20260701-000000-bare.md", "myapp")]
-        result = dashboard.auto_pick_brief(briefs, repos_root=str(self.root / "projects"))
+        result = dashboard.auto_pick_brief(
+            briefs, repos_root=str(self.root / "projects")
+        )
         self.assertEqual(result["pick"]["id"], "20260701-000000-bare")
         self.assertEqual(result["skipped"], [])
 
@@ -2753,7 +3158,9 @@ class AutoPick(unittest.TestCase):
         """`owner/name`-style repo values (e.g. 'behindthedash/devops') resolve
         by basename against repos_root, same as the repo_filter basename match."""
         briefs = [self._brief("20260701-000000-ownername.md", "behindthedash/myapp")]
-        result = dashboard.auto_pick_brief(briefs, repos_root=str(self.root / "projects"))
+        result = dashboard.auto_pick_brief(
+            briefs, repos_root=str(self.root / "projects")
+        )
         self.assertEqual(result["pick"]["id"], "20260701-000000-ownername")
         self.assertEqual(result["skipped"], [])
 
@@ -2776,7 +3183,10 @@ class AutoPick(unittest.TestCase):
         briefs = [self._brief("20260701-000000-bare.md", "myapp")]
         result = dashboard.auto_pick_brief(briefs)
         self.assertIsNone(result["pick"])
-        self.assertEqual(result["skipped"], [{"id": "20260701-000000-bare", "reason": "repo-missing"}])
+        self.assertEqual(
+            result["skipped"],
+            [{"id": "20260701-000000-bare", "reason": "repo-missing"}],
+        )
 
     def test_empty_queue_returns_null_pick(self):
         result = dashboard.auto_pick_brief([])
@@ -2786,7 +3196,9 @@ class AutoPick(unittest.TestCase):
     def test_remote_same_spec_branch_is_skipped(self):
         briefs = [
             self._brief(
-                "20260701-000000-colliding.md", str(self.repo), target_spec="017-go-auto-mode"
+                "20260701-000000-colliding.md",
+                str(self.repo),
+                target_spec="017-go-auto-mode",
             ),
             self._brief("20260710-000000-free.md", str(self.repo)),
         ]
@@ -2824,7 +3236,11 @@ class AutoPickMissLogging(unittest.TestCase):
     def _lines(self) -> list[dict]:
         if not self.log_path.is_file():
             return []
-        return [json.loads(line) for line in self.log_path.read_text().splitlines() if line.strip()]
+        return [
+            json.loads(line)
+            for line in self.log_path.read_text().splitlines()
+            if line.strip()
+        ]
 
     def test_a_real_pick_logs_nothing(self):
         dashboard.log_auto_pick_miss(
@@ -2841,21 +3257,25 @@ class AutoPickMissLogging(unittest.TestCase):
                 {"id": "c", "reason": "not-yet-due"},
             ],
         }
-        dashboard.log_auto_pick_miss(auto_pick, total_briefs=62, repo_filter="myapp",
-                                     path=self.log_path)
+        dashboard.log_auto_pick_miss(
+            auto_pick, total_briefs=62, repo_filter="myapp", path=self.log_path
+        )
         lines = self._lines()
         self.assertEqual(len(lines), 1)
         record = lines[0]
         self.assertEqual(record["total_briefs"], 62)
         self.assertEqual(record["repo_filter"], "myapp")
         self.assertEqual(record["skipped_count"], 3)
-        self.assertEqual(record["reasons"], {"orchestrator-run-active": 2, "not-yet-due": 1})
+        self.assertEqual(
+            record["reasons"], {"orchestrator-run-active": 2, "not-yet-due": 1}
+        )
         self.assertEqual(record["skipped"], auto_pick["skipped"])
         datetime.datetime.fromisoformat(record["at"])  # parses; raises if malformed
 
     def test_an_empty_queue_miss_still_logs(self):
-        dashboard.log_auto_pick_miss({"pick": None, "skipped": []}, total_briefs=0,
-                                     path=self.log_path)
+        dashboard.log_auto_pick_miss(
+            {"pick": None, "skipped": []}, total_briefs=0, path=self.log_path
+        )
         lines = self._lines()
         self.assertEqual(len(lines), 1)
         self.assertEqual(lines[0]["total_briefs"], 0)
@@ -2865,16 +3285,21 @@ class AutoPickMissLogging(unittest.TestCase):
         for i in range(dashboard.MAX_AUTO_PICK_MISS_ENTRIES + 5):
             dashboard.log_auto_pick_miss(
                 {"pick": None, "skipped": [{"id": str(i), "reason": "not-yet-due"}]},
-                total_briefs=1, path=self.log_path,
+                total_briefs=1,
+                path=self.log_path,
             )
         lines = self._lines()
         self.assertEqual(len(lines), dashboard.MAX_AUTO_PICK_MISS_ENTRIES)
         # Oldest entries were dropped; the newest survive.
-        self.assertEqual(lines[-1]["skipped"][0]["id"], str(dashboard.MAX_AUTO_PICK_MISS_ENTRIES + 4))
+        self.assertEqual(
+            lines[-1]["skipped"][0]["id"], str(dashboard.MAX_AUTO_PICK_MISS_ENTRIES + 4)
+        )
         self.assertEqual(lines[0]["skipped"][0]["id"], "5")
 
     def test_env_var_override_resolves_path(self):
-        with mock.patch.dict(os.environ, {dashboard.AUTO_PICK_MISS_LOG_ENV: str(self.log_path)}):
+        with mock.patch.dict(
+            os.environ, {dashboard.AUTO_PICK_MISS_LOG_ENV: str(self.log_path)}
+        ):
             self.assertEqual(dashboard.auto_pick_miss_log_path(), self.log_path)
 
     def test_write_failure_is_swallowed_not_raised(self):
@@ -2884,7 +3309,9 @@ class AutoPickMissLogging(unittest.TestCase):
         blocker = Path(self._tmp.name) / "blocker"
         blocker.write_text("x")
         bad_path = blocker / "misses.jsonl"
-        dashboard.log_auto_pick_miss({"pick": None, "skipped": []}, total_briefs=1, path=bad_path)
+        dashboard.log_auto_pick_miss(
+            {"pick": None, "skipped": []}, total_briefs=1, path=bad_path
+        )
 
 
 class ClusterRendering(unittest.TestCase):
@@ -2916,7 +3343,11 @@ class ClusterRendering(unittest.TestCase):
 
     def test_multiple_clusters_one_line_each_one_trailing_next_step(self):
         clusters = self.CLUSTERS + [
-            {"members": ["brief-d", "brief-e"], "signals": ["duplicate-slug"], "size": 2},
+            {
+                "members": ["brief-d", "brief-e"],
+                "signals": ["duplicate-slug"],
+                "size": 2,
+            },
         ]
         out = dashboard.render_dashboard(
             None, [], [], [{"filename": "b.md", "focus": "x"}], clusters=clusters
@@ -2943,7 +3374,9 @@ class ClusterRendering(unittest.TestCase):
             queue_briefs=[{"filename": "b.md", "focus": "fix the thing"}],
             clusters=self.CLUSTERS,
         )
-        self.assertLess(out.index("📥 Queued handoffs"), out.index("🔗 Consolidatable briefs"))
+        self.assertLess(
+            out.index("📥 Queued handoffs"), out.index("🔗 Consolidatable briefs")
+        )
 
     def test_precision_line_shown_at_threshold(self):
         """consolidated + declined >= CLUSTER_PRECISION_MIN_DECIDED (5):
@@ -2958,7 +3391,9 @@ class ClusterRendering(unittest.TestCase):
             cluster_precision=precision,
         )
         section = self._cluster_section(out)
-        self.assertIn("Precision so far: 60% (14 shown, 3 consolidated, 2 declined)", section)
+        self.assertIn(
+            "Precision so far: 60% (14 shown, 3 consolidated, 2 declined)", section
+        )
 
     def test_precision_line_omitted_below_threshold(self):
         """consolidated + declined < CLUSTER_PRECISION_MIN_DECIDED: no
@@ -3011,7 +3446,9 @@ class ClusterDetectionIntegration(unittest.TestCase):
         self.work_queue_dir = Path(self._tmp.name) / "work-queue"
         self.queue_dir = self.work_queue_dir / "queue"
         self.queue_dir.mkdir(parents=True)
-        self._env_patch = mock.patch.dict(os.environ, {"WORK_QUEUE_DIR": str(self.work_queue_dir)})
+        self._env_patch = mock.patch.dict(
+            os.environ, {"WORK_QUEUE_DIR": str(self.work_queue_dir)}
+        )
         self._env_patch.start()
 
     def tearDown(self):
@@ -3020,7 +3457,13 @@ class ClusterDetectionIntegration(unittest.TestCase):
 
     @staticmethod
     def _write_brief(
-        dirpath: Path, filename: str, *, repo=None, target_spec=None, related=None, focus: str = ""
+        dirpath: Path,
+        filename: str,
+        *,
+        repo=None,
+        target_spec=None,
+        related=None,
+        focus: str = "",
     ) -> str:
         lines = ["---"]
         if repo is not None:
@@ -3064,7 +3507,11 @@ class ClusterDetectionIntegration(unittest.TestCase):
         )
         return {
             "members": sorted(
-                ["20260714-090000-brief-a", "20260714-090100-brief-b", "20260714-090200-brief-c"]
+                [
+                    "20260714-090000-brief-a",
+                    "20260714-090100-brief-b",
+                    "20260714-090200-brief-c",
+                ]
             ),
             "signals": ["related-link", "same-target-spec"],
             "size": 3,
@@ -3127,7 +3574,9 @@ class ClusterDetectionIntegration(unittest.TestCase):
     def test_compute_clusters_raising_still_completes_main_with_empty_clusters(self):
         self._write_clustered_briefs()
         with mock.patch.object(
-            dashboard.cluster_detect, "compute_clusters", side_effect=RuntimeError("boom")
+            dashboard.cluster_detect,
+            "compute_clusters",
+            side_effect=RuntimeError("boom"),
         ):
             output = self._run_json()
         self.assertEqual(output["clusters"], [])
@@ -3170,19 +3619,25 @@ class RecentRuns(unittest.TestCase):
             runs_dir = Path(tmp) / "runs"
             run_dir = runs_dir / "myrepo"
             self._write_run(
-                run_dir, "go-20260701-000000",
+                run_dir,
+                "go-20260701-000000",
                 completed_at="2026-07-01T01:00:00+0000",
                 final_status="completed_pr_open",
                 pull_request="https://github.com/x/y/pull/1",
             )
             self._write_run(
-                run_dir, "go-20260702-000000",
+                run_dir,
+                "go-20260702-000000",
                 started_at="2026-07-02T00:00:00+0000",
             )  # still in progress -- no completed_at
             runs = dashboard.load_recent_runs(repo, runs_dir=runs_dir)
-            self.assertEqual([r["run_id"] for r in runs], [
-                "go-20260702-000000", "go-20260701-000000",
-            ])
+            self.assertEqual(
+                [r["run_id"] for r in runs],
+                [
+                    "go-20260702-000000",
+                    "go-20260701-000000",
+                ],
+            )
             self.assertEqual(runs[1]["final_status"], "completed_pr_open")
             self.assertEqual(runs[1]["pull_request"], "https://github.com/x/y/pull/1")
 
@@ -3194,7 +3649,8 @@ class RecentRuns(unittest.TestCase):
             run_dir = runs_dir / "myrepo"
             for i in range(7):
                 self._write_run(
-                    run_dir, f"go-2026070{i}-000000",
+                    run_dir,
+                    f"go-2026070{i}-000000",
                     completed_at=f"2026-07-0{i}T00:00:00+0000",
                 )
             runs = dashboard.load_recent_runs(repo, limit=5, runs_dir=runs_dir)
@@ -3208,17 +3664,26 @@ class RecentRuns(unittest.TestCase):
             run_dir = runs_dir / "myrepo"
             run_dir.mkdir(parents=True)
             (run_dir / "broken.yaml").write_bytes(b"\xff\xfe not utf-8")
-            self._write_run(run_dir, "go-20260701-000000", completed_at="2026-07-01T00:00:00+0000")
+            self._write_run(
+                run_dir, "go-20260701-000000", completed_at="2026-07-01T00:00:00+0000"
+            )
             runs = dashboard.load_recent_runs(repo, runs_dir=runs_dir)
             self.assertEqual([r["run_id"] for r in runs], ["go-20260701-000000"])
 
     def test_render_dashboard_recent_runs_section(self):
         runs = [
-            {"run_id": "go-2", "selected_route": "D", "final_status": None,
-             "pull_request": None},
-            {"run_id": "go-1", "selected_route": "C",
-             "final_status": "planned_ready_for_implementation",
-             "pull_request": "https://github.com/x/y/pull/1"},
+            {
+                "run_id": "go-2",
+                "selected_route": "D",
+                "final_status": None,
+                "pull_request": None,
+            },
+            {
+                "run_id": "go-1",
+                "selected_route": "C",
+                "final_status": "planned_ready_for_implementation",
+                "pull_request": "https://github.com/x/y/pull/1",
+            },
         ]
         out = dashboard.render_dashboard(None, [], [], [], recent_runs=runs)
         self.assertIn("🕘 Recent runs (2)", out)
@@ -3240,7 +3705,8 @@ class RecentRuns(unittest.TestCase):
             specs_dir.mkdir(parents=True)
             runs_dir = root / "runs"
             self._write_run(
-                runs_dir / "myrepo", "go-20260701-000000",
+                runs_dir / "myrepo",
+                "go-20260701-000000",
                 completed_at="2026-07-01T00:00:00+0000",
                 final_status="completed_pr_open",
             )
@@ -3250,11 +3716,15 @@ class RecentRuns(unittest.TestCase):
 
             f = io.StringIO()
             with redirect_stdout(f):
-                dashboard.main([
-                    "--root", str(specs_dir),
-                    "--run-record-dir", str(runs_dir),
-                    "--json",
-                ])
+                dashboard.main(
+                    [
+                        "--root",
+                        str(specs_dir),
+                        "--run-record-dir",
+                        str(runs_dir),
+                        "--json",
+                    ]
+                )
             output = json.loads(f.getvalue())
             self.assertEqual(len(output["recent_runs"]), 1)
             self.assertEqual(output["recent_runs"][0]["run_id"], "go-20260701-000000")
@@ -3269,7 +3739,8 @@ class RecentRuns(unittest.TestCase):
             (repo_b / ".git").mkdir(parents=True)
             runs_dir = parent / "runs"
             self._write_run(
-                runs_dir / "repo-a", "go-20260701-000000",
+                runs_dir / "repo-a",
+                "go-20260701-000000",
                 completed_at="2026-07-01T00:00:00+0000",
             )
 
@@ -3278,11 +3749,15 @@ class RecentRuns(unittest.TestCase):
 
             f = io.StringIO()
             with redirect_stdout(f):
-                dashboard.main([
-                    "--repos", str(parent),
-                    "--run-record-dir", str(runs_dir),
-                    "--json",
-                ])
+                dashboard.main(
+                    [
+                        "--repos",
+                        str(parent),
+                        "--run-record-dir",
+                        str(runs_dir),
+                        "--json",
+                    ]
+                )
             output = json.loads(f.getvalue())
             ra = next(r for r in output["repos"] if r["repo"] == "repo-a")
             rb = next(r for r in output["repos"] if r["repo"] == "repo-b")
@@ -3305,7 +3780,9 @@ class PostmergeAuditDashboardIntegration(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         work_queue_dir = Path(self._tmp.name) / "work-queue"
         (work_queue_dir / "queue").mkdir(parents=True)
-        self._env_patch = mock.patch.dict(os.environ, {"WORK_QUEUE_DIR": str(work_queue_dir)})
+        self._env_patch = mock.patch.dict(
+            os.environ, {"WORK_QUEUE_DIR": str(work_queue_dir)}
+        )
         self._env_patch.start()
 
     def tearDown(self):
@@ -3329,25 +3806,42 @@ class PostmergeAuditDashboardIntegration(unittest.TestCase):
             _spec(specs_dir / "001-x", spec_body=SPEC_MIN)
             state_dir = root / "no-such-postmerge-state"  # never created
 
-            baseline = self._run_json([
-                "--root", str(specs_dir),
-                "--postmerge-audit-state", str(state_dir),
-                "--json",
-            ])
-            with_flag = self._run_json([
-                "--root", str(specs_dir),
-                "--postmerge-audit-state", str(state_dir),
-                "--json",
-            ])
+            baseline = self._run_json(
+                [
+                    "--root",
+                    str(specs_dir),
+                    "--postmerge-audit-state",
+                    str(state_dir),
+                    "--json",
+                ]
+            )
+            with_flag = self._run_json(
+                [
+                    "--root",
+                    str(specs_dir),
+                    "--postmerge-audit-state",
+                    str(state_dir),
+                    "--json",
+                ]
+            )
 
             # cluster_precision reads a real shared telemetry log outside this
             # test's control (see cluster_telemetry.summarize()) -- its own key
             # presence is checked, but its value is not diffed across calls.
             for key in (
-                "constitution", "specs", "active_specs", "handoff_queue",
-                "inflight", "worktrees", "category_actions", "category_items",
-                "auto_pick", "clusters", "capacity",
-                "recent_runs", "staleness_warnings",
+                "constitution",
+                "specs",
+                "active_specs",
+                "handoff_queue",
+                "inflight",
+                "worktrees",
+                "category_actions",
+                "category_items",
+                "auto_pick",
+                "clusters",
+                "capacity",
+                "recent_runs",
+                "staleness_warnings",
             ):
                 self.assertEqual(baseline[key], with_flag[key], key)
             self.assertIn("cluster_precision", with_flag)
@@ -3364,21 +3858,36 @@ class PostmergeAuditDashboardIntegration(unittest.TestCase):
             (parent / "repo-a" / ".git").mkdir(parents=True)
             state_dir = parent / "no-such-postmerge-state"  # never created
 
-            baseline = self._run_json([
-                "--repos", str(parent),
-                "--postmerge-audit-state", str(state_dir),
-                "--json",
-            ])
-            with_flag = self._run_json([
-                "--repos", str(parent),
-                "--postmerge-audit-state", str(state_dir),
-                "--json",
-            ])
+            baseline = self._run_json(
+                [
+                    "--repos",
+                    str(parent),
+                    "--postmerge-audit-state",
+                    str(state_dir),
+                    "--json",
+                ]
+            )
+            with_flag = self._run_json(
+                [
+                    "--repos",
+                    str(parent),
+                    "--postmerge-audit-state",
+                    str(state_dir),
+                    "--json",
+                ]
+            )
 
             for key in (
-                "repos", "active_specs", "handoff_queue", "inflight",
-                "category_actions", "category_items", "auto_pick", "clusters",
-                "capacity", "staleness_warnings",
+                "repos",
+                "active_specs",
+                "handoff_queue",
+                "inflight",
+                "category_actions",
+                "category_items",
+                "auto_pick",
+                "clusters",
+                "capacity",
+                "staleness_warnings",
             ):
                 self.assertEqual(baseline[key], with_flag[key], key)
             self.assertIn("cluster_precision", with_flag)
@@ -3396,23 +3905,31 @@ class PostmergeAuditDashboardIntegration(unittest.TestCase):
             _spec(specs_dir / "001-x", spec_body=SPEC_MIN)
             state_dir = root / "postmerge-state"
             state_dir.mkdir()
-            (state_dir / "myrepo.json").write_text(json.dumps({
-                "last_swept_at": "2026-08-01T00:00:00+00:00",
-                "flagged": [
+            (state_dir / "myrepo.json").write_text(
+                json.dumps(
                     {
-                        "repo": "myrepo",
-                        "url": "https://github.com/org/myrepo/pull/7",
-                        "failing_checks": ["ci/build"],
-                        "merged_at": "2026-08-01T00:00:00Z",
-                    },
-                ],
-            }))
+                        "last_swept_at": "2026-08-01T00:00:00+00:00",
+                        "flagged": [
+                            {
+                                "repo": "myrepo",
+                                "url": "https://github.com/org/myrepo/pull/7",
+                                "failing_checks": ["ci/build"],
+                                "merged_at": "2026-08-01T00:00:00Z",
+                            },
+                        ],
+                    }
+                )
+            )
 
-            output = self._run_json([
-                "--root", str(specs_dir),
-                "--postmerge-audit-state", str(state_dir),
-                "--json",
-            ])
+            output = self._run_json(
+                [
+                    "--root",
+                    str(specs_dir),
+                    "--postmerge-audit-state",
+                    str(state_dir),
+                    "--json",
+                ]
+            )
 
             self.assertEqual(
                 output["postmerge_check_failures"],
@@ -3438,23 +3955,31 @@ class PostmergeAuditDashboardIntegration(unittest.TestCase):
             (parent / "repo-a" / ".git").mkdir(parents=True)
             state_dir = parent / "postmerge-state"
             state_dir.mkdir()
-            (state_dir / "repo-a.json").write_text(json.dumps({
-                "last_swept_at": "2026-08-01T00:00:00+00:00",
-                "flagged": [
+            (state_dir / "repo-a.json").write_text(
+                json.dumps(
                     {
-                        "repo": "repo-a",
-                        "url": "https://github.com/org/repo-a/pull/3",
-                        "failing_checks": ["ci/test"],
-                        "merged_at": "2026-08-01T00:00:00Z",
-                    },
-                ],
-            }))
+                        "last_swept_at": "2026-08-01T00:00:00+00:00",
+                        "flagged": [
+                            {
+                                "repo": "repo-a",
+                                "url": "https://github.com/org/repo-a/pull/3",
+                                "failing_checks": ["ci/test"],
+                                "merged_at": "2026-08-01T00:00:00Z",
+                            },
+                        ],
+                    }
+                )
+            )
 
-            output = self._run_json([
-                "--repos", str(parent),
-                "--postmerge-audit-state", str(state_dir),
-                "--json",
-            ])
+            output = self._run_json(
+                [
+                    "--repos",
+                    str(parent),
+                    "--postmerge-audit-state",
+                    str(state_dir),
+                    "--json",
+                ]
+            )
 
             self.assertEqual(output["postmerge_check_failures"]["repos_flagged"], 1)
             self.assertEqual(output["postmerge_check_failures"]["prs_flagged"], 1)
@@ -3473,32 +3998,44 @@ class PostmergeAuditDashboardIntegration(unittest.TestCase):
 
             f = io.StringIO()
             with redirect_stdout(f):
-                dashboard.main([
-                    "--root", str(specs_dir),
-                    "--postmerge-audit-state", str(empty_state_dir),
-                ])
+                dashboard.main(
+                    [
+                        "--root",
+                        str(specs_dir),
+                        "--postmerge-audit-state",
+                        str(empty_state_dir),
+                    ]
+                )
             self.assertNotIn("Post-merge check failures", f.getvalue())
 
             state_dir = root / "postmerge-state"
             state_dir.mkdir()
-            (state_dir / "myrepo.json").write_text(json.dumps({
-                "last_swept_at": "2026-08-01T00:00:00+00:00",
-                "flagged": [
+            (state_dir / "myrepo.json").write_text(
+                json.dumps(
                     {
-                        "repo": "myrepo",
-                        "url": "https://github.com/org/myrepo/pull/9",
-                        "failing_checks": ["ci/build"],
-                        "merged_at": "2026-08-01T00:00:00Z",
-                    },
-                ],
-            }))
+                        "last_swept_at": "2026-08-01T00:00:00+00:00",
+                        "flagged": [
+                            {
+                                "repo": "myrepo",
+                                "url": "https://github.com/org/myrepo/pull/9",
+                                "failing_checks": ["ci/build"],
+                                "merged_at": "2026-08-01T00:00:00Z",
+                            },
+                        ],
+                    }
+                )
+            )
 
             f2 = io.StringIO()
             with redirect_stdout(f2):
-                dashboard.main([
-                    "--root", str(specs_dir),
-                    "--postmerge-audit-state", str(state_dir),
-                ])
+                dashboard.main(
+                    [
+                        "--root",
+                        str(specs_dir),
+                        "--postmerge-audit-state",
+                        str(state_dir),
+                    ]
+                )
             self.assertIn("Post-merge check failures", f2.getvalue())
             self.assertIn("myrepo#9", f2.getvalue())
 
@@ -3508,39 +4045,73 @@ class StalenessWarnings(unittest.TestCase):
 
     def test_helper_returns_empty_when_freshness_module_unavailable(self):
         with mock.patch.object(dashboard, "_check_repo_freshness", None):
-            self.assertEqual(dashboard._staleness_warnings([("repo-a", "/tmp/repo-a")]), [])
+            self.assertEqual(
+                dashboard._staleness_warnings([("repo-a", "/tmp/repo-a")]), []
+            )
 
     def test_helper_reports_only_stale_repos(self):
         def fake_check(path):
             if "stale" in str(path):
-                return {"stale": True, "warning": "local main is 3 commit(s) behind origin/main"}
+                return {
+                    "stale": True,
+                    "warning": "local main is 3 commit(s) behind origin/main",
+                }
             return {"stale": False, "warning": None}
 
         with mock.patch.object(dashboard, "_check_repo_freshness", fake_check):
-            out = dashboard._staleness_warnings([
-                ("fresh-repo", "/tmp/fresh-repo"),
-                ("stale-repo", "/tmp/stale-repo"),
-            ])
-        self.assertEqual(out, [{"repo": "stale-repo", "warning": "local main is 3 commit(s) behind origin/main"}])
+            out = dashboard._staleness_warnings(
+                [
+                    ("fresh-repo", "/tmp/fresh-repo"),
+                    ("stale-repo", "/tmp/stale-repo"),
+                ]
+            )
+        self.assertEqual(
+            out,
+            [
+                {
+                    "repo": "stale-repo",
+                    "warning": "local main is 3 commit(s) behind origin/main",
+                }
+            ],
+        )
 
     def test_helper_degrades_silently_on_exception(self):
         def boom(path):
             raise RuntimeError("network unreachable")
 
         with mock.patch.object(dashboard, "_check_repo_freshness", boom):
-            self.assertEqual(dashboard._staleness_warnings([("repo-a", "/tmp/repo-a")]), [])
+            self.assertEqual(
+                dashboard._staleness_warnings([("repo-a", "/tmp/repo-a")]), []
+            )
 
     def test_render_dashboard_unaffected_when_no_staleness_warnings(self):
         baseline = dashboard.render_dashboard(None, [], [], [])
-        self.assertEqual(baseline, dashboard.render_dashboard(None, [], [], [], staleness_warnings=[]))
-        self.assertEqual(baseline, dashboard.render_dashboard(None, [], [], [], staleness_warnings=None))
+        self.assertEqual(
+            baseline,
+            dashboard.render_dashboard(None, [], [], [], staleness_warnings=[]),
+        )
+        self.assertEqual(
+            baseline,
+            dashboard.render_dashboard(None, [], [], [], staleness_warnings=None),
+        )
 
     def test_render_dashboard_surfaces_staleness_warning_line(self):
         out = dashboard.render_dashboard(
-            None, [], [], [],
-            staleness_warnings=[{"repo": "datalena", "warning": "local dev is 3 commit(s) behind origin/dev"}],
+            None,
+            [],
+            [],
+            [],
+            staleness_warnings=[
+                {
+                    "repo": "datalena",
+                    "warning": "local dev is 3 commit(s) behind origin/dev",
+                }
+            ],
         )
-        self.assertIn("⚠️  Stale checkout — datalena: local dev is 3 commit(s) behind origin/dev", out)
+        self.assertIn(
+            "⚠️  Stale checkout — datalena: local dev is 3 commit(s) behind origin/dev",
+            out,
+        )
 
     def test_main_json_single_repo_check_freshness_flag(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3549,7 +4120,10 @@ class StalenessWarnings(unittest.TestCase):
             specs.mkdir(parents=True)
 
             def fake_check(path):
-                return {"stale": True, "warning": "local main is 1 commit(s) behind origin/main"}
+                return {
+                    "stale": True,
+                    "warning": "local main is 1 commit(s) behind origin/main",
+                }
 
             import io
             from contextlib import redirect_stdout
@@ -3557,7 +4131,9 @@ class StalenessWarnings(unittest.TestCase):
             f = io.StringIO()
             with mock.patch.object(dashboard, "_check_repo_freshness", fake_check):
                 with redirect_stdout(f):
-                    dashboard.main(["--root", str(specs), "--check-freshness", "--json"])
+                    dashboard.main(
+                        ["--root", str(specs), "--check-freshness", "--json"]
+                    )
             output = json.loads(f.getvalue())
             self.assertEqual(len(output["staleness_warnings"]), 1)
             self.assertEqual(output["staleness_warnings"][0]["repo"], "myrepo")
@@ -3605,7 +4181,9 @@ class StalenessWarnings(unittest.TestCase):
             f = io.StringIO()
             with mock.patch.object(dashboard, "_check_repo_freshness", fake_check):
                 with redirect_stdout(f):
-                    dashboard.main(["--repos", str(parent), "--check-freshness", "--json"])
+                    dashboard.main(
+                        ["--repos", str(parent), "--check-freshness", "--json"]
+                    )
             output = json.loads(f.getvalue())
             self.assertEqual(
                 output["staleness_warnings"], [{"repo": "repo-a", "warning": "behind"}]
@@ -3634,8 +4212,12 @@ class DashboardRepoRootResolution(unittest.TestCase):
         (no `.git`); the ancestor walk must instead find the real checkout."""
         repo_root = self.root / "cache" / "developer-kit"
         scripts = (
-            repo_root / "developer-kit-project-management" / "a1b2c3d4e5f6"
-            / "skills" / "devkit-pm-go" / "scripts"
+            repo_root
+            / "developer-kit-project-management"
+            / "a1b2c3d4e5f6"
+            / "skills"
+            / "devkit-pm-go"
+            / "scripts"
         )
         scripts.mkdir(parents=True)
         (repo_root / ".git").mkdir()
@@ -3648,8 +4230,12 @@ class DashboardRepoRootResolution(unittest.TestCase):
         the same `.git`-ancestor walk rather than a hardcoded offset."""
         repo_root = self.root / "marketplaces" / "developer-kit"
         scripts = (
-            repo_root / "plugins" / "developer-kit-project-management"
-            / "skills" / "devkit-pm-go" / "scripts"
+            repo_root
+            / "plugins"
+            / "developer-kit-project-management"
+            / "skills"
+            / "devkit-pm-go"
+            / "scripts"
         )
         scripts.mkdir(parents=True)
         (repo_root / ".git").mkdir()
@@ -3661,8 +4247,14 @@ class DashboardRepoRootResolution(unittest.TestCase):
         """No `.git` anywhere above `_HERE` -> falls back to the old
         `parents[4]` offset instead of raising."""
         scripts = (
-            self.root / "cache" / "developer-kit" / "developer-kit-project-management"
-            / "deadbeefcafe" / "skills" / "devkit-pm-go" / "scripts"
+            self.root
+            / "cache"
+            / "developer-kit"
+            / "developer-kit-project-management"
+            / "deadbeefcafe"
+            / "skills"
+            / "devkit-pm-go"
+            / "scripts"
         )
         scripts.mkdir(parents=True)
         dashboard._HERE = scripts
@@ -3695,7 +4287,7 @@ class AutoPickReleaseTriage(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def _brief(self, filename: str, triage: "str | None" = None) -> dict:
+    def _brief(self, filename: str, triage: str | None = None) -> dict:
         path = self.queue / filename
         triage_line = f"triage: {triage}\n" if triage else ""
         path.write_text(
@@ -3776,15 +4368,18 @@ class RepoScopedQueueRender(unittest.TestCase):
     BRIEFS = [
         {"filename": "a.md", "focus": "devops thing", "repo": "devops"},
         {"filename": "b.md", "focus": "datalena thing", "repo": "datalena"},
-        {"filename": "c.md", "focus": "path-repo thing",
-         "repo": "/home/x/projects/devops/"},
+        {
+            "filename": "c.md",
+            "focus": "path-repo thing",
+            "repo": "/home/x/projects/devops/",
+        },
         {"filename": "d.md", "focus": "unattributed thing", "repo": None},
     ]
 
     def test_queue_repo_filters_and_counts_hidden(self):
         out = dashboard.render_dashboard(
-            None, [], inflight=[], queue_briefs=list(self.BRIEFS),
-            queue_repo="devops")
+            None, [], inflight=[], queue_briefs=list(self.BRIEFS), queue_repo="devops"
+        )
         self.assertIn("📥 Queued handoffs (2, +2 in other repos)", out)
         self.assertIn("devops thing", out)
         self.assertIn("path-repo thing", out)  # basename match on a path repo
@@ -3793,25 +4388,35 @@ class RepoScopedQueueRender(unittest.TestCase):
 
     def test_no_filter_without_queue_repo(self):
         out = dashboard.render_dashboard(
-            None, [], inflight=[], queue_briefs=list(self.BRIEFS))
+            None, [], inflight=[], queue_briefs=list(self.BRIEFS)
+        )
         self.assertIn("📥 Queued handoffs (4)", out)
         self.assertIn("datalena thing", out)
 
     def test_all_hidden_still_surfaces_a_count(self):
         out = dashboard.render_dashboard(
-            None, [], inflight=[],
+            None,
+            [],
+            inflight=[],
             queue_briefs=[{"filename": "b.md", "focus": "x", "repo": "datalena"}],
-            queue_repo="devops")
+            queue_repo="devops",
+        )
         self.assertIn("📥 Queued handoffs: none for this repo (+1 in other repos)", out)
         self.assertNotIn("• x", out)
 
     def test_inflight_filtered_with_note(self):
         inflight = [
             {"filename": "p1.md", "focus": "ours", "repo": "devops", "claimed_at": "t"},
-            {"filename": "p2.md", "focus": "theirs", "repo": "datalena", "claimed_at": "t"},
+            {
+                "filename": "p2.md",
+                "focus": "theirs",
+                "repo": "datalena",
+                "claimed_at": "t",
+            },
         ]
         out = dashboard.render_dashboard(
-            None, [], inflight=inflight, queue_briefs=[], queue_repo="devops")
+            None, [], inflight=inflight, queue_briefs=[], queue_repo="devops"
+        )
         self.assertIn("Stalled in-flight (1, +1 in other repos)", out)
         self.assertIn("ours", out)
         self.assertNotIn("theirs", out)
@@ -3838,8 +4443,13 @@ class RepoScopedCategoryPickers(unittest.TestCase):
 
     def test_category_actions_counts_scoped_to_queue_repo(self):
         cats = dashboard.build_category_actions(
-            None, [], inflight=[], queue_briefs=list(self.BRIEFS),
-            open_decisions=list(self.DECISIONS), queue_repo="devops")
+            None,
+            [],
+            inflight=[],
+            queue_briefs=list(self.BRIEFS),
+            open_decisions=list(self.DECISIONS),
+            queue_repo="devops",
+        )
         decisions_cat = next(c for c in cats if c["category"] == "decisions")
         workqueue_cat = next(c for c in cats if c["category"] == "workqueue")
         self.assertEqual(decisions_cat["label"], "Open decisions (1)")
@@ -3847,8 +4457,12 @@ class RepoScopedCategoryPickers(unittest.TestCase):
 
     def test_category_actions_unscoped_without_queue_repo(self):
         cats = dashboard.build_category_actions(
-            None, [], inflight=[], queue_briefs=list(self.BRIEFS),
-            open_decisions=list(self.DECISIONS))
+            None,
+            [],
+            inflight=[],
+            queue_briefs=list(self.BRIEFS),
+            open_decisions=list(self.DECISIONS),
+        )
         decisions_cat = next(c for c in cats if c["category"] == "decisions")
         workqueue_cat = next(c for c in cats if c["category"] == "workqueue")
         self.assertEqual(decisions_cat["label"], "Open decisions (2)")
@@ -3856,8 +4470,13 @@ class RepoScopedCategoryPickers(unittest.TestCase):
 
     def test_category_items_scoped_to_queue_repo(self):
         items = dashboard.build_category_items(
-            None, [], inflight=[], queue_briefs=list(self.BRIEFS),
-            open_decisions=list(self.DECISIONS), queue_repo="devops")
+            None,
+            [],
+            inflight=[],
+            queue_briefs=list(self.BRIEFS),
+            open_decisions=list(self.DECISIONS),
+            queue_repo="devops",
+        )
         self.assertEqual(len(items["decisions"]), 1)
         self.assertEqual(items["decisions"][0]["id"], "d-ours")
         self.assertEqual(len(items["workqueue"]), 1)
@@ -3865,17 +4484,28 @@ class RepoScopedCategoryPickers(unittest.TestCase):
 
     def test_category_items_unscoped_without_queue_repo(self):
         items = dashboard.build_category_items(
-            None, [], inflight=[], queue_briefs=list(self.BRIEFS),
-            open_decisions=list(self.DECISIONS))
+            None,
+            [],
+            inflight=[],
+            queue_briefs=list(self.BRIEFS),
+            open_decisions=list(self.DECISIONS),
+        )
         self.assertEqual({d["id"] for d in items["decisions"]}, {"d-ours", "d-theirs"})
         self.assertEqual({b["id"] for b in items["workqueue"]}, {"a", "b"})
 
     def test_path_repo_basename_match(self):
         cats = dashboard.build_category_actions(
-            None, [], inflight=[],
-            queue_briefs=[{"filename": "c.md", "focus": "x", "repo": "/home/x/projects/devops/"}],
-            open_decisions=[{"id": "d-1", "question": "?", "repo": "/home/x/projects/devops"}],
-            queue_repo="devops")
+            None,
+            [],
+            inflight=[],
+            queue_briefs=[
+                {"filename": "c.md", "focus": "x", "repo": "/home/x/projects/devops/"}
+            ],
+            open_decisions=[
+                {"id": "d-1", "question": "?", "repo": "/home/x/projects/devops"}
+            ],
+            queue_repo="devops",
+        )
         decisions_cat = next(c for c in cats if c["category"] == "decisions")
         workqueue_cat = next(c for c in cats if c["category"] == "workqueue")
         self.assertEqual(decisions_cat["label"], "Open decisions (1)")
@@ -3883,10 +4513,13 @@ class RepoScopedCategoryPickers(unittest.TestCase):
 
     def test_unattributed_item_excluded_from_scoped_view(self):
         cats = dashboard.build_category_actions(
-            None, [], inflight=[],
+            None,
+            [],
+            inflight=[],
             queue_briefs=[{"filename": "c.md", "focus": "x", "repo": None}],
             open_decisions=[{"id": "d-1", "question": "?", "repo": None}],
-            queue_repo="devops")
+            queue_repo="devops",
+        )
         self.assertFalse(any(c["category"] == "decisions" for c in cats))
         self.assertFalse(any(c["category"] == "workqueue" for c in cats))
 
@@ -3898,7 +4531,11 @@ class DecisionsJsonCLI(unittest.TestCase):
     `--queue-json`'s existing malformed-input behavior."""
 
     DECISIONS_PAYLOAD = json.dumps(
-        {"decisions": [{"id": "dec-1", "question": "Approach A or B?", "repo": "myrepo"}]}
+        {
+            "decisions": [
+                {"id": "dec-1", "question": "Approach A or B?", "repo": "myrepo"}
+            ]
+        }
     )
 
     def setUp(self):
@@ -3908,7 +4545,9 @@ class DecisionsJsonCLI(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         work_queue_dir = Path(self._tmp.name) / "work-queue"
         (work_queue_dir / "queue").mkdir(parents=True)
-        self._env_patch = mock.patch.dict(os.environ, {"WORK_QUEUE_DIR": str(work_queue_dir)})
+        self._env_patch = mock.patch.dict(
+            os.environ, {"WORK_QUEUE_DIR": str(work_queue_dir)}
+        )
         self._env_patch.start()
 
     def tearDown(self):
@@ -3930,17 +4569,23 @@ class DecisionsJsonCLI(unittest.TestCase):
             specs_dir = Path(tmp) / "myrepo" / "docs" / "specs"
             specs_dir.mkdir(parents=True)
 
-            output = self._run_json([
-                "--root", str(specs_dir),
-                "--decisions-json", self.DECISIONS_PAYLOAD,
-                "--json",
-            ])
+            output = self._run_json(
+                [
+                    "--root",
+                    str(specs_dir),
+                    "--decisions-json",
+                    self.DECISIONS_PAYLOAD,
+                    "--json",
+                ]
+            )
 
             self.assertEqual(
                 output["open_decisions"],
                 [{"id": "dec-1", "question": "Approach A or B?", "repo": "myrepo"}],
             )
-            decision_cats = [c for c in output["category_actions"] if c["category"] == "decisions"]
+            decision_cats = [
+                c for c in output["category_actions"] if c["category"] == "decisions"
+            ]
             self.assertEqual(len(decision_cats), 1)
             self.assertEqual(decision_cats[0]["label"], "Open decisions (1)")
             self.assertEqual(len(output["category_items"]["decisions"]), 1)
@@ -3951,17 +4596,23 @@ class DecisionsJsonCLI(unittest.TestCase):
             parent = Path(tmp)
             (parent / "myrepo" / ".git").mkdir(parents=True)
 
-            output = self._run_json([
-                "--repos", str(parent),
-                "--decisions-json", self.DECISIONS_PAYLOAD,
-                "--json",
-            ])
+            output = self._run_json(
+                [
+                    "--repos",
+                    str(parent),
+                    "--decisions-json",
+                    self.DECISIONS_PAYLOAD,
+                    "--json",
+                ]
+            )
 
             self.assertEqual(
                 output["open_decisions"],
                 [{"id": "dec-1", "question": "Approach A or B?", "repo": "myrepo"}],
             )
-            decision_cats = [c for c in output["category_actions"] if c["category"] == "decisions"]
+            decision_cats = [
+                c for c in output["category_actions"] if c["category"] == "decisions"
+            ]
             self.assertEqual(len(decision_cats), 1)
             self.assertEqual(decision_cats[0]["label"], "Open decisions (1)")
             self.assertEqual(len(output["category_items"]["decisions"]), 1)
@@ -3972,11 +4623,15 @@ class DecisionsJsonCLI(unittest.TestCase):
             specs_dir = Path(tmp) / "myrepo" / "docs" / "specs"
             specs_dir.mkdir(parents=True)
 
-            output = self._run_json([
-                "--root", str(specs_dir),
-                "--decisions-json", "{not valid json",
-                "--json",
-            ])
+            output = self._run_json(
+                [
+                    "--root",
+                    str(specs_dir),
+                    "--decisions-json",
+                    "{not valid json",
+                    "--json",
+                ]
+            )
 
             self.assertEqual(output["open_decisions"], [])
             self.assertNotIn("decisions", output["category_items"])
@@ -4003,21 +4658,42 @@ class DecisionsJsonCLI(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             specs_dir = Path(tmp) / "myrepo" / "docs" / "specs"
             specs_dir.mkdir(parents=True)
-            decisions_payload = json.dumps({"decisions": [
-                {"id": "dec-ours", "question": "Ours?", "repo": "myrepo"},
-                {"id": "dec-theirs", "question": "Theirs?", "repo": "otherrepo"},
-            ]})
-            queue_payload = json.dumps({"briefs": [
-                {"filename": "ours.md", "focus": "ours", "repo": "myrepo"},
-                {"filename": "theirs.md", "focus": "theirs", "repo": "otherrepo"},
-            ]})
+            decisions_payload = json.dumps(
+                {
+                    "decisions": [
+                        {"id": "dec-ours", "question": "Ours?", "repo": "myrepo"},
+                        {
+                            "id": "dec-theirs",
+                            "question": "Theirs?",
+                            "repo": "otherrepo",
+                        },
+                    ]
+                }
+            )
+            queue_payload = json.dumps(
+                {
+                    "briefs": [
+                        {"filename": "ours.md", "focus": "ours", "repo": "myrepo"},
+                        {
+                            "filename": "theirs.md",
+                            "focus": "theirs",
+                            "repo": "otherrepo",
+                        },
+                    ]
+                }
+            )
 
-            output = self._run_json([
-                "--root", str(specs_dir),
-                "--decisions-json", decisions_payload,
-                "--queue-json", queue_payload,
-                "--json",
-            ])
+            output = self._run_json(
+                [
+                    "--root",
+                    str(specs_dir),
+                    "--decisions-json",
+                    decisions_payload,
+                    "--queue-json",
+                    queue_payload,
+                    "--json",
+                ]
+            )
 
             self.assertEqual([d["id"] for d in output["open_decisions"]], ["dec-ours"])
 
@@ -4054,14 +4730,20 @@ class QueueJsonFileCLI(unittest.TestCase):
         {"briefs": [{"filename": "b1.md", "focus": "do the thing", "repo": "myrepo"}]}
     )
     DECISIONS_PAYLOAD = json.dumps(
-        {"decisions": [{"id": "dec-1", "question": "Approach A or B?", "repo": "myrepo"}]}
+        {
+            "decisions": [
+                {"id": "dec-1", "question": "Approach A or B?", "repo": "myrepo"}
+            ]
+        }
     )
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         work_queue_dir = Path(self._tmp.name) / "work-queue"
         (work_queue_dir / "queue").mkdir(parents=True)
-        self._env_patch = mock.patch.dict(os.environ, {"WORK_QUEUE_DIR": str(work_queue_dir)})
+        self._env_patch = mock.patch.dict(
+            os.environ, {"WORK_QUEUE_DIR": str(work_queue_dir)}
+        )
         self._env_patch.start()
 
     def tearDown(self):
@@ -4085,15 +4767,28 @@ class QueueJsonFileCLI(unittest.TestCase):
             queue_file = Path(tmp) / "queue.json"
             queue_file.write_text(self.QUEUE_PAYLOAD)
 
-            via_file = self._run_json([
-                "--root", str(specs_dir), "--queue-json-file", str(queue_file), "--json",
-            ])
-            via_inline = self._run_json([
-                "--root", str(specs_dir), "--queue-json", self.QUEUE_PAYLOAD, "--json",
-            ])
+            via_file = self._run_json(
+                [
+                    "--root",
+                    str(specs_dir),
+                    "--queue-json-file",
+                    str(queue_file),
+                    "--json",
+                ]
+            )
+            via_inline = self._run_json(
+                [
+                    "--root",
+                    str(specs_dir),
+                    "--queue-json",
+                    self.QUEUE_PAYLOAD,
+                    "--json",
+                ]
+            )
 
             self.assertEqual(
-                via_file["category_items"]["workqueue"], via_inline["category_items"]["workqueue"]
+                via_file["category_items"]["workqueue"],
+                via_inline["category_items"]["workqueue"],
             )
             self.assertEqual(via_file["category_items"]["workqueue"][0]["id"], "b1")
 
@@ -4104,10 +4799,15 @@ class QueueJsonFileCLI(unittest.TestCase):
             decisions_file = Path(tmp) / "decisions.json"
             decisions_file.write_text(self.DECISIONS_PAYLOAD)
 
-            via_file = self._run_json([
-                "--root", str(specs_dir),
-                "--decisions-json-file", str(decisions_file), "--json",
-            ])
+            via_file = self._run_json(
+                [
+                    "--root",
+                    str(specs_dir),
+                    "--decisions-json-file",
+                    str(decisions_file),
+                    "--json",
+                ]
+            )
 
             self.assertEqual(
                 via_file["open_decisions"],
@@ -4115,14 +4815,22 @@ class QueueJsonFileCLI(unittest.TestCase):
             )
 
     def test_queue_json_file_reads_stdin_when_dash(self):
-        with tempfile.TemporaryDirectory() as tmp, \
-                mock.patch("sys.stdin", io.StringIO(self.QUEUE_PAYLOAD)):
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch("sys.stdin", io.StringIO(self.QUEUE_PAYLOAD)),
+        ):
             specs_dir = Path(tmp) / "myrepo" / "docs" / "specs"
             specs_dir.mkdir(parents=True)
 
-            output = self._run_json([
-                "--root", str(specs_dir), "--queue-json-file", "-", "--json",
-            ])
+            output = self._run_json(
+                [
+                    "--root",
+                    str(specs_dir),
+                    "--queue-json-file",
+                    "-",
+                    "--json",
+                ]
+            )
 
             self.assertEqual(output["category_items"]["workqueue"][0]["id"], "b1")
 
@@ -4133,15 +4841,24 @@ class QueueJsonFileCLI(unittest.TestCase):
             queue_file = Path(tmp) / "queue.json"
             queue_file.write_text(self.QUEUE_PAYLOAD)
             stale_inline = json.dumps(
-                {"briefs": [{"filename": "stale.md", "focus": "stale", "repo": "myrepo"}]}
+                {
+                    "briefs": [
+                        {"filename": "stale.md", "focus": "stale", "repo": "myrepo"}
+                    ]
+                }
             )
 
-            output = self._run_json([
-                "--root", str(specs_dir),
-                "--queue-json", stale_inline,
-                "--queue-json-file", str(queue_file),
-                "--json",
-            ])
+            output = self._run_json(
+                [
+                    "--root",
+                    str(specs_dir),
+                    "--queue-json",
+                    stale_inline,
+                    "--queue-json-file",
+                    str(queue_file),
+                    "--json",
+                ]
+            )
 
             self.assertEqual(output["category_items"]["workqueue"][0]["id"], "b1")
 
@@ -4152,9 +4869,15 @@ class QueueJsonFileCLI(unittest.TestCase):
             queue_file = Path(tmp) / "queue.json"
             queue_file.write_text("{not valid json")
 
-            output = self._run_json([
-                "--root", str(specs_dir), "--queue-json-file", str(queue_file), "--json",
-            ])
+            output = self._run_json(
+                [
+                    "--root",
+                    str(specs_dir),
+                    "--queue-json-file",
+                    str(queue_file),
+                    "--json",
+                ]
+            )
 
             self.assertNotIn("queue", output["category_items"])
 
@@ -4172,7 +4895,9 @@ class QueueJsonArgvLimitRegression(unittest.TestCase):
         # Pad well past MAX_ARG_STRLEN so the JSON string itself -- not just
         # the surrounding argv overhead -- exceeds the single-argument cap.
         focus = "x" * (self.MAX_ARG_STRLEN + 4096)
-        return json.dumps({"briefs": [{"filename": "big.md", "focus": focus, "repo": "myrepo"}]})
+        return json.dumps(
+            {"briefs": [{"filename": "big.md", "focus": focus, "repo": "myrepo"}]}
+        )
 
     def _isolated_env(self, tmp: Path) -> dict:
         # Isolate from this machine's real ~/work-queue -- otherwise a stray
@@ -4202,9 +4927,19 @@ class QueueJsonArgvLimitRegression(unittest.TestCase):
             # started yet).
             with self.assertRaises(OSError):
                 subprocess.run(
-                    [sys.executable, "-m", "worktrail.router.dashboard",
-                     "--root", str(specs_dir), "--queue-json", payload, "--json"],
-                    capture_output=True, text=True, env=self._isolated_env(tmp_path),
+                    [
+                        sys.executable,
+                        "-m",
+                        "worktrail.router.dashboard",
+                        "--root",
+                        str(specs_dir),
+                        "--queue-json",
+                        payload,
+                        "--json",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    env=self._isolated_env(tmp_path),
                 )
 
     def test_queue_json_file_over_argv_limit_succeeds(self):
@@ -4219,9 +4954,19 @@ class QueueJsonArgvLimitRegression(unittest.TestCase):
             queue_file.write_text(payload)
 
             r = subprocess.run(
-                [sys.executable, "-m", "worktrail.router.dashboard",
-                 "--root", str(specs_dir), "--queue-json-file", str(queue_file), "--json"],
-                capture_output=True, text=True, env=self._isolated_env(tmp_path),
+                [
+                    sys.executable,
+                    "-m",
+                    "worktrail.router.dashboard",
+                    "--root",
+                    str(specs_dir),
+                    "--queue-json-file",
+                    str(queue_file),
+                    "--json",
+                ],
+                capture_output=True,
+                text=True,
+                env=self._isolated_env(tmp_path),
             )
 
             self.assertEqual(r.returncode, 0, msg=r.stderr)
@@ -4241,8 +4986,9 @@ class EpicStageDetection(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def _mk_epic(self, epic_id: str, *, features: int = 1,
-                 status: str | None = None) -> Path:
+    def _mk_epic(
+        self, epic_id: str, *, features: int = 1, status: str | None = None
+    ) -> Path:
         epics = self.repo / "docs" / "specs" / "epics"
         epics.mkdir(parents=True, exist_ok=True)
         body = [f"# Epic: {epic_id}", ""]
@@ -4261,7 +5007,8 @@ class EpicStageDetection(unittest.TestCase):
         spec_dir = self.repo / "docs" / "specs" / spec_id
         spec_dir.mkdir(parents=True, exist_ok=True)
         (spec_dir / "spec.md").write_text(
-            f"# Spec {spec_id}\n\nOwning epic: {epic_id}\n", encoding="utf-8")
+            f"# Spec {spec_id}\n\nOwning epic: {epic_id}\n", encoding="utf-8"
+        )
 
     def test_epic_gap_when_fewer_citing_specs_than_features(self):
         epic_file = self._mk_epic("001-payments", features=2)
@@ -4303,15 +5050,16 @@ class EpicStageDetection(unittest.TestCase):
         self.assertEqual(result["cited"], 1)
         self.assertIn("020-welcome", result["citing_specs"])
 
-    def test_non_epic_named_file_is_ignored_by_epic_id_pattern_against_real_directory(self):
+    def test_non_epic_named_file_is_ignored_by_epic_id_pattern_against_real_directory(
+        self,
+    ):
         epic_file = self._mk_epic("001-payments", features=1)
         epics_dir = epic_file.parent
         (epics_dir / "README.md").write_text("# Epics index\n", encoding="utf-8")
         (epics_dir / "index.md").write_text("# Index\n", encoding="utf-8")
 
         matched = sorted(
-            f.name for f in epics_dir.iterdir()
-            if dashboard.EPIC_ID_RE.match(f.stem)
+            f.name for f in epics_dir.iterdir() if dashboard.EPIC_ID_RE.match(f.stem)
         )
 
         self.assertEqual(matched, ["001-payments.md"])
@@ -4327,8 +5075,9 @@ class EpicScan(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def _mk_epic(self, epic_id: str, *, features: int = 1,
-                 status: str | None = None) -> Path:
+    def _mk_epic(
+        self, epic_id: str, *, features: int = 1, status: str | None = None
+    ) -> Path:
         epics = self.repo / "docs" / "specs" / "epics"
         epics.mkdir(parents=True, exist_ok=True)
         body = [f"# Epic: {epic_id}", ""]
@@ -4358,8 +5107,16 @@ class EpicScan(unittest.TestCase):
         for row in rows:
             self.assertEqual(
                 set(row),
-                {"id", "epic_file", "status_header", "stage", "next_action",
-                 "features", "cited", "citing_specs"},
+                {
+                    "id",
+                    "epic_file",
+                    "status_header",
+                    "stage",
+                    "next_action",
+                    "features",
+                    "cited",
+                    "citing_specs",
+                },
             )
 
     def test_scan_epics_returns_empty_list_when_no_epics_dir(self):
@@ -4395,7 +5152,8 @@ class EpicScan(unittest.TestCase):
         spec_dir = self.repo / "docs" / "specs" / spec_id
         spec_dir.mkdir(parents=True, exist_ok=True)
         (spec_dir / "spec.md").write_text(
-            f"# Spec {spec_id}\n\nOwning epic: {epic_id}\n", encoding="utf-8")
+            f"# Spec {spec_id}\n\nOwning epic: {epic_id}\n", encoding="utf-8"
+        )
 
 
 class EpicRowsInDashboardJson(unittest.TestCase):
@@ -4464,7 +5222,9 @@ class EpicRowsInDashboardJson(unittest.TestCase):
         self.assertEqual(
             [e["id"] for e in rows_by_repo["repo-a"]["epics"]], ["002-onboarding"]
         )
-        self.assertEqual(rows_by_repo["repo-a"]["epics"], dashboard.scan_epics(self.repo))
+        self.assertEqual(
+            rows_by_repo["repo-a"]["epics"], dashboard.scan_epics(self.repo)
+        )
         self.assertEqual(rows_by_repo["repo-b"]["epics"], [])
 
 
@@ -4505,7 +5265,10 @@ class EpicsSectionInRenderDashboard(unittest.TestCase):
 
     def test_omitted_when_only_epic_complete_multi_repo(self):
         repo_rows = [
-            {"repo": "repo-a", "epics": [{"id": "003-legacy", "stage": "epic-complete"}]},
+            {
+                "repo": "repo-a",
+                "epics": [{"id": "003-legacy", "stage": "epic-complete"}],
+            },
         ]
         out = dashboard.render_dashboard(repo_rows, None, [], [])
         self.assertNotIn("Outstanding epics", out)

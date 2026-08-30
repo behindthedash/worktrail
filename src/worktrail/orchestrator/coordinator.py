@@ -43,7 +43,8 @@ import fnmatch
 import json
 import os
 import sys
-from typing import Any, Dict, List, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 TAIL_KINDS = {"e2e", "cleanup"}
 DONE = {"done", "completed"}
@@ -67,7 +68,7 @@ def _norm_files(files) -> set:
     return {os.path.normpath(f) for f in (files or [])}
 
 
-def tail_held_out_task_ids(tasks: List[Dict[str, Any]]) -> List[str]:
+def tail_held_out_task_ids(tasks: list[dict[str, Any]]) -> list[str]:
     """Tasks held out of the fan-out.
 
     This includes tail-kind tasks themselves plus pending non-tail tasks whose
@@ -92,7 +93,9 @@ def tail_held_out_task_ids(tasks: List[Dict[str, Any]]) -> List[str]:
     return sorted(held_out)
 
 
-def runnable_frontier(tasks: List[Dict[str, Any]], max_workers: int) -> List[Dict[str, Any]]:
+def runnable_frontier(
+    tasks: list[dict[str, Any]], max_workers: int
+) -> list[dict[str, Any]]:
     """Pending tasks runnable now: deps satisfied + file-disjoint, capped."""
     done = {t["id"] for t in tasks if t.get("status") in DONE}
     in_flight = [t for t in tasks if t.get("status") in IN_FLIGHT]
@@ -103,7 +106,7 @@ def runnable_frontier(tasks: List[Dict[str, Any]], max_workers: int) -> List[Dic
     for t in in_flight:
         locked_files |= _norm_files(t.get("files"))
 
-    frontier: List[Dict[str, Any]] = []
+    frontier: list[dict[str, Any]] = []
     for t in tasks:
         if t.get("status") != "pending":
             continue
@@ -126,7 +129,9 @@ def runnable_frontier(tasks: List[Dict[str, Any]], max_workers: int) -> List[Dic
     return frontier
 
 
-def disjoint_batches(tasks: List[Dict[str, Any]], max_workers: int) -> List[List[Dict[str, Any]]]:
+def disjoint_batches(
+    tasks: list[dict[str, Any]], max_workers: int
+) -> list[list[dict[str, Any]]]:
     """Greedily pack tasks into batches that may run concurrently: within a batch no
     two tasks share a (normalised) file, and a batch holds at most `max_workers`.
 
@@ -135,7 +140,7 @@ def disjoint_batches(tasks: List[Dict[str, Any]], max_workers: int) -> List[List
     while still guaranteeing two tasks never write the same file at once.
     """
     cap = max(1, max_workers)
-    batches: List[Dict[str, Any]] = []  # each: {"tasks": [...], "files": set}
+    batches: list[dict[str, Any]] = []  # each: {"tasks": [...], "files": set}
     for t in tasks:
         files = _norm_files(t.get("files"))
         for b in batches:
@@ -148,14 +153,14 @@ def disjoint_batches(tasks: List[Dict[str, Any]], max_workers: int) -> List[List
     return [b["tasks"] for b in batches]
 
 
-def simulate(tasks: List[Dict[str, Any]], max_workers: int):
+def simulate(tasks: list[dict[str, Any]], max_workers: int):
     """Replay frontier ticks (assume each dispatched task finishes that tick).
 
     Returns (impl_batches, tail_ids). Pure: operates on a deep copy.
     """
     tasks = copy.deepcopy(tasks)
     by_id = {t["id"]: t for t in tasks}
-    batches: List[List[str]] = []
+    batches: list[list[str]] = []
     for _ in range(10_000):  # guard against cycles
         frontier = runnable_frontier(tasks, max_workers)
         if not frontier:
@@ -170,9 +175,9 @@ def simulate(tasks: List[Dict[str, Any]], max_workers: int):
 # --------------------------------------------------------------------------- #
 # Levels (topological depth) -- for display / sanity
 # --------------------------------------------------------------------------- #
-def compute_levels(tasks: List[Dict[str, Any]]) -> Dict[str, int]:
+def compute_levels(tasks: list[dict[str, Any]]) -> dict[str, int]:
     by_id = {t["id"]: t for t in tasks}
-    level: Dict[str, int] = {}
+    level: dict[str, int] = {}
 
     def lvl(tid: str, seen: frozenset) -> int:
         if tid in seen:
@@ -191,21 +196,21 @@ def compute_levels(tasks: List[Dict[str, Any]]) -> Dict[str, int]:
 # --------------------------------------------------------------------------- #
 # Grouping -> one PR per group
 # --------------------------------------------------------------------------- #
-def _reqs(ids, by_id) -> List[str]:
+def _reqs(ids, by_id) -> list[str]:
     out = set()
     for i in ids:
         out.update(by_id[i].get("reqs", []))
     return sorted(out)
 
 
-def _touches_migration(task: Dict[str, Any], patterns: Sequence[str]) -> bool:
+def _touches_migration(task: dict[str, Any], patterns: Sequence[str]) -> bool:
     """True if any of `task`'s declared files match a migration path pattern."""
     files = _norm_files(task.get("files"))
     return any(fnmatch.fnmatch(f, pat) for f in files for pat in patterns)
 
 
 def group_contains_migration_task(
-    group: Dict[str, Any], tasks: List[Dict[str, Any]], patterns: Sequence[str]
+    group: dict[str, Any], tasks: list[dict[str, Any]], patterns: Sequence[str]
 ) -> bool:
     """True if any task in `group` (a `plan_groups()` entry) touches a
     migration path pattern -- i.e. this is (part of) why `plan_groups` folded
@@ -219,13 +224,15 @@ def group_contains_migration_task(
         return False
     by_id = {t["id"]: t for t in tasks}
     return any(
-        _touches_migration(by_id[tid], patterns) for tid in group["tasks"] if tid in by_id
+        _touches_migration(by_id[tid], patterns)
+        for tid in group["tasks"]
+        if tid in by_id
     )
 
 
 def plan_groups(
-    tasks: List[Dict[str, Any]], migration_patterns: Sequence[str] = ()
-) -> List[Dict[str, Any]]:
+    tasks: list[dict[str, Any]], migration_patterns: Sequence[str] = ()
+) -> list[dict[str, Any]]:
     """Partition the DAG into a base group + independent feature groups.
 
     Algorithm:
@@ -286,7 +293,7 @@ def plan_groups(
     ids = set(by_id)
 
     # forward edges: dep -> direct dependents (within impl)
-    dependents: Dict[str, set] = {tid: set() for tid in ids}
+    dependents: dict[str, set] = {tid: set() for tid in ids}
     for t in impl:
         for d in t.get("deps", []):
             if d in dependents:
@@ -392,7 +399,7 @@ def plan_groups(
     # Shared-file edges. Grouped by file rather than compared pairwise: a file
     # written by k tasks contributes k-1 unions, not k*(k-1)/2 comparisons.
     feat_files = {tid: _norm_files(by_id[tid].get("files")) for tid in feat}
-    writers: Dict[str, List[str]] = {}
+    writers: dict[str, list[str]] = {}
     for tid in sorted(feat):
         for f in feat_files[tid]:
             writers.setdefault(f, []).append(tid)
@@ -400,19 +407,26 @@ def plan_groups(
         for other in co_writers[1:]:
             union(co_writers[0], other)
 
-    comps: Dict[str, set] = {}
+    comps: dict[str, set] = {}
     for tid in feat:
         comps.setdefault(find(tid), set()).add(tid)
 
-    groups: List[Dict[str, Any]] = []
+    groups: list[dict[str, Any]] = []
     if base:
         groups.append(
-            {"name": "base", "tasks": sorted(base), "depends_on": [], "reqs": _reqs(base, by_id)}
+            {
+                "name": "base",
+                "tasks": sorted(base),
+                "depends_on": [],
+                "reqs": _reqs(base, by_id),
+            }
         )
     base_files: set = set()
     for b in base:
         base_files |= _norm_files(by_id[b].get("files"))
-    for idx, members in enumerate(sorted(comps.values(), key=lambda m: sorted(m)[0]), start=1):
+    for idx, members in enumerate(
+        sorted(comps.values(), key=lambda m: sorted(m)[0]), start=1
+    ):
         member_files: set = set()
         for m in members:
             member_files |= _norm_files(by_id[m].get("files"))
@@ -439,8 +453,8 @@ def plan_groups(
 
 
 def declared_files_by_group(
-    groups: List[Dict[str, Any]], tasks: List[Dict[str, Any]]
-) -> Dict[str, List[str]]:
+    groups: list[dict[str, Any]], tasks: list[dict[str, Any]]
+) -> dict[str, list[str]]:
     """`{group name: every file its tasks declare}`, normalised.
 
     Feeds the verify-stage deny-list, which needs to tell an out-of-scope edit
@@ -449,7 +463,7 @@ def declared_files_by_group(
     own deliverable read as a violation.
     """
     by_id = {t["id"]: t for t in tasks}
-    out: Dict[str, List[str]] = {}
+    out: dict[str, list[str]] = {}
     for g in groups:
         files: set = set()
         for tid in g.get("tasks", []):
@@ -464,9 +478,9 @@ FAILED_STATUSES = {"failed", "escalated"}
 
 
 def deliverable_subset(
-    group_task_ids: List[str],
-    tasks: List[Dict[str, Any]],
-    status: Dict[str, str],
+    group_task_ids: list[str],
+    tasks: list[dict[str, Any]],
+    status: dict[str, str],
 ) -> tuple:
     """Split a group into the tasks we can still ship vs. the ones to quarantine.
 
@@ -513,14 +527,16 @@ def deliverable_subset(
     return sorted(deliverable), sorted(non_deliverable)
 
 
-def pr_plan(tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
+def pr_plan(tasks: list[dict[str, Any]]) -> dict[str, Any]:
     """Human-readable PR delivery plan derived from plan_groups()."""
     groups = plan_groups(tasks)
     tail = [t["id"] for t in tasks if t.get("kind") in TAIL_KINDS]
     # Feature groups never depend on each other (any such edge would have merged
     # them), so every non-base group can run in parallel once base has merged.
     parallel = [
-        g["name"] for g in groups if g["name"] != "base" and set(g["depends_on"]) <= {"base"}
+        g["name"]
+        for g in groups
+        if g["name"] != "base" and set(g["depends_on"]) <= {"base"}
     ]
     return {"groups": groups, "tail": tail, "parallel_after_base": parallel}
 
@@ -528,7 +544,7 @@ def pr_plan(tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # Demo
 # --------------------------------------------------------------------------- #
-def _toy_tasks() -> List[Dict[str, Any]]:
+def _toy_tasks() -> list[dict[str, Any]]:
     return [
         {
             "id": "TASK-001",
@@ -579,7 +595,13 @@ def _toy_tasks() -> List[Dict[str, Any]]:
             "kind": "e2e",
             "reqs": [],
         },
-        {"id": "TASK-008", "deps": ["TASK-007"], "files": [], "kind": "cleanup", "reqs": []},
+        {
+            "id": "TASK-008",
+            "deps": ["TASK-007"],
+            "files": [],
+            "kind": "cleanup",
+            "reqs": [],
+        },
     ]
 
 
@@ -615,7 +637,9 @@ def _demo() -> None:
     print("=" * 64)
     plan = pr_plan(tasks)
     for g in plan["groups"]:
-        stack = f"  (stacks on: {', '.join(g['depends_on'])})" if g["depends_on"] else ""
+        stack = (
+            f"  (stacks on: {', '.join(g['depends_on'])})" if g["depends_on"] else ""
+        )
         print(f"  [{g['name']:9}] tasks: {', '.join(g['tasks'])}{stack}")
         print(f"              reqs : {', '.join(g['reqs']) or '-'}")
     print(
@@ -634,7 +658,7 @@ def _demo() -> None:
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
-def _load(path: str) -> List[Dict[str, Any]]:
+def _load(path: str) -> list[dict[str, Any]]:
     with open(path) as f:
         data = json.load(f)
     tasks = data.get("tasks", data) if isinstance(data, dict) else data

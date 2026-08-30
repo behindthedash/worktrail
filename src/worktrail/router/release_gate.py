@@ -19,69 +19,92 @@ Streak semantics (newest-first, consecutive):
 Usage:
   worktrail-release-gate --repo /path/to/repo [--target 5] [--json]
 """
+
 from __future__ import annotations
 
 import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
-from .run_record import RunRecordFormatError, _load
 from .policy import default_run_record_dir, load_policy
+from .run_record import RunRecordFormatError, _load
 
 DEFAULT_TARGET = 5
 
 # Successful terminals only: the completed_* trio plus the two non-PR route
 # completions. blocked_*/failed_* are real terminals but each one is exactly
 # the "run didn't finish clean" signal the streak exists to count against.
-CLEAN_STATES = frozenset({
-    "completed_and_merged",
-    "completed_pr_open",
-    "completed_awaiting_human_approval",
-    "planned_ready_for_implementation",
-    "investigation_complete",
-})
+CLEAN_STATES = frozenset(
+    {
+        "completed_and_merged",
+        "completed_pr_open",
+        "completed_awaiting_human_approval",
+        "planned_ready_for_implementation",
+        "investigation_complete",
+    }
+)
 
 
 def _runs_dir(repo: Path) -> Path:
     policy = load_policy(repo)
-    base = Path(str(policy.get("run_record_dir") or default_run_record_dir())).expanduser()
+    base = Path(
+        str(policy.get("run_record_dir") or default_run_record_dir())
+    ).expanduser()
     return base / repo.name
 
 
-def evaluate(repo: Path, target: int = DEFAULT_TARGET) -> Dict[str, Any]:
+def evaluate(repo: Path, target: int = DEFAULT_TARGET) -> dict[str, Any]:
     repo = Path(repo).expanduser().resolve()
     policy = load_policy(repo)
     gate = policy.get("release_gate")
     runs_dir = _runs_dir(repo)
-    rows: List[Dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
     if runs_dir.is_dir():
         for f in sorted(runs_dir.glob("*.yaml"), reverse=True):  # newest-first
             try:
                 rec = _load(f)
             except RunRecordFormatError:
-                rows.append({"run": f.stem, "status": None, "interventions": None,
-                             "counts": "break", "reason": "malformed record"})
+                rows.append(
+                    {
+                        "run": f.stem,
+                        "status": None,
+                        "interventions": None,
+                        "counts": "break",
+                        "reason": "malformed record",
+                    }
+                )
                 continue
             status = rec.get("final_status")
             n_interventions = len(rec.get("interventions") or [])
             if status is None:
-                rows.append({"run": f.stem, "status": None,
-                             "interventions": n_interventions,
-                             "counts": "skip", "reason": "in flight"})
+                rows.append(
+                    {
+                        "run": f.stem,
+                        "status": None,
+                        "interventions": n_interventions,
+                        "counts": "skip",
+                        "reason": "in flight",
+                    }
+                )
                 continue
             clean = status in CLEAN_STATES and n_interventions == 0
-            rows.append({
-                "run": f.stem,
-                "status": status,
-                "interventions": n_interventions,
-                "counts": "clean" if clean else "break",
-                "reason": None if clean else (
-                    f"{n_interventions} intervention(s)" if n_interventions
-                    else f"final_status {status}"
-                ),
-            })
+            rows.append(
+                {
+                    "run": f.stem,
+                    "status": status,
+                    "interventions": n_interventions,
+                    "counts": "clean" if clean else "break",
+                    "reason": None
+                    if clean
+                    else (
+                        f"{n_interventions} intervention(s)"
+                        if n_interventions
+                        else f"final_status {status}"
+                    ),
+                }
+            )
 
     streak = 0
     for row in rows:
@@ -115,8 +138,10 @@ def main(argv=None) -> int:
     else:
         gate = result["release_gate"] or "(no release_gate set in policy)"
         state = "MET" if result["met"] else "NOT MET"
-        print(f"release gate {gate}: {state} — streak {result['streak']}/{result['target']} "
-              f"clean consecutive runs ({result['runs_considered']} records considered)")
+        print(
+            f"release gate {gate}: {state} — streak {result['streak']}/{result['target']} "
+            f"clean consecutive runs ({result['runs_considered']} records considered)"
+        )
         for row in result["runs"]:
             mark = {"clean": "✓", "break": "✗", "skip": "…"}[row["counts"]]
             reason = f" ({row['reason']})" if row.get("reason") else ""

@@ -16,8 +16,10 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import coordinator  # noqa: E402
-from worktrail.orchestrator import live  # noqa: E402
+from worktrail.orchestrator import (
+    coordinator,
+    live,
+)
 
 
 def _entry(tid, role, *, review_status=None, status="success", sha="abc123"):
@@ -39,7 +41,13 @@ def _entry(tid, role, *, review_status=None, status="success", sha="abc123"):
 
 def _fresh(ids):
     return [
-        {"id": i, "status": "pending", "retry_count": 0, "deps": [], "files": [f"{i}.py"]}
+        {
+            "id": i,
+            "status": "pending",
+            "retry_count": 0,
+            "deps": [],
+            "files": [f"{i}.py"],
+        }
         for i in ids
     ]
 
@@ -256,7 +264,11 @@ class InterleavedJournalResumeTest(unittest.TestCase):
         journal = {
             "entries": [_entry("TASK-001", "implement")],
             "groups": {
-                "base": {"pr_url": "http://pr/base", "head_branch": "run/base", "state": "MERGED"}
+                "base": {
+                    "pr_url": "http://pr/base",
+                    "head_branch": "run/base",
+                    "state": "MERGED",
+                }
             },
         }
         live.reconcile_from_journal(tasks, journal)

@@ -6,9 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from worktrail.orchestrator import integrate
-from worktrail.orchestrator import live
-from worktrail.orchestrator import progress
+from worktrail.orchestrator import integrate, live, progress
 
 
 class IncompleteTerminalState(unittest.TestCase):
@@ -90,7 +88,15 @@ class IncompleteTerminalState(unittest.TestCase):
     def test_validate_task_metadata_rejects_impl_without_files_or_deps(self):
         with self.assertRaisesRegex(RuntimeError, "TASK-001"):
             live.validate_task_metadata(
-                [{"id": "TASK-001", "status": "pending", "kind": "impl", "files": [], "deps": []}]
+                [
+                    {
+                        "id": "TASK-001",
+                        "status": "pending",
+                        "kind": "impl",
+                        "files": [],
+                        "deps": [],
+                    }
+                ]
             )
 
     def test_validate_task_metadata_allows_tail_without_files(self):
@@ -98,7 +104,9 @@ class IncompleteTerminalState(unittest.TestCase):
             [{"id": "TASK-999", "status": "pending", "kind": "cleanup", "files": []}]
         )
 
-    def test_validate_task_metadata_allows_scope_less_task_serialized_behind_a_dep(self):
+    def test_validate_task_metadata_allows_scope_less_task_serialized_behind_a_dep(
+        self,
+    ):
         """compile.py's own prompt tells the model an empty `files` list is "the safe
         answer" because the task stays "serialised behind its neighbours" --
         `runplan.apply_to_tasks` enforces exactly that by refusing to drop a baseline
@@ -119,7 +127,9 @@ class IncompleteTerminalState(unittest.TestCase):
             ]
         )
 
-    def test_validate_task_metadata_rejects_pending_same_file_siblings_with_no_order(self):
+    def test_validate_task_metadata_rejects_pending_same_file_siblings_with_no_order(
+        self,
+    ):
         """go-20260805-172326: a compiled plan left two sibling tasks both declaring
         the same file with no dependency between them. `runnable_frontier`'s per-tick
         file lock happens to serialise them anyway at runtime, but this is the graph-
@@ -128,7 +138,12 @@ class IncompleteTerminalState(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, r"shared\.py.*TASK-001.*TASK-002"):
             live.validate_task_metadata(
                 [
-                    {"id": "TASK-000", "status": "done", "kind": "impl", "files": ["a.py"]},
+                    {
+                        "id": "TASK-000",
+                        "status": "done",
+                        "kind": "impl",
+                        "files": ["a.py"],
+                    },
                     {
                         "id": "TASK-001",
                         "status": "pending",
@@ -149,7 +164,12 @@ class IncompleteTerminalState(unittest.TestCase):
     def test_validate_task_metadata_allows_same_file_tasks_ordered_by_a_dep(self):
         live.validate_task_metadata(
             [
-                {"id": "TASK-001", "status": "pending", "kind": "impl", "files": ["shared.py"]},
+                {
+                    "id": "TASK-001",
+                    "status": "pending",
+                    "kind": "impl",
+                    "files": ["shared.py"],
+                },
                 {
                     "id": "TASK-002",
                     "status": "pending",
@@ -160,12 +180,24 @@ class IncompleteTerminalState(unittest.TestCase):
             ]
         )
 
-    def test_validate_task_metadata_ignores_a_collision_where_both_tasks_are_already_done(self):
+    def test_validate_task_metadata_ignores_a_collision_where_both_tasks_are_already_done(
+        self,
+    ):
         """Nothing left to protect: both writers already ran."""
         live.validate_task_metadata(
             [
-                {"id": "TASK-001", "status": "done", "kind": "impl", "files": ["shared.py"]},
-                {"id": "TASK-002", "status": "done", "kind": "impl", "files": ["shared.py"]},
+                {
+                    "id": "TASK-001",
+                    "status": "done",
+                    "kind": "impl",
+                    "files": ["shared.py"],
+                },
+                {
+                    "id": "TASK-002",
+                    "status": "done",
+                    "kind": "impl",
+                    "files": ["shared.py"],
+                },
             ]
         )
 

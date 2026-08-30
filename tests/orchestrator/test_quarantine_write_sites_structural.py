@@ -50,7 +50,11 @@ def _callee_name(node: ast.Call) -> str | None:
 
 
 def _const_str(node: ast.AST) -> str | None:
-    return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+    return (
+        node.value
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        else None
+    )
 
 
 def _arg_at(node: ast.Call, index: int, keyword: str) -> ast.AST | None:
@@ -89,7 +93,11 @@ def _quarantined_writes_missing_reason(path: Path) -> list[tuple[int, str]]:
         # value, matching the actual PR #221/#227 bug shape (argument
         # entirely omitted, not an empty string deliberately passed).
         reason_str = _const_str(reason_node)
-        if reason_node is not None and isinstance(reason_node, ast.Constant) and reason_str == "":
+        if (
+            reason_node is not None
+            and isinstance(reason_node, ast.Constant)
+            and reason_str == ""
+        ):
             offenders.append((node.lineno, callee))
     return offenders
 

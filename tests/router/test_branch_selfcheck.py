@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Tests for branch_selfcheck.py. Run: python3 -m pytest tests/router/test_branch_selfcheck.py -q"""
+
 import json
 import subprocess
 import tempfile
@@ -16,8 +17,9 @@ from worktrail.router.branch_selfcheck import (
 
 
 def _run_git(args: list, cwd: Path) -> None:
-    subprocess.run(["git", *args], cwd=str(cwd), check=True,
-                    capture_output=True, text=True)
+    subprocess.run(
+        ["git", *args], cwd=str(cwd), check=True, capture_output=True, text=True
+    )
 
 
 def _init_repo(root: Path, name: str) -> Path:
@@ -52,8 +54,12 @@ def _gh_only_side_effect(gh_result):
 
 
 def _no_merged_pr():
-    return patch("subprocess.run", side_effect=_gh_only_side_effect(
-        subprocess.CompletedProcess(args=[], returncode=1, stdout="")))
+    return patch(
+        "subprocess.run",
+        side_effect=_gh_only_side_effect(
+            subprocess.CompletedProcess(args=[], returncode=1, stdout="")
+        ),
+    )
 
 
 def _gh_merged_for_branches(merged_branches: set):
@@ -68,7 +74,8 @@ def _gh_merged_for_branches(merged_branches: set):
             head = cmd[cmd.index("--head") + 1] if "--head" in cmd else None
             prs = [{"number": 1}] if head in merged_branches else []
             return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout=json.dumps(prs))
+                args=cmd, returncode=0, stdout=json.dumps(prs)
+            )
         return real_run(cmd, *args, **kwargs)
 
     return patch("subprocess.run", side_effect=_side_effect)
@@ -110,7 +117,8 @@ class TestMergeMethod(unittest.TestCase):
         with _no_merged_pr():
             self.assertIsNone(merge_method("topic", repo))
         merged_pr = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout=json.dumps([{"number": 9}]))
+            args=[], returncode=0, stdout=json.dumps([{"number": 9}])
+        )
         with patch("subprocess.run", side_effect=_gh_only_side_effect(merged_pr)):
             self.assertEqual(merge_method("topic", repo), "merged-pr")
 
@@ -136,7 +144,9 @@ class TestMergeMethod(unittest.TestCase):
         repo = _init_repo(self.tmp, "r6")
         _branch_with_commit(repo, "spec/task-1", "task1.txt")
         _run_git(["checkout", "-b", "spec/group", "main"], repo)
-        _run_git(["merge", "--no-ff", "spec/task-1", "-m", "merge task into group"], repo)
+        _run_git(
+            ["merge", "--no-ff", "spec/task-1", "-m", "merge task into group"], repo
+        )
         (repo / "group-extra.txt").write_text("extra\n", encoding="utf-8")
         _run_git(["add", "group-extra.txt"], repo)
         _run_git(["commit", "-m", "group's own extra commit"], repo)
@@ -160,8 +170,12 @@ class TestMergeMethod(unittest.TestCase):
         _run_git(["checkout", "main"], repo)
         _run_git(["merge", "--squash", "topic"], repo)
         _run_git(["commit", "-m", "squash merge topic"], repo)
-        with patch("subprocess.run", side_effect=_gh_only_side_effect(
-                subprocess.CompletedProcess(args=[], returncode=127, stdout=""))):
+        with patch(
+            "subprocess.run",
+            side_effect=_gh_only_side_effect(
+                subprocess.CompletedProcess(args=[], returncode=127, stdout="")
+            ),
+        ):
             self.assertIsNone(merge_method("topic", repo))
 
 

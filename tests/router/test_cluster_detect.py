@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 from unittest import mock
 
 from worktrail.router import cluster_detect as _cluster_detect_mod
@@ -36,14 +36,14 @@ from worktrail.router.cluster_detect import (
 _FM_RE = re.compile(r"^---\r?\n(.*?)\n---\r?\n", re.DOTALL)
 
 
-def _fake_parse_frontmatter(text: str) -> Dict[str, Any]:
+def _fake_parse_frontmatter(text: str) -> dict[str, Any]:
     """Minimal stand-in for the loader-backed parser dashboard.py injects in
     production: handles scalars, null, quoted strings, inline `[a, b]` lists,
     and multi-line block-sequence lists."""
     m = _FM_RE.match(text)
     if not m:
         return {}
-    result: Dict[str, Any] = {}
+    result: dict[str, Any] = {}
     lines = m.group(1).split("\n")
     i = 0
     while i < len(lines):
@@ -58,7 +58,7 @@ def _fake_parse_frontmatter(text: str) -> Dict[str, Any]:
             continue
         key, val = kv.group(1), kv.group(2).strip()
         if not val:
-            items: List[str] = []
+            items: list[str] = []
             i += 1
             while i < len(lines) and re.match(r"^\s+-", lines[i]):
                 item_m = re.match(r"^\s+-\s+(.*)", lines[i])
@@ -69,12 +69,19 @@ def _fake_parse_frontmatter(text: str) -> Dict[str, Any]:
             continue
         if val.startswith("[") and val.endswith("]"):
             inner = val[1:-1].strip()
-            result[key] = [x.strip().strip("\"'") for x in inner.split(",")] if inner else []
+            result[key] = (
+                [x.strip().strip("\"'") for x in inner.split(",")] if inner else []
+            )
         elif val in ("null", "~"):
             result[key] = None
-        elif val.startswith('"') and val.endswith('"') and len(val) >= 2:
-            result[key] = val[1:-1]
-        elif val.startswith("'") and val.endswith("'") and len(val) >= 2:
+        elif (
+            val.startswith('"')
+            and val.endswith('"')
+            and len(val) >= 2
+            or val.startswith("'")
+            and val.endswith("'")
+            and len(val) >= 2
+        ):
             result[key] = val[1:-1]
         else:
             result[key] = val
@@ -86,11 +93,11 @@ def _write_brief(
     dirpath: Path,
     filename: str,
     *,
-    repo: Optional[str] = None,
-    target_spec: Optional[str] = None,
-    target_task: Optional[str] = None,
-    related: Union[None, str, List[str]] = None,
-    blocked_by: Union[None, str, List[str]] = None,
+    repo: str | None = None,
+    target_spec: str | None = None,
+    target_task: str | None = None,
+    related: None | str | list[str] = None,
+    blocked_by: None | str | list[str] = None,
     focus: str = "",
 ) -> Path:
     lines = ["---"]
@@ -187,15 +194,19 @@ class ExtractSignalTests(unittest.TestCase):
         self.assertIsNone(_extract_signal(missing, _fake_parse_frontmatter))
 
     def test_parser_exception_yields_none(self):
-        path = _write_brief(self.dir, "20260610-093000-alpha.md", repo="repo-a", focus="x")
+        path = _write_brief(
+            self.dir, "20260610-093000-alpha.md", repo="repo-a", focus="x"
+        )
 
-        def _raising_parser(_text: str) -> Dict[str, Any]:
+        def _raising_parser(_text: str) -> dict[str, Any]:
             raise ValueError("boom")
 
         self.assertIsNone(_extract_signal(path, _raising_parser))
 
     def test_empty_focus_yields_empty_focus_tokens(self):
-        path = _write_brief(self.dir, "20260610-093000-no-focus.md", repo="repo-a", focus="")
+        path = _write_brief(
+            self.dir, "20260610-093000-no-focus.md", repo="repo-a", focus=""
+        )
         sig = _extract_signal(path, _fake_parse_frontmatter)
         assert sig is not None
         self.assertEqual(sig["focus_tokens"], set())
@@ -220,7 +231,7 @@ class SignalMatchesTests(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def _sig(self, filename: str, **kwargs) -> Dict[str, Any]:
+    def _sig(self, filename: str, **kwargs) -> dict[str, Any]:
         path = _write_brief(self.dir, filename, **kwargs)
         sig = _extract_signal(path, _fake_parse_frontmatter)
         assert sig is not None
@@ -233,27 +244,39 @@ class SignalMatchesTests(unittest.TestCase):
         self.assertIn("duplicate-slug", matches)
 
     def test_same_repo_same_target_spec_matches(self):
-        a = self._sig("20260610-093000-alpha.md", repo="repo-a", target_spec="018", focus="")
-        b = self._sig("20260611-101500-beta.md", repo="repo-a", target_spec="018", focus="")
+        a = self._sig(
+            "20260610-093000-alpha.md", repo="repo-a", target_spec="018", focus=""
+        )
+        b = self._sig(
+            "20260611-101500-beta.md", repo="repo-a", target_spec="018", focus=""
+        )
         matches = dict(_signal_matches(a, b))
         self.assertIn("same-target-spec", matches)
 
     def test_related_link_matches_forward_direction(self):
         b = self._sig("20260611-101500-beta.md", repo="repo-a", focus="")
-        a = self._sig("20260610-093000-alpha.md", repo="repo-a", related=[b["stem"]], focus="")
+        a = self._sig(
+            "20260610-093000-alpha.md", repo="repo-a", related=[b["stem"]], focus=""
+        )
         matches = dict(_signal_matches(a, b))
         self.assertIn("related-link", matches)
 
     def test_related_link_matches_reverse_direction(self):
         c = self._sig("20260610-093000-gamma.md", repo="repo-a", focus="")
-        d = self._sig("20260611-101500-delta.md", repo="repo-a", related=[c["stem"]], focus="")
+        d = self._sig(
+            "20260611-101500-delta.md", repo="repo-a", related=[c["stem"]], focus=""
+        )
         # d names c; querying (c, d) must still surface the link.
         matches = dict(_signal_matches(c, d))
         self.assertIn("related-link", matches)
 
     def test_focus_overlap_at_or_above_threshold_matches(self):
-        a = self._sig("20260610-093000-alpha.md", repo="repo-a", focus="alpha beta gamma delta")
-        b = self._sig("20260611-101500-beta.md", repo="repo-a", focus="alpha beta gamma epsilon")
+        a = self._sig(
+            "20260610-093000-alpha.md", repo="repo-a", focus="alpha beta gamma delta"
+        )
+        b = self._sig(
+            "20260611-101500-beta.md", repo="repo-a", focus="alpha beta gamma epsilon"
+        )
         score = _overlap_coefficient(a["focus_tokens"], b["focus_tokens"])
         self.assertGreaterEqual(score, OVERLAP_THRESHOLD)
         matches = dict(_signal_matches(a, b))
@@ -263,8 +286,12 @@ class SignalMatchesTests(unittest.TestCase):
         self.assertAlmostEqual(overlap_score, score)
 
     def test_focus_overlap_below_threshold_no_match(self):
-        a = self._sig("20260610-093000-alpha.md", repo="repo-a", focus="alpha beta gamma delta")
-        b = self._sig("20260611-101500-beta.md", repo="repo-a", focus="alpha zeta eta theta")
+        a = self._sig(
+            "20260610-093000-alpha.md", repo="repo-a", focus="alpha beta gamma delta"
+        )
+        b = self._sig(
+            "20260611-101500-beta.md", repo="repo-a", focus="alpha zeta eta theta"
+        )
         score = _overlap_coefficient(a["focus_tokens"], b["focus_tokens"])
         self.assertLess(score, OVERLAP_THRESHOLD)
         matches = dict(_signal_matches(a, b))
@@ -371,7 +398,9 @@ class SignalMatchesTests(unittest.TestCase):
         # `related:` naming just the descriptive slug (no timestamp prefix) —
         # _id_matches's endswith fallback still resolves it to the full stem.
         b = self._sig("20260611-101500-beta.md", repo="repo-a", focus="")
-        a = self._sig("20260610-093000-alpha.md", repo="repo-a", related=["beta"], focus="")
+        a = self._sig(
+            "20260610-093000-alpha.md", repo="repo-a", related=["beta"], focus=""
+        )
         matches = dict(_signal_matches(a, b))
         self.assertIn("related-link", matches)
 
@@ -397,7 +426,7 @@ class SignalMatchesTests(unittest.TestCase):
 
 class ConnectedComponentsTests(unittest.TestCase):
     def test_three_pairwise_connected_form_one_cluster(self):
-        edges: List[_Edge] = [
+        edges: list[_Edge] = [
             ("a", "b", [("same-target-spec", None)]),
             ("b", "c", [("related-link", None)]),
             ("a", "c", [("related-link", None)]),
@@ -409,7 +438,7 @@ class ConnectedComponentsTests(unittest.TestCase):
 
     def test_transitivity_via_shared_neighbor(self):
         # a-b and a-c match; b-c does not. Still one component of size 3.
-        edges: List[_Edge] = [
+        edges: list[_Edge] = [
             ("a", "b", [("related-link", None)]),
             ("a", "c", [("same-target-spec", None)]),
         ]
@@ -437,7 +466,7 @@ class ConnectedComponentsTests(unittest.TestCase):
         self.assertEqual(_connected_components(edges), [])
 
     def test_signals_list_contains_only_distinct_present_labels(self):
-        edges: List[_Edge] = [
+        edges: list[_Edge] = [
             ("a", "b", [("same-target-spec", None)]),
             ("b", "c", [("related-link", None)]),
             ("a", "c", [("same-target-spec", None), ("related-link", None)]),
@@ -459,7 +488,7 @@ class UniformReportingThresholdTests(unittest.TestCase):
     size-2 component whose only edge was a non-scored signal)."""
 
     def test_size_three_always_surfaced(self):
-        edges: List[_Edge] = [
+        edges: list[_Edge] = [
             ("a", "b", [("related-link", None)]),
             ("b", "c", [("related-link", None)]),
         ]
@@ -468,11 +497,11 @@ class UniformReportingThresholdTests(unittest.TestCase):
         self.assertEqual(clusters[0]["size"], 3)
 
     def test_size_two_duplicate_slug_surfaced(self):
-        edges: List[_Edge] = [("a", "b", [("duplicate-slug", None)])]
+        edges: list[_Edge] = [("a", "b", [("duplicate-slug", None)])]
         self.assertEqual(len(_assemble_clusters(edges)), 1)
 
     def test_size_two_focus_overlap_at_overlap_threshold_surfaced(self):
-        edges: List[_Edge] = [("a", "b", [("focus-overlap", OVERLAP_THRESHOLD)])]
+        edges: list[_Edge] = [("a", "b", [("focus-overlap", OVERLAP_THRESHOLD)])]
         clusters = _assemble_clusters(edges)
         self.assertEqual(len(clusters), 1)
         self.assertEqual(clusters[0]["members"], ["a", "b"])
@@ -484,21 +513,21 @@ class UniformReportingThresholdTests(unittest.TestCase):
         score = 0.46
         self.assertGreaterEqual(score, OVERLAP_THRESHOLD)
         self.assertLess(score, 0.50)
-        edges: List[_Edge] = [("a", "b", [("focus-overlap", score)])]
+        edges: list[_Edge] = [("a", "b", [("focus-overlap", score)])]
         clusters = _assemble_clusters(edges)
         self.assertEqual(len(clusters), 1)
         self.assertEqual(clusters[0]["signals"], ["focus-overlap"])
 
     def test_size_two_same_target_spec_only_surfaced(self):
-        edges: List[_Edge] = [("a", "b", [("same-target-spec", None)])]
+        edges: list[_Edge] = [("a", "b", [("same-target-spec", None)])]
         self.assertEqual(len(_assemble_clusters(edges)), 1)
 
     def test_size_two_related_link_only_surfaced(self):
-        edges: List[_Edge] = [("a", "b", [("related-link", None)])]
+        edges: list[_Edge] = [("a", "b", [("related-link", None)])]
         self.assertEqual(len(_assemble_clusters(edges)), 1)
 
     def test_no_signal_match_never_surfaced(self):
-        edges: List[_Edge] = [("a", "b", [])]
+        edges: list[_Edge] = [("a", "b", [])]
         self.assertEqual(_assemble_clusters(edges), [])
 
 
@@ -507,7 +536,7 @@ class AssembleClustersTests(unittest.TestCase):
         self.assertEqual(_assemble_clusters([]), [])
 
     def test_end_to_end_three_brief_cluster_surfaced_as_one(self):
-        edges: List[_Edge] = [
+        edges: list[_Edge] = [
             ("a", "b", [("same-target-spec", None)]),
             ("b", "c", [("related-link", None)]),
         ]
@@ -520,7 +549,7 @@ class AssembleClustersTests(unittest.TestCase):
     def test_end_to_end_size_two_pair_surfaced_alongside_trio(self):
         # Full-recall decision: a size-2 related-link pair surfaces alongside
         # the trio (the pre-change contract dropped it as non-near-identical).
-        edges: List[_Edge] = [
+        edges: list[_Edge] = [
             ("a", "b", [("same-target-spec", None)]),
             ("b", "c", [("related-link", None)]),
             ("d", "e", [("related-link", None)]),
@@ -531,7 +560,7 @@ class AssembleClustersTests(unittest.TestCase):
         self.assertEqual(clusters[1]["members"], ["d", "e"])
 
     def test_end_to_end_duplicate_slug_pair_surfaced(self):
-        edges: List[_Edge] = [("a", "b", [("duplicate-slug", None)])]
+        edges: list[_Edge] = [("a", "b", [("duplicate-slug", None)])]
         clusters = _assemble_clusters(edges)
         self.assertEqual(len(clusters), 1)
         self.assertEqual(clusters[0]["members"], ["a", "b"])
@@ -546,16 +575,20 @@ class ComputeClustersTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def _members_containing(
-        self, clusters: List[Dict[str, Any]], stem: str
-    ) -> Optional[Dict[str, Any]]:
+        self, clusters: list[dict[str, Any]], stem: str
+    ) -> dict[str, Any] | None:
         for cluster in clusters:
             if stem in cluster["members"]:
                 return cluster
         return None
 
     def test_malformed_brief_excluded_but_clustering_continues(self):
-        a = _write_brief(self.dir, "20260610-090000-fix-auth-flow.md", repo="repo-a", focus="")
-        b = _write_brief(self.dir, "20260610-091000-fix-auth-flow.md", repo="repo-b", focus="")
+        a = _write_brief(
+            self.dir, "20260610-090000-fix-auth-flow.md", repo="repo-a", focus=""
+        )
+        b = _write_brief(
+            self.dir, "20260610-091000-fix-auth-flow.md", repo="repo-b", focus=""
+        )
         broken = self.dir / "20260610-092000-broken.md"
         broken.write_text("no frontmatter here, just body text.\n", encoding="utf-8")
 
@@ -573,12 +606,18 @@ class ComputeClustersTests(unittest.TestCase):
         self.assertEqual(compute_clusters(self.dir, _fake_parse_frontmatter), [])
 
     def test_parser_exception_for_one_file_does_not_abort_others(self):
-        a = _write_brief(self.dir, "20260610-090000-fix-auth-flow.md", repo="repo-a", focus="")
-        b = _write_brief(self.dir, "20260610-091000-fix-auth-flow.md", repo="repo-b", focus="")
-        boom = _write_brief(self.dir, "20260610-092000-boom.md", repo="repo-c", focus="")
+        a = _write_brief(
+            self.dir, "20260610-090000-fix-auth-flow.md", repo="repo-a", focus=""
+        )
+        b = _write_brief(
+            self.dir, "20260610-091000-fix-auth-flow.md", repo="repo-b", focus=""
+        )
+        boom = _write_brief(
+            self.dir, "20260610-092000-boom.md", repo="repo-c", focus=""
+        )
 
         # Raise only for the "boom" brief by inspecting its own frontmatter marker.
-        def _selective_raising_parser(text: str) -> Dict[str, Any]:
+        def _selective_raising_parser(text: str) -> dict[str, Any]:
             fm = _fake_parse_frontmatter(text)
             if fm.get("repo") == "repo-c":
                 raise RuntimeError("unexpected internal failure")
@@ -592,8 +631,12 @@ class ComputeClustersTests(unittest.TestCase):
 
     def test_full_realistic_multi_brief_scenario(self):
         # duplicate-slug pair, different repos -> size-2 near-identical, surfaced.
-        dup_a = _write_brief(self.dir, "20260610-090000-fix-auth-flow.md", repo="repo-a", focus="")
-        dup_b = _write_brief(self.dir, "20260610-091000-fix-auth-flow.md", repo="repo-b", focus="")
+        dup_a = _write_brief(
+            self.dir, "20260610-090000-fix-auth-flow.md", repo="repo-a", focus=""
+        )
+        dup_b = _write_brief(
+            self.dir, "20260610-091000-fix-auth-flow.md", repo="repo-b", focus=""
+        )
 
         # same-target-spec + related-link trio -> size-3, surfaced unconditionally.
         alpha = _write_brief(
@@ -646,8 +689,7 @@ class ComputeClustersTests(unittest.TestCase):
             "20260610-097000-delta.md",
             repo="repo-e",
             focus=(
-                "apple banana cherry date fig "
-                "grape honey kiwi lemon mango nectarine"
+                "apple banana cherry date fig grape honey kiwi lemon mango nectarine"
             ),
         )
         epsilon = _write_brief(
@@ -655,13 +697,14 @@ class ComputeClustersTests(unittest.TestCase):
             "20260610-098000-epsilon.md",
             repo="repo-e",
             focus=(
-                "apple banana cherry date fig "
-                "quince plum peach pear grapefruit papaya"
+                "apple banana cherry date fig quince plum peach pear grapefruit papaya"
             ),
         )
 
         # unrelated brief matching nothing.
-        _write_brief(self.dir, "20260610-099000-zeta.md", repo="repo-f", focus="zzz random text")
+        _write_brief(
+            self.dir, "20260610-099000-zeta.md", repo="repo-f", focus="zzz random text"
+        )
 
         # malformed brief must be skipped without raising.
         (self.dir / "20260610-100000-broken.md").write_text(
@@ -694,10 +737,17 @@ class ComputeClustersTests(unittest.TestCase):
         queue_dir = self.dir / "queue"
         queue_dir.mkdir()
 
-        a = _write_brief(queue_dir, "20260610-090000-fix-auth-flow.md", repo="repo-a", focus="")
-        b = _write_brief(queue_dir, "20260610-091000-fix-auth-flow.md", repo="repo-b", focus="")
+        a = _write_brief(
+            queue_dir, "20260610-090000-fix-auth-flow.md", repo="repo-a", focus=""
+        )
+        b = _write_brief(
+            queue_dir, "20260610-091000-fix-auth-flow.md", repo="repo-b", focus=""
+        )
         _write_brief(
-            queue_dir, "20260610-092000-unrelated.md", repo="repo-c", focus="nothing shared"
+            queue_dir,
+            "20260610-092000-unrelated.md",
+            repo="repo-c",
+            focus="nothing shared",
         )
 
         clusters = compute_clusters(queue_dir, _fake_parse_frontmatter)
@@ -722,8 +772,10 @@ class TargetTaskMatchTests(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def _task_candidates_fn(self, repo: str, target_spec: str) -> List[Dict[str, Any]]:
-        return [{"task_id": self._TASK_ID, "task_text": self._TASK_TEXT, "checked": False}]
+    def _task_candidates_fn(self, repo: str, target_spec: str) -> list[dict[str, Any]]:
+        return [
+            {"task_id": self._TASK_ID, "task_text": self._TASK_TEXT, "checked": False}
+        ]
 
     def test_two_undispatched_briefs_sharing_target_spec_and_matching_same_task_surface_advisory(
         self,
@@ -749,7 +801,9 @@ class TargetTaskMatchTests(unittest.TestCase):
         )
 
         clusters = compute_clusters(
-            self.dir, _fake_parse_frontmatter, task_candidates_fn=self._task_candidates_fn
+            self.dir,
+            _fake_parse_frontmatter,
+            task_candidates_fn=self._task_candidates_fn,
         )
 
         self.assertEqual(len(clusters), 1)
@@ -774,7 +828,9 @@ class TargetTaskMatchTests(unittest.TestCase):
         )
 
         clusters = compute_clusters(
-            self.dir, _fake_parse_frontmatter, task_candidates_fn=self._task_candidates_fn
+            self.dir,
+            _fake_parse_frontmatter,
+            task_candidates_fn=self._task_candidates_fn,
         )
 
         self.assertEqual(clusters, [])
@@ -806,7 +862,9 @@ class RealPR93RegressionTests(unittest.TestCase):
     0.4444) to reproduce that exact real-world 0.44 overlap."""
 
     _FOCUS_A = "contract sentinel route gate finish rollout downstream consumers cutoff"
-    _FOCUS_B = "contract sentinel route gate verify existence missing coverage endpoints"
+    _FOCUS_B = (
+        "contract sentinel route gate verify existence missing coverage endpoints"
+    )
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -844,15 +902,23 @@ class RealPR93RegressionTests(unittest.TestCase):
 
     def test_surfaced_when_llm_verification_returns_positive(self):
         a, b = self._write_pair()
-        with mock.patch.object(_cluster_detect_mod, "_verify_same_work", return_value=True):
-            clusters = compute_clusters(self.dir, _fake_parse_frontmatter, agent_cli="claude")
+        with mock.patch.object(
+            _cluster_detect_mod, "_verify_same_work", return_value=True
+        ):
+            clusters = compute_clusters(
+                self.dir, _fake_parse_frontmatter, agent_cli="claude"
+            )
         self.assertEqual(len(clusters), 1)
         self.assertEqual(clusters[0]["members"], sorted([a.stem, b.stem]))
 
     def test_not_surfaced_when_llm_verification_returns_negative(self):
         a, b = self._write_pair()
-        with mock.patch.object(_cluster_detect_mod, "_verify_same_work", return_value=False):
-            clusters = compute_clusters(self.dir, _fake_parse_frontmatter, agent_cli="claude")
+        with mock.patch.object(
+            _cluster_detect_mod, "_verify_same_work", return_value=False
+        ):
+            clusters = compute_clusters(
+                self.dir, _fake_parse_frontmatter, agent_cli="claude"
+            )
         self.assertEqual(clusters, [])
 
     def test_not_surfaced_when_llm_call_fails_open(self):
@@ -865,9 +931,13 @@ class RealPR93RegressionTests(unittest.TestCase):
         with mock.patch.object(
             _cluster_detect_mod.subprocess,
             "run",
-            side_effect=subprocess.TimeoutExpired(cmd=["claude", "-p", "x"], timeout=10),
+            side_effect=subprocess.TimeoutExpired(
+                cmd=["claude", "-p", "x"], timeout=10
+            ),
         ):
-            clusters = compute_clusters(self.dir, _fake_parse_frontmatter, agent_cli="claude")
+            clusters = compute_clusters(
+                self.dir, _fake_parse_frontmatter, agent_cli="claude"
+            )
         self.assertEqual(clusters, [])
 
 
@@ -886,7 +956,9 @@ class VerifySameWorkFailOpenTests(unittest.TestCase):
         with mock.patch.object(
             _cluster_detect_mod.subprocess,
             "run",
-            side_effect=subprocess.TimeoutExpired(cmd=["claude", "-p", "x"], timeout=10),
+            side_effect=subprocess.TimeoutExpired(
+                cmd=["claude", "-p", "x"], timeout=10
+            ),
         ):
             verdict = _verify_same_work("focus a", "focus b", agent_cli="claude")
         self.assertIsNone(verdict)
@@ -943,7 +1015,7 @@ class NullRepoGateSignalMatchesTests(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def _sig(self, filename: str, **kwargs) -> Dict[str, Any]:
+    def _sig(self, filename: str, **kwargs) -> dict[str, Any]:
         path = _write_brief(self.dir, filename, **kwargs)
         sig = _extract_signal(path, _fake_parse_frontmatter)
         assert sig is not None
@@ -985,13 +1057,9 @@ class FullRecallSizeTwoTests(unittest.TestCase):
     pair)."""
 
     _FOCUS_A = (
-        "alpha beta gamma delta epsilon zeta "
-        "eta theta iota kappa lambda omicron sigma"
+        "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda omicron sigma"
     )
-    _FOCUS_B = (
-        "alpha beta gamma delta epsilon zeta "
-        "tau upsilon phi chi psi omega rho"
-    )
+    _FOCUS_B = "alpha beta gamma delta epsilon zeta tau upsilon phi chi psi omega rho"
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -1000,7 +1068,7 @@ class FullRecallSizeTwoTests(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def _write_pair(self, repo_a: Optional[str], repo_b: Optional[str]):
+    def _write_pair(self, repo_a: str | None, repo_b: str | None):
         a = _write_brief(
             self.dir, "20260813-090000-alpha-work.md", repo=repo_a, focus=self._FOCUS_A
         )
@@ -1063,7 +1131,7 @@ class BlockScalarFocusProductionParserTests(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def _write_block_scalar_brief(self, filename: str, focus_lines: List[str]) -> Path:
+    def _write_block_scalar_brief(self, filename: str, focus_lines: list[str]) -> Path:
         body = ["---", f"id: {filename[:-3]}", "focus: |-"]
         body.extend(f"  {line}" for line in focus_lines)
         body += ["repo: null", "status: queued", "---", "", "## Focus", ""]
@@ -1134,7 +1202,9 @@ class LlmVerificationGateBandTests(unittest.TestCase):
         with mock.patch.object(
             _cluster_detect_mod.subprocess, "run", return_value=mock_result
         ) as mock_run:
-            clusters = compute_clusters(self.dir, _fake_parse_frontmatter, agent_cli="claude")
+            clusters = compute_clusters(
+                self.dir, _fake_parse_frontmatter, agent_cli="claude"
+            )
 
         mock_run.assert_called_once()
         self.assertEqual(len(clusters), 1)
