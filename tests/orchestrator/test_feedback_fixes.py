@@ -46,7 +46,7 @@ class ClassifyChecksInformational(unittest.TestCase):
                 "isRequired": False,
             },
         ]
-        pending, failing = verify.classify_checks(rollup)
+        _pending, failing = verify.classify_checks(rollup)
         self.assertEqual(failing, [])
 
     def test_required_failure_still_gates(self):

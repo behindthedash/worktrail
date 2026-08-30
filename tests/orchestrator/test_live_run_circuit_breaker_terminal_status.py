@@ -41,7 +41,10 @@ def _commit_file(wt: Path, name: str, content: str) -> str:
         capture_output=True,
     )
     return subprocess.run(
-        ["git", "-C", str(wt), "rev-parse", "HEAD"], capture_output=True, text=True
+        ["git", "-C", str(wt), "rev-parse", "HEAD"],
+        check=False,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
 
 
@@ -68,7 +71,10 @@ class AlwaysFailReviewSpawn:
 
     def __call__(self, role: str, task: dict, wt: Path) -> spawnlib.SpawnResult:
         sha = subprocess.run(
-            ["git", "-C", str(wt), "rev-parse", "HEAD"], capture_output=True, text=True
+            ["git", "-C", str(wt), "rev-parse", "HEAD"],
+            check=False,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
         if role in ("implement", "fix"):
             self._commit_count += 1

@@ -93,7 +93,10 @@ class FakeSpawn:
                 capture_output=True,
             )
         sha = subprocess.run(
-            ["git", "-C", str(wt), "rev-parse", "HEAD"], capture_output=True, text=True
+            ["git", "-C", str(wt), "rev-parse", "HEAD"],
+            check=False,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
         rs = '"PASSED"' if role == "review" else "null"
         return spawnlib.SpawnResult(

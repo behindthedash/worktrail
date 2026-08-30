@@ -237,7 +237,7 @@ def parse_files_sections(text: str) -> tuple[list[str], list[str]]:
             continue
         if current is None:
             continue
-        if line.startswith("- ") or line.startswith("* "):
+        if line.startswith(("- ", "* ")):
             item = line[2:].strip()
             m = re.match(r"`([^`]+)`", item)
             path = m.group(1) if m else item.split(" - ")[0].strip()

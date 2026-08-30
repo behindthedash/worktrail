@@ -97,7 +97,7 @@ def _is_path_token(token: str) -> bool:
     # searched -- a brief's `Repo: /home/...` line is the usual source. Passing
     # one to `git log -- <abs>` is useless at best and, observed 2026-08-05, an
     # expensive timeout at worst.
-    if token.startswith("/") or token.startswith("~"):
+    if token.startswith(("/", "~")):
         return False
     if "/" in token:
         # A real path has a letter somewhere; `2.1/2.2/2.3/2.4` does not.
@@ -181,10 +181,11 @@ def extract_probes(text: str) -> dict[str, Any]:
             if token not in seen_paths:
                 seen_paths.add(token)
                 paths.append(token)
-        elif _is_symbol_token(token) or _is_flag_token(token):
-            if token not in seen_symbols:
-                seen_symbols.add(token)
-                symbols.append(token)
+        elif (
+            _is_symbol_token(token) or _is_flag_token(token)
+        ) and token not in seen_symbols:
+            seen_symbols.add(token)
+            symbols.append(token)
 
     text_wo_backticks = _BACKTICK_RE.sub(" ", text)
     for raw in _WORD_RE.findall(text_wo_backticks):

@@ -120,6 +120,7 @@ class FakeSpawn:
         sha = (
             subprocess.run(
                 ["git", "-C", str(wt), "rev-parse", "HEAD"],
+                check=False,
                 capture_output=True,
                 text=True,
             ).stdout.strip()[:8]
@@ -194,24 +195,24 @@ def _run(
     resume=False,
     only=None,
 ):
-    kwargs = dict(
-        repo=repo,
-        spec_rel="docs/specs/001-x",
-        remote="origin",
-        base="main",
-        model="haiku",
-        max_workers=1,  # serialize ticks so the budget cut lands deterministically
-        timeout=30,
-        resume=resume,
-        only=only,
-        role_models=None,
-        run_budget=run_budget,
-        journal_path=journal_path,
-        run_id="full-test",
-        _spawn=spawn,
-        _integrate_one=integrate_one,
-        _make_verifier=lambda: verifier,
-    )
+    kwargs = {
+        "repo": repo,
+        "spec_rel": "docs/specs/001-x",
+        "remote": "origin",
+        "base": "main",
+        "model": "haiku",
+        "max_workers": 1,  # serialize ticks so the budget cut lands deterministically
+        "timeout": 30,
+        "resume": resume,
+        "only": only,
+        "role_models": None,
+        "run_budget": run_budget,
+        "journal_path": journal_path,
+        "run_id": "full-test",
+        "_spawn": spawn,
+        "_integrate_one": integrate_one,
+        "_make_verifier": lambda: verifier,
+    }
     return live._pipeline_scheduler(**kwargs)
 
 
@@ -225,7 +226,7 @@ class PartialGroupBudgetExhaustionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             repo = _init_repo(Path(tmp))
             journal_path = str(Path(tmp) / "pipeline-journal.json")
-            integrate_one, events = _make_integrate_one()
+            integrate_one, _events = _make_integrate_one()
 
             # Budget check happens at the TOP of each tick, before frontier is
             # computed. max_workers=1 serializes ticks; sleeping 1s AFTER
@@ -288,7 +289,7 @@ class ResumeAfterPartialGroupQuarantineTest(unittest.TestCase):
 
             # Phase 1: tiny budget -> TASK-001 + TASK-002 complete, TASK-003 and
             # its group ("feature-1") get force-quarantined budget_exhausted.
-            integrate_one1, events1 = _make_integrate_one()
+            integrate_one1, _events1 = _make_integrate_one()
             spawn1 = FakeSpawn()
             phase1 = _run(
                 repo,
@@ -427,7 +428,7 @@ class ResumeWithOnlyExcludingPendingSiblingTest(unittest.TestCase):
             # Phase 2: resume with --only naming just TASK-002 -- TASK-003 is
             # excluded but genuinely already done from phase 1, so this must
             # proceed normally (not raise).
-            integrate_one2, events2 = _make_integrate_one()
+            integrate_one2, _events2 = _make_integrate_one()
             phase2 = _run(
                 repo,
                 journal_path,

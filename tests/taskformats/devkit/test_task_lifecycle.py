@@ -33,14 +33,13 @@ def _make_task(frontmatter: dict, body: str) -> str:
     """Write a temporary task file and return its path."""
     import yaml
 
-    tmp = tempfile.NamedTemporaryFile(
+    with tempfile.NamedTemporaryFile(
         mode="w", suffix=".md", delete=False, encoding="utf-8"
-    )
-    tmp.write("---\n")
-    tmp.write(yaml.dump(frontmatter, sort_keys=False))
-    tmp.write("---\n")
-    tmp.write(body)
-    tmp.close()
+    ) as tmp:
+        tmp.write("---\n")
+        tmp.write(yaml.dump(frontmatter, sort_keys=False))
+        tmp.write("---\n")
+        tmp.write(body)
     return tmp.name
 
 
@@ -417,7 +416,9 @@ class TestOutOfScopeFileExitsClean:
     """AC1: task_lifecycle.py must exit 0 with no output for non-task files."""
 
     def _run(self, action: str, path: str):
-        return subprocess.run(CLI_ARGV + [action, path], capture_output=True, text=True)
+        return subprocess.run(
+            CLI_ARGV + [action, path], check=False, capture_output=True, text=True
+        )
 
     def test_validate_non_task_py_file_exits_zero(self, tmp_path):
         f = tmp_path / "config.py"
@@ -442,13 +443,15 @@ class TestOutOfScopeFileExitsClean:
 
     def test_no_file_arg_exits_zero(self):
         """Missing CLAUDE_CHANGED_FILE (collapsed to absent arg) exits 0."""
-        result = subprocess.run(CLI_ARGV + ["validate"], capture_output=True, text=True)
+        result = subprocess.run(
+            CLI_ARGV + ["validate"], check=False, capture_output=True, text=True
+        )
         assert result.returncode == 0
 
     def test_empty_filepath_exits_zero(self):
         """Empty string filepath exits 0."""
         result = subprocess.run(
-            CLI_ARGV + ["validate", ""], capture_output=True, text=True
+            CLI_ARGV + ["validate", ""], check=False, capture_output=True, text=True
         )
         assert result.returncode == 0
 
@@ -464,7 +467,7 @@ class TestInvalidTaskFileFailsWithStderr:
         f = tmp_path / "TASK-999.md"
         f.write_text("---\ntitle: Broken task\n---\n# No required fields\n")
         result = subprocess.run(
-            CLI_ARGV + ["validate", str(f)], capture_output=True, text=True
+            CLI_ARGV + ["validate", str(f)], check=False, capture_output=True, text=True
         )
         assert result.returncode != 0
 
@@ -472,7 +475,7 @@ class TestInvalidTaskFileFailsWithStderr:
         f = tmp_path / "TASK-999.md"
         f.write_text("---\ntitle: Broken task\n---\n# No required fields\n")
         result = subprocess.run(
-            CLI_ARGV + ["validate", str(f)], capture_output=True, text=True
+            CLI_ARGV + ["validate", str(f)], check=False, capture_output=True, text=True
         )
         assert "Validation failed" in result.stderr
         # At least one specific error message must be present
@@ -482,7 +485,7 @@ class TestInvalidTaskFileFailsWithStderr:
         f = tmp_path / "TASK-999.md"
         f.write_text("---\ntitle: Broken task\n---\n# No required fields\n")
         result = subprocess.run(
-            CLI_ARGV + ["validate", str(f)], capture_output=True, text=True
+            CLI_ARGV + ["validate", str(f)], check=False, capture_output=True, text=True
         )
         # Validation failure output must NOT appear on stdout
         assert "Validation failed" not in result.stdout
@@ -666,7 +669,7 @@ class TestChangeSpecTaskFileValidation:
         f = tmp_path / "TASK-CHG-999.md"
         f.write_text("---\ntitle: Broken change task\n---\n# No required fields\n")
         result = subprocess.run(
-            CLI_ARGV + ["validate", str(f)], capture_output=True, text=True
+            CLI_ARGV + ["validate", str(f)], check=False, capture_output=True, text=True
         )
         assert result.returncode != 0
 
@@ -674,7 +677,7 @@ class TestChangeSpecTaskFileValidation:
         f = tmp_path / "TASK-CHG-999.md"
         f.write_text("---\ntitle: Broken change task\n---\n# No required fields\n")
         result = subprocess.run(
-            CLI_ARGV + ["validate", str(f)], capture_output=True, text=True
+            CLI_ARGV + ["validate", str(f)], check=False, capture_output=True, text=True
         )
         assert "Validation failed" in result.stderr
         assert "Validation failed" not in result.stdout

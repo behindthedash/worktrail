@@ -172,34 +172,36 @@ class IntegrateCompleteMarker(unittest.TestCase):
                 pr_view_responses=pr_view, ls_remote_responses=ls_remote
             )
 
-            with patch(
-                "worktrail.orchestrator.integrate.coordinator.plan_groups"
-            ) as mock_groups:
-                with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                    with patch(
-                        "worktrail.orchestrator.integrate.subprocess.run",
-                        side_effect=run,
-                    ):
-                        group = mock_group("base", ["T001"])
-                        mock_groups.return_value = [group]
+            with (
+                patch(
+                    "worktrail.orchestrator.integrate.coordinator.plan_groups"
+                ) as mock_groups,
+                patch("worktrail.orchestrator.integrate._git", side_effect=run),
+                patch(
+                    "worktrail.orchestrator.integrate.subprocess.run",
+                    side_effect=run,
+                ),
+            ):
+                group = mock_group("base", ["T001"])
+                mock_groups.return_value = [group]
 
-                        prs, _, _ = integrate_groups(
-                            Path("/repo"),
-                            "spec-001",
-                            [mock_task("T001")],
-                            "origin",
-                            "full-123",
-                            "main",
-                            cleanup=False,
-                            journal_path=str(journal_path),
-                        )
+                _prs, _, _ = integrate_groups(
+                    Path("/repo"),
+                    "spec-001",
+                    [mock_task("T001")],
+                    "origin",
+                    "full-123",
+                    "main",
+                    cleanup=False,
+                    journal_path=str(journal_path),
+                )
 
-                        # Check journal was written with integrate_complete
-                        journal = json.loads(journal_path.read_text())
-                        self.assertTrue(
-                            journal.get("integrate_complete"),
-                            "integrate_complete marker should be True",
-                        )
+                # Check journal was written with integrate_complete
+                journal = json.loads(journal_path.read_text())
+                self.assertTrue(
+                    journal.get("integrate_complete"),
+                    "integrate_complete marker should be True",
+                )
 
     def test_journal_not_written_when_path_none(self):
         """Verify backward compatibility: no journal writing when journal_path=None."""
@@ -222,33 +224,35 @@ class IntegrateCompleteMarker(unittest.TestCase):
                 pr_view_responses=pr_view, ls_remote_responses=ls_remote
             )
 
-            with patch(
-                "worktrail.orchestrator.integrate.coordinator.plan_groups"
-            ) as mock_groups:
-                with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                    with patch(
-                        "worktrail.orchestrator.integrate.subprocess.run",
-                        side_effect=run,
-                    ):
-                        group = mock_group("base", ["T001"])
-                        mock_groups.return_value = [group]
+            with (
+                patch(
+                    "worktrail.orchestrator.integrate.coordinator.plan_groups"
+                ) as mock_groups,
+                patch("worktrail.orchestrator.integrate._git", side_effect=run),
+                patch(
+                    "worktrail.orchestrator.integrate.subprocess.run",
+                    side_effect=run,
+                ),
+            ):
+                group = mock_group("base", ["T001"])
+                mock_groups.return_value = [group]
 
-                        prs, _, _ = integrate_groups(
-                            Path("/repo"),
-                            "spec-001",
-                            [mock_task("T001")],
-                            "origin",
-                            "full-456",
-                            "main",
-                            cleanup=False,
-                            journal_path=None,  # No journal writing
-                        )
+                _prs, _, _ = integrate_groups(
+                    Path("/repo"),
+                    "spec-001",
+                    [mock_task("T001")],
+                    "origin",
+                    "full-456",
+                    "main",
+                    cleanup=False,
+                    journal_path=None,  # No journal writing
+                )
 
-                        # Journal file should not exist
-                        self.assertFalse(
-                            journal_path.exists(),
-                            "Journal should not be created when journal_path=None",
-                        )
+                # Journal file should not exist
+                self.assertFalse(
+                    journal_path.exists(),
+                    "Journal should not be created when journal_path=None",
+                )
 
 
 class PerGroupIntegrateRecords(unittest.TestCase):
@@ -278,38 +282,40 @@ class PerGroupIntegrateRecords(unittest.TestCase):
                 pr_view_responses=pr_view, ls_remote_responses=ls_remote
             )
 
-            with patch(
-                "worktrail.orchestrator.integrate.coordinator.plan_groups"
-            ) as mock_groups:
-                with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                    with patch(
-                        "worktrail.orchestrator.integrate.subprocess.run",
-                        side_effect=run,
-                    ):
-                        group = mock_group("base", ["T001"])
-                        mock_groups.return_value = [group]
+            with (
+                patch(
+                    "worktrail.orchestrator.integrate.coordinator.plan_groups"
+                ) as mock_groups,
+                patch("worktrail.orchestrator.integrate._git", side_effect=run),
+                patch(
+                    "worktrail.orchestrator.integrate.subprocess.run",
+                    side_effect=run,
+                ),
+            ):
+                group = mock_group("base", ["T001"])
+                mock_groups.return_value = [group]
 
-                        prs, _, _ = integrate_groups(
-                            Path("/repo"),
-                            "spec-001",
-                            [mock_task("T001")],
-                            "origin",
-                            "full-789",
-                            "main",
-                            cleanup=False,
-                            journal_path=str(journal_path),
-                        )
+                _prs, _, _ = integrate_groups(
+                    Path("/repo"),
+                    "spec-001",
+                    [mock_task("T001")],
+                    "origin",
+                    "full-789",
+                    "main",
+                    cleanup=False,
+                    journal_path=str(journal_path),
+                )
 
-                        # Check per-group record
-                        journal = json.loads(journal_path.read_text())
-                        self.assertIn("groups", journal)
-                        self.assertIn("base", journal["groups"])
+                # Check per-group record
+                journal = json.loads(journal_path.read_text())
+                self.assertIn("groups", journal)
+                self.assertIn("base", journal["groups"])
 
-                        record = journal["groups"]["base"]
-                        self.assertIn("pr_url", record)
-                        self.assertIn("head_branch", record)
-                        self.assertIn("state", record)
-                        self.assertEqual(record["state"], "OPEN")
+                record = journal["groups"]["base"]
+                self.assertIn("pr_url", record)
+                self.assertIn("head_branch", record)
+                self.assertIn("state", record)
+                self.assertEqual(record["state"], "OPEN")
 
     def test_merged_group_record_written(self):
         """Verify MERGED group records are written with state: MERGED."""
@@ -335,35 +341,37 @@ class PerGroupIntegrateRecords(unittest.TestCase):
                 pr_view_responses=pr_view, ls_remote_responses=ls_remote
             )
 
-            with patch(
-                "worktrail.orchestrator.integrate.coordinator.plan_groups"
-            ) as mock_groups:
-                with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                    with patch(
-                        "worktrail.orchestrator.integrate.subprocess.run",
-                        side_effect=run,
-                    ):
-                        group = mock_group("base", ["T001"])
-                        mock_groups.return_value = [group]
+            with (
+                patch(
+                    "worktrail.orchestrator.integrate.coordinator.plan_groups"
+                ) as mock_groups,
+                patch("worktrail.orchestrator.integrate._git", side_effect=run),
+                patch(
+                    "worktrail.orchestrator.integrate.subprocess.run",
+                    side_effect=run,
+                ),
+            ):
+                group = mock_group("base", ["T001"])
+                mock_groups.return_value = [group]
 
-                        prs, _, _ = integrate_groups(
-                            Path("/repo"),
-                            "spec-001",
-                            [mock_task("T001")],
-                            "origin",
-                            "full-999",
-                            "main",
-                            cleanup=False,
-                            journal_path=str(journal_path),
-                        )
+                _prs, _, _ = integrate_groups(
+                    Path("/repo"),
+                    "spec-001",
+                    [mock_task("T001")],
+                    "origin",
+                    "full-999",
+                    "main",
+                    cleanup=False,
+                    journal_path=str(journal_path),
+                )
 
-                        # Check merged group record
-                        journal = json.loads(journal_path.read_text())
-                        self.assertIn("groups", journal)
-                        self.assertIn("base", journal["groups"])
+                # Check merged group record
+                journal = json.loads(journal_path.read_text())
+                self.assertIn("groups", journal)
+                self.assertIn("base", journal["groups"])
 
-                        record = journal["groups"]["base"]
-                        self.assertEqual(record["state"], "MERGED")
+                record = journal["groups"]["base"]
+                self.assertEqual(record["state"], "MERGED")
 
 
 class OperatorPRDiscovery(unittest.TestCase):
@@ -397,50 +405,48 @@ class OperatorPRDiscovery(unittest.TestCase):
                 ls_remote_responses=ls_remote,
             )
 
-            with patch(
-                "worktrail.orchestrator.integrate.coordinator.plan_groups"
-            ) as mock_groups:
-                with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                    with patch(
-                        "worktrail.orchestrator.integrate.subprocess.run",
-                        side_effect=run,
-                    ):
-                        group = mock_group("base", ["T001"])
-                        mock_groups.return_value = [group]
+            with (
+                patch(
+                    "worktrail.orchestrator.integrate.coordinator.plan_groups"
+                ) as mock_groups,
+                patch("worktrail.orchestrator.integrate._git", side_effect=run),
+                patch(
+                    "worktrail.orchestrator.integrate.subprocess.run",
+                    side_effect=run,
+                ),
+            ):
+                group = mock_group("base", ["T001"])
+                mock_groups.return_value = [group]
 
-                        prs, _, _ = integrate_groups(
-                            Path("/repo"),
-                            "spec-001",
-                            [mock_task("T001")],
-                            "origin",
-                            "full-111",
-                            "main",
-                            cleanup=False,
-                            journal_path=str(journal_path),
-                        )
+                prs, _, _ = integrate_groups(
+                    Path("/repo"),
+                    "spec-001",
+                    [mock_task("T001")],
+                    "origin",
+                    "full-111",
+                    "main",
+                    cleanup=False,
+                    journal_path=str(journal_path),
+                )
 
-                        # Verify operator PR was discovered and reused
-                        self.assertEqual(len(prs), 1)
-                        name, target, pr_url = prs[0]
-                        self.assertEqual(name, "base")
-                        self.assertEqual(
-                            pr_url, "https://github.com/owner/repo/pull/88"
-                        )
+                # Verify operator PR was discovered and reused
+                self.assertEqual(len(prs), 1)
+                name, _target, pr_url = prs[0]
+                self.assertEqual(name, "base")
+                self.assertEqual(pr_url, "https://github.com/owner/repo/pull/88")
 
-                        # Verify gh pr create was NOT called
-                        create_calls = run.find_calls("gh", "pr", "create")
-                        self.assertEqual(
-                            len(create_calls),
-                            0,
-                            "Should not call gh pr create for discovered operator PR",
-                        )
+                # Verify gh pr create was NOT called
+                create_calls = run.find_calls("gh", "pr", "create")
+                self.assertEqual(
+                    len(create_calls),
+                    0,
+                    "Should not call gh pr create for discovered operator PR",
+                )
 
-                        # Verify journal has correct head_branch
-                        journal = json.loads(journal_path.read_text())
-                        record = journal["groups"]["base"]
-                        self.assertEqual(
-                            record["head_branch"], "operator-custom-branch"
-                        )
+                # Verify journal has correct head_branch
+                journal = json.loads(journal_path.read_text())
+                record = journal["groups"]["base"]
+                self.assertEqual(record["head_branch"], "operator-custom-branch")
 
     def test_no_operator_pr_creates_normally(self):
         """Regression: When no operator PR found, create new PR normally."""
@@ -460,35 +466,37 @@ class OperatorPRDiscovery(unittest.TestCase):
                 ls_remote_responses=ls_remote,
             )
 
-            with patch(
-                "worktrail.orchestrator.integrate.coordinator.plan_groups"
-            ) as mock_groups:
-                with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                    with patch(
-                        "worktrail.orchestrator.integrate.subprocess.run",
-                        side_effect=run,
-                    ):
-                        group = mock_group("base", ["T001"])
-                        mock_groups.return_value = [group]
+            with (
+                patch(
+                    "worktrail.orchestrator.integrate.coordinator.plan_groups"
+                ) as mock_groups,
+                patch("worktrail.orchestrator.integrate._git", side_effect=run),
+                patch(
+                    "worktrail.orchestrator.integrate.subprocess.run",
+                    side_effect=run,
+                ),
+            ):
+                group = mock_group("base", ["T001"])
+                mock_groups.return_value = [group]
 
-                        prs, _, _ = integrate_groups(
-                            Path("/repo"),
-                            "spec-001",
-                            [mock_task("T001")],
-                            "origin",
-                            "full-222",
-                            "main",
-                            cleanup=False,
-                            journal_path=str(journal_path),
-                        )
+                _prs, _, _ = integrate_groups(
+                    Path("/repo"),
+                    "spec-001",
+                    [mock_task("T001")],
+                    "origin",
+                    "full-222",
+                    "main",
+                    cleanup=False,
+                    journal_path=str(journal_path),
+                )
 
-                        # Should create PR normally
-                        create_calls = run.find_calls("gh", "pr", "create")
-                        self.assertEqual(
-                            len(create_calls),
-                            1,
-                            "Should call gh pr create when no operator PR found",
-                        )
+                # Should create PR normally
+                create_calls = run.find_calls("gh", "pr", "create")
+                self.assertEqual(
+                    len(create_calls),
+                    1,
+                    "Should call gh pr create when no operator PR found",
+                )
 
     def test_operator_pr_search_failure_falls_back(self):
         """Edge case: gh pr list fails → fall back to gh pr create."""
@@ -502,34 +510,34 @@ class OperatorPRDiscovery(unittest.TestCase):
             ls_remote_responses=ls_remote,
         )
 
-        with patch(
-            "worktrail.orchestrator.integrate.coordinator.plan_groups"
-        ) as mock_groups:
-            with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                with patch(
-                    "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
-                ):
-                    group = mock_group("base", ["T001"])
-                    mock_groups.return_value = [group]
+        with (
+            patch(
+                "worktrail.orchestrator.integrate.coordinator.plan_groups"
+            ) as mock_groups,
+            patch("worktrail.orchestrator.integrate._git", side_effect=run),
+            patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run),
+        ):
+            group = mock_group("base", ["T001"])
+            mock_groups.return_value = [group]
 
-                    prs, _, _ = integrate_groups(
-                        Path("/repo"),
-                        "spec-001",
-                        [mock_task("T001")],
-                        "origin",
-                        "full-333",
-                        "main",
-                        cleanup=False,
-                        journal_path=None,
-                    )
+            _prs, _, _ = integrate_groups(
+                Path("/repo"),
+                "spec-001",
+                [mock_task("T001")],
+                "origin",
+                "full-333",
+                "main",
+                cleanup=False,
+                journal_path=None,
+            )
 
-                    # Should fall back to creating PR
-                    create_calls = run.find_calls("gh", "pr", "create")
-                    self.assertEqual(
-                        len(create_calls),
-                        1,
-                        "Should fallback to create when pr list fails",
-                    )
+            # Should fall back to creating PR
+            create_calls = run.find_calls("gh", "pr", "create")
+            self.assertEqual(
+                len(create_calls),
+                1,
+                "Should fallback to create when pr list fails",
+            )
 
 
 class MultipleGroupsWithOperatorPR(unittest.TestCase):
@@ -573,48 +581,50 @@ class MultipleGroupsWithOperatorPR(unittest.TestCase):
                 ls_remote_responses=ls_remote,
             )
 
-            with patch(
-                "worktrail.orchestrator.integrate.coordinator.plan_groups"
-            ) as mock_groups:
-                with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                    with patch(
-                        "worktrail.orchestrator.integrate.subprocess.run",
-                        side_effect=run,
-                    ):
-                        base = mock_group("base", ["T001"])
-                        feat1 = mock_group("feature-1", ["T002"], depends_on=["base"])
-                        feat2 = mock_group("feature-2", ["T003"], depends_on=["base"])
-                        mock_groups.return_value = [base, feat1, feat2]
+            with (
+                patch(
+                    "worktrail.orchestrator.integrate.coordinator.plan_groups"
+                ) as mock_groups,
+                patch("worktrail.orchestrator.integrate._git", side_effect=run),
+                patch(
+                    "worktrail.orchestrator.integrate.subprocess.run",
+                    side_effect=run,
+                ),
+            ):
+                base = mock_group("base", ["T001"])
+                feat1 = mock_group("feature-1", ["T002"], depends_on=["base"])
+                feat2 = mock_group("feature-2", ["T003"], depends_on=["base"])
+                mock_groups.return_value = [base, feat1, feat2]
 
-                        prs, _, _ = integrate_groups(
-                            Path("/repo"),
-                            "spec-001",
-                            [mock_task("T001"), mock_task("T002"), mock_task("T003")],
-                            "origin",
-                            "full-mixed",
-                            "main",
-                            cleanup=False,
-                            journal_path=str(journal_path),
-                        )
+                prs, _, _ = integrate_groups(
+                    Path("/repo"),
+                    "spec-001",
+                    [mock_task("T001"), mock_task("T002"), mock_task("T003")],
+                    "origin",
+                    "full-mixed",
+                    "main",
+                    cleanup=False,
+                    journal_path=str(journal_path),
+                )
 
-                        # base: conventional OPEN PR
-                        # feature-1: operator PR discovered
-                        # feature-2: new PR created
-                        self.assertEqual(len(prs), 3)
+                # base: conventional OPEN PR
+                # feature-1: operator PR discovered
+                # feature-2: new PR created
+                self.assertEqual(len(prs), 3)
 
-                        pr_names = [p[0] for p in prs]
-                        self.assertIn("base", pr_names)
-                        self.assertIn("feature-1", pr_names)
-                        self.assertIn("feature-2", pr_names)
+                pr_names = [p[0] for p in prs]
+                self.assertIn("base", pr_names)
+                self.assertIn("feature-1", pr_names)
+                self.assertIn("feature-2", pr_names)
 
-                        # Verify journal has all three records
-                        journal = json.loads(journal_path.read_text())
-                        self.assertEqual(len(journal["groups"]), 3)
-                        self.assertEqual(journal["groups"]["base"]["state"], "OPEN")
-                        self.assertEqual(
-                            journal["groups"]["feature-1"]["head_branch"],
-                            "operator-feature-1",
-                        )
+                # Verify journal has all three records
+                journal = json.loads(journal_path.read_text())
+                self.assertEqual(len(journal["groups"]), 3)
+                self.assertEqual(journal["groups"]["base"]["state"], "OPEN")
+                self.assertEqual(
+                    journal["groups"]["feature-1"]["head_branch"],
+                    "operator-feature-1",
+                )
 
 
 def _tail_task(task_id, kind="e2e", status="pending"):
@@ -733,7 +743,9 @@ class PendingTailRecording(unittest.TestCase):
 
 
 def _run_git(cwd, *args):
-    r = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True)
+    r = subprocess.run(
+        ["git", *args], check=False, cwd=str(cwd), capture_output=True, text=True
+    )
     assert r.returncode == 0, f"git {' '.join(args)} failed: {r.stderr}"
     return r.stdout.strip()
 
@@ -837,20 +849,22 @@ class UnreconciledTailEvidence(unittest.TestCase):
             self.assertEqual(findings, [])
 
             run = FakeRunWithOperator.FakeRunHelper()
-            with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                with patch(
+            with (
+                patch("worktrail.orchestrator.integrate._git", side_effect=run),
+                patch(
                     "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
-                ):
-                    result = integrate.reconcile_unreconciled_tail_evidence(
-                        findings,
-                        repo,
-                        "008-x",
-                        [task],
-                        "origin",
-                        "run-1",
-                        "main",
-                        None,
-                    )
+                ),
+            ):
+                result = integrate.reconcile_unreconciled_tail_evidence(
+                    findings,
+                    repo,
+                    "008-x",
+                    [task],
+                    "origin",
+                    "run-1",
+                    "main",
+                    None,
+                )
 
             self.assertEqual(result, [])
             self.assertEqual(run.find_calls("gh", "pr", "create"), [])
@@ -1097,21 +1111,23 @@ class ReconcileUnreconciledTailEvidence(unittest.TestCase):
                 def verify_one(self, *args, **kwargs):
                     pass
 
-            with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                with patch(
+            with (
+                patch("worktrail.orchestrator.integrate._git", side_effect=run),
+                patch(
                     "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
-                ):
-                    result = integrate.reconcile_unreconciled_tail_evidence(
-                        findings,
-                        Path("/repo"),
-                        "spec-001",
-                        [task],
-                        "origin",
-                        "run-1",
-                        "main",
-                        str(journal_path),
-                        make_verifier=lambda: NoOpVerifier(),
-                    )
+                ),
+            ):
+                result = integrate.reconcile_unreconciled_tail_evidence(
+                    findings,
+                    Path("/repo"),
+                    "spec-001",
+                    [task],
+                    "origin",
+                    "run-1",
+                    "main",
+                    str(journal_path),
+                    make_verifier=lambda: NoOpVerifier(),
+                )
 
             # Enriched contract (post-1.2/1.3): a new list carrying each finding's
             # original fields plus reconcile_state/reconcile_pr_url; input untouched.
@@ -1158,30 +1174,32 @@ class ReconcileUnreconciledTailEvidence(unittest.TestCase):
             findings = [{"task": "T022", "worktree": "/x", "head_sha": "abc123"}]
             task = _tail_task("T022", "e2e", status="done")
 
-            with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                with patch(
+            with (
+                patch("worktrail.orchestrator.integrate._git", side_effect=run),
+                patch(
                     "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
-                ):
-                    first = integrate.reconcile_unreconciled_tail_evidence(
-                        findings,
-                        Path("/repo"),
-                        "spec-001",
-                        [task],
-                        "origin",
-                        "run-1",
-                        "main",
-                        str(journal_path),
-                    )
-                    second = integrate.reconcile_unreconciled_tail_evidence(
-                        findings,
-                        Path("/repo"),
-                        "spec-001",
-                        [task],
-                        "origin",
-                        "run-1",
-                        "main",
-                        str(journal_path),
-                    )
+                ),
+            ):
+                first = integrate.reconcile_unreconciled_tail_evidence(
+                    findings,
+                    Path("/repo"),
+                    "spec-001",
+                    [task],
+                    "origin",
+                    "run-1",
+                    "main",
+                    str(journal_path),
+                )
+                second = integrate.reconcile_unreconciled_tail_evidence(
+                    findings,
+                    Path("/repo"),
+                    "spec-001",
+                    [task],
+                    "origin",
+                    "run-1",
+                    "main",
+                    str(journal_path),
+                )
 
             self.assertEqual(first[0]["reconcile_state"], "opened")
             self.assertEqual(second[0]["reconcile_state"], "already-open")
@@ -1217,20 +1235,22 @@ class ReconcileUnreconciledTailEvidence(unittest.TestCase):
             findings = [{"task": "T022", "worktree": "/x", "head_sha": "abc123"}]
             task = _tail_task("T022", "e2e", status="done")
 
-            with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                with patch(
+            with (
+                patch("worktrail.orchestrator.integrate._git", side_effect=run),
+                patch(
                     "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
-                ):
-                    result = integrate.reconcile_unreconciled_tail_evidence(
-                        findings,
-                        Path("/repo"),
-                        "spec-001",
-                        [task],
-                        "origin",
-                        "run-1",
-                        "main",
-                        str(journal_path),
-                    )
+                ),
+            ):
+                result = integrate.reconcile_unreconciled_tail_evidence(
+                    findings,
+                    Path("/repo"),
+                    "spec-001",
+                    [task],
+                    "origin",
+                    "run-1",
+                    "main",
+                    str(journal_path),
+                )
 
             self.assertEqual(result[0]["reconcile_state"], "merged")
             self.assertEqual(result[0]["reconcile_pr_url"], merged_url)
@@ -1251,20 +1271,22 @@ class ReconcileUnreconciledTailEvidence(unittest.TestCase):
             findings = [{"task": "T022", "worktree": "/x", "head_sha": "abc123"}]
             task = _tail_task("T022", "e2e", status="done")
 
-            with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                with patch(
+            with (
+                patch("worktrail.orchestrator.integrate._git", side_effect=run),
+                patch(
                     "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
-                ):
-                    result = integrate.reconcile_unreconciled_tail_evidence(
-                        findings,
-                        Path("/repo"),
-                        "spec-001",
-                        [task],
-                        "origin",
-                        "run-1",
-                        "main",
-                        str(journal_path),
-                    )
+                ),
+            ):
+                result = integrate.reconcile_unreconciled_tail_evidence(
+                    findings,
+                    Path("/repo"),
+                    "spec-001",
+                    [task],
+                    "origin",
+                    "run-1",
+                    "main",
+                    str(journal_path),
+                )
 
             self.assertEqual(result[0]["reconcile_state"], "quarantined")
             self.assertEqual(result[0]["reconcile_pr_url"], "")
@@ -1294,20 +1316,22 @@ class ReconcileUnreconciledTailEvidence(unittest.TestCase):
                 _tail_task("T023", "cleanup", status="done"),
             ]
 
-            with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                with patch(
+            with (
+                patch("worktrail.orchestrator.integrate._git", side_effect=run),
+                patch(
                     "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
-                ):
-                    result = integrate.reconcile_unreconciled_tail_evidence(
-                        findings,
-                        Path("/repo"),
-                        "spec-001",
-                        tasks,
-                        "origin",
-                        "run-1",
-                        "main",
-                        str(journal_path),
-                    )
+                ),
+            ):
+                result = integrate.reconcile_unreconciled_tail_evidence(
+                    findings,
+                    Path("/repo"),
+                    "spec-001",
+                    tasks,
+                    "origin",
+                    "run-1",
+                    "main",
+                    str(journal_path),
+                )
 
             by_task = {r["task"]: r for r in result}
             self.assertEqual(by_task["T022"]["reconcile_state"], "quarantined")
@@ -1349,20 +1373,22 @@ class QuarantinedTailGroupPickedUpByQuarantineSelfcheck(unittest.TestCase):
             findings = [{"task": "T022", "worktree": "/x", "head_sha": "abc123"}]
             task = _tail_task("T022", "e2e", status="done")
 
-            with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                with patch(
+            with (
+                patch("worktrail.orchestrator.integrate._git", side_effect=run),
+                patch(
                     "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
-                ):
-                    integrate.reconcile_unreconciled_tail_evidence(
-                        findings,
-                        repo,
-                        "spec-001",
-                        [task],
-                        "origin",
-                        "run-1",
-                        "main",
-                        str(journal_path),
-                    )
+                ),
+            ):
+                integrate.reconcile_unreconciled_tail_evidence(
+                    findings,
+                    repo,
+                    "spec-001",
+                    [task],
+                    "origin",
+                    "run-1",
+                    "main",
+                    str(journal_path),
+                )
 
             journal = json.loads(journal_path.read_text())
             self.assertEqual(journal["groups"]["tail-t022"]["state"], "QUARANTINED")

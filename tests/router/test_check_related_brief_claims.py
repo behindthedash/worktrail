@@ -328,7 +328,7 @@ class TestPendingDecisionEnvelope:
     def _active_claim(
         self, tmp_path: Path, queue_dirs, brief_id="20260101-000000-other"
     ):
-        picked_dir, queue_dir = queue_dirs
+        picked_dir, _queue_dir = queue_dirs
         _write_brief(
             picked_dir / f"{brief_id}.md",
             status="picked",

@@ -242,12 +242,12 @@ class TestConcurrencyNoBleed(unittest.TestCase):
         with (
             patch.object(dispatch, "build_worker_prompt", return_value="fake"),
             patch.object(spawnlib, "spawn_claude_p", fake_spawn),
+            ThreadPoolExecutor(max_workers=2) as ex,
         ):
-            with ThreadPoolExecutor(max_workers=2) as ex:
-                fa = ex.submit(run, task_a)
-                fb = ex.submit(run, task_b)
-                fa.result()
-                fb.result()
+            fa = ex.submit(run, task_a)
+            fb = ex.submit(run, task_b)
+            fa.result()
+            fb.result()
 
         self.assertEqual(received[thread_ids["T001"]], 900)
         self.assertEqual(received[thread_ids["T002"]], 3600)

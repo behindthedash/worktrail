@@ -182,6 +182,7 @@ class MainCliGitIntegrationTests(unittest.TestCase):
                 "--repo",
                 repo,
             ],
+            check=False,
             capture_output=True,
             text=True,
         )
@@ -202,6 +203,7 @@ class MainCliGitIntegrationTests(unittest.TestCase):
                 "--repo",
                 repo,
             ],
+            check=False,
             capture_output=True,
             text=True,
         )
@@ -225,6 +227,7 @@ class MainCliGitIntegrationTests(unittest.TestCase):
                 "--repo",
                 repo,
             ],
+            check=False,
             capture_output=True,
             text=True,
         )

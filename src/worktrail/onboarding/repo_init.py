@@ -775,7 +775,7 @@ def init_openspec(repo: Path) -> tuple[bool, str | None]:
 
 
 def _run(cmd: list[str], **kw: Any) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True, **kw)
+    return subprocess.run(cmd, check=False, capture_output=True, text=True, **kw)
 
 
 def resolve_gh_repo(repo: Path) -> str | None:

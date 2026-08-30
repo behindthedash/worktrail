@@ -141,7 +141,7 @@ def test_parse_explicit_reset_extracts_codex_notice():
     reset = agent_capacity.parse_explicit_reset(stdout)
     assert reset is not None
     assert (reset.year, reset.month, reset.day) == (2026, 8, 8)
-    local_naive = datetime(2026, 8, 8, 2, 17)
+    local_naive = datetime(2026, 8, 8, 2, 17)  # noqa: DTZ001
     assert reset == local_naive.astimezone(timezone.utc)
 
 
@@ -498,7 +498,7 @@ def test_clear_rejects_all_without_explicit_flag(tmp_path):
         retry_after=agent_capacity._now() + timedelta(minutes=5),
         path=path,
     )
-    content_before = path.read_text()
+    path.read_text()
     rc = agent_capacity.cmd_clear("--all", "resolved", path=path)
     assert rc == 0  # --all is explicit scope
 
@@ -675,7 +675,7 @@ def _run_racing_writers(tmp_path, monkeypatch, writer_a, writer_b):
         try:
             barrier.wait(timeout=5)
             writer()
-        except Exception as exc:  # pragma: no cover - failure reporting only
+        except Exception as exc:  # noqa: BLE001 -- pragma: no cover, failure reporting
             errors.append(exc)
 
     threads = [threading.Thread(target=run, args=(w,)) for w in (writer_a, writer_b)]

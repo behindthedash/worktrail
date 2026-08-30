@@ -23,6 +23,7 @@ McpRunner = Callable[..., subprocess.CompletedProcess[str]]
 def _run_git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", "-C", str(repo), *args],
+        check=False,
         capture_output=True,
         text=True,
         timeout=10,
@@ -34,6 +35,7 @@ def _run_mcp(
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         command,
+        check=False,
         input=input,
         capture_output=True,
         text=True,

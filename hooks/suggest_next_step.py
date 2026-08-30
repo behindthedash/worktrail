@@ -249,6 +249,7 @@ def check_deferred_work(run_record_paths: list[str]) -> list[dict]:
     try:
         result = subprocess.run(
             args,
+            check=False,
             capture_output=True,
             text=True,
             timeout=DEFERRED_WORK_TIMEOUT_SECONDS,
@@ -338,6 +339,7 @@ def check_dedup_gate(
     try:
         result = subprocess.run(
             args,
+            check=False,
             capture_output=True,
             text=True,
             timeout=DEDUP_GATE_TIMEOUT_SECONDS,
@@ -502,7 +504,7 @@ def main() -> int:
             reason_chars=len(reason),
         )
         print(json.dumps({"decision": "block", "reason": reason}))
-    except Exception:
+    except Exception:  # noqa: BLE001
         # Hooks must never break a session.
         return 0
     return 0

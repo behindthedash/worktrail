@@ -44,6 +44,7 @@ def _git_head_short(repo: Path) -> str | None:
     try:
         out = subprocess.run(
             ["git", "-C", str(repo), "rev-parse", "--short=12", "HEAD"],
+            check=False,
             capture_output=True,
             text=True,
             timeout=5,

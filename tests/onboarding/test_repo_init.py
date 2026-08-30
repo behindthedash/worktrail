@@ -990,7 +990,7 @@ class ProposeTests(unittest.TestCase):
 
     def test_without_aspens_flag_leaves_policy_file_bare(self):
         repo = _tmp_repo()
-        rc, result = self._run_propose(repo)
+        _rc, _result = self._run_propose(repo)
         policy_text = (repo / ".worktrail" / "policy.yaml").read_text()
         self.assertNotIn("add_ons:", policy_text)
 
@@ -1020,7 +1020,7 @@ class ProposeTests(unittest.TestCase):
     def test_without_gitnexus_flag_invokes_no_gitnexus_behavior(self):
         repo = _tmp_repo()
         with mock.patch.object(repo_init, "enable_gitnexus") as eg:
-            rc, result = self._run_propose(repo)
+            rc, _result = self._run_propose(repo)
         self.assertEqual(rc, 0)
         eg.assert_not_called()
         policy_text = (repo / ".worktrail" / "policy.yaml").read_text()
@@ -1255,9 +1255,11 @@ class ApplyTests(unittest.TestCase):
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-        with mock.patch.object(repo_init, "_run", side_effect=fake_run):
-            with mock.patch("builtins.print") as printed:
-                rc = repo_init.cmd_apply(args)
+        with (
+            mock.patch.object(repo_init, "_run", side_effect=fake_run),
+            mock.patch("builtins.print") as printed,
+        ):
+            rc = repo_init.cmd_apply(args)
 
         result = json.loads(printed.call_args[0][0])
         self.assertEqual(result["repo"], "acme/widget")
@@ -1314,9 +1316,11 @@ class ApplyTests(unittest.TestCase):
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-        with mock.patch.object(repo_init, "_run", side_effect=fake_run):
-            with mock.patch("builtins.print") as printed:
-                rc = repo_init.cmd_apply(args)
+        with (
+            mock.patch.object(repo_init, "_run", side_effect=fake_run),
+            mock.patch("builtins.print") as printed,
+        ):
+            rc = repo_init.cmd_apply(args)
 
         result = json.loads(printed.call_args[0][0])
         self.assertEqual(len(label_calls), 5)
@@ -1383,9 +1387,11 @@ class ApplyTests(unittest.TestCase):
                 f"unexpected branch/setting-mutating call on an already-applied repo: {cmd}"
             )
 
-        with mock.patch.object(repo_init, "_run", side_effect=fake_run):
-            with mock.patch("builtins.print") as printed:
-                rc = repo_init.cmd_apply(args)
+        with (
+            mock.patch.object(repo_init, "_run", side_effect=fake_run),
+            mock.patch("builtins.print") as printed,
+        ):
+            rc = repo_init.cmd_apply(args)
 
         result = json.loads(printed.call_args[0][0])
         self.assertEqual(result["branches"], {})
@@ -1456,9 +1462,11 @@ class ApplyTests(unittest.TestCase):
             repo, variable_names=[], secret_names=[]
         )
 
-        with mock.patch.object(repo_init, "_run", side_effect=fake_run):
-            with mock.patch("builtins.print") as printed:
-                rc = repo_init.cmd_apply(args)
+        with (
+            mock.patch.object(repo_init, "_run", side_effect=fake_run),
+            mock.patch("builtins.print") as printed,
+        ):
+            rc = repo_init.cmd_apply(args)
 
         result = json.loads(printed.call_args[0][0])
         self.assertEqual(rc, 0)
@@ -1479,9 +1487,11 @@ class ApplyTests(unittest.TestCase):
             secret_names=["RELEASE_NOTES_APP_PRIVATE_KEY"],
         )
 
-        with mock.patch.object(repo_init, "_run", side_effect=fake_run):
-            with mock.patch("builtins.print") as printed:
-                rc = repo_init.cmd_apply(args)
+        with (
+            mock.patch.object(repo_init, "_run", side_effect=fake_run),
+            mock.patch("builtins.print") as printed,
+        ):
+            rc = repo_init.cmd_apply(args)
 
         result = json.loads(printed.call_args[0][0])
         self.assertEqual(rc, 0)

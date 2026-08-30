@@ -127,7 +127,7 @@ class WorktreeManager:
         proc = (
             self.runner(cmd)
             if self.runner
-            else subprocess.run(cmd, capture_output=True, text=True)
+            else subprocess.run(cmd, check=False, capture_output=True, text=True)
         )
         if proc.returncode != 0:
             err = (proc.stderr or "").strip()

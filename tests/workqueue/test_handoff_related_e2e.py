@@ -97,6 +97,7 @@ class E2ETestBase(unittest.TestCase):
                 "--queue-dir",
                 str(self.base),
             ],
+            check=False,
             capture_output=True,
             text=True,
         )
@@ -397,6 +398,7 @@ class TestRegressionAC022(E2ETestBase):
         test_script = Path(__file__).parent / "test_work_queue.py"
         result = subprocess.run(
             [sys.executable, str(test_script)],
+            check=False,
             capture_output=True,
             text=True,
         )

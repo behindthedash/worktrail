@@ -126,9 +126,7 @@ def _id_matches(identifier: str, stem: str) -> bool:
     if stem.startswith(identifier):
         return True
     # Suffix/contains match (slug without date-time prefix)
-    if stem.endswith(identifier):
-        return True
-    return False
+    return bool(stem.endswith(identifier))
 
 
 def _is_blocked_by_pair(

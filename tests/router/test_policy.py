@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from typing import ClassVar
 from unittest import mock
 
 import pytest
@@ -415,7 +416,7 @@ class TestProtectedPathsEnforcement(unittest.TestCase):
         self.assertIn("migrations/", reason)
 
     def test_glob_pattern_denies(self):
-        eligible, reason = automerge_eligible(
+        eligible, _reason = automerge_eligible(
             self._policy(["src/billing/*.py"]),
             "low",
             [],
@@ -762,7 +763,7 @@ class TestPolicyJsonSafetyMatrix(unittest.TestCase):
     Phase 4 policy load. Covers `defaults`/`roles`/`tiers`, each with and
     without a model/effort segment present."""
 
-    POLICY_YAMLS = {
+    POLICY_YAMLS: ClassVar = {
         "empty_routing_block": "routing: {}\n",
         "defaults_only": (
             "routing:\n"
@@ -2374,9 +2375,11 @@ class LegacyRoutingKeys(unittest.TestCase):
             "targets:\n  codex-main:\n    harness: codex\n    pool: subscription\n"
         )
         repo = _repo_with("routing:\n  fallback:\n    - codex\n")
-        with mock.patch.dict(os.environ, {"GO_ROUTING_FILE": str(mw)}):
-            with self.assertRaises(OperatorConfigError):
-                load_policy(repo)
+        with (
+            mock.patch.dict(os.environ, {"GO_ROUTING_FILE": str(mw)}),
+            self.assertRaises(OperatorConfigError),
+        ):
+            load_policy(repo)
 
 
 if __name__ == "__main__":

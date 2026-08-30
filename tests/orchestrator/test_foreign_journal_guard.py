@@ -311,7 +311,7 @@ class FullRealInnerFreshDiscardsForeignJournalTest(unittest.TestCase):
                         )
                     # any other RuntimeError from the mocked-out environment is
                     # not what this test cares about
-                except Exception:
+                except Exception:  # noqa: BLE001, S110
                     pass
 
             # --fresh (resume=False) discards the journal before the guard's

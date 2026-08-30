@@ -295,13 +295,13 @@ class ConcurrentPhaseProgress(unittest.TestCase):
 
 class SummarizeUsage(unittest.TestCase):
     def _u(self, **kw):
-        base = dict(
-            input_tokens=0,
-            cache_creation_input_tokens=0,
-            cache_read_input_tokens=0,
-            output_tokens=0,
-            total_cost_usd=0.0,
-        )
+        base = {
+            "input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "output_tokens": 0,
+            "total_cost_usd": 0.0,
+        }
         base.update(kw)
         return base
 
@@ -559,13 +559,13 @@ class RenderUsage(unittest.TestCase):
 
 class SummarizePoolUsage(unittest.TestCase):
     def _u(self, **kw):
-        base = dict(
-            input_tokens=0,
-            cache_creation_input_tokens=0,
-            cache_read_input_tokens=0,
-            output_tokens=0,
-            total_cost_usd=0.0,
-        )
+        base = {
+            "input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "output_tokens": 0,
+            "total_cost_usd": 0.0,
+        }
         base.update(kw)
         return base
 

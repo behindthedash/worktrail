@@ -415,7 +415,7 @@ class SpecSyncSweepE2ETests(unittest.TestCase):
         _make_drifted_repo_single_spec(self.repos_root, "drifted-repo")
 
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
-        holder = open(self.lock_path, "a+")
+        holder = open(self.lock_path, "a+")  # noqa: SIM115 -- held across the surrounding scope as a lock file
         self.addCleanup(holder.close)
         fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
 

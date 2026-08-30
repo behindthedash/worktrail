@@ -118,6 +118,7 @@ print(json.dumps({
 """
         completed = subprocess.run(
             [str(python), "-I", "-c", probe],
+            check=False,
             cwd=tmp,
             env=env,
             capture_output=True,

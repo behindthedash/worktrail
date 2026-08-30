@@ -46,6 +46,7 @@ def _save(p, state):
 def _branch_sha(remote: str, branch: str) -> str:
     out = subprocess.run(
         ["git", "-C", remote, "rev-parse", f"refs/heads/{branch}"],
+        check=False,
         capture_output=True,
         text=True,
     )
@@ -119,6 +120,7 @@ def _dispatch(argv) -> int:
         else:  # gh infers head from the current branch; harness always passes cwd's branch
             head = subprocess.run(
                 ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                check=False,
                 capture_output=True,
                 text=True,
             ).stdout.strip()
@@ -189,6 +191,7 @@ def _dispatch(argv) -> int:
             )
             m = subprocess.run(
                 ["git", "-C", str(clone), "merge", "--squash", "-q", sha],
+                check=False,
                 capture_output=True,
                 text=True,
             )

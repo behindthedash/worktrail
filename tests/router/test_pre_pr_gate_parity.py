@@ -189,27 +189,33 @@ GATE_PARITY = {
     ),
     "is_docs_only": (
         "exempt",
-        "skip-only mechanism (never fails the gate): the orchestrator's "
-        "_run_integration_smoke() always runs integrate_smoke_cmd unconditionally, so it "
-        "does strictly MORE work than the one-off path here, never less -- the safe "
-        "direction for a skip to diverge in.",
+        (
+            "skip-only mechanism (never fails the gate): the orchestrator's "
+            "_run_integration_smoke() always runs integrate_smoke_cmd unconditionally, so it "
+            "does strictly MORE work than the one-off path here, never less -- the safe "
+            "direction for a skip to diverge in."
+        ),
     ),
     "is_promotion_pr": (
         "exempt",
-        "skip-only mechanism (never fails the gate), same shape as is_docs_only above: the "
-        "orchestrator's _run_integration_smoke() always runs integrate_smoke_cmd "
-        "unconditionally regardless of this check, so it does strictly MORE work than the "
-        "one-off path's promotion-PR skip, never less. Also structurally inapplicable to the "
-        "orchestrator path: group PRs target the repo's own base branch (feature work), not a "
-        "policy-declared promotion_pairs head/base pair, so is_promotion_pr() would never "
-        "return True there even if invoked.",
+        (
+            "skip-only mechanism (never fails the gate), same shape as is_docs_only above: the "
+            "orchestrator's _run_integration_smoke() always runs integrate_smoke_cmd "
+            "unconditionally regardless of this check, so it does strictly MORE work than the "
+            "one-off path's promotion-PR skip, never less. Also structurally inapplicable to the "
+            "orchestrator path: group PRs target the repo's own base branch (feature work), not a "
+            "policy-declared promotion_pairs head/base pair, so is_promotion_pr() would never "
+            "return True there even if invoked."
+        ),
     ),
     "resolve_cmd": (
         "exempt",
-        "the orchestrator runs a deliberately separate, policy-documented command "
-        "(integrate_smoke_cmd via _run_integration_smoke), not pre_pr_cmd -- both keys "
-        "are explicit, independent entries in docs/specs/go-policy.yaml's schema, not a "
-        "silent gap.",
+        (
+            "the orchestrator runs a deliberately separate, policy-documented command "
+            "(integrate_smoke_cmd via _run_integration_smoke), not pre_pr_cmd -- both keys "
+            "are explicit, independent entries in docs/specs/go-policy.yaml's schema, not a "
+            "silent gap."
+        ),
     ),
     "_warn_orphaned_tests": (
         "exempt",

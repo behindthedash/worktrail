@@ -101,6 +101,7 @@ class FakeSpawn:
         sha = (
             subprocess.run(
                 ["git", "-C", str(wt), "rev-parse", "HEAD"],
+                check=False,
                 capture_output=True,
                 text=True,
             ).stdout.strip()[:8]
@@ -258,7 +259,7 @@ class SpawnlibPausedSeconds(unittest.TestCase):
         # sharing the same real clock, so this never rots.
         Proc = namedtuple("Proc", "returncode stdout stderr")
         reset_at = (
-            (datetime.datetime.now() + datetime.timedelta(minutes=5))
+            (datetime.datetime.now() + datetime.timedelta(minutes=5))  # noqa: DTZ005
             .strftime("%I:%M%p")
             .lstrip("0")
             .lower()
@@ -296,7 +297,7 @@ class SpawnlibPausedSeconds(unittest.TestCase):
         # See test_session_limit_sleep_accumulates_paused for why this uses
         # the real clock rather than a hardcoded fixed "now".
         reset_at = (
-            (datetime.datetime.now() + datetime.timedelta(minutes=5))
+            (datetime.datetime.now() + datetime.timedelta(minutes=5))  # noqa: DTZ005
             .strftime("%I:%M%p")
             .lstrip("0")
             .lower()

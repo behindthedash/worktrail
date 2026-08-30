@@ -82,6 +82,7 @@ def run_check(repo: Path, check: dict) -> str | None:
             return f"file_tracked check failed: {path} does not exist"
         result = subprocess.run(
             ["git", "ls-files", "--error-unmatch", path],
+            check=False,
             cwd=str(repo),
             capture_output=True,
             text=True,
@@ -138,7 +139,7 @@ def run_check(repo: Path, check: dict) -> str | None:
         cmd = check.get("cmd")
         if not cmd:
             return f"malformed command check (missing 'cmd'): {check}"
-        result = subprocess.run(["bash", "-c", cmd], cwd=str(repo))
+        result = subprocess.run(["bash", "-c", cmd], check=False, cwd=str(repo))
         if result.returncode != 0:
             return f"command check failed (exit {result.returncode}): {cmd}"
         return None
@@ -212,6 +213,7 @@ def _find_candidate_paths(repo: Path, basename: str, *, limit: int = 5) -> list[
     matches."""
     result = subprocess.run(
         ["git", "ls-files", f"*/{basename}", basename],
+        check=False,
         cwd=str(repo),
         capture_output=True,
         text=True,
@@ -372,6 +374,7 @@ def _resolve_base_ref(repo: Path, configured: str | None) -> str | None:
     for ref in candidates:
         result = subprocess.run(
             ["git", "rev-parse", "--verify", "--quiet", ref],
+            check=False,
             cwd=str(repo),
             capture_output=True,
             text=True,
@@ -387,6 +390,7 @@ def _changed_paths_via_git(repo: Path, configured_base: str | None) -> list[str]
         return []
     merge_base = subprocess.run(
         ["git", "merge-base", "HEAD", base_ref],
+        check=False,
         cwd=str(repo),
         capture_output=True,
         text=True,
@@ -395,6 +399,7 @@ def _changed_paths_via_git(repo: Path, configured_base: str | None) -> list[str]
         return []
     diff = subprocess.run(
         ["git", "diff", "--name-only", merge_base.stdout.strip(), "HEAD"],
+        check=False,
         cwd=str(repo),
         capture_output=True,
         text=True,

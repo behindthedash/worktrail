@@ -409,16 +409,18 @@ class CodexHomePreflightTests(unittest.TestCase):
             os.chmod(tmp, 0o555)
             try:
                 inherited = os.path.join(tmp, "codex-home")
-                with patch.dict(os.environ, {"CODEX_HOME": inherited}, clear=True):
-                    with patch.object(
+                with (
+                    patch.dict(os.environ, {"CODEX_HOME": inherited}, clear=True),
+                    patch.object(
                         skill_dispatch,
                         "default_worktrail_codex_home",
                         return_value="/tmp/worktrail-default",
-                    ):
-                        self.assertEqual(
-                            skill_dispatch.select_codex_home(None),
-                            ("/tmp/worktrail-default", True),
-                        )
+                    ),
+                ):
+                    self.assertEqual(
+                        skill_dispatch.select_codex_home(None),
+                        ("/tmp/worktrail-default", True),
+                    )
             finally:
                 os.chmod(tmp, 0o755)
 
@@ -1047,6 +1049,7 @@ class DispatchDepthHermeticityTests(unittest.TestCase):
         }
         proc = subprocess.run(
             [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", node],
+            check=False,
             cwd=repo_root,
             env=env,
             capture_output=True,
@@ -1292,9 +1295,12 @@ class MainRoutingIntegrationTests(unittest.TestCase):
 
     def test_agent_or_routing_is_required(self):
         stdout, stderr = StringIO(), StringIO()
-        with redirect_stdout(stdout), redirect_stderr(stderr):
-            with self.assertRaises(SystemExit):
-                skill_dispatch.main(["--skill", "worktrail-sdd-workflow"])
+        with (
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+            self.assertRaises(SystemExit),
+        ):
+            skill_dispatch.main(["--skill", "worktrail-sdd-workflow"])
 
 
 if __name__ == "__main__":

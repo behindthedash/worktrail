@@ -196,6 +196,7 @@ def tracked_test_files(repo: Path) -> list[str]:
     try:
         proc = subprocess.run(
             ["git", "-C", str(repo), "ls-files", "-z"],
+            check=False,
             capture_output=True,
             text=True,
             timeout=30,

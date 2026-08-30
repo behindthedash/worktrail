@@ -104,6 +104,7 @@ class FakeSpawn:
         sha = (
             subprocess.run(
                 ["git", "-C", str(wt), "rev-parse", "HEAD"],
+                check=False,
                 capture_output=True,
                 text=True,
             ).stdout.strip()[:8]

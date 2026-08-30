@@ -29,7 +29,9 @@ from worktrail.orchestrator import integrate
 
 
 def _run_git(cwd, *args):
-    r = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True)
+    r = subprocess.run(
+        ["git", *args], check=False, cwd=str(cwd), capture_output=True, text=True
+    )
     assert r.returncode == 0, f"git {' '.join(args)} failed: {r.stderr}"
     return r.stdout.strip()
 

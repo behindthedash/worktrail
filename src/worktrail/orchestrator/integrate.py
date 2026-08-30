@@ -149,6 +149,7 @@ def _refresh_pr_labels(
             cmd += ["--route", route]
         r = subprocess.run(
             cmd,
+            check=False,
             capture_output=True,
             text=True,
             timeout=30,
@@ -231,7 +232,7 @@ def _run_gh_with_retry(cmd: list, cwd) -> subprocess.CompletedProcess:
     that persists through every attempt) flows into the same quarantine/fallback
     paths as before.
     """
-    r = subprocess.run(cmd, capture_output=True, text=True, cwd=str(cwd))
+    r = subprocess.run(cmd, check=False, capture_output=True, text=True, cwd=str(cwd))
     for attempt in range(1, GH_TRANSIENT_ATTEMPTS):
         if r.returncode == 0:
             return r
@@ -245,7 +246,9 @@ def _run_gh_with_retry(cmd: list, cwd) -> subprocess.CompletedProcess:
             f"(attempt {attempt}/{GH_TRANSIENT_ATTEMPTS - 1}, waiting {wait}s): {detail}"
         )
         _retry_sleep(wait)
-        r = subprocess.run(cmd, capture_output=True, text=True, cwd=str(cwd))
+        r = subprocess.run(
+            cmd, check=False, capture_output=True, text=True, cwd=str(cwd)
+        )
     return r
 
 
@@ -500,9 +503,12 @@ def finish(
                 "--title",
                 f"[{run_id}] {name}: {', '.join(group_tasks[name])}",
                 "--body",
-                f"Group **{name}** | reqs: {', '.join(g['reqs']) or '-'} "
-                f"| base: `{target}`\n\nparallel-orchestrator {run_id}.",
+                (
+                    f"Group **{name}** | reqs: {', '.join(g['reqs']) or '-'} "
+                    f"| base: `{target}`\n\nparallel-orchestrator {run_id}."
+                ),
             ],
+            check=False,
             capture_output=True,
             text=True,
         )
@@ -526,6 +532,7 @@ def finish(
             if gb:
                 subprocess.run(
                     ["gh", "pr", "close", "--repo", sandbox, gb, "--delete-branch"],
+                    check=False,
                     capture_output=True,
                     text=True,
                 )
@@ -574,7 +581,7 @@ def _write_group_journal(
         progress.atomic_write_text(
             journal_file, json.dumps(journal, indent=2, sort_keys=True) + "\n"
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"  WARNING: Failed to write journal for group {name}: {e}")
 
 
@@ -635,7 +642,7 @@ def _mark_integrate_complete_if_terminal(
                 journal_file, json.dumps(journal, indent=2, sort_keys=True) + "\n"
             )
         return complete
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"  WARNING: Failed to finalize integrate journal: {e}")
         return False
 
@@ -731,7 +738,7 @@ def _record_unreconciled_tail_evidence(
         progress.atomic_write_text(
             journal_file, json.dumps(journal, indent=2, sort_keys=True) + "\n"
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"  WARNING: Failed to record unreconciled tail evidence: {e}")
 
 
@@ -749,6 +756,7 @@ def _run_integration_smoke(iw: Path, name: str, smoke_cmd: str) -> tuple:
     try:
         r = subprocess.run(
             smoke_cmd,
+            check=False,
             shell=True,
             cwd=str(iw),
             capture_output=True,
@@ -791,6 +799,7 @@ def _run_drift_gate(iw: Path, name: str) -> tuple:
     try:
         r = subprocess.run(
             [sys.executable, str(gate_script), "--repo", str(iw), "--checks-only"],
+            check=False,
             capture_output=True,
             text=True,
             timeout=DRIFT_GATE_TIMEOUT_DEFAULT,
@@ -938,7 +947,7 @@ def _attempt_assembly_resolve(
             if rep.get("status") == "success":
                 return True
             parsed_failure = True  # worker explicitly reported failure; trust it
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             print(f"  RESOLVE [{name:9}] worker error: {exc!r}")
         if not parsed_failure and _assembly_resolve_salvage(iw, conflicted_files):
             print(
@@ -1155,7 +1164,7 @@ def integrate_one(
                 _do_journal(name, pr_url, gb, "MERGED")
                 group_branch[name] = gb
                 return None
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
 
     # Reconcile: remote branch (reuse or create)
@@ -1308,7 +1317,7 @@ def integrate_one(
             elif pr_state == "MERGED":
                 print(f"  MERGED [{name:9}] (already integrated, skipping)")
                 return None
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
 
     # No open PR on conventional branch; try operator PR discovery
@@ -1349,7 +1358,7 @@ def integrate_one(
                 )
                 _do_journal(name, pr_url, head_branch, "OPEN")
                 return (name, pr_base, pr_url)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
 
     # No PR found (conventional or operator); refresh labels and create new one
@@ -1386,8 +1395,10 @@ def integrate_one(
         "--title",
         f"[{run_id}] {name}: {', '.join(deliverable)}",
         "--body",
-        f"Group **{name}** | reqs: {', '.join(g['reqs']) or '-'} "
-        f"| base: `{pr_base}`\n\nparallel-orchestrator {run_id}.{escalation_note}",
+        (
+            f"Group **{name}** | reqs: {', '.join(g['reqs']) or '-'} "
+            f"| base: `{pr_base}`\n\nparallel-orchestrator {run_id}.{escalation_note}"
+        ),
     ]
     if gh_repo:
         cmd += ["--repo", gh_repo]
@@ -1425,7 +1436,7 @@ def _read_group_journal_record(journal_path: str | None, name: str) -> dict:
             return {}
         journal = json.loads(journal_file.read_text())
         return journal.get("groups", {}).get(name, {})
-    except Exception:
+    except Exception:  # noqa: BLE001
         return {}
 
 
@@ -1498,6 +1509,7 @@ def _close_superseded_tail_pr(
     repo_args = ["--repo", gh_repo] if gh_repo else []
     close = subprocess.run(
         ["gh", "pr", "close", branch, *repo_args],
+        check=False,
         capture_output=True,
         text=True,
         cwd=str(repo),
@@ -1519,19 +1531,21 @@ def _close_superseded_tail_pr(
             "databaseId,status",
             *repo_args,
         ],
+        check=False,
         capture_output=True,
         text=True,
         cwd=str(repo),
     )
     try:
         runs = json.loads(list_runs.stdout or "[]")
-    except Exception:
+    except Exception:  # noqa: BLE001
         runs = []
     for run in runs:
         if run.get("status") == "completed":
             continue
         subprocess.run(
             ["gh", "run", "cancel", str(run["databaseId"]), *repo_args],
+            check=False,
             capture_output=True,
             text=True,
             cwd=str(repo),
@@ -1661,7 +1675,7 @@ def reconcile_unreconciled_tail_evidence(
         if descendant is not None:
             try:
                 _close_superseded_tail_pr(repo, remote, name, journal_path)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 print(
                     f"  WARNING: failed to close superseded tail PR for {task_id}: {e}"
                 )
@@ -1751,7 +1765,7 @@ def reconcile_unreconciled_tail_evidence(
             else:
                 reconcile_state = "quarantined"
             pr_url = post_record.get("pr_url", "") or ""
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(f"  WARNING: reconciliation failed for tail task {task_id}: {e}")
             reconcile_state = "quarantined"
             pr_url = ""
@@ -1788,6 +1802,7 @@ def _wait_for_pr_checks(
     while time.monotonic() < deadline:
         view = subprocess.run(
             ["gh", "pr", "view", pr_url, "--json", "state,statusCheckRollup"],
+            check=False,
             capture_output=True,
             text=True,
             cwd=str(repo),
@@ -1796,7 +1811,7 @@ def _wait_for_pr_checks(
             return "error"
         try:
             data = json.loads(view.stdout)
-        except Exception:
+        except Exception:  # noqa: BLE001
             return "error"
         state = data.get("state", "")
         if state in ("MERGED", "CLOSED"):

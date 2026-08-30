@@ -219,7 +219,7 @@ def find_parent_spec(spec_dir: Path) -> Path | None:
     # Multiple dated revisions of the same spec (e.g. a later rewrite) ->
     # the lexicographically latest filename is the current one (date-prefixed
     # naming sorts chronologically).
-    return sorted(pool)[-1]
+    return max(pool)
 
 
 def parent_spec_status(parent_spec: Path) -> str | None:
@@ -260,6 +260,7 @@ def _git_tracked(repo: Path, paths: list[str]) -> set[str]:
     try:
         result = subprocess.run(
             ["git", "-C", str(repo), "ls-files", "-z", "--"] + paths,
+            check=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
@@ -293,11 +294,7 @@ def _looks_repo_relative(entry: str) -> bool:
     plain non-file descriptions (e.g. "crontab (user-level)") -- real fleet
     `files:` data carries all of these, and naively checking every entry
     against git would false-positive on them fleet-wide."""
-    return not (
-        entry.startswith("~")
-        or entry.startswith("/")
-        or any(ch.isspace() for ch in entry)
-    )
+    return not (entry.startswith(("~", "/")) or any(ch.isspace() for ch in entry))
 
 
 def check_spec(spec_dir: Path, repo: Path | None = None) -> list[str]:

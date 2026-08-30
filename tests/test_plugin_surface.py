@@ -439,6 +439,7 @@ def test_opencode_bridge_registers_openspec_propose_deterministically():
     """
     result = subprocess.run(
         ["node", "--input-type=module", "-e", script],
+        check=False,
         capture_output=True,
         text=True,
         timeout=15,

@@ -260,7 +260,7 @@ def set_group_phases(journal_path: str | Path, group_phases: dict[str, str]) -> 
 def _fmt_dur(seconds: float | None) -> str:
     if seconds is None:
         return "?"
-    s = int(round(seconds))
+    s = round(seconds)
     if s < 60:
         return f"{s}s"
     if s < 3600:
@@ -654,7 +654,7 @@ def render(
                     parts.append(f"{n} {ph}")
             phase_summary = " / ".join(parts) if parts else "idle"
             lines.append(f"spec {spec_id}   run {run_id}   {phase_summary}")
-        except Exception:
+        except Exception:  # noqa: BLE001
             lines.append(f"spec {spec_id}   run {run_id}   phase: {phase}")
     else:
         lines.append(f"spec {spec_id}   run {run_id}   phase: {phase}")

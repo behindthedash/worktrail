@@ -146,7 +146,7 @@ def extract_spec_summary(spec_dir: Path) -> dict[str, Any] | None:
         # probe_stale=False: stage here is display-only; skip the per-spec
         # `git ls-files` probe the dashboard needs for dispatch decisions.
         stage = detect_stage(spec_dir, probe_stale=False).get("stage", "unknown")
-    except Exception:
+    except Exception:  # noqa: BLE001
         stage = "unknown"
 
     return {

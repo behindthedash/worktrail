@@ -158,7 +158,7 @@ class RetainedWorktreeRepairsOnDrift(unittest.TestCase):
         path must not even be entered -- no extra fetch/merge on the hot
         path."""
         with tempfile.TemporaryDirectory() as tmp:
-            bare, repo = _init_bare_and_repo(tmp)
+            _bare, repo = _init_bare_and_repo(tmp)
             task, by_id = _task_and_by_id()
 
             wt = Path(tmp) / "wt" / "102-x-task-002"

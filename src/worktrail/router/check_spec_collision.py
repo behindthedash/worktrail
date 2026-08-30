@@ -112,7 +112,7 @@ def _fallback_find_spec_file(spec_dir: Path) -> Path | None:
     if not cands:
         return None
     dated = sorted(f for f in cands if _DATE_PREFIX.match(f.name))
-    return dated[-1] if dated else sorted(cands)[0]
+    return dated[-1] if dated else min(cands)
 
 
 def _status_header(spec_text: str) -> str | None:
@@ -147,7 +147,7 @@ def _collect_task_files(spec_dir: Path) -> list[str]:
     if _load_tasks is not None:
         try:
             tasks = _load_tasks(spec_dir)
-        except Exception:
+        except Exception:  # noqa: BLE001
             tasks = None
         if tasks:
             files = sorted({f for t in tasks for f in (t.get("files") or [])})
@@ -298,7 +298,7 @@ def check(
                     "feature_summary": s.get("feature_summary"),
                 }
             )
-        except Exception:  # noqa: BLE001 - malformed candidate entry, skip it
+        except Exception:  # noqa: BLE001, S112 - malformed candidate entry, skip it
             continue
 
     result["checked"] = True

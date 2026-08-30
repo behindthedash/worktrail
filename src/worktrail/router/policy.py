@@ -251,7 +251,7 @@ def _parse_scalar(raw: str) -> Any:
     s = raw.strip()
     if s.startswith("#"):
         return None
-    if "#" in s and not (s.startswith('"') or s.startswith("'")):
+    if "#" in s and not (s.startswith(('"', "'"))):
         s = s.split("#", 1)[0].strip()
     if (s.startswith('"') and s.endswith('"')) or (
         s.startswith("'") and s.endswith("'")

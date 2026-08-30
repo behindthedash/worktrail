@@ -175,6 +175,7 @@ class CarrySquashMergedDependenciesConflictFailsLoud(unittest.TestCase):
             self.assertEqual(
                 subprocess.run(
                     ["git", "-C", str(wt), "rev-parse", "-q", "--verify", "MERGE_HEAD"],
+                    check=False,
                     capture_output=True,
                 ).returncode,
                 1,
@@ -323,6 +324,7 @@ class TasksMdChecklistConflictResolvesViaUnion(unittest.TestCase):
             self.assertEqual(
                 subprocess.run(
                     ["git", "-C", str(wt), "rev-parse", "-q", "--verify", "MERGE_HEAD"],
+                    check=False,
                     capture_output=True,
                 ).returncode,
                 1,
@@ -375,6 +377,7 @@ class TasksMdConflictPlusOtherFileFailsLoud(unittest.TestCase):
             self.assertEqual(
                 subprocess.run(
                     ["git", "-C", str(wt), "rev-parse", "-q", "--verify", "MERGE_HEAD"],
+                    check=False,
                     capture_output=True,
                 ).returncode,
                 1,

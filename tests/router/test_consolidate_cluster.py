@@ -91,6 +91,7 @@ class ConsolidateClusterTestCase(unittest.TestCase):
                 identifier,
                 "--json",
             ],
+            check=False,
             capture_output=True,
             text=True,
             env=self._env(),
@@ -100,6 +101,7 @@ class ConsolidateClusterTestCase(unittest.TestCase):
     def _wq_list_json(self) -> str:
         r = subprocess.run(
             [sys.executable, "-m", "worktrail.workqueue.work_queue", "list", "--json"],
+            check=False,
             capture_output=True,
             text=True,
             env=self._env(),

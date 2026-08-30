@@ -120,8 +120,10 @@ def _format_human(res: dict[str, Any]) -> str:
     if not candidates:
         return f"no candidates ({res['files_scanned']} file(s) scanned) -- nothing to triage"
     lines = [
-        f"{len(candidates)} candidate(s) for human triage "
-        f"({res['files_scanned']} file(s) scanned) -- advisory only, not a CI failure:"
+        (
+            f"{len(candidates)} candidate(s) for human triage "
+            f"({res['files_scanned']} file(s) scanned) -- advisory only, not a CI failure:"
+        )
     ]
     for c in candidates:
         lines.append(f"  {c['file']}  cue={c['cue']!r}  action=`{c['action']}`")

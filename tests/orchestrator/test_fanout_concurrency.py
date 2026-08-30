@@ -81,7 +81,10 @@ class FakeSpawn:
         with self.lock:
             self.current -= 1
         sha = subprocess.run(
-            ["git", "-C", str(wt), "rev-parse", "HEAD"], capture_output=True, text=True
+            ["git", "-C", str(wt), "rev-parse", "HEAD"],
+            check=False,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
         rs = '"PASSED"' if role == "review" else "null"
         return spawnlib.SpawnResult(
@@ -577,7 +580,7 @@ class RegistryLockParamTest(unittest.TestCase):
                 sleep=lambda *_: None,
                 worktree_base=Path("/tmp/fake-wt"),
             )
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass  # git/gh calls may fail in hermetic mode; we only care the lock was passed
         # The lock must have been used (cleanup_group or _group_worktree acquired it)
         self.assertIs(
@@ -869,7 +872,10 @@ class _BarrierSpawn:
         with self.lock:
             self.current -= 1
         sha = subprocess.run(
-            ["git", "-C", str(wt), "rev-parse", "HEAD"], capture_output=True, text=True
+            ["git", "-C", str(wt), "rev-parse", "HEAD"],
+            check=False,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
         rs = '"PASSED"' if role == "review" else "null"
         return spawnlib.SpawnResult(

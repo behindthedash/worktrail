@@ -314,7 +314,7 @@ def parse_explicit_reset(text: str) -> datetime | None:
     candidate = f"{month} {day} {year} {clock.replace(' ', '').upper()}"
     for fmt in ("%b %d %Y %I:%M%p", "%B %d %Y %I:%M%p"):
         try:
-            parsed = datetime.strptime(candidate, fmt)
+            parsed = datetime.strptime(candidate, fmt)  # noqa: DTZ007
         except ValueError:
             continue
         return parsed.astimezone(timezone.utc)
@@ -455,7 +455,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cache", type=str, default=None, help="override cache path")
     sub = parser.add_subparsers(dest="command")
 
-    status_parser = sub.add_parser("status", help="show capacity cache status")
+    sub.add_parser("status", help="show capacity cache status")
 
     clear_parser = sub.add_parser("clear", help="clear capacity gate(s)")
     clear_parser.add_argument(

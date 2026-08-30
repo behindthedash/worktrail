@@ -85,6 +85,7 @@ class RetainedBranchAutoMergeTests(unittest.TestCase):
         # Merge was aborted: no MERGE_HEAD, branch head unchanged, work intact.
         merge_head = subprocess.run(
             ["git", "-C", str(self.wt), "rev-parse", "-q", "--verify", "MERGE_HEAD"],
+            check=False,
             capture_output=True,
             text=True,
         )

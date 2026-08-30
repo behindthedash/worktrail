@@ -96,6 +96,7 @@ class AspensAddOn:
             cmd.append("--refresh")
         result = subprocess.run(
             cmd,
+            check=False,
             cwd=str(worktree),
             capture_output=True,
             text=True,

@@ -137,6 +137,7 @@ def _run_gh(args: list[str], repo: Path, timeout: float = 30) -> Any | None:
     try:
         result = subprocess.run(
             ["gh", *args],
+            check=False,
             capture_output=True,
             text=True,
             timeout=timeout,

@@ -202,7 +202,7 @@ def forbidden_prefixes_for(spec_path: str | None = None) -> tuple:
 # Default (live) effect runners -- replaced by fakes in tests
 # --------------------------------------------------------------------------- #
 def _real_run(cmd: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True)
+    return subprocess.run(cmd, check=False, capture_output=True, text=True)
 
 
 def _make_live_spawn(
@@ -711,6 +711,7 @@ class Verifier:
         try:
             r = subprocess.run(
                 cmd,
+                check=False,
                 shell=True,
                 cwd=str(wt),
                 capture_output=True,
@@ -969,8 +970,10 @@ class Verifier:
             if strike >= self.max_strikes:
                 return (
                     False,
-                    f"CI still failing after {self.max_strikes} fix "
-                    f"attempts: {', '.join(failing)}",
+                    (
+                        f"CI still failing after {self.max_strikes} fix "
+                        f"attempts: {', '.join(failing)}"
+                    ),
                 )
             self.log(
                 f"    [{group['name']}] CI red ({', '.join(failing)}) "

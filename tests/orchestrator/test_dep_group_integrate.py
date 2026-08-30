@@ -135,24 +135,26 @@ class DepBranchGoneFallback(unittest.TestCase):
         group_branch = {"base": "full-run/base"}
         quarantined: dict = {}
 
-        with patch("worktrail.orchestrator.integrate._git", side_effect=git_dispatch):
-            with patch(
+        with (
+            patch("worktrail.orchestrator.integrate._git", side_effect=git_dispatch),
+            patch(
                 "worktrail.orchestrator.integrate.subprocess.run",
                 side_effect=subprocess_dispatch,
-            ):
-                result = integrate.integrate_one(
-                    _mock_group("feature-1", ["T002"], depends_on=["base"]),
-                    Path("/repo"),
-                    "spec-049",
-                    [_mock_task("T001"), _mock_task("T002")],
-                    "origin",
-                    "full-run",
-                    "main",
-                    None,
-                    {"T001": "done", "T002": "done"},
-                    group_branch,
-                    quarantined,
-                )
+            ),
+        ):
+            result = integrate.integrate_one(
+                _mock_group("feature-1", ["T002"], depends_on=["base"]),
+                Path("/repo"),
+                "spec-049",
+                [_mock_task("T001"), _mock_task("T002")],
+                "origin",
+                "full-run",
+                "main",
+                None,
+                {"T001": "done", "T002": "done"},
+                group_branch,
+                quarantined,
+            )
 
         return result, git_dispatch.calls, quarantined
 
@@ -255,24 +257,26 @@ class DepBranchGoneFallback(unittest.TestCase):
             }
         )
         quarantined: dict = {}
-        with patch("worktrail.orchestrator.integrate._git", side_effect=git_dispatch):
-            with patch(
+        with (
+            patch("worktrail.orchestrator.integrate._git", side_effect=git_dispatch),
+            patch(
                 "worktrail.orchestrator.integrate.subprocess.run",
                 side_effect=subprocess_dispatch,
-            ):
-                result = integrate.integrate_one(
-                    _mock_group("base", ["T001"]),  # no depends_on
-                    Path("/repo"),
-                    "spec-049",
-                    [_mock_task("T001")],
-                    "origin",
-                    "full-run",
-                    "main",
-                    None,
-                    {"T001": "done"},
-                    {},
-                    quarantined,
-                )
+            ),
+        ):
+            result = integrate.integrate_one(
+                _mock_group("base", ["T001"]),  # no depends_on
+                Path("/repo"),
+                "spec-049",
+                [_mock_task("T001")],
+                "origin",
+                "full-run",
+                "main",
+                None,
+                {"T001": "done"},
+                {},
+                quarantined,
+            )
         self.assertIsNotNone(result)
         self.assertNotIn("base", quarantined)
         rev_parse_calls = [
@@ -306,24 +310,26 @@ class AlreadyIntegratedGroupRegistersBranch(unittest.TestCase):
                 ("gh", "pr", "view"): Proc(1, "", "no pr"),
             }
         )
-        with patch("worktrail.orchestrator.integrate._git", side_effect=git_dispatch):
-            with patch(
+        with (
+            patch("worktrail.orchestrator.integrate._git", side_effect=git_dispatch),
+            patch(
                 "worktrail.orchestrator.integrate.subprocess.run",
                 side_effect=subprocess_dispatch,
-            ):
-                result = integrate.integrate_one(
-                    _mock_group("feature-1", ["T001"]),
-                    Path("/repo"),
-                    "spec-049",
-                    [_mock_task("T001", status="completed")],
-                    "origin",
-                    "full-run",
-                    "main",
-                    None,
-                    {"T001": "completed"},
-                    group_branch,
-                    quarantined,
-                )
+            ),
+        ):
+            result = integrate.integrate_one(
+                _mock_group("feature-1", ["T001"]),
+                Path("/repo"),
+                "spec-049",
+                [_mock_task("T001", status="completed")],
+                "origin",
+                "full-run",
+                "main",
+                None,
+                {"T001": "completed"},
+                group_branch,
+                quarantined,
+            )
 
         self.assertIsNone(result, "already-merged group opens no new PR")
         self.assertNotIn("feature-1", quarantined, "must not be quarantined")
@@ -349,24 +355,26 @@ class AlreadyIntegratedGroupRegistersBranch(unittest.TestCase):
                 ),
             }
         )
-        with patch("worktrail.orchestrator.integrate._git", side_effect=git_dispatch):
-            with patch(
+        with (
+            patch("worktrail.orchestrator.integrate._git", side_effect=git_dispatch),
+            patch(
                 "worktrail.orchestrator.integrate.subprocess.run",
                 side_effect=subprocess_dispatch,
-            ):
-                result = integrate.integrate_one(
-                    _mock_group("feature-1", ["T001"]),
-                    Path("/repo"),
-                    "spec-049",
-                    [_mock_task("T001", status="done")],
-                    "origin",
-                    "full-run",
-                    "main",
-                    None,
-                    {"T001": "done"},
-                    group_branch,
-                    quarantined,
-                )
+            ),
+        ):
+            result = integrate.integrate_one(
+                _mock_group("feature-1", ["T001"]),
+                Path("/repo"),
+                "spec-049",
+                [_mock_task("T001", status="done")],
+                "origin",
+                "full-run",
+                "main",
+                None,
+                {"T001": "done"},
+                group_branch,
+                quarantined,
+            )
 
         self.assertIsNone(result)
         self.assertIn(
@@ -503,7 +511,7 @@ class JournalMergedAfterVerify(unittest.TestCase):
         def make_verifier_fn():
             return FakeVerifier()
 
-        tasks = [_mock_task("T001")]
+        [_mock_task("T001")]
 
         # Reconstruct _integrate_verify_group inline (mirrors the closure structure)
         def _integrate_verify_group(g):
@@ -528,7 +536,7 @@ class JournalMergedAfterVerify(unittest.TestCase):
                     verifier.verify_one(
                         g, group_branch[name], {name: []}, merged, quarantined, iv_lock
                     )
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     with iv_lock:
                         quarantined[name] = f"verify exception: {exc!r}"
                     _record_group_fn(
@@ -616,7 +624,7 @@ class JournalMergedAfterVerify(unittest.TestCase):
                         quarantined_local,
                         iv_lock,
                     )
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     with iv_lock:
                         quarantined_local[name] = f"exception: {exc!r}"
                     _record_group_fn(name, "", f"{run_id}/{name}", "QUARANTINED")

@@ -425,7 +425,7 @@ def plan_groups(
     for b in base:
         base_files |= _norm_files(by_id[b].get("files"))
     for idx, members in enumerate(
-        sorted(comps.values(), key=lambda m: sorted(m)[0]), start=1
+        sorted(comps.values(), key=lambda m: min(m)), start=1
     ):
         member_files: set = set()
         for m in members:

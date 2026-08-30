@@ -181,6 +181,7 @@ def _git_show(repo: Path, ref: str, relpath: str) -> str | None:
     """Contents of `relpath` at `ref`, or None if it did not exist there."""
     result = subprocess.run(
         ["git", "show", f"{ref}:{relpath}"],
+        check=False,
         cwd=str(repo),
         capture_output=True,
         text=True,
@@ -270,6 +271,7 @@ def _resolve_base_ref(repo: Path, configured: str | None) -> str | None:
     for ref in candidates:
         result = subprocess.run(
             ["git", "rev-parse", "--verify", "--quiet", ref],
+            check=False,
             cwd=str(repo),
             capture_output=True,
             text=True,
@@ -282,6 +284,7 @@ def _resolve_base_ref(repo: Path, configured: str | None) -> str | None:
 def _changed_paths_via_git(repo: Path, base_ref: str) -> list[str]:
     merge_base = subprocess.run(
         ["git", "merge-base", "HEAD", base_ref],
+        check=False,
         cwd=str(repo),
         capture_output=True,
         text=True,
@@ -290,6 +293,7 @@ def _changed_paths_via_git(repo: Path, base_ref: str) -> list[str]:
         return []
     diff = subprocess.run(
         ["git", "diff", "--name-only", merge_base.stdout.strip(), "HEAD"],
+        check=False,
         cwd=str(repo),
         capture_output=True,
         text=True,

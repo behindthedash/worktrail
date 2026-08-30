@@ -57,7 +57,7 @@ def _base_branch_for(repo: Path) -> str:
     below `drain/` in the layering, and this is a two-line policy read)."""
     try:
         return load_policy(repo).get("base_branch") or "dev"
-    except Exception:
+    except Exception:  # noqa: BLE001
         return "dev"
 
 
@@ -65,6 +65,7 @@ def _resolve_ref_sha(ref: str, cwd: Path) -> str | None:
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--verify", ref],
+            check=False,
             cwd=str(cwd),
             capture_output=True,
             text=True,
@@ -99,6 +100,7 @@ def _has_merged_pr(branch: str, cwd: Path) -> bool:
                 "--limit",
                 "1",
             ],
+            check=False,
             cwd=str(cwd),
             capture_output=True,
             text=True,
@@ -129,6 +131,7 @@ def _has_merged_indirectly(branch: str, cwd: Path) -> bool:
     try:
         result = subprocess.run(
             ["git", "branch", "--format=%(refname:short)", "--contains", branch],
+            check=False,
             cwd=str(cwd),
             capture_output=True,
             text=True,
@@ -150,6 +153,7 @@ def _has_merged_indirectly(branch: str, cwd: Path) -> bool:
         try:
             ancestor = subprocess.run(
                 ["git", "merge-base", "--is-ancestor", other_sha, "HEAD"],
+                check=False,
                 cwd=str(cwd),
                 timeout=5,
             )
@@ -183,6 +187,7 @@ def merge_method(branch: str, cwd: Path) -> str | None:
     try:
         ancestor = subprocess.run(
             ["git", "merge-base", "--is-ancestor", branch_sha, "HEAD"],
+            check=False,
             cwd=str(cwd),
             timeout=5,
         )
@@ -194,6 +199,7 @@ def merge_method(branch: str, cwd: Path) -> str | None:
     try:
         cherry = subprocess.run(
             ["git", "cherry", "HEAD", branch_sha],
+            check=False,
             cwd=str(cwd),
             capture_output=True,
             text=True,
@@ -219,6 +225,7 @@ def _local_branches(repo: Path) -> list[str]:
     try:
         result = subprocess.run(
             ["git", "branch", "--format=%(refname:short)"],
+            check=False,
             cwd=str(repo),
             capture_output=True,
             text=True,
@@ -238,6 +245,7 @@ def _worktree_branches(repo: Path) -> dict[str, Path]:
     try:
         result = subprocess.run(
             ["git", "worktree", "list", "--porcelain"],
+            check=False,
             cwd=str(repo),
             capture_output=True,
             text=True,
@@ -263,6 +271,7 @@ def _is_worktree_dirty(worktree: Path) -> bool:
     try:
         result = subprocess.run(
             ["git", "status", "--porcelain"],
+            check=False,
             cwd=str(worktree),
             capture_output=True,
             text=True,

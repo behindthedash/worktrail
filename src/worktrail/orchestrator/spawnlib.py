@@ -89,8 +89,8 @@ from . import agent_capacity
 class SpawnResult(NamedTuple):
     text: str
     usage: dict
-    tools_used: list[str] = []
-    skills_used: list[str] = []
+    tools_used: list[str] = []  # noqa: RUF012 -- NamedTuple field default, not a class attribute
+    skills_used: list[str] = []  # noqa: RUF012
     # Cumulative seconds the spawn spent sleeping on session-limit waits. The
     # caller subtracts this from the run's wall-clock elapsed time so a rate-limit
     # pause never consumes the --run-budget (without it a 4h reset window would
@@ -157,8 +157,8 @@ def parse_session_limit_reset(
     m = _SESSION_LIMIT_RE.search(text or "")
     if not m:
         return None
-    now = now or datetime.datetime.now()
-    clock = datetime.datetime.strptime(
+    now = now or datetime.datetime.now()  # noqa: DTZ005
+    clock = datetime.datetime.strptime(  # noqa: DTZ007
         m.group(1).replace(" ", "").lower(), "%I:%M%p"
     ).time()
     reset = now.replace(hour=clock.hour, minute=clock.minute, second=0, microsecond=0)
@@ -1036,6 +1036,7 @@ def spawn_agent(
         try:
             proc = subprocess.run(  # TimeoutExpired propagates by design
                 cmd,
+                check=False,
                 cwd=str(cwd),
                 capture_output=True,
                 text=True,
@@ -1103,7 +1104,7 @@ def spawn_agent(
             if waits_left > 0:
                 waits_left -= 1
                 wait_s = (
-                    max(0.0, (reset_at - datetime.datetime.now()).total_seconds()) + 5.0
+                    max(0.0, (reset_at - datetime.datetime.now()).total_seconds()) + 5.0  # noqa: DTZ005
                 )
                 log(
                     f"    session limit hit; sleeping {wait_s:.0f}s until "

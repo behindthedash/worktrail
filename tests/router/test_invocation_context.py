@@ -194,10 +194,13 @@ class CliTests(unittest.TestCase):
     def _run(self, argv, environ=None, installed=True):
         out, err = StringIO(), StringIO()
         located = "/usr/bin/stub" if installed else None
-        with patch.dict(os.environ, environ or {}, clear=True):
-            with patch.object(invocation_context, "_which", return_value=located):
-                with redirect_stdout(out), redirect_stderr(err):
-                    code = invocation_context.main(argv)
+        with (
+            patch.dict(os.environ, environ or {}, clear=True),
+            patch.object(invocation_context, "_which", return_value=located),
+            redirect_stdout(out),
+            redirect_stderr(err),
+        ):
+            code = invocation_context.main(argv)
         return code, out.getvalue(), err.getvalue()
 
     def test_json_output_carries_both_axes_and_the_dispatch_mode(self):

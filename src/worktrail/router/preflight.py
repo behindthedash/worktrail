@@ -171,6 +171,7 @@ def _git(repo: Path, *args: str) -> str | None:
     try:
         result = subprocess.run(
             ["git", "-C", str(repo), *args],
+            check=False,
             capture_output=True,
             text=True,
             timeout=30,
@@ -235,6 +236,7 @@ def _open_pr_branches(repo: Path) -> list[str]:
                 "--limit",
                 "200",
             ],
+            check=False,
             capture_output=True,
             text=True,
             timeout=15,
@@ -295,6 +297,7 @@ def _pr_touched_files(repo: Path, branch: str) -> frozenset | None:
     try:
         result = subprocess.run(
             ["gh", "pr", "diff", branch, "--name-only"],
+            check=False,
             capture_output=True,
             text=True,
             timeout=15,
@@ -375,7 +378,7 @@ def duplicate_work_warning(repo: Path) -> str | None:
             if other_files:
                 shared_files = own_files & other_files
                 if shared_files:
-                    example = sorted(shared_files)[0]
+                    example = min(shared_files)
                     return (
                         f"branch '{branch}' touches the same file(s) as "
                         f"'{other_branch}' ({source}), e.g. '{example}' -- "

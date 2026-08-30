@@ -229,7 +229,7 @@ class TestResolve(QueueTestBase):
         try:
             res = q.resolve("", self.queue)
             self.assertIn(res["status"], ("match", "ambiguous", "none"))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.fail(f"resolve('') raised {exc!r}")
 
     def test_middle_substring_no_match_via_suffix(self):

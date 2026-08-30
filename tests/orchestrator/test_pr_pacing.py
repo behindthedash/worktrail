@@ -112,7 +112,7 @@ class PipelinePacingTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             repo = _init_repo(Path(tmp))
-            integrate_one, events = _make_integrate_one()
+            integrate_one, _events = _make_integrate_one()
             with patch.object(integrate, "_wait_for_pr_checks", side_effect=fake_wait):
                 summary = live._pipeline_scheduler(
                     repo=repo,

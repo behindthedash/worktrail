@@ -131,7 +131,7 @@ class GitRepoTestCase(unittest.TestCase):
 
     def _init_repo(self, initial_branch: str = "main") -> str:
         d = tempfile.mkdtemp(prefix="req-coverage-")
-        self.addCleanup(lambda: subprocess.run(["rm", "-rf", d]))
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", d], check=False))
         self._git(d, "init", "-q", "-b", initial_branch)
         self._git(d, "config", "user.email", "test@example.com")
         self._git(d, "config", "user.name", "Test")
@@ -306,6 +306,7 @@ class BaseRefUnresolvableTests(GitRepoTestCase):
                 "--repo",
                 repo,
             ],
+            check=False,
             capture_output=True,
             text=True,
         )

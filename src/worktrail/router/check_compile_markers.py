@@ -41,6 +41,7 @@ def _run_git(repo: Path, args: Sequence[str], timeout: int = 15) -> str | None:
     try:
         out = subprocess.run(
             ["git", "-C", str(repo), *args],
+            check=False,
             capture_output=True,
             text=True,
             timeout=timeout,

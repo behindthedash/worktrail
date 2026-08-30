@@ -261,7 +261,7 @@ def _enrich_with_run_record(
         run_record_path = _find_run_record(entry["id"], entry.get("repo"), runs_dir)
         if run_record_path:
             entry["run_record"] = run_record_path
-    except Exception:  # noqa: BLE001 - enrichment is purely additive, never fatal
+    except Exception:  # noqa: BLE001, S110 - enrichment is purely additive, never fatal
         pass
 
 

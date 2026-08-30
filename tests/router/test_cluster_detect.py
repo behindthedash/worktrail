@@ -912,7 +912,7 @@ class RealPR93RegressionTests(unittest.TestCase):
         self.assertEqual(clusters[0]["members"], sorted([a.stem, b.stem]))
 
     def test_not_surfaced_when_llm_verification_returns_negative(self):
-        a, b = self._write_pair()
+        _a, _b = self._write_pair()
         with mock.patch.object(
             _cluster_detect_mod, "_verify_same_work", return_value=False
         ):
@@ -927,7 +927,7 @@ class RealPR93RegressionTests(unittest.TestCase):
         `subprocess.run` failure for an in-band candidate must degrade to
         "not surfaced" at the `compute_clusters()` level, not just at the
         `_verify_same_work` unit level."""
-        a, b = self._write_pair()
+        _a, _b = self._write_pair()
         with mock.patch.object(
             _cluster_detect_mod.subprocess,
             "run",

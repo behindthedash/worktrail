@@ -345,7 +345,7 @@ class TestSweep(unittest.TestCase):
         tmp = Path(tempfile.mkdtemp())
         clean_repo = _repo_with_worktrees(tmp, "clean-repo")
         _journal(tmp / "clean-repo-worktrees", "spec-a", _CLEAN_GROUPS)
-        flagged_repo = _repo_with_worktrees(tmp, "flagged-repo")
+        _repo_with_worktrees(tmp, "flagged-repo")
         _journal(tmp / "flagged-repo-worktrees", "spec-b", _QUARANTINED_GROUPS)
         _repo_with_worktrees(tmp, "no-worktrees-repo")
 

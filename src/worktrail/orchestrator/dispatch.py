@@ -346,11 +346,15 @@ _ROLE_ACTION = {
 }
 
 _WORKTREE_GITNEXUS_RULES = (
-    "  - This generated worktree normally has no GitNexus index. Use its actual files, "
-    "`rg`, and tests as current-branch ground truth; do not search for or create a "
-    "worktree-local `.gitnexus/` index.",
-    "  - GitNexus describes the canonical repo's base branch. Use it only for broader "
-    "base-branch context; if it disagrees with this worktree, the worktree wins.",
+    (
+        "  - This generated worktree normally has no GitNexus index. Use its actual files, "
+        "`rg`, and tests as current-branch ground truth; do not search for or create a "
+        "worktree-local `.gitnexus/` index."
+    ),
+    (
+        "  - GitNexus describes the canonical repo's base branch. Use it only for broader "
+        "base-branch context; if it disagrees with this worktree, the worktree wins."
+    ),
 )
 
 # Companion to the per-role "no hand-rolled background-wait loop" rule below.
@@ -366,15 +370,19 @@ _WORKTREE_GITNEXUS_RULES = (
 # affordance explicitly is the fix; same failure class as the user-level Stop
 # hook that forced a continuation turn (live.py `_LEAN_WORKER_FLAGS`).
 _NO_BACKGROUND_TASK_RULES = (
-    "  - Do NOT start any command as a background or async task and then wait for it "
-    "to notify you — no `run_in_background`, no trailing `&`, no `nohup`, no "
-    '"I will wait for the completion notification". You are a single headless '
-    "turn: nothing will notify you, and the spawn is torn down the moment your "
-    "reply ends.",
-    "  - Run every command — test suites included — in the FOREGROUND to completion, "
-    "then emit your report-back JSON in that same reply. A reply that ends while "
-    "work is still running is a lost spawn: it is scored as a failure and retried "
-    "from scratch.",
+    (
+        "  - Do NOT start any command as a background or async task and then wait for it "
+        "to notify you — no `run_in_background`, no trailing `&`, no `nohup`, no "
+        '"I will wait for the completion notification". You are a single headless '
+        "turn: nothing will notify you, and the spawn is torn down the moment your "
+        "reply ends."
+    ),
+    (
+        "  - Run every command — test suites included — in the FOREGROUND to completion, "
+        "then emit your report-back JSON in that same reply. A reply that ends while "
+        "work is still running is a lost spawn: it is scored as a failure and retried "
+        "from scratch."
+    ),
 )
 
 
@@ -534,10 +542,12 @@ def build_worker_prompt(
     # needs-spec: true frontmatter opt back in when the task file is thin.
     if role == ROLE_IMPLEMENT:
         reads = [
-            f"{brief}{brief_note}   "
-            f"(your brief: AC, Technical Context, Files, Test Instructions, DoD — "
-            f"do NOT read spec, data-model, contracts, or knowledge-graph unless "
-            f"your task file has needs-spec: true in its frontmatter)",
+            (
+                f"{brief}{brief_note}   "
+                f"(your brief: AC, Technical Context, Files, Test Instructions, DoD — "
+                f"do NOT read spec, data-model, contracts, or knowledge-graph unless "
+                f"your task file has needs-spec: true in its frontmatter)"
+            ),
         ]
         if task.get("needs_spec"):
             reads.append(
@@ -569,16 +579,20 @@ def build_worker_prompt(
                     )
     elif role == ROLE_REVIEW:
         reads = [
-            f"{brief}{brief_note}   "
-            f"(success-criteria and AC — your complete checklist; "
-            f"do NOT read spec, data-model, contracts, or knowledge-graph)",
+            (
+                f"{brief}{brief_note}   "
+                f"(success-criteria and AC — your complete checklist; "
+                f"do NOT read spec, data-model, contracts, or knowledge-graph)"
+            ),
         ]
     elif role == ROLE_FIX:
         reads = [
             f"{ctx['spec_folder']}reviews/{tid}-review.md   (the findings to fix — read this first)",
-            f"{brief}{brief_note}   "
-            f"(AC only — verify your fixes meet acceptance criteria; "
-            f"do NOT read spec, data-model, contracts, or knowledge-graph)",
+            (
+                f"{brief}{brief_note}   "
+                f"(AC only — verify your fixes meet acceptance criteria; "
+                f"do NOT read spec, data-model, contracts, or knowledge-graph)"
+            ),
         ]
     else:  # ROLE_CLEANUP
         reads = [
@@ -616,24 +630,30 @@ def build_worker_prompt(
             "",
             "Hard rules:",
             f"  - Touch no files outside scope. Do NOT modify {spec_prefix}** at all.",
-            f"  - Never commit files under {spec_prefix}*/reviews/ — they are gitignored "
-            "point-in-time snapshots. If your task writes a review file there, do not "
-            "stage or commit it.",
+            (
+                f"  - Never commit files under {spec_prefix}*/reviews/ — they are gitignored "
+                "point-in-time snapshots. If your task writes a review file there, do not "
+                "stage or commit it."
+            ),
             "  - Do NOT modify package.json or package-lock.json (toolchain is already installed).",
             "  - Do NOT edit orchestrator state or run git worktree commands.",
             *_WORKTREE_GITNEXUS_RULES,
             f"  - {gitnexus_prompt_note(gitnexus_capability)}",
-            "  - Do NOT hand-roll a background-wait loop (while true / until / sleep) "
-            "or poll for a build/test/CI to finish: run commands to completion, then "
-            "report back. The orchestrator does the waiting, not you.",
+            (
+                "  - Do NOT hand-roll a background-wait loop (while true / until / sleep) "
+                "or poll for a build/test/CI to finish: run commands to completion, then "
+                "report back. The orchestrator does the waiting, not you."
+            ),
             *_NO_BACKGROUND_TASK_RULES,
-            "  - If `tsconfig.json` exists in the repo root, run "
-            "`tsc -p tsconfig.json --noEmit` before committing. Fix ALL type errors "
-            "it reports before pushing — CI will surface the same errors one at a time.",
+            (
+                "  - If `tsconfig.json` exists in the repo root, run "
+                "`tsc -p tsconfig.json --noEmit` before committing. Fix ALL type errors "
+                "it reports before pushing — CI will surface the same errors one at a time."
+            ),
             "  - Commit your work with a clear message.",
             "",
             "End your reply with EXACTLY one fenced ```json block (the report-back):",
-            '  {"task": "%s", "step": "%s", "status": "success|failed",' % (tid, role),
+            f'  {{"task": "{tid}", "step": "{role}", "status": "success|failed",',
             '   "head_sha": "<sha>", "files_touched": [...], "tests": "passed|failed|none",',
             '   "review_status": "PASSED|FAILED|null", "critical_issues": 0, "major_issues": 0,',
             '   "context_quality": "sufficient|too_much|insufficient",',
@@ -645,10 +665,12 @@ def build_worker_prompt(
                 # the fix→retry loop. status signals whether the worker ran; code
                 # verdict belongs exclusively in review_status.
                 [
-                    '  REVIEW FIELD GUIDE: set status="success" whenever the review ran'
-                    ' (even when review_status="FAILED"). Set status="failed" ONLY if'
-                    " the review itself crashed or could not execute. Code quality verdict"
-                    " goes in review_status (PASSED|FAILED), never in status."
+                    (
+                        '  REVIEW FIELD GUIDE: set status="success" whenever the review ran'
+                        ' (even when review_status="FAILED"). Set status="failed" ONLY if'
+                        " the review itself crashed or could not execute. Code quality verdict"
+                        " goes in review_status (PASSED|FAILED), never in status."
+                    )
                 ]
                 if role == ROLE_REVIEW
                 else []
@@ -686,71 +708,99 @@ def build_group_prompt(role: str, group: dict[str, Any], ctx: dict[str, Any]) ->
 
     if role == ROLE_RESOLVE:
         action = [
-            f"The open PR for group `{name}` (branch `{gb}`, tasks {tasks}) is "
-            f"CONFLICTING with its base `{base}`.",
+            (
+                f"The open PR for group `{name}` (branch `{gb}`, tasks {tasks}) is "
+                f"CONFLICTING with its base `{base}`."
+            ),
             f"In this worktree (already on `{gb}`):",
             f"  1. `git fetch {remote}` then merge `{remote}/{base}` into `{gb}`.",
-            "  2. Resolve every conflict MINIMALLY, preserving the intent of BOTH "
-            "sides (the base advanced; keep your group's changes and the base's).",
+            (
+                "  2. Resolve every conflict MINIMALLY, preserving the intent of BOTH "
+                "sides (the base advanced; keep your group's changes and the base's)."
+            ),
             "  3. Run the affected tests/build to confirm nothing regressed.",
             f"  4. Commit the merge and `git push {remote} {gb}`.",
         ]
         hard_rules_extra = [
-            f"  - Push to `{remote} {gb}` so the existing PR updates (do NOT open a "
-            "new PR or merge it yourself).",
-            "  - Do NOT wait for CI or hand-roll a background-wait loop (while true / "
-            "until / sleep) after pushing: push, then report back. The orchestrator "
-            "re-polls CI on the 3-strikes budget; it does the waiting, not you.",
+            (
+                f"  - Push to `{remote} {gb}` so the existing PR updates (do NOT open a "
+                "new PR or merge it yourself)."
+            ),
+            (
+                "  - Do NOT wait for CI or hand-roll a background-wait loop (while true / "
+                "until / sleep) after pushing: push, then report back. The orchestrator "
+                "re-polls CI on the 3-strikes budget; it does the waiting, not you."
+            ),
             *_NO_BACKGROUND_TASK_RULES,
         ]
     elif role == ROLE_ASSEMBLY_RESOLVE:
         conflicting = ctx.get("conflicting_branch", "(unknown task branch)")
         action = [
-            f"The merge of task branch `{conflicting}` into the integration branch for "
-            f"group `{name}` (tasks {tasks}) has CONFLICTS.",
+            (
+                f"The merge of task branch `{conflicting}` into the integration branch for "
+                f"group `{name}` (tasks {tasks}) has CONFLICTS."
+            ),
             "The worktree is already in a conflicted `git merge` state.",
             "  1. `git diff --name-only --diff-filter=U` to list conflicted files.",
-            "  2. Open each file and resolve every conflict MINIMALLY, preserving the "
-            "intent of BOTH sides (keep both tasks' changes where possible).",
+            (
+                "  2. Open each file and resolve every conflict MINIMALLY, preserving the "
+                "intent of BOTH sides (keep both tasks' changes where possible)."
+            ),
             "  3. `git add <resolved files>` then `git merge --continue` to complete the merge.",
             "  4. Run the affected tests to confirm nothing regressed.",
         ]
         hard_rules_extra = [
-            "  - Do NOT push or open a PR — the branch is build-only at this stage; "
-            "the orchestrator will push and open the PR after all tasks are merged.",
+            (
+                "  - Do NOT push or open a PR — the branch is build-only at this stage; "
+                "the orchestrator will push and open the PR after all tasks are merged."
+            ),
             "  - Do NOT wait for CI or hand-roll a background-wait loop.",
             *_NO_BACKGROUND_TASK_RULES,
         ]
     else:  # ROLE_CI_FIX
         action = [
-            f"CI is FAILING on the open PR for group `{name}` (branch `{gb}`, "
-            f"tasks {tasks}).",
+            (
+                f"CI is FAILING on the open PR for group `{name}` (branch `{gb}`, "
+                f"tasks {tasks})."
+            ),
             f"Failing checks: {ctx.get('failing_checks', '(unknown)')}",
             "Failure log (tail):",
             "------------------------------------------------------------------",
             (ctx.get("failure_log") or "(no log captured)").strip()[-4000:],
             "------------------------------------------------------------------",
             f"In this worktree (already on `{gb}`):",
-            "  1. Diagnose the ROOT CAUSE from the log and the diff. Use the minimum "
-            "change that fixes the root cause — do NOT add longer timeouts as a proxy "
-            "fix for race conditions or flaky async behaviour.",
-            "  2. Fix it with the SMALLEST change that makes CI pass. Do not "
-            "refactor unrelated code or change unrelated behavior.",
-            "  3. Reproduce the check locally (run the same test/build) and "
-            "confirm it now passes.",
+            (
+                "  1. Diagnose the ROOT CAUSE from the log and the diff. Use the minimum "
+                "change that fixes the root cause — do NOT add longer timeouts as a proxy "
+                "fix for race conditions or flaky async behaviour."
+            ),
+            (
+                "  2. Fix it with the SMALLEST change that makes CI pass. Do not "
+                "refactor unrelated code or change unrelated behavior."
+            ),
+            (
+                "  3. Reproduce the check locally (run the same test/build) and "
+                "confirm it now passes."
+            ),
             f"  4. Commit and `git push {remote} {gb}`.",
             "",
-            "Common React testing pitfall: `mockResolvedValueOnce` is consumed in "
-            "arrival order — background fetches (setTimeout, deps-less useEffect, "
-            "image loaders) can steal mocks before the component under test calls. "
-            "Use `mockImplementation(url => ...)` with URL-based routing instead.",
+            (
+                "Common React testing pitfall: `mockResolvedValueOnce` is consumed in "
+                "arrival order — background fetches (setTimeout, deps-less useEffect, "
+                "image loaders) can steal mocks before the component under test calls. "
+                "Use `mockImplementation(url => ...)` with URL-based routing instead."
+            ),
         ]
         hard_rules_extra = [
-            f"  - Push to `{remote} {gb}` so the existing PR updates (do NOT open a "
-            "new PR or merge it yourself).",
-            "  - Do NOT wait for CI or hand-roll a background-wait loop (while true / "
-            "until / sleep) after pushing: push, then report back. The orchestrator "
-            "re-polls CI on the 3-strikes budget; it does the waiting, not you.",
+            (
+                f"  - Push to `{remote} {gb}` so the existing PR updates (do NOT open a "
+                "new PR or merge it yourself)."
+            ),
+            (
+                "  - Do NOT wait for CI or hand-roll a background-wait loop (while true / "
+                "until / sleep) after pushing: push, then report back. The orchestrator "
+                "re-polls CI on the 3-strikes budget; it does the waiting, not you."
+            ),
             *_NO_BACKGROUND_TASK_RULES,
         ]
 
@@ -762,8 +812,10 @@ def build_group_prompt(role: str, group: dict[str, Any], ctx: dict[str, Any]) ->
 
     return "\n".join(
         [
-            f"You are the {role.upper()} worker for group `{name}` of spec "
-            f"{ctx['spec_id']}.",
+            (
+                f"You are the {role.upper()} worker for group `{name}` of spec "
+                f"{ctx['spec_id']}."
+            ),
             "",
             f"Worktree (operate ONLY here): {ctx['worktree_path']}",
             branch_line,
@@ -775,17 +827,21 @@ def build_group_prompt(role: str, group: dict[str, Any], ctx: dict[str, Any]) ->
             f"  - Do NOT modify {_spec_prefix(ctx)}** or orchestrator state.",
             *_WORKTREE_GITNEXUS_RULES,
             f"  - {gitnexus_prompt_note(gitnexus_capability)}",
-            "  - Do NOT run `gh pr merge`, enable auto-merge, or take any merge action "
-            "yourself, even if a merge/auto-merge command itself is what's failing — "
-            "that is the orchestrator's job, not yours.",
-            "  - Do NOT modify `.github/workflows/**` or any other shared CI/merge "
-            "configuration as a side effect of fixing this task. If the failure "
-            'genuinely requires a workflow change, report back status="failed" with '
-            "that in `notes` instead of patching it yourself.",
+            (
+                "  - Do NOT run `gh pr merge`, enable auto-merge, or take any merge action "
+                "yourself, even if a merge/auto-merge command itself is what's failing — "
+                "that is the orchestrator's job, not yours."
+            ),
+            (
+                "  - Do NOT modify `.github/workflows/**` or any other shared CI/merge "
+                "configuration as a side effect of fixing this task. If the failure "
+                'genuinely requires a workflow change, report back status="failed" with '
+                "that in `notes` instead of patching it yourself."
+            ),
             *hard_rules_extra,
             "",
             "End your reply with EXACTLY one fenced ```json block (the report-back):",
-            '  {"task": "%s", "step": "%s", "status": "success|failed",' % (name, role),
+            f'  {{"task": "{name}", "step": "{role}", "status": "success|failed",',
             '   "head_sha": "<sha>", "files_touched": [...], "tests": "passed|failed|none",',
             '   "notes": "<one line>"}',
         ]
@@ -813,19 +869,27 @@ def build_stack_conflict_prompt(
     gitnexus_capability = gitnexus_check(Path(worktree_path))
     return "\n".join(
         [
-            f"You are the {ROLE_ASSEMBLY_RESOLVE.upper()} worker for task `{task_id}` of "
-            f"spec {spec_id}.",
+            (
+                f"You are the {ROLE_ASSEMBLY_RESOLVE.upper()} worker for task `{task_id}` of "
+                f"spec {spec_id}."
+            ),
             "",
             f"Worktree (operate ONLY here): {worktree_path}",
-            f"Branch (already in conflicted merge state, merging sibling dependency "
-            f"branch `{conflicting_branch}`):",
+            (
+                f"Branch (already in conflicted merge state, merging sibling dependency "
+                f"branch `{conflicting_branch}`):"
+            ),
             "",
-            f"Merging sibling dependency branch `{conflicting_branch}` into task "
-            f"`{task_id}`'s stacked worktree has CONFLICTS.",
+            (
+                f"Merging sibling dependency branch `{conflicting_branch}` into task "
+                f"`{task_id}`'s stacked worktree has CONFLICTS."
+            ),
             "The worktree is already in a conflicted `git merge` state.",
             "  1. `git diff --name-only --diff-filter=U` to list conflicted files.",
-            "  2. Open each file and resolve every conflict MINIMALLY, preserving the "
-            "intent of BOTH sides (keep both branches' changes where possible).",
+            (
+                "  2. Open each file and resolve every conflict MINIMALLY, preserving the "
+                "intent of BOTH sides (keep both branches' changes where possible)."
+            ),
             "  3. `git add <resolved files>` then `git merge --continue` to complete the merge.",
             "  4. Run the affected tests to confirm nothing regressed.",
             "",
@@ -834,15 +898,18 @@ def build_stack_conflict_prompt(
             "  - Operate ONLY in this worktree -- do not touch any other worktree or branch.",
             *_WORKTREE_GITNEXUS_RULES,
             f"  - {gitnexus_prompt_note(gitnexus_capability)}",
-            "  - Do NOT push or open a PR -- this branch is build-only at this stage; "
-            "the orchestrator pushes and opens the PR after all tasks are merged.",
-            "  - Do NOT wait for CI or hand-roll a background-wait loop (while true / "
-            "until / sleep). Resolve, then report back.",
+            (
+                "  - Do NOT push or open a PR -- this branch is build-only at this stage; "
+                "the orchestrator pushes and opens the PR after all tasks are merged."
+            ),
+            (
+                "  - Do NOT wait for CI or hand-roll a background-wait loop (while true / "
+                "until / sleep). Resolve, then report back."
+            ),
             *_NO_BACKGROUND_TASK_RULES,
             "",
             "End your reply with EXACTLY one fenced ```json block (the report-back):",
-            '  {"task": "%s", "step": "%s", "status": "success|failed",'
-            % (task_id, ROLE_ASSEMBLY_RESOLVE),
+            f'  {{"task": "{task_id}", "step": "{ROLE_ASSEMBLY_RESOLVE}", "status": "success|failed",',
             '   "head_sha": "<sha>", "files_touched": [...], "tests": "passed|failed|none",',
             '   "notes": "<one line>"}',
         ]
@@ -1059,28 +1126,38 @@ def _demo() -> None:
     samples = [
         (
             ROLE_IMPLEMENT,
-            'done.\n```json\n{"task":"TASK-002","step":"implement",'
-            '"status":"success","head_sha":"de1f7a0","tests":"passed"}\n```',
+            (
+                'done.\n```json\n{"task":"TASK-002","step":"implement",'
+                '"status":"success","head_sha":"de1f7a0","tests":"passed"}\n```'
+            ),
         ),
         (
             ROLE_REVIEW,
-            '```json\n{"task":"TASK-002","step":"review","status":"success",'
-            '"review_status":"FAILED","critical_issues":1,"major_issues":2}\n```',
+            (
+                '```json\n{"task":"TASK-002","step":"review","status":"success",'
+                '"review_status":"FAILED","critical_issues":1,"major_issues":2}\n```'
+            ),
         ),
         (
             ROLE_FIX,
-            '```json\n{"task":"TASK-002","step":"fix","status":"success",'
-            '"head_sha":"9c2b1aa"}\n```',
+            (
+                '```json\n{"task":"TASK-002","step":"fix","status":"success",'
+                '"head_sha":"9c2b1aa"}\n```'
+            ),
         ),
         (
             ROLE_REVIEW,
-            '```json\n{"task":"TASK-002","step":"review","status":"success",'
-            '"review_status":"PASSED"}\n```',
+            (
+                '```json\n{"task":"TASK-002","step":"review","status":"success",'
+                '"review_status":"PASSED"}\n```'
+            ),
         ),
         (
             ROLE_CLEANUP,
-            '```json\n{"task":"TASK-002","step":"cleanup","status":"success",'
-            '"head_sha":"f00dfee"}\n```',
+            (
+                '```json\n{"task":"TASK-002","step":"cleanup","status":"success",'
+                '"head_sha":"f00dfee"}\n```'
+            ),
         ),
     ]
     state = [dict(task)]

@@ -22,6 +22,8 @@ sys.path.insert(
     0, __import__("os").path.dirname(__import__("os").path.abspath(__file__))
 )
 
+from typing import ClassVar
+
 from worktrail.orchestrator import integrate
 
 # The exact DAG from the incident: 1.1<-1.2<-1.3<-1.4<-1.5<-2.1<-2.2<-2.3<-2.4,
@@ -170,7 +172,7 @@ class ReconcileDedupIntegrationTest(unittest.TestCase):
 class ReconcileVerifySeamTest(unittest.TestCase):
     """`reconcile_unreconciled_tail_evidence`'s post-`integrate_one` verify step."""
 
-    SINGLE_TASK = [{"id": "1.1", "deps": []}]
+    SINGLE_TASK: ClassVar = [{"id": "1.1", "deps": []}]
 
     def test_open_state_runs_verify_one_and_reflects_merged_outcome(self):
         findings = [_finding("1.1")]

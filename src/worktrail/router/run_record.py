@@ -705,11 +705,13 @@ def _scope_review_worktree_empty_diff(record: dict[str, Any]) -> str | None:
     try:
         status = subprocess.run(
             ["git", "-C", str(wt_path), "status", "--porcelain"],
+            check=False,
             capture_output=True,
             text=True,
         )
         diff = subprocess.run(
             ["git", "-C", str(wt_path), "diff", "--quiet", base_commit],
+            check=False,
             capture_output=True,
         )
     except (OSError, subprocess.SubprocessError):
@@ -1035,6 +1037,7 @@ def _is_stale(record: dict[str, Any], repo_dir: Path, base_branch: str) -> bool:
                 "-e",
                 f"{base_branch}:{candidate}",
             ],
+            check=False,
             capture_output=True,
         )
         if result.returncode != 0:
@@ -1355,6 +1358,7 @@ def _run_remote_git(
     try:
         return subprocess.run(
             ["git", "-C", str(repo_dir), *args],
+            check=False,
             capture_output=True,
             text=True,
             timeout=_REMOTE_GIT_TIMEOUT,

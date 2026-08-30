@@ -214,7 +214,7 @@ def _capacity(
         result = check(provider, model, now=now)
     except TypeError:
         result = check(provider, model)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         # agent_capacity.check communicates an active gate by raising. Do not
         # couple this pure module to that exception class.
         return False, getattr(exc, "state", str(exc))

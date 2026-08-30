@@ -236,7 +236,7 @@ pre-existing drift
 
     def test_held_lock_returns_skipped_overlap_and_calls_no_discovery(self) -> None:
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
-        holder = open(self.lock_path, "a+")
+        holder = open(self.lock_path, "a+")  # noqa: SIM115 -- held across the surrounding scope as a lock file
         self.addCleanup(holder.close)
         fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
 
@@ -406,7 +406,7 @@ pre-existing drift
 
     def test_held_lock_yields_empty_checkbox_lists_too(self) -> None:
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
-        holder = open(self.lock_path, "a+")
+        holder = open(self.lock_path, "a+")  # noqa: SIM115 -- held across the surrounding scope as a lock file
         self.addCleanup(holder.close)
         fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
 

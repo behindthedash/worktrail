@@ -183,7 +183,7 @@ def check(repo: Path, root: str = "docs/specs/epics") -> dict[str, object]:
         try:
             text = epic_file.read_text(encoding="utf-8")
             stage_info = detect_epic_stage(epic_file, repo)
-        except Exception:  # noqa: BLE001 - one bad epic file, skip it
+        except Exception:  # noqa: BLE001, S112 - one bad epic file, skip it
             continue
         candidates.append(
             {

@@ -151,6 +151,7 @@ def _set_status(path: Path, status: str) -> None:
 def _run_precheck(repo: Path, spec_rel: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         _live_module_argv() + ["precheck", "--repo", str(repo), spec_rel],
+        check=False,
         capture_output=True,
         text=True,
     )

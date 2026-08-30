@@ -50,8 +50,10 @@ def test_check_reports_stale_installed_entry_points(tmp_path: Path) -> None:
     ):
         errors = metadata.check(repo)
     assert errors == [
-        "installed worktrail console-script metadata is stale: "
-        "missing=['worktrail-two'] extra=['worktrail-old']"
+        (
+            "installed worktrail console-script metadata is stale: "
+            "missing=['worktrail-two'] extra=['worktrail-old']"
+        )
     ]
 
 
@@ -64,8 +66,10 @@ def test_check_reports_plugin_version_drift(tmp_path: Path) -> None:
     ):
         errors = metadata.check(repo)
     assert errors == [
-        "Codex plugin manifest version differs from pyproject.toml: "
-        "plugin='1.2.2' package='1.2.3'"
+        (
+            "Codex plugin manifest version differs from pyproject.toml: "
+            "plugin='1.2.2' package='1.2.3'"
+        )
     ]
 
 
@@ -78,8 +82,10 @@ def test_check_reports_installed_version_drift(tmp_path: Path) -> None:
     ):
         errors = metadata.check(repo)
     assert errors == [
-        "installed worktrail version differs from pyproject.toml: "
-        "installed='1.2.2' package='1.2.3'"
+        (
+            "installed worktrail version differs from pyproject.toml: "
+            "installed='1.2.2' package='1.2.3'"
+        )
     ]
 
 

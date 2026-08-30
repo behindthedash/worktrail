@@ -295,7 +295,7 @@ def _resolve_preview_payload(raw: str) -> dict[str, Any]:
     except json.JSONDecodeError as exc:
         raise ValueError(f"--preview is not valid JSON: {exc}") from exc
     if not isinstance(parsed, dict) or not isinstance(parsed.get("proposals"), list):
-        raise ValueError("--preview must be a JSON object with a 'proposals' list")
+        raise ValueError("--preview must be a JSON object with a 'proposals' list")  # noqa: TRY004 -- ValueError is this function's uniform malformed-input contract; callers catch ValueError specifically
     return parsed
 
 

@@ -142,6 +142,7 @@ class _LegacySpawn:
         sha = (
             subprocess.run(
                 ["git", "-C", str(wt), "rev-parse", "HEAD"],
+                check=False,
                 capture_output=True,
                 text=True,
             ).stdout.strip()[:8]
@@ -221,6 +222,7 @@ class E2EBackwardCompatTest(unittest.TestCase):
         """AC-016 [EXT]: `orchestrate.py check` must exit 0 (golden unchanged)."""
         result = subprocess.run(
             [sys.executable, "-m", "worktrail.orchestrator.orchestrate", "check"],
+            check=False,
             capture_output=True,
             text=True,
             cwd=str(_HERE),

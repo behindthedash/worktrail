@@ -370,8 +370,7 @@ def _yaml_scalar(value: Any) -> str:
     dumped = yaml.safe_dump(
         value, default_flow_style=True, width=10**9, allow_unicode=True
     )
-    if dumped.endswith("...\n"):  # document-end marker on a plain scalar
-        dumped = dumped[: -len("...\n")]
+    dumped = dumped.removesuffix("...\n")
     scalar = dumped.strip()
     if "\n" in scalar:
         return json.dumps(value if isinstance(value, str) else str(value))
@@ -462,7 +461,7 @@ def _set_fm_list_field(path: Path, key: str, values: list[str]) -> None:
 
     for line in lines:
         if skip_continuations:
-            if line.startswith("  ") or line.startswith("\t"):
+            if line.startswith(("  ", "\t")):
                 continue
             skip_continuations = False
         if key_re.match(line):
@@ -508,7 +507,7 @@ def normalize_dependency_reference(raw: Any) -> str:
     lossy split that can silently change eligibility semantics.
     """
     if not isinstance(raw, str):
-        raise ValueError("dependency reference must be a string")
+        raise ValueError("dependency reference must be a string")  # noqa: TRY004 -- ValueError is this function's uniform malformed-input contract; callers catch ValueError specifically
     ref = raw.strip()
     if not ref:
         raise ValueError("dependency reference must not be blank")
@@ -613,7 +612,7 @@ def _is_not_yet_due(path: Path) -> bool:
         due = datetime.date.fromisoformat(str(raw))
     except ValueError:
         return False
-    return datetime.date.today() < due
+    return datetime.date.today() < due  # noqa: DTZ011
 
 
 RECENTLY_RELEASED_MINUTES = 20.0
@@ -653,7 +652,7 @@ def _recently_released_info(path: Path) -> dict[str, Any]:
     now = (
         datetime.datetime.now(released_at.tzinfo)
         if released_at.tzinfo
-        else datetime.datetime.now()
+        else datetime.datetime.now()  # noqa: DTZ005
     )
     age_minutes = (now - released_at).total_seconds() / 60.0
     if 0 <= age_minutes < RECENTLY_RELEASED_MINUTES:
@@ -819,7 +818,7 @@ def _premise_drift_warning(path: Path) -> str | None:
     now = (
         datetime.datetime.now(created.tzinfo)
         if created.tzinfo
-        else datetime.datetime.now()
+        else datetime.datetime.now()  # noqa: DTZ005
     )
     age_days = (now - created).total_seconds() / 86400.0
     if age_days <= PREMISE_DRIFT_THRESHOLD_DAYS:
@@ -1552,7 +1551,7 @@ def _git_backup(reason: str) -> None:
                 timeout=30,
                 check=False,
             )
-        except Exception:  # noqa: BLE001 -- backup is best-effort, never disrupt the queue op
+        except Exception:  # noqa: BLE001, S110 -- backup is best-effort, never disrupt the queue op
             pass
 
     _git("add", "-A")

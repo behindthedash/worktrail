@@ -61,6 +61,7 @@ def _run(
     try:
         return subprocess.run(
             args,
+            check=False,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -186,6 +187,7 @@ def _run_gh(
     try:
         return subprocess.run(
             ["gh", *args],
+            check=False,
             capture_output=True,
             text=True,
             timeout=timeout,

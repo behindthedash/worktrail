@@ -130,7 +130,7 @@ def is_recently_triaged(path: Path, within_days: int) -> bool:
         return False
 
     most_recent = max(dates)
-    age_days = (datetime.date.today() - most_recent).days
+    age_days = (datetime.date.today() - most_recent).days  # noqa: DTZ011
     return age_days <= within_days
 
 
@@ -204,6 +204,7 @@ def _check_repo_archived(repo: str, cwd: str | Path) -> bool | None:
     try:
         result = subprocess.run(
             ["gh", "repo", "view", "--json", "isArchived,name", "--", repo],
+            check=False,
             capture_output=True,
             text=True,
             cwd=str(cwd),
@@ -568,7 +569,7 @@ def apply_verdicts(verdicts: list[Verdict], *, confirm: bool) -> list[dict]:
     never dropping any -- `apply`'s `--json`/human output (4.3) renders this
     list directly.
     """
-    run_date = datetime.date.today().isoformat()
+    run_date = datetime.date.today().isoformat()  # noqa: DTZ011
     log: list[dict] = []
     for v in verdicts:
         if v.verdict == "keep":

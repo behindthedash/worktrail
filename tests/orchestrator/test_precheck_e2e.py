@@ -31,8 +31,8 @@ def _make_task_file(
     task_id: str,
     status: str = "pending",
     kind: str = "impl",
-    files: list = None,
-    external_deps: list = None,
+    files: list | None = None,
+    external_deps: list | None = None,
 ) -> None:
     files_yaml = str(files or [])
     lines = [
@@ -70,6 +70,7 @@ def _write_status_file(repo_dir: Path, spec_id: str, payload: dict) -> None:
 def _run_precheck(repo_dir: Path, spec_rel: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         _live_module_argv() + ["precheck", "--repo", str(repo_dir), spec_rel],
+        check=False,
         capture_output=True,
         text=True,
     )

@@ -19,14 +19,14 @@ def qbase(tmp_path, monkeypatch):
 
 
 def _ask(qbase, **kw):
-    defaults = dict(
-        background="Exports were added before archiving existed; both behaviors "
+    defaults = {
+        "background": "Exports were added before archiving existed; both behaviors "
         "now have users depending on them.",
-        why="Two mutually exclusive user-facing behaviors are both defensible.",
-        context="Read the spec, the epic, and the last three PRs; no precedent.",
-        options=["Option A: strict — tradeoff X", "Option B: lenient — tradeoff Y"],
-        queue_base=qbase,
-    )
+        "why": "Two mutually exclusive user-facing behaviors are both defensible.",
+        "context": "Read the spec, the epic, and the last three PRs; no precedent.",
+        "options": ["Option A: strict — tradeoff X", "Option B: lenient — tradeoff Y"],
+        "queue_base": qbase,
+    }
     defaults.update(kw)
     return decisions.ask("Should exports include archived rows?", **defaults)
 

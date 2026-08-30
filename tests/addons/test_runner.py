@@ -137,9 +137,11 @@ class RunAddonsTests(unittest.TestCase):
             # No `required` key -- defaults to non-fatal per design D4.
             policy = {"add_ons": {"aspens": {}}}
 
-            with patch("worktrail.addons.runner.addon_for", return_value=addon):
-                with patch("builtins.print") as mock_print:
-                    logs = run_addons(repo, repo, policy)
+            with (
+                patch("worktrail.addons.runner.addon_for", return_value=addon),
+                patch("builtins.print") as mock_print,
+            ):
+                logs = run_addons(repo, repo, policy)
 
             self.assertEqual(before, self._head_sha(repo))
             self.assertEqual(len(logs), 1)
@@ -164,9 +166,11 @@ class RunAddonsTests(unittest.TestCase):
             addon = _FakeAddOn("aspens", _run)
             policy = {"add_ons": {"aspens": {"required": True}}}
 
-            with patch("worktrail.addons.runner.addon_for", return_value=addon):
-                with self.assertRaises(AddOnFailure) as cm:
-                    run_addons(repo, repo, policy)
+            with (
+                patch("worktrail.addons.runner.addon_for", return_value=addon),
+                self.assertRaises(AddOnFailure) as cm,
+            ):
+                run_addons(repo, repo, policy)
 
             self.assertEqual(cm.exception.name, "aspens")
             self.assertIn("boom", cm.exception.detail)

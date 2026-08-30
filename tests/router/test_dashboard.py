@@ -18,6 +18,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import ClassVar
 from unittest import mock
 
 from worktrail.conductor import compile as runplan_compile
@@ -733,8 +734,10 @@ class OpenSpecSyncPending(unittest.TestCase):
                 "# Export\n",
             ),
             "added scenario": (
-                "## MODIFIED Requirements\n\n### Requirement: Export\n\n"
-                "#### Scenario: CSV export\n",
+                (
+                    "## MODIFIED Requirements\n\n### Requirement: Export\n\n"
+                    "#### Scenario: CSV export\n"
+                ),
                 "### Requirement: Export\n",
             ),
             "removed requirement": (
@@ -742,9 +745,11 @@ class OpenSpecSyncPending(unittest.TestCase):
                 "### Requirement: Legacy export\n",
             ),
             "renamed requirement": (
-                "## RENAMED Requirements\n\n"
-                "- FROM: `### Requirement: Old export`\n"
-                "- TO: `### Requirement: New export`\n",
+                (
+                    "## RENAMED Requirements\n\n"
+                    "- FROM: `### Requirement: Old export`\n"
+                    "- TO: `### Requirement: New export`\n"
+                ),
                 "### Requirement: Old export\n",
             ),
         }
@@ -1628,7 +1633,7 @@ class ReposScan(unittest.TestCase):
         # (no journal at all) alone.
         with tempfile.TemporaryDirectory() as tmp:
             parent = Path(tmp)
-            quarantined = self._repo(parent, "repo-a")
+            self._repo(parent, "repo-a")
             self._repo(parent, "repo-b")
             worktrees_dir = parent / "repo-a-worktrees"
             worktrees_dir.mkdir(parents=True)
@@ -3083,7 +3088,7 @@ class AutoPick(unittest.TestCase):
         self.assertIsNotNone(result["pick"])  # stale lock file alone never blocks
 
         held = self.worktrees / "run-live.lock"
-        fh = open(held, "w")
+        fh = open(held, "w")  # noqa: SIM115 -- held across the surrounding scope as a lock file
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:
             result = dashboard.auto_pick_brief(briefs)
@@ -3112,7 +3117,7 @@ class AutoPick(unittest.TestCase):
         nested = self.worktrees / "081-spec-worktrees"
         nested.mkdir()
         held = nested / "run-081-spec.lock"
-        fh = open(held, "w")
+        fh = open(held, "w")  # noqa: SIM115 -- held across the surrounding scope as a lock file
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:
             briefs = [self._brief("20260701-000000-brief.md", str(self.repo))]
@@ -3317,7 +3322,7 @@ class AutoPickMissLogging(unittest.TestCase):
 class ClusterRendering(unittest.TestCase):
     """render_dashboard's new `clusters` parameter (TASK-004, AC-011/AC-012)."""
 
-    CLUSTERS = [
+    CLUSTERS: ClassVar = [
         {
             "members": ["brief-a", "brief-b", "brief-c"],
             "signals": ["related-link", "same-target-spec"],
@@ -4129,11 +4134,11 @@ class StalenessWarnings(unittest.TestCase):
             from contextlib import redirect_stdout
 
             f = io.StringIO()
-            with mock.patch.object(dashboard, "_check_repo_freshness", fake_check):
-                with redirect_stdout(f):
-                    dashboard.main(
-                        ["--root", str(specs), "--check-freshness", "--json"]
-                    )
+            with (
+                mock.patch.object(dashboard, "_check_repo_freshness", fake_check),
+                redirect_stdout(f),
+            ):
+                dashboard.main(["--root", str(specs), "--check-freshness", "--json"])
             output = json.loads(f.getvalue())
             self.assertEqual(len(output["staleness_warnings"]), 1)
             self.assertEqual(output["staleness_warnings"][0]["repo"], "myrepo")
@@ -4155,9 +4160,11 @@ class StalenessWarnings(unittest.TestCase):
             from contextlib import redirect_stdout
 
             f = io.StringIO()
-            with mock.patch.object(dashboard, "_check_repo_freshness", fake_check):
-                with redirect_stdout(f):
-                    dashboard.main(["--root", str(specs), "--json"])
+            with (
+                mock.patch.object(dashboard, "_check_repo_freshness", fake_check),
+                redirect_stdout(f),
+            ):
+                dashboard.main(["--root", str(specs), "--json"])
             output = json.loads(f.getvalue())
             self.assertEqual(output["staleness_warnings"], [])
             self.assertEqual(called, [])
@@ -4179,11 +4186,11 @@ class StalenessWarnings(unittest.TestCase):
             from contextlib import redirect_stdout
 
             f = io.StringIO()
-            with mock.patch.object(dashboard, "_check_repo_freshness", fake_check):
-                with redirect_stdout(f):
-                    dashboard.main(
-                        ["--repos", str(parent), "--check-freshness", "--json"]
-                    )
+            with (
+                mock.patch.object(dashboard, "_check_repo_freshness", fake_check),
+                redirect_stdout(f),
+            ):
+                dashboard.main(["--repos", str(parent), "--check-freshness", "--json"])
             output = json.loads(f.getvalue())
             self.assertEqual(
                 output["staleness_warnings"], [{"repo": "repo-a", "warning": "behind"}]
@@ -4365,7 +4372,7 @@ class RepoScopedQueueRender(unittest.TestCase):
     queued/in-flight briefs as if they were claimable here (observed live
     2026-08-13: `worktrail-go devops` listed datalena briefs)."""
 
-    BRIEFS = [
+    BRIEFS: ClassVar = [
         {"filename": "a.md", "focus": "devops thing", "repo": "devops"},
         {"filename": "b.md", "focus": "datalena thing", "repo": "datalena"},
         {
@@ -4432,11 +4439,11 @@ class RepoScopedCategoryPickers(unittest.TestCase):
     the 'Open decisions' category and inflated 'Work queue' to a cross-repo
     count)."""
 
-    BRIEFS = [
+    BRIEFS: ClassVar = [
         {"filename": "a.md", "focus": "ours", "repo": "devops"},
         {"filename": "b.md", "focus": "theirs", "repo": "datalena"},
     ]
-    DECISIONS = [
+    DECISIONS: ClassVar = [
         {"id": "d-ours", "question": "ours?", "repo": "devops"},
         {"id": "d-theirs", "question": "theirs?", "repo": "datalena"},
     ]
@@ -4937,6 +4944,7 @@ class QueueJsonArgvLimitRegression(unittest.TestCase):
                         payload,
                         "--json",
                     ],
+                    check=False,
                     capture_output=True,
                     text=True,
                     env=self._isolated_env(tmp_path),
@@ -4964,6 +4972,7 @@ class QueueJsonArgvLimitRegression(unittest.TestCase):
                     str(queue_file),
                     "--json",
                 ],
+                check=False,
                 capture_output=True,
                 text=True,
                 env=self._isolated_env(tmp_path),

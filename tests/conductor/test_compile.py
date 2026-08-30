@@ -83,12 +83,12 @@ def test_compiling_the_same_change_twice_spawns_nothing_the_second_time(
             }
         )
     )
-    kwargs = dict(
-        spec_id=spec_id,
-        repo=change.parents[2],
-        cache_dir=tmp_path / "plans",
-        spawn=spawn,
-    )
+    kwargs = {
+        "spec_id": spec_id,
+        "repo": change.parents[2],
+        "cache_dir": tmp_path / "plans",
+        "spawn": spawn,
+    }
 
     first = conductor_compile.compile_run_plan(change, tasks, **kwargs)
     assert spawn.calls == 1
@@ -105,12 +105,12 @@ def test_editing_the_change_invalidates_the_cache(change, tmp_path):
     spawn = RecordingSpawn(
         _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
     )
-    kwargs = dict(
-        spec_id=spec_id,
-        repo=change.parents[2],
-        cache_dir=tmp_path / "plans",
-        spawn=spawn,
-    )
+    kwargs = {
+        "spec_id": spec_id,
+        "repo": change.parents[2],
+        "cache_dir": tmp_path / "plans",
+        "spawn": spawn,
+    }
 
     conductor_compile.compile_run_plan(change, tasks, **kwargs)
     (change / "proposal.md").write_text("## Why\nBecause, revised.\n")
@@ -123,12 +123,12 @@ def test_force_recompiles_over_a_cache_hit(change, tmp_path):
     spawn = RecordingSpawn(
         _reply(**{t["id"]: {"files": ["a.py"], "deps": []} for t in tasks})
     )
-    kwargs = dict(
-        spec_id=spec_id,
-        repo=change.parents[2],
-        cache_dir=tmp_path / "plans",
-        spawn=spawn,
-    )
+    kwargs = {
+        "spec_id": spec_id,
+        "repo": change.parents[2],
+        "cache_dir": tmp_path / "plans",
+        "spawn": spawn,
+    }
 
     conductor_compile.compile_run_plan(change, tasks, **kwargs)
     conductor_compile.compile_run_plan(change, tasks, force=True, **kwargs)
@@ -151,7 +151,7 @@ def test_force_is_refused_when_task_worktrees_already_exist_for_the_spec(
 
     spec_id, tasks = _load(change)
     repo = change.parents[2]
-    kwargs = dict(spec_id=spec_id, repo=repo, cache_dir=tmp_path / "plans")
+    kwargs = {"spec_id": spec_id, "repo": repo, "cache_dir": tmp_path / "plans"}
 
     first_spawn = RecordingSpawn(
         _reply(**{t["id"]: {"files": ["a.py"], "deps": []} for t in tasks})
@@ -185,7 +185,7 @@ def test_allow_force_over_active_worktrees_overrides_the_guard(change, tmp_path)
 
     spec_id, tasks = _load(change)
     repo = change.parents[2]
-    kwargs = dict(spec_id=spec_id, repo=repo, cache_dir=tmp_path / "plans")
+    kwargs = {"spec_id": spec_id, "repo": repo, "cache_dir": tmp_path / "plans"}
 
     conductor_compile.compile_run_plan(
         change,
@@ -219,7 +219,11 @@ def test_force_still_recompiles_when_no_task_worktrees_exist(change, tmp_path):
     keep working exactly as before this guard: a bare `--force` still reaches
     the model without needing the override."""
     spec_id, tasks = _load(change)
-    kwargs = dict(spec_id=spec_id, repo=change.parents[2], cache_dir=tmp_path / "plans")
+    kwargs = {
+        "spec_id": spec_id,
+        "repo": change.parents[2],
+        "cache_dir": tmp_path / "plans",
+    }
 
     conductor_compile.compile_run_plan(
         change,
@@ -250,7 +254,11 @@ def test_the_default_spawn_patch_site_still_receives_the_same_call_shape(
     reply = _reply(
         **{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks}
     )
-    kwargs = dict(spec_id=spec_id, repo=change.parents[2], cache_dir=tmp_path / "plans")
+    kwargs = {
+        "spec_id": spec_id,
+        "repo": change.parents[2],
+        "cache_dir": tmp_path / "plans",
+    }
 
     with patch(
         "worktrail.conductor.compile._default_spawn", return_value=reply
@@ -365,16 +373,18 @@ def test_repo_policy_roles_compile_tier_wins_over_default_tier(change, tmp_path)
         **{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks}
     )
 
-    with _clear_ambient_agent_env(tmp_path):
-        with patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent:
-            spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
-            plan = conductor_compile.compile_run_plan(
-                change,
-                tasks,
-                spec_id=spec_id,
-                repo=repo,
-                cache_dir=tmp_path / "plans",
-            )
+    with (
+        _clear_ambient_agent_env(tmp_path),
+        patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent,
+    ):
+        spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
+        plan = conductor_compile.compile_run_plan(
+            change,
+            tasks,
+            spec_id=spec_id,
+            repo=repo,
+            cache_dir=tmp_path / "plans",
+        )
 
     assert plan.source == runplan.SOURCE_COMPILED
     assert spawn_agent.call_count == 1
@@ -401,26 +411,26 @@ def test_explicit_agent_and_model_override_a_declared_target(change, tmp_path):
     seeded_routing_file = resolved_routing_file_path()
     seeded_routing_text = seeded_routing_file.read_text(encoding="utf-8")
 
-    with _clear_ambient_agent_env(tmp_path):
-        with patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent:
-            spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
-            plan = conductor_compile.compile_run_plan(
-                change,
-                tasks,
-                spec_id=spec_id,
-                repo=repo,
-                cache_dir=tmp_path / "plans",
-                spawn=lambda prompt, cwd, timeout, log: (
-                    conductor_compile._default_spawn(
-                        prompt,
-                        cwd,
-                        timeout,
-                        log,
-                        agent="claude-sub",
-                        model="override-model",
-                    )
-                ),
-            )
+    with (
+        _clear_ambient_agent_env(tmp_path),
+        patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent,
+    ):
+        spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
+        plan = conductor_compile.compile_run_plan(
+            change,
+            tasks,
+            spec_id=spec_id,
+            repo=repo,
+            cache_dir=tmp_path / "plans",
+            spawn=lambda prompt, cwd, timeout, log: conductor_compile._default_spawn(
+                prompt,
+                cwd,
+                timeout,
+                log,
+                agent="claude-sub",
+                model="override-model",
+            ),
+        )
 
     assert plan.source == runplan.SOURCE_COMPILED
     assert spawn_agent.call_count == 1
@@ -437,11 +447,13 @@ def test_explicit_agent_and_model_override_a_declared_target(change, tmp_path):
 
 def test_explicit_model_without_agent_is_rejected(change, tmp_path):
     """`--model` with no `--agent` has no target to attach it to."""
-    with _clear_ambient_agent_env(tmp_path):
-        with pytest.raises(ValueError, match="--model requires --agent"):
-            conductor_compile._default_spawn(
-                "prompt", change.parents[2], 60, lambda *_: None, model="some-model"
-            )
+    with (
+        _clear_ambient_agent_env(tmp_path),
+        pytest.raises(ValueError, match="--model requires --agent"),
+    ):
+        conductor_compile._default_spawn(
+            "prompt", change.parents[2], 60, lambda *_: None, model="some-model"
+        )
 
 
 def _git_change_dir(tmp_path: Path) -> Path:
@@ -466,25 +478,27 @@ def test_cli_agent_and_model_flags_override_a_declared_target(tmp_path):
     from unittest.mock import patch
 
     d = _git_change_dir(tmp_path)
-    spec_id, tasks = _load(d)
+    _spec_id, tasks = _load(d)
     reply = _reply(
         **{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks}
     )
 
-    with _clear_ambient_agent_env(tmp_path):
-        with patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent:
-            spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
-            rc = conductor_compile.main(
-                [
-                    str(d),
-                    "--agent",
-                    "codex-sub",
-                    "--model",
-                    "override-model",
-                    "--cache-dir",
-                    str(tmp_path / "plans"),
-                ]
-            )
+    with (
+        _clear_ambient_agent_env(tmp_path),
+        patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent,
+    ):
+        spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
+        rc = conductor_compile.main(
+            [
+                str(d),
+                "--agent",
+                "codex-sub",
+                "--model",
+                "override-model",
+                "--cache-dir",
+                str(tmp_path / "plans"),
+            ]
+        )
 
     assert rc == 0
     assert spawn_agent.call_count == 1
@@ -498,17 +512,19 @@ def test_cli_agent_flag_alone_prefers_the_target_within_the_resolved_tier(tmp_pa
     from unittest.mock import patch
 
     d = _git_change_dir(tmp_path)
-    spec_id, tasks = _load(d)
+    _spec_id, tasks = _load(d)
     reply = _reply(
         **{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks}
     )
 
-    with _clear_ambient_agent_env(tmp_path):
-        with patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent:
-            spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
-            rc = conductor_compile.main(
-                [str(d), "--agent", "codex-sub", "--cache-dir", str(tmp_path / "plans")]
-            )
+    with (
+        _clear_ambient_agent_env(tmp_path),
+        patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent,
+    ):
+        spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
+        rc = conductor_compile.main(
+            [str(d), "--agent", "codex-sub", "--cache-dir", str(tmp_path / "plans")]
+        )
 
     assert rc == 0
     assert spawn_agent.call_count == 1
@@ -527,23 +543,25 @@ def test_cli_fallback_chain_flag_is_accepted_but_does_not_reach_spawn_agent(tmp_
     from unittest.mock import patch
 
     d = _git_change_dir(tmp_path)
-    spec_id, tasks = _load(d)
+    _spec_id, tasks = _load(d)
     reply = _reply(
         **{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks}
     )
 
-    with _clear_ambient_agent_env(tmp_path):
-        with patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent:
-            spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
-            rc = conductor_compile.main(
-                [
-                    str(d),
-                    "--fallback-chain",
-                    "codex-sub,opencode-free",
-                    "--cache-dir",
-                    str(tmp_path / "plans"),
-                ]
-            )
+    with (
+        _clear_ambient_agent_env(tmp_path),
+        patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent,
+    ):
+        spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
+        rc = conductor_compile.main(
+            [
+                str(d),
+                "--fallback-chain",
+                "codex-sub,opencode-free",
+                "--cache-dir",
+                str(tmp_path / "plans"),
+            ]
+        )
 
     assert rc == 0
     assert spawn_agent.call_count == 1
@@ -574,16 +592,18 @@ def test_ambient_orch_model_env_vars_do_not_influence_compile_spawn(change, tmp_
         "ORCH_OPENCODE_MODEL": "some-opencode-model",
         "ORCH_CODEX_MODEL": "some-codex-model",
     }
-    with patch.dict("os.environ", env, clear=False):
-        with patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent:
-            spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
-            plan = conductor_compile.compile_run_plan(
-                change,
-                tasks,
-                spec_id=spec_id,
-                repo=change.parents[2],
-                cache_dir=tmp_path / "plans",
-            )
+    with (
+        patch.dict("os.environ", env, clear=False),
+        patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent,
+    ):
+        spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
+        plan = conductor_compile.compile_run_plan(
+            change,
+            tasks,
+            spec_id=spec_id,
+            repo=change.parents[2],
+            cache_dir=tmp_path / "plans",
+        )
 
     assert plan.source == runplan.SOURCE_COMPILED
     assert spawn_agent.call_count == 1
@@ -817,9 +837,12 @@ def test_editing_a_declared_files_scope_invalidates_the_cached_plan(tmp_path):
             }
         )
     )
-    kwargs = dict(
-        spec_id="declared", repo=tmp_path, cache_dir=tmp_path / "plans", spawn=spawn
-    )
+    kwargs = {
+        "spec_id": "declared",
+        "repo": tmp_path,
+        "cache_dir": tmp_path / "plans",
+        "spawn": spawn,
+    }
 
     first = conductor_compile.compile_run_plan(d, tasks, **kwargs)
     assert spawn.calls == 1
@@ -929,7 +952,11 @@ def test_a_rejected_response_is_not_cached(change, tmp_path):
     version, and the next run would silently inherit it."""
     spec_id, tasks = _load(change)
     bad = RecordingSpawn("no json here")
-    kwargs = dict(spec_id=spec_id, repo=change.parents[2], cache_dir=tmp_path / "plans")
+    kwargs = {
+        "spec_id": spec_id,
+        "repo": change.parents[2],
+        "cache_dir": tmp_path / "plans",
+    }
 
     conductor_compile.compile_run_plan(change, tasks, spawn=bad, **kwargs)
     good = RecordingSpawn(
@@ -1345,7 +1372,7 @@ def test_a_passing_cli_run_writes_the_compile_marker(tmp_path, capsys):
 
     from worktrail.taskformats import resolve
 
-    spec_id, tasks = resolve.load_spec(str(d))
+    _spec_id, tasks = resolve.load_spec(str(d))
     assert marker.read_text(encoding="utf-8").strip() == runplan.fingerprint(d, tasks)
 
 

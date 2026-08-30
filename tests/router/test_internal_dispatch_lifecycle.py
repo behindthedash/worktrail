@@ -335,7 +335,11 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
                     if agent == "codex":
                         command.append("--no-inherit-codex-auth")
                     result = subprocess.run(
-                        command, env=environment, capture_output=True, text=True
+                        command,
+                        check=False,
+                        env=environment,
+                        capture_output=True,
+                        text=True,
                     )
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(proof.read_text(), f"executed:{agent}:{seed}\n")
@@ -375,6 +379,7 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
 
                     blocked = subprocess.run(
                         command,
+                        check=False,
                         env={**environment, "WORKTRAIL_SKILL_DISPATCH_DEPTH": "1"},
                         capture_output=True,
                         text=True,
@@ -384,6 +389,7 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
 
                     unseeded = subprocess.run(
                         [*command[:6], "handoff:20260812-090245", *command[7:]],
+                        check=False,
                         env={
                             **environment,
                             "FAKE_INTERNAL_DISPATCH_EXPECTED": "handoff:20260812-090245",
@@ -490,6 +496,7 @@ class DecisionResumeLifecycleTests(unittest.TestCase):
                     self._dispatch_command(
                         agent, ["--resume-decision", self.DECISION_ID]
                     ),
+                    check=False,
                     env=env,
                     capture_output=True,
                     text=True,
@@ -511,6 +518,7 @@ class DecisionResumeLifecycleTests(unittest.TestCase):
                     self._dispatch_command(
                         agent, ["--resume-decision", self.DECISION_ID]
                     ),
+                    check=False,
                     env=env,
                     capture_output=True,
                     text=True,
@@ -539,6 +547,7 @@ class DecisionResumeLifecycleTests(unittest.TestCase):
                         "--present-decision",
                         self.DECISION_ID,
                     ],
+                    check=False,
                     env=self.environment,
                     capture_output=True,
                     text=True,

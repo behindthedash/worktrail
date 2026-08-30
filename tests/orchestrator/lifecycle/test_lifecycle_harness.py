@@ -252,18 +252,20 @@ def _run_full_real(
 ) -> dict:
     """Invoke the real `_full_real_inner` with only LiveSpawn + sleep patched."""
     worker = worker or ScriptedWorker()
-    with unittest.mock.patch.dict(os.environ, env):
-        with unittest.mock.patch.object(live, "LiveSpawn", return_value=worker):
-            with unittest.mock.patch.object(time, "sleep", lambda s: None):
-                result = live._full_real_inner(
-                    str(repo),
-                    spec_rel,
-                    remote="origin",
-                    base="main",
-                    max_workers=3,
-                    timeout=60,
-                    resume=resume,
-                )
+    with (
+        unittest.mock.patch.dict(os.environ, env),
+        unittest.mock.patch.object(live, "LiveSpawn", return_value=worker),
+        unittest.mock.patch.object(time, "sleep", lambda s: None),
+    ):
+        result = live._full_real_inner(
+            str(repo),
+            spec_rel,
+            remote="origin",
+            base="main",
+            max_workers=3,
+            timeout=60,
+            resume=resume,
+        )
     result["_worker"] = worker
     return result
 
@@ -280,6 +282,7 @@ def _journal(repo: Path, spec_rel: str) -> dict:
 def _remote_file(remote: Path, path: str) -> str | None:
     r = subprocess.run(
         ["git", "-C", str(remote), "show", f"main:{path}"],
+        check=False,
         capture_output=True,
         text=True,
     )

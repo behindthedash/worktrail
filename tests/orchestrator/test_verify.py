@@ -1012,7 +1012,7 @@ class MergeMethodOverride(unittest.TestCase):
         run = FakeRun({"run/feature-1": [view()]})
         v = mk(run, FakeSpawn(), "/tmp/x", merge_method="merge")
 
-        ok, msg = v.auto_merge(FEATURE, "run/feature-1")
+        ok, _msg = v.auto_merge(FEATURE, "run/feature-1")
 
         self.assertTrue(ok)
         self.assertFalse(
@@ -1043,7 +1043,7 @@ class CleanupNoOps(unittest.TestCase):
         # verify worktree path never created, so cleanup handles it gracefully
         try:
             v.cleanup_group(FEATURE, "run/feature-1")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             self.fail(f"cleanup_group raised {e} for nonexistent worktree")
 
     def test_cleanup_already_deleted_branch(self):
@@ -1059,7 +1059,7 @@ class CleanupNoOps(unittest.TestCase):
         v = mk(fake_run_with_branch_error, spawn, "/tmp/x")
         try:
             v.cleanup_group(FEATURE, "run/feature-1")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             self.fail(f"cleanup_group raised {e} for already-deleted branch")
 
     def test_cleanup_branch_deletion_with_alternative_error_msg(self):
@@ -1074,7 +1074,7 @@ class CleanupNoOps(unittest.TestCase):
         v = mk(fake_run_with_branch_error, spawn, "/tmp/x")
         try:
             v.cleanup_group(FEATURE, "run/feature-1")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             self.fail(f"cleanup_group raised {e} for already-deleted branch")
 
     def test_cleanup_deletes_remote_group_branch(self):
@@ -1101,7 +1101,7 @@ class CleanupNoOps(unittest.TestCase):
         v = mk(fake_run_push_fails, spawn, "/tmp/x")
         try:
             v.cleanup_group(FEATURE, "run/feature-1")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             self.fail(f"cleanup_group raised {e} when remote push --delete failed")
 
     def test_cleanup_skips_remote_branch_delete_when_queued(self):
@@ -1521,13 +1521,6 @@ class RetargetDependent(unittest.TestCase):
     def test_retarget_falls_back_to_pr_edit_when_pr_number_unresolvable(self):
         """If `pr_status` can't resolve a PR number (e.g. `gh pr view` failed),
         fall back to `gh pr edit --base` rather than skip retargeting silently."""
-        base = {"name": "base", "tasks": ["TASK-001"], "reqs": [], "depends_on": []}
-        feat = {
-            "name": "feature-1",
-            "tasks": ["TASK-002"],
-            "reqs": [],
-            "depends_on": ["base"],
-        }
         run = FakeRun({"run/base": [view()], "run/feature-1": [view()]})
         v = mk(run, FakeSpawn(), "/tmp/x")
         v.retarget_to_base({"name": "feature-1"}, "run/feature-1")
@@ -1560,7 +1553,7 @@ class BranchProtectionAutoMergePath(unittest.TestCase):
 
         def run(cmd):
             if cmd[:3] == ["gh", "pr", "merge"]:
-                branch = cmd[3]
+                cmd[3]
                 merge_calls.append(cmd)
                 if "--auto" in cmd:
                     return Proc(
@@ -1953,7 +1946,7 @@ class SquashMergeDetection(unittest.TestCase):
         spawn = FakeSpawn()
         v = mk(run, spawn, "/tmp/x")
 
-        ok, msg = v.auto_merge(FEATURE, "run/feature-1")
+        ok, _msg = v.auto_merge(FEATURE, "run/feature-1")
 
         self.assertTrue(ok)
         merge_calls = [c for c in run.calls if c[:3] == ["gh", "pr", "merge"]]
@@ -1988,7 +1981,7 @@ class SquashMergeDetection(unittest.TestCase):
         spawn = FakeSpawn()
         v = mk(run, spawn, "/tmp/x")
 
-        ok, msg = v.auto_merge(FEATURE, "run/feature-1")
+        ok, _msg = v.auto_merge(FEATURE, "run/feature-1")
 
         self.assertTrue(ok)
         merge_calls = [c for c in run.calls if c[:3] == ["gh", "pr", "merge"]]
@@ -2013,7 +2006,7 @@ class SquashMergeDetection(unittest.TestCase):
         spawn = FakeSpawn()
         v = mk(run, spawn, "/tmp/x")
 
-        ok, msg = v.auto_merge(FEATURE, "run/feature-1")
+        ok, _msg = v.auto_merge(FEATURE, "run/feature-1")
 
         self.assertTrue(ok)
         merge_calls = [c for c in run.calls if c[:3] == ["gh", "pr", "merge"]]
@@ -2131,7 +2124,7 @@ class AutoMergeMethodFallback(unittest.TestCase):
 
     def test_enablepullrequestautomerge_all_fallbacks_fail_quarantines(self):
         """When all method fallbacks fail, the group is quarantined."""
-        run, merge_calls = self._make_method_fallback_run(fallback_succeeds=False)
+        run, _merge_calls = self._make_method_fallback_run(fallback_succeeds=False)
         v = mk(run, FakeSpawn(), "/tmp/x")
 
         ok, msg = v.auto_merge(FEATURE, "run/feature-1")

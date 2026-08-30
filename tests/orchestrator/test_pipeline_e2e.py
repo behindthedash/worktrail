@@ -138,6 +138,7 @@ class FakeSpawn:
         sha = (
             subprocess.run(
                 ["git", "-C", str(wt), "rev-parse", "HEAD"],
+                check=False,
                 capture_output=True,
                 text=True,
             ).stdout.strip()[:8]
@@ -346,9 +347,8 @@ class E2EHappyPathTest(unittest.TestCase):
                 quarantined,
                 **kwargs,
             ):
-                if g["name"] == "base":
-                    if feature_fanout_started.wait(timeout=10):
-                        overlap_confirmed.set()
+                if g["name"] == "base" and feature_fanout_started.wait(timeout=10):
+                    overlap_confirmed.set()
                 return base_fn(
                     g,
                     repo_,
@@ -783,7 +783,7 @@ class E2EQuarantineTest(unittest.TestCase):
             integrate_one, _ = _make_integrate_one(force_quarantine={"base"})
             try:
                 _run_pipeline(repo, tmp, FakeSpawn(), integrate_one, FakeVerifier())
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 self.fail(f"Run aborted by quarantine (should not happen): {exc!r}")
 
     def test_quarantine_summary_prints_reasons_not_just_names(self):
@@ -1002,7 +1002,7 @@ class E2EResumeTest(unittest.TestCase):
                 result = self._resume_run(
                     repo, journal_path, {}, integrate_one=integrate_one
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 self.fail(f"Corrupt journal must not cause a crash; got {exc!r}")
             for key in ("group_prs", "final", "quarantined", "merged"):
                 self.assertIn(
@@ -1025,6 +1025,7 @@ class RegressionTest(unittest.TestCase):
         """AC-020: `orchestrate.py check` must exit 0 (golden unchanged)."""
         result = subprocess.run(
             [sys.executable, "-m", "worktrail.orchestrator.orchestrate", "check"],
+            check=False,
             capture_output=True,
             text=True,
             cwd=str(_HERE),
@@ -1060,6 +1061,7 @@ class RegressionTest(unittest.TestCase):
                 try:
                     result = subprocess.run(
                         [sys.executable, str(tf)],
+                        check=False,
                         capture_output=True,
                         text=True,
                         cwd=str(_HERE),

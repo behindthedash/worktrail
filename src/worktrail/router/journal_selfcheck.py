@@ -73,7 +73,7 @@ def _runlock_held(lock_path: Path) -> bool:
     except ImportError:  # pragma: no cover - non-POSIX
         return False
     try:
-        fh = open(lock_path, "a")
+        fh = open(lock_path, "a")  # noqa: SIM115 -- held across the surrounding scope as a lock file
     except OSError:
         return False
     try:

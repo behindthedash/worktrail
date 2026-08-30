@@ -75,10 +75,12 @@ def check_text(text: str) -> list[str]:
         return []
 
     return [
-        f"inference-based Clarifications resolution ('{inference_hit}') co-occurs "
-        f"with an all-clear line ('{all_clear_hit}') — see Decision Classification "
-        "in specs.spec-check.md; an owner-escalated marker must be reported as "
-        "Decision needed, not None outstanding"
+        (
+            f"inference-based Clarifications resolution ('{inference_hit}') co-occurs "
+            f"with an all-clear line ('{all_clear_hit}') — see Decision Classification "
+            "in specs.spec-check.md; an owner-escalated marker must be reported as "
+            "Decision needed, not None outstanding"
+        )
     ]
 
 
@@ -104,6 +106,7 @@ def _resolve_base_ref(repo: Path, configured: str | None) -> str | None:
     for ref in candidates:
         result = subprocess.run(
             ["git", "rev-parse", "--verify", "--quiet", ref],
+            check=False,
             cwd=str(repo),
             capture_output=True,
             text=True,
@@ -119,6 +122,7 @@ def _changed_paths_via_git(repo: Path, configured_base: str | None) -> list[str]
         return []
     merge_base = subprocess.run(
         ["git", "merge-base", "HEAD", base_ref],
+        check=False,
         cwd=str(repo),
         capture_output=True,
         text=True,
@@ -127,6 +131,7 @@ def _changed_paths_via_git(repo: Path, configured_base: str | None) -> list[str]
         return []
     diff = subprocess.run(
         ["git", "diff", "--name-only", merge_base.stdout.strip(), "HEAD"],
+        check=False,
         cwd=str(repo),
         capture_output=True,
         text=True,

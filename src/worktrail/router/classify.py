@@ -572,11 +572,14 @@ def classify(
         hits["E"].extend(ci_hits)
 
     # State preconditions.
-    if state.get("active_specs", 0) == 0 and not _SPEC_ID_RE.search(text):
-        # No pending spec on disk and no spec id cited -> implementation demoted.
-        if scores["D"] > 0:
-            scores["D"] -= 2
-            reason_parts.append("D demoted: no active spec in state and none cited")
+    # No pending spec on disk and no spec id cited -> implementation demoted.
+    if (
+        state.get("active_specs", 0) == 0
+        and not _SPEC_ID_RE.search(text)
+        and scores["D"] > 0
+    ):
+        scores["D"] -= 2
+        reason_parts.append("D demoted: no active spec in state and none cited")
     if state.get("handoff_queue", 0) > 0 and "handoff" in text.lower():
         scores["E"] += 2
 

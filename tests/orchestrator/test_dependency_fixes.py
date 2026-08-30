@@ -29,6 +29,8 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from typing import ClassVar
+
 from worktrail.orchestrator import (
     coordinator,
     dispatch,
@@ -77,12 +79,12 @@ def _write_sibling_task_file(
 # Defect B -- deliverable_subset: ship healthy siblings, split out the failure
 # --------------------------------------------------------------------------- #
 class DeliverableSubset(unittest.TestCase):
-    CHAIN = [
+    CHAIN: ClassVar = [
         {"id": "TASK-001", "deps": []},  # helper
         {"id": "TASK-002", "deps": ["TASK-001"]},  # consumer
         {"id": "TASK-003", "deps": ["TASK-002"]},  # test-of-consumer
     ]
-    GROUP = ["TASK-001", "TASK-002", "TASK-003"]
+    GROUP: ClassVar = ["TASK-001", "TASK-002", "TASK-003"]
 
     def test_all_done_ships_whole_chain_not_quarantine(self):
         # The headline regression: a clean dependency chain delivers as ONE PR

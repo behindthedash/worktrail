@@ -22,10 +22,10 @@ def _brief(
     focus: str,
     repo: str = "null",
     status: str = "queued",
-    blocked_by: list = None,
+    blocked_by: list | None = None,
     extra_body: str = "",
-    target_spec: str = None,
-    related: list = None,
+    target_spec: str | None = None,
+    related: list | None = None,
 ) -> str:
     fm_lines = [
         f"focus: {focus}",
@@ -93,10 +93,8 @@ class TestSameRepoBoost(ScoreCandidatesTestBase):
         focus_shared = "sharp cloudinary bake writeback missing"
 
         new = self.write_new_brief("20260604-160000-new.md", focus=focus_new, repo=repo)
-        same = self.write_queue(
-            "20260604-112107-same-repo.md", focus=focus_shared, repo=repo
-        )
-        diff = self.write_queue(
+        self.write_queue("20260604-112107-same-repo.md", focus=focus_shared, repo=repo)
+        self.write_queue(
             "20260604-154500-diff-repo.md",
             focus=focus_shared,
             repo="/home/user/projects/other",

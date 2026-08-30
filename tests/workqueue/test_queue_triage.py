@@ -18,7 +18,7 @@ from unittest import mock
 from worktrail.workqueue import queue_triage as qt
 
 
-def _brief(focus: str, repo: str = None, body: str = "") -> str:
+def _brief(focus: str, repo: str | None = None, body: str = "") -> str:
     fm = [f"focus: {focus}", "status: queued"]
     if repo is not None:
         fm.append(f"repo: {repo}")
@@ -37,7 +37,7 @@ class QueueTriageTestBase(unittest.TestCase):
         os.environ.pop("WORK_QUEUE_DIR", None)
         self._tmp.cleanup()
 
-    def write(self, name: str, repo: str = None, body: str = "") -> Path:
+    def write(self, name: str, repo: str | None = None, body: str = "") -> Path:
         p = self.queue / name
         p.write_text(_brief(name, repo=repo, body=body), encoding="utf-8")
         return p
@@ -112,7 +112,7 @@ class TestIsRecentlyTriaged(QueueTriageTestBase):
     def test_recent_triage_section_is_within_window(self):
         import datetime
 
-        recent = datetime.date.today() - datetime.timedelta(days=1)
+        recent = datetime.date.today() - datetime.timedelta(days=1)  # noqa: DTZ011
         p = self.write(
             "a.md",
             body=f"## Triage {recent.isoformat()}\n\nkeep\n",
@@ -133,7 +133,7 @@ class TestIsRecentlyTriaged(QueueTriageTestBase):
     def test_most_recent_of_multiple_triage_sections_wins(self):
         import datetime
 
-        recent = datetime.date.today() - datetime.timedelta(days=1)
+        recent = datetime.date.today() - datetime.timedelta(days=1)  # noqa: DTZ011
         p = self.write(
             "a.md",
             body=(
@@ -150,7 +150,7 @@ class TestIsRecentlyTriaged(QueueTriageTestBase):
     def test_unparsable_date_does_not_shadow_a_valid_one(self):
         import datetime
 
-        recent = datetime.date.today() - datetime.timedelta(days=1)
+        recent = datetime.date.today() - datetime.timedelta(days=1)  # noqa: DTZ011
         p = self.write(
             "a.md",
             body=(
@@ -169,7 +169,7 @@ class TestIsRecentlyTriaged(QueueTriageTestBase):
         # computed the same way the implementation does to avoid brittleness.
         import datetime
 
-        today = datetime.date.today()
+        today = datetime.date.today()  # noqa: DTZ011
         boundary_date = today - datetime.timedelta(days=30)
         p = self.write(
             "a.md",
@@ -180,7 +180,7 @@ class TestIsRecentlyTriaged(QueueTriageTestBase):
     def test_one_day_past_boundary_is_stale(self):
         import datetime
 
-        today = datetime.date.today()
+        today = datetime.date.today()  # noqa: DTZ011
         past_boundary = today - datetime.timedelta(days=31)
         p = self.write(
             "a.md",
@@ -506,7 +506,7 @@ class TestApplyVerdicts(QueueTriageTestBase):
         # brief is left in place -- unlike stale-close, needs-update never claims it
         self.assertTrue(b_path.exists())
         content = b_path.read_text(encoding="utf-8")
-        run_date = datetime.date.today().isoformat()
+        run_date = datetime.date.today().isoformat()  # noqa: DTZ011
         self.assertIn(f"## Triage {run_date}", content)
         self.assertIn("target file renamed, brief needs a refresh", content)
         self.assertTrue(qt.is_recently_triaged(b_path, within_days=1))
@@ -775,7 +775,7 @@ class TestReportAndVerdictFileOutput(QueueTriageTestBase):
         self.write("b2.md", repo="behindthedash/repo-b")
         self.write("n1.md")
         self.write("n2.md")
-        today = datetime.date.today().isoformat()
+        today = datetime.date.today().isoformat()  # noqa: DTZ011
         self.write(
             "skipped.md",
             repo="behindthedash/repo-a",

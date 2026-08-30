@@ -123,9 +123,7 @@ def _id_matches(identifier: str, stem: str) -> bool:
         return True
     if stem.startswith(identifier):
         return True
-    if stem.endswith(identifier):
-        return True
-    return False
+    return bool(stem.endswith(identifier))
 
 
 def _extract_signal(
@@ -144,7 +142,7 @@ def _extract_signal(
         return None
     try:
         fm = parse_frontmatter(text)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
     if not fm:
         return None
@@ -393,6 +391,7 @@ def _verify_same_work(
     try:
         proc = subprocess.run(
             build_cmd(_verification_prompt(focus_a, focus_b)),
+            check=False,
             capture_output=True,
             text=True,
             timeout=_VERIFY_TIMEOUT_SECONDS,

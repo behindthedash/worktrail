@@ -73,7 +73,7 @@ def resolve_spec_rel(repo: Path, spec_id: str) -> str | None:
 def _base_branch_for(repo: Path) -> str | None:
     try:
         return load_policy(repo).get("base_branch") or None
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
 
 

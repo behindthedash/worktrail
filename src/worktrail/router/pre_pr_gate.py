@@ -202,6 +202,7 @@ def _resolve_base_ref(repo: Path, policy: dict[str, Any]) -> str | None:
     for ref in candidates:
         result = subprocess.run(
             ["git", "rev-parse", "--verify", "--quiet", ref],
+            check=False,
             cwd=str(repo),
             capture_output=True,
             text=True,
@@ -222,6 +223,7 @@ def changed_paths(repo: Path, policy: dict[str, Any]) -> list[str] | None:
         return None
     merge_base = subprocess.run(
         ["git", "merge-base", "HEAD", base_ref],
+        check=False,
         cwd=str(repo),
         capture_output=True,
         text=True,
@@ -230,6 +232,7 @@ def changed_paths(repo: Path, policy: dict[str, Any]) -> list[str] | None:
         return None
     diff = subprocess.run(
         ["git", "diff", "--name-only", merge_base.stdout.strip(), "HEAD"],
+        check=False,
         cwd=str(repo),
         capture_output=True,
         text=True,
@@ -269,6 +272,7 @@ def _current_branch(repo: Path) -> str | None:
     """Current checked-out branch name, or None if unresolvable (e.g. detached HEAD)."""
     result = subprocess.run(
         ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        check=False,
         cwd=str(repo),
         capture_output=True,
         text=True,
@@ -284,10 +288,15 @@ def _head_matches_pushed_remote(repo: Path, branch: str) -> bool:
     clean — i.e. nothing local/uncommitted/unpushed that CI hasn't already
     seen and vetted when this branch's own commits landed on `origin`."""
     head = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=str(repo), capture_output=True, text=True
+        ["git", "rev-parse", "HEAD"],
+        check=False,
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
     )
     remote = subprocess.run(
         ["git", "rev-parse", "--verify", "--quiet", f"origin/{branch}"],
+        check=False,
         cwd=str(repo),
         capture_output=True,
         text=True,
@@ -297,7 +306,11 @@ def _head_matches_pushed_remote(repo: Path, branch: str) -> bool:
     if head.stdout.strip() != remote.stdout.strip():
         return False
     status = subprocess.run(
-        ["git", "status", "--porcelain"], cwd=str(repo), capture_output=True, text=True
+        ["git", "status", "--porcelain"],
+        check=False,
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
     )
     return status.returncode == 0 and not status.stdout.strip()
 
@@ -346,8 +359,7 @@ def scope_review_failures(run_path: Path | None) -> list[str]:
         if status == "blocked":
             failures.append(f"blocked scope item: {item} ({detail})")
         elif status == "out-of-scope" and not (
-            detail.startswith("different purpose:")
-            or detail.startswith("user approved:")
+            detail.startswith(("different purpose:", "user approved:"))
         ):
             failures.append(
                 f"out-of-scope item lacks a different-purpose or user-approved reason: {item}"
@@ -415,7 +427,7 @@ def _warn_orphaned_tests(repo: Path) -> None:
     """
     try:
         orphaned = orphaned_test_paths(repo)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return
     if not orphaned:
         return
@@ -673,7 +685,7 @@ def main(argv=None) -> int:
         hint_line = None
         reason = None
 
-    result = subprocess.run(["bash", "-c", cmd], cwd=str(repo))
+    result = subprocess.run(["bash", "-c", cmd], check=False, cwd=str(repo))
     if result.returncode == 0:
         print("PRE-PR GATE: PASS")
         if args.risk is not None and label_line:

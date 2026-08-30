@@ -244,9 +244,7 @@ def _check(
                     status = "GATED"
                     notes.append("model_unavailable")
                     gated += 1
-                if pool == "free" and not (
-                    model.endswith("-free") or model.endswith(":free")
-                ):
+                if pool == "free" and not (model.endswith(("-free", ":free"))):
                     notes.append("warn: free-pool id missing -free/:free suffix")
 
             if effort:

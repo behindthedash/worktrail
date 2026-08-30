@@ -82,6 +82,7 @@ def _wq(args: list[str], base: Path) -> tuple[int, Any]:
     env = {**os.environ, "WORK_QUEUE_DIR": str(base)}
     r = subprocess.run(
         [sys.executable, "-m", "worktrail.workqueue.work_queue"] + args,
+        check=False,
         capture_output=True,
         text=True,
         env=env,
@@ -96,6 +97,7 @@ def _wq(args: list[str], base: Path) -> tuple[int, Any]:
 def _seed_cli(path: str) -> tuple[int, dict]:
     r = subprocess.run(
         [sys.executable, "-m", "worktrail.router.handoff_seed", "--json", "seed", path],
+        check=False,
         capture_output=True,
         text=True,
     )
@@ -157,7 +159,7 @@ class TestListClaimSeed(E2EBase):
 
     def test_seed_field_mapping_from_claimed_brief(self):
         _write(self.queue / "20260531-180000-teardown-cleanup.md", _BRIEF_A)
-        rc, claim = _wq(
+        _rc, claim = _wq(
             ["claim", "20260531-180000-teardown-cleanup.md", "--json"], self.base
         )
         self.assertEqual(claim["status"], "claimed")

@@ -545,18 +545,20 @@ class TestLifecycle(unittest.TestCase):
         def blocked(*_a, **_k):
             return {"state": "OPEN", "mergeStateStatus": "BLOCKED"}
 
-        with patch("worktrail.router.run_record._query_merge_state", blocked):
-            with self.assertRaises(SystemExit):
-                main(
-                    [
-                        "finish",
-                        res["path"],
-                        "--status",
-                        "completed_pr_open",
-                        "--pr",
-                        "https://github.com/x/y/pull/10",
-                    ]
-                )
+        with (
+            patch("worktrail.router.run_record._query_merge_state", blocked),
+            self.assertRaises(SystemExit),
+        ):
+            main(
+                [
+                    "finish",
+                    res["path"],
+                    "--status",
+                    "completed_pr_open",
+                    "--pr",
+                    "https://github.com/x/y/pull/10",
+                ]
+            )
         rec = _load(Path(res["path"]))
         self.assertIsNone(rec["final_status"])
         self.assertEqual(rec["status"], "route_selected")
@@ -740,18 +742,20 @@ class TestLifecycle(unittest.TestCase):
                 "unaddressed": [{"path": "x.py", "line": 1}],
             }
 
-        with patch("worktrail.router.check_review_threads.check", blocking):
-            with self.assertRaises(SystemExit):
-                main(
-                    [
-                        "finish",
-                        res["path"],
-                        "--status",
-                        "completed_pr_open",
-                        "--pr",
-                        "https://github.com/x/y/pull/6",
-                    ]
-                )
+        with (
+            patch("worktrail.router.check_review_threads.check", blocking),
+            self.assertRaises(SystemExit),
+        ):
+            main(
+                [
+                    "finish",
+                    res["path"],
+                    "--status",
+                    "completed_pr_open",
+                    "--pr",
+                    "https://github.com/x/y/pull/6",
+                ]
+            )
         rec = _load(Path(res["path"]))
         self.assertIsNone(rec["final_status"])
         self.assertEqual(rec["status"], "route_selected")
@@ -1677,7 +1681,9 @@ class TestReconcile(unittest.TestCase):
     def test_stale_at_call_time_closes_record_with_explicit_note(self):
         run = self._stale_run("stale run, with note")
 
-        rc, out = _reconcile(run["path"], note="auto-reconciled: custom staleness note")
+        rc, _out = _reconcile(
+            run["path"], note="auto-reconciled: custom staleness note"
+        )
 
         self.assertEqual(rc, 0)
         rec = _load(Path(run["path"]))
@@ -1906,6 +1912,7 @@ class TestRemoteClaim:
         ref = _claim_ref("spec-remote")
         pushed = subprocess.run(
             ["git", "-C", str(bare_dir), "rev-parse", "--verify", ref],
+            check=False,
             capture_output=True,
             text=True,
         )
@@ -1925,7 +1932,7 @@ class TestRemoteClaim:
         acquisition succeeds (no visibility into session A's local lock),
         so it's the remote push conflict alone that must reject it.
         """
-        bare_dir, clone_dir = remote_origin
+        _bare_dir, clone_dir = remote_origin
         run_dir_a = tmp_path / "runs-a"
         run_dir_a.mkdir()
         run_dir_b = tmp_path / "runs-b"
@@ -2032,6 +2039,7 @@ class TestRemoteClaim:
         ref = _claim_ref("spec-remote-stale")
         pushed = subprocess.run(
             ["git", "-C", str(bare_dir), "rev-parse", "--verify", ref],
+            check=False,
             capture_output=True,
             text=True,
         )
@@ -2069,6 +2077,7 @@ class TestRemoteClaim:
 
         pushed = subprocess.run(
             ["git", "-C", str(bare_dir), "rev-parse", "--verify", ref],
+            check=False,
             capture_output=True,
             text=True,
         )
@@ -2101,6 +2110,7 @@ class TestRemoteClaim:
         ref = _claim_ref("spec-remote-finish")
         pushed = subprocess.run(
             ["git", "-C", str(bare_dir), "ls-remote", str(bare_dir), ref],
+            check=False,
             capture_output=True,
             text=True,
         )
@@ -2113,6 +2123,7 @@ class TestRemoteClaim:
 
         deleted = subprocess.run(
             ["git", "-C", str(bare_dir), "ls-remote", str(bare_dir), ref],
+            check=False,
             capture_output=True,
             text=True,
         )
@@ -2399,7 +2410,7 @@ class TestSweepOrphans(unittest.TestCase):
         res = _start(self.tmp, request="orphaned dispatch")
         self._backdate_updated_at(res["path"], seconds_ago=99999)
 
-        rc, out = _sweep_orphans(
+        rc, _out = _sweep_orphans(
             self.tmp, note="auto-reconciled: backlog cleanup 2026-08-21"
         )
 

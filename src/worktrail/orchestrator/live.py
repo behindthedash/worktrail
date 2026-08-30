@@ -41,13 +41,15 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
+from typing_extensions import Self
+
 from ..router import invocation_context
 from ..taskformats import resolve as taskformats
 from . import agent_capacity, coordinator, dispatch, orchestrate, progress, spawnlib
 
 
 def _ts() -> str:
-    return datetime.now().strftime("[%H:%M:%S]")
+    return datetime.now().strftime("[%H:%M:%S]")  # noqa: DTZ005
 
 
 # Per-worker headless agent timeout (seconds). Raised to 1800s: sonnet on
@@ -291,7 +293,7 @@ class RunLock:
         except ImportError:  # non-POSIX: degrade to no-op
             return self
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        fh = open(self.path, "w")
+        fh = open(self.path, "w")  # noqa: SIM115 -- held across the surrounding scope as a lock file
         try:
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
@@ -316,7 +318,7 @@ class RunLock:
             self._fh.close()
             self._fh = None
 
-    def __enter__(self) -> RunLock:
+    def __enter__(self) -> Self:
         return self.acquire()
 
     def __exit__(self, *_) -> None:
@@ -525,7 +527,7 @@ def _record_plan_fingerprint(repo: Path, spec_rel: str, plan) -> None:
             )
         jp.parent.mkdir(parents=True, exist_ok=True)
         jp.write_text(json.dumps(journal, indent=2))
-    except Exception as exc:  # best-effort: observability never takes a run down
+    except Exception as exc:  # noqa: BLE001 -- best-effort: observability never takes a run down
         print(f"{_ts()} run plan: could not record fingerprint ({exc})")
 
 
@@ -604,7 +606,7 @@ def _format_unreconciled_tail_note(findings: list[dict]) -> str | None:
 def _format_migration_quarantine_warning(
     groups: list[dict],
     tasks: list[dict],
-    migration_patterns: Sequence[str] | None,
+    migration_patterns: list[str] | None,
     quarantined: dict[str, str],
 ) -> str | None:
     """Explicit warning when a migration-touching group is quarantined while
@@ -1065,7 +1067,7 @@ def validate_task_metadata(tasks: list) -> None:
         )
 
 
-def _fanout_failed_status(repo: Path, spec_rel: str) -> Optional[dict]:
+def _fanout_failed_status(repo: Path, spec_rel: str) -> dict | None:
     """Best-effort read of the prior-run heartbeat sidecar for this spec."""
     try:
         spec_id = Path(spec_rel).name
@@ -1477,7 +1479,7 @@ def _annotate_external_deps(
     including from a separate, concurrently running orchestrator invocation against
     the sibling spec (REQ-013).
     """
-    repo_root = repo.resolve()
+    repo.resolve()
     for t in tasks:
         if t.get("status") != "pending":
             continue
@@ -1938,7 +1940,7 @@ def _stack_resolve_attempt(
             rep = dispatch.parse_report_back(raw)
             if rep.get("status") != "success":
                 explicit_failure = True  # worker explicitly reported failure; trust it
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass  # spawn crash or unparseable report-back: let git state decide
         if not explicit_failure and _stack_resolve_verify(wt, conflicted_files):
             return True
@@ -2254,7 +2256,12 @@ def bootstrap_worktree(
     log(f"{_ts()} BOOTSTRAP: {bootstrap_cmd}  (in {wt.name})")
     try:
         proc = subprocess.run(
-            bootstrap_cmd, shell=True, cwd=str(wt), capture_output=True, text=True
+            bootstrap_cmd,
+            check=False,
+            shell=True,
+            cwd=str(wt),
+            capture_output=True,
+            text=True,
         )
     except OSError as e:
         log(
@@ -2342,7 +2349,7 @@ def run_research_session(
                 task = taskformats.task_for(spec_folder, tf.stem)
                 for f in (task or {}).get("files", []) or []:
                     file_counts[f] += 1
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
                 pass
 
     # --- pre-load top-N most-referenced source files ---
@@ -2593,11 +2600,11 @@ class LiveSpawn:
 
         explicit_model = self.role_models.get(role)
         explicit_effort = self.effort if role not in dispatch.JUDGMENT_ROLES else None
-        spawn_kwargs = dict(
-            timeout=effective_timeout,
-            resume_session_id=resume_session_id,
-            log=print,
-        )
+        spawn_kwargs = {
+            "timeout": effective_timeout,
+            "resume_session_id": resume_session_id,
+            "log": print,
+        }
         # extra_args/system-prompt depend on which HARNESS actually serves,
         # which only select_cell() (not tier_for()) determines -- peek at it
         # purely to shape the prompt/flags before the real call. Best-effort:
@@ -2723,7 +2730,7 @@ def spawn_one(
         report = dispatch.parse_report_back(out)
         print("---- parsed report-back ----")
         print(json.dumps(report))
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"---- report-back parse FAILED: {e} ----")
 
     print("---- worker commit (files) ----")
@@ -2808,7 +2815,7 @@ def live_run(
                 break
             try:
                 rep = dispatch.parse_report_back(raw)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 print(f"{_ts()}   !! {task['id']}/{role} report parse FAILED: {e}")
                 print(f"     raw tail: {raw[-220:]!r}")
                 task["status"] = "failed"
@@ -2956,7 +2963,7 @@ def full(
                         rep = dispatch.parse_report_back(
                             spawn(role, t, repo).text
                         )  # cwd = repo (on integ)
-                    except Exception as e:
+                    except Exception as e:  # noqa: BLE001
                         print(f"  !! {tid}/{role} parse failed: {e}")
                         t["status"] = "failed"
                         break
@@ -2987,6 +2994,7 @@ def full(
             "--body",
             f"Final integration of all groups + e2e/cleanup tail ({run_id}).",
         ],
+        check=False,
         capture_output=True,
         text=True,
     )
@@ -3002,6 +3010,7 @@ def full(
         for branch in [integ, *reversed(list(group_branch.values()))]:
             subprocess.run(
                 ["gh", "pr", "close", "--repo", sandbox, branch, "--delete-branch"],
+                check=False,
                 capture_output=True,
                 text=True,
             )
@@ -3353,13 +3362,14 @@ def _fire_notify(cmd: str, payload: dict) -> None:
     try:
         subprocess.run(
             cmd,
+            check=False,
             shell=True,
             input=json.dumps(payload),
             text=True,
             timeout=10,
             capture_output=True,
         )
-    except Exception:
+    except Exception:  # noqa: BLE001, S110
         pass
 
 
@@ -3417,7 +3427,7 @@ def _apply_step_commit(
     try:
         if agent:
             entry["agent"] = agent
-    except Exception:
+    except Exception:  # noqa: BLE001, S110
         pass
     entries.append(entry)
     task.pop("_scope_added_files", None)
@@ -3857,7 +3867,7 @@ def live_run_real(
                 break
             try:
                 rep = dispatch.parse_report_back(raw)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 # #11: a good commit shouldn't be lost to an unparseable report-back.
                 rep = salvage_report(role, task, wt, pre_sha)
                 if rep is None:
@@ -3994,7 +4004,7 @@ def live_run_real(
                         f" · {current}"
                         f" · {elapsed} elapsed"
                     )
-                except Exception:
+                except Exception:  # noqa: BLE001, S110
                     pass
 
         _emitter = threading.Thread(
@@ -4581,7 +4591,7 @@ def _pipeline_scheduler(
         """Best-effort: update heartbeat with current per-group phases."""
         try:
             progress.set_group_phases(journal_path, dict(_group_phase_map))
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
 
     terminal_statuses = coordinator.DONE | coordinator.FAILED_STATUSES
@@ -4675,7 +4685,7 @@ def _pipeline_scheduler(
                     if pr_tuple is not None:
                         with iv_lock:
                             prs.append(pr_tuple)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     with iv_lock:
                         quarantined[name] = f"integrate exception: {exc!r}"
                     _record_group_fn(
@@ -4727,7 +4737,7 @@ def _pipeline_scheduler(
                     armed=armed,
                     post_merge_regressed=post_merge_regressed,
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 with iv_lock:
                     quarantined[name] = f"verify exception: {exc!r}"
                 _record_group_fn(
@@ -5058,7 +5068,7 @@ def _pipeline_scheduler(
                 break
             try:
                 rep = dispatch.parse_report_back(raw)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 rep = salvage_report(role, task, wt, pre_sha)
                 if rep is None:
                     t1 = time.time()
@@ -5124,7 +5134,7 @@ def _pipeline_scheduler(
     def _safe_drive(task: dict) -> None:
         try:
             _drive(task)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             now = time.time()
             print(f"{_ts()}   !! {task['id']} drive crashed: {exc!r} -- marking failed")
             with state_lock:
@@ -6297,7 +6307,7 @@ def main(argv=None) -> int:
                 t["retry_count"] = 0
             journal = json.loads(jp.read_text())
             reconcile_from_journal(tasks, journal)
-        except Exception as e:  # render is still useful from the journal alone
+        except Exception as e:  # noqa: BLE001 -- render is still useful from the journal alone
             print(f"(note: could not reconcile spec tasks: {e})")
             tasks = []
         sys.stdout.write(progress.render(jp, tasks=tasks or None))

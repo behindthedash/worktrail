@@ -287,12 +287,14 @@ def _build(file: str | None, spec: str | None, cassette: str | None):
         spec_id, tasks = taskformats.load_spec(spec)
         scenario: dict[str, Any] = {}
     else:
-        data = json.load(open(file or DEFAULT_FIXTURE))
+        with open(file or DEFAULT_FIXTURE) as f:
+            data = json.load(f)
         spec_id = data.get("spec_id", "spec")
         tasks = data["tasks"]
         scenario = data.get("scenario", {})
     if cassette:
-        cass = json.load(open(cassette))
+        with open(cassette) as f:
+            cass = json.load(f)
         spawn = ReplaySpawn(cass)
         recorded = {e["task"] for e in cass.get("entries", [])}
         if recorded:  # replay only what the cassette covers

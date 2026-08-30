@@ -309,8 +309,10 @@ def render_report(report: dict[str, Any]) -> str:
         "Tier-Accuracy Report",
         f"repo root: {report['repo_root']}",
         f"journals: {report['parsed_journals']} parsed, {report['skipped_journals']} skipped",
-        f"thresholds: review samples >= {report['min_review_samples']}, "
-        f"mis-stamp gap >= {report['misstamp_rate_gap']:.0%}",
+        (
+            f"thresholds: review samples >= {report['min_review_samples']}, "
+            f"mis-stamp gap >= {report['misstamp_rate_gap']:.0%}"
+        ),
         "",
     ]
     for pair in report.get("pairs", []):

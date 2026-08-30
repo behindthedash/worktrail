@@ -96,9 +96,7 @@ class TimingSpawn:
         self.recorded: dict = {}  # task_id -> effective_timeout
         self._lock = threading.Lock()
 
-    def __call__(
-        self, role: str, task: dict, wt: Path
-    ) -> "worktrail.orchestrator.spawnlib.SpawnResult":
+    def __call__(self, role: str, task: dict, wt: Path) -> "spawnlib.SpawnResult":
         effective = task.get("timeout") or self.run_level_timeout
         with self._lock:
             self.recorded[task["id"]] = effective
@@ -119,6 +117,7 @@ class TimingSpawn:
         sha = (
             subprocess.run(
                 ["git", "-C", str(wt), "rev-parse", "HEAD"],
+                check=False,
                 capture_output=True,
                 text=True,
             ).stdout.strip()[:8]
@@ -287,7 +286,7 @@ class MalformedTimeoutFallbackTest(unittest.TestCase):
             spawn = TimingSpawn(run_level_timeout=1800)
             try:
                 res = _run(repo, tmp, spawn, run_level_timeout=1800, max_workers=2)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 self.fail(
                     f"AC-10: malformed timeout must not crash the fan-out; got {exc!r}"
                 )
@@ -367,6 +366,7 @@ class GoldenCheckTest(unittest.TestCase):
         _here = Path(__file__).resolve().parent
         result = subprocess.run(
             [sys.executable, "-m", "worktrail.orchestrator.orchestrate", "check"],
+            check=False,
             capture_output=True,
             text=True,
             cwd=str(_here),

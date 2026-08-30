@@ -237,7 +237,7 @@ def find_spec_file(spec_dir: Path) -> Path | None:
         n = f.name.lower()
         if n == "spec.md":
             return (0, f.name)
-        if n.endswith("-specs.md") or n.endswith("-spec.md"):
+        if n.endswith(("-specs.md", "-spec.md")):
             return (1, f.name)
         if n == "brainstorm.md":
             return (2, f.name)
@@ -438,6 +438,7 @@ def _git_tracked(repo: Path, files: list[str]) -> set:
         try:
             result = subprocess.run(
                 ["git", "-C", str(repo), "ls-files", "-z", "--"] + list(files),
+                check=False,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 text=True,
@@ -465,6 +466,7 @@ def _rename_destinations(repo_value: str) -> dict[str, str]:
                 "--name-status",
                 "--format=",
             ],
+            check=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
@@ -747,6 +749,7 @@ def _group_merged_on_base(repo: Path, pr_url: str) -> bool:
                 f"(#{m.group(1)})",
                 "-1",
             ],
+            check=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
@@ -1086,6 +1089,7 @@ def _git_last_commit_time(repo: Path, path: Path) -> int | None:
     try:
         result = subprocess.run(
             ["git", "-C", str(repo), "log", "-1", "--format=%ct", "--", str(path)],
+            check=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
@@ -1120,6 +1124,7 @@ def _git_added_commit_time(repo: Path, path: Path) -> int | None:
                 "--",
                 str(path),
             ],
+            check=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
@@ -1138,6 +1143,7 @@ def _git_added_commit_time(repo: Path, path: Path) -> int | None:
                 "--",
                 str(path),
             ],
+            check=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
@@ -1197,7 +1203,7 @@ def _openspec_delta_drift(change_dir: Path, repo: Path) -> list[dict[str, str]]:
                         }
                     )
         return drift
-    except Exception:
+    except Exception:  # noqa: BLE001
         return []
 
 
@@ -1274,8 +1280,10 @@ def _safe_detect_openspec(change_dir: Path) -> dict[str, Any]:
                 suffix = f" ({', '.join(stale_ids)})" if stale_ids else ""
                 stage, next_action = (
                     "stale-bookkeeping",
-                    f"confirm & close{suffix} (files already merged on base; "
-                    "flip task status → completed, no orchestrator)",
+                    (
+                        f"confirm & close{suffix} (files already merged on base; "
+                        "flip task status → completed, no orchestrator)"
+                    ),
                 )
             else:
                 stage, next_action = "ready-to-implement", "orchestrator"
@@ -1631,7 +1639,7 @@ def _runlock_held(lock_path: Path) -> bool:
     except ImportError:  # pragma: no cover - non-POSIX
         return False
     try:
-        fh = open(lock_path, "a")
+        fh = open(lock_path, "a")  # noqa: SIM115 -- held across the surrounding scope as a lock file
     except OSError:
         return False
     try:
@@ -1723,6 +1731,7 @@ def _remote_spec_branch(
                 f"spec/{spec_id}*",
                 f"chg/{spec_id}-*",
             ],
+            check=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
@@ -2717,7 +2726,7 @@ def load_recent_runs(
     for path in run_dir.glob("*.yaml"):
         try:
             record = _load_run_record(path)
-        except Exception:  # noqa: BLE001 - a corrupt record must not break the render
+        except Exception:  # noqa: BLE001, S112 - a corrupt record must not break the render
             continue
         records.append(
             {
@@ -3116,7 +3125,7 @@ def _staleness_warnings(named_paths: list[tuple]) -> list[dict[str, Any]]:
     for name, path in named_paths:
         try:
             result = _check_repo_freshness(Path(path))
-        except Exception:  # noqa: BLE001 — never crash the dashboard render
+        except Exception:  # noqa: BLE001, S112 — never crash the dashboard render
             continue
         if result.get("stale") and result.get("warning"):
             warnings.append({"repo": name, "warning": result["warning"]})
@@ -3300,7 +3309,7 @@ def main(argv=None) -> int:
     if args.json and clusters and cluster_telemetry:
         try:
             cluster_telemetry.log_shown(clusters)
-        except Exception:  # noqa: BLE001 — degrade, never crash the dashboard render
+        except Exception:  # noqa: BLE001, S110 — degrade, never crash the dashboard render
             pass
 
     # Precision summary (spec 018 change: cluster-precision-telemetry, item 6):

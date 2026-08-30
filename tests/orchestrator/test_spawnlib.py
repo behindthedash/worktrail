@@ -20,6 +20,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from typing import ClassVar
+
 from worktrail.orchestrator import spawnlib
 
 os.environ.setdefault(
@@ -306,7 +308,7 @@ class KeepTranscripts(unittest.TestCase):
             files = os.listdir(tdir)
             self.assertEqual(len(files), 1)
             self.assertTrue(files[0].startswith("task-worktree-claude-"))
-            self.assertEqual(open(os.path.join(tdir, files[0])).read(), raw)
+            self.assertEqual(Path(tdir, files[0]).read_text(), raw)
 
     def test_write_failure_is_non_fatal(self):
         with tempfile.TemporaryDirectory() as tdir:
@@ -328,25 +330,25 @@ class SessionLimitParse(unittest.TestCase):
         self.assertIsNone(spawnlib.parse_session_limit_reset(None))
 
     def test_parses_reset_same_day(self):
-        now = datetime.datetime(2026, 6, 4, 10, 0)
+        now = datetime.datetime(2026, 6, 4, 10, 0)  # noqa: DTZ001
         r = spawnlib.parse_session_limit_reset(
             "You've hit your session limit. Your limit resets at 3:00pm.", now=now
         )
-        self.assertEqual(r, datetime.datetime(2026, 6, 4, 15, 0))
+        self.assertEqual(r, datetime.datetime(2026, 6, 4, 15, 0))  # noqa: DTZ001
 
     def test_rolls_to_tomorrow_when_reset_already_passed(self):
-        now = datetime.datetime(2026, 6, 4, 16, 0)
+        now = datetime.datetime(2026, 6, 4, 16, 0)  # noqa: DTZ001
         r = spawnlib.parse_session_limit_reset(
             "hit your session limit, resets 3:00pm", now=now
         )
-        self.assertEqual(r, datetime.datetime(2026, 6, 5, 15, 0))
+        self.assertEqual(r, datetime.datetime(2026, 6, 5, 15, 0))  # noqa: DTZ001
 
     def test_handles_am_and_loose_spacing(self):
-        now = datetime.datetime(2026, 6, 4, 10, 0)
+        now = datetime.datetime(2026, 6, 4, 10, 0)  # noqa: DTZ001
         r = spawnlib.parse_session_limit_reset(
             "hit your session limit ... resets 9:30 am", now=now
         )
-        self.assertEqual(r, datetime.datetime(2026, 6, 5, 9, 30))
+        self.assertEqual(r, datetime.datetime(2026, 6, 5, 9, 30))  # noqa: DTZ001
 
     def test_ignores_benign_mention_of_session_limit(self):
         # A plain "session limit" reference (no "hit your ... resets <time>") is not a
@@ -371,11 +373,11 @@ class SessionLimitParse(unittest.TestCase):
         self.assertIsNone(spawnlib.parse_session_limit_reset(transcript))
 
     def test_short_genuine_notice_still_parses(self):
-        now = datetime.datetime(2026, 6, 4, 10, 0)
+        now = datetime.datetime(2026, 6, 4, 10, 0)  # noqa: DTZ001
         r = spawnlib.parse_session_limit_reset(
             "You've hit your session limit. Your limit resets at 3:00pm.", now=now
         )
-        self.assertEqual(r, datetime.datetime(2026, 6, 4, 15, 0))
+        self.assertEqual(r, datetime.datetime(2026, 6, 4, 15, 0))  # noqa: DTZ001
 
 
 class SessionLimitRetry(unittest.TestCase):
@@ -427,7 +429,7 @@ class SessionLimitRetry(unittest.TestCase):
         # (first attempt + 2 retries). The wait must not eat an infra attempt.
         limit = Proc(0, "hit your session limit resets 3:00pm", "")
         fail = Proc(1, "", "boom")
-        out, fr, slept = self._run([limit, fail, fail, fail], session_limit_waits=3)
+        _out, fr, slept = self._run([limit, fail, fail, fail], session_limit_waits=3)
         self.assertEqual(fr.calls, 4)  # 1 wait + 3 infra attempts
         self.assertEqual(len(slept), 3)  # 1 session wait + 2 infra backoffs
 
@@ -849,9 +851,9 @@ class SpawnAgentSelection(unittest.TestCase):
         with (
             _patch_routing(SINGLE_CLAUDE_ROUTING),
             patch.object(spawnlib.subprocess, "run", side_effect=fake_run),
+            self.assertRaises(spawnlib.NoExecutionTarget),
         ):
-            with self.assertRaises(spawnlib.NoExecutionTarget):
-                spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build")
+            spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build")
         self.assertEqual(calls, [])
 
 
@@ -1028,12 +1030,12 @@ class ParseStreamJson(unittest.TestCase):
 
     def test_fallback_on_old_json_envelope(self):
         raw = '{"result": "the answer", "total_cost_usd": 0.01, "usage": {"input_tokens": 5}}'
-        text, usage, tools, skills, sid = spawnlib._parse_stream_json(raw)
+        text, _usage, _tools, _skills, sid = spawnlib._parse_stream_json(raw)
         self.assertEqual(text, raw)
         self.assertEqual(sid, "")
 
     def test_empty_stream(self):
-        text, usage, tools, skills, sid = spawnlib._parse_stream_json("")
+        text, usage, _tools, _skills, sid = spawnlib._parse_stream_json("")
         self.assertEqual(text, "")
         self.assertEqual(usage, {})
         self.assertEqual(sid, "")
@@ -1078,7 +1080,7 @@ class ParseStreamJsonOpenCode(unittest.TestCase):
                 },
             ]
         )
-        text, usage, tools, skills, sid = spawnlib._parse_stream_json(raw)
+        text, _usage, _tools, _skills, sid = spawnlib._parse_stream_json(raw)
         self.assertEqual(text, "final opencode text")
         self.assertEqual(sid, "ses_1")
 
@@ -1190,7 +1192,7 @@ class ParseStreamJsonOpenCode(unittest.TestCase):
                 },
             ]
         )
-        text, usage, tools, skills, sid = spawnlib._parse_stream_json(raw)
+        text, _usage, tools, _skills, _sid = spawnlib._parse_stream_json(raw)
         self.assertEqual(text, "done")
         self.assertEqual(tools, ["todowrite"])
 
@@ -1359,9 +1361,11 @@ class CodexSpawn(unittest.TestCase):
     def test_codex_api_cell_without_codex_home_fails_loud_before_launch(self):
         launched = []
         spawnlib.subprocess.run = lambda *a, **k: launched.append(a) or Proc(0, "", "")
-        with _patch_routing(self._api_routing(None)):
-            with self.assertRaises(spawnlib.OperatorConfigError) as ctx:
-                spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build")
+        with (
+            _patch_routing(self._api_routing(None)),
+            self.assertRaises(spawnlib.OperatorConfigError) as ctx,
+        ):
+            spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build")
         self.assertIn("auth.codex_home", str(ctx.exception))
         self.assertIn("codex-api", str(ctx.exception))
         self.assertEqual(launched, [])
@@ -1369,10 +1373,12 @@ class CodexSpawn(unittest.TestCase):
     def test_codex_api_cell_with_unprovisioned_home_fails_loud_before_launch(self):
         launched = []
         spawnlib.subprocess.run = lambda *a, **k: launched.append(a) or Proc(0, "", "")
-        with tempfile.TemporaryDirectory() as home:  # exists, but no auth.json
-            with _patch_routing(self._api_routing(home)):
-                with self.assertRaises(spawnlib.OperatorConfigError) as ctx:
-                    spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build")
+        with (
+            tempfile.TemporaryDirectory() as home,
+            _patch_routing(self._api_routing(home)),
+            self.assertRaises(spawnlib.OperatorConfigError) as ctx,
+        ):
+            spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build")
         self.assertIn("auth.json", str(ctx.exception))
         self.assertIn("--with-api-key", str(ctx.exception))
         self.assertEqual(launched, [])
@@ -2124,7 +2130,7 @@ class CrossHopArgvInvariant(unittest.TestCase):
 
     # Deterministic per-target models so argv assertions can identify which
     # cell ran by model, independent of the routing fixture's target names.
-    HOP_MODELS = {
+    HOP_MODELS: ClassVar = {
         "claude": "pin-claude-model",
         "codex": "pin-codex-model",
         "opencode": "pin-opencode-model",
@@ -2240,7 +2246,7 @@ class CrossHopArgvInvariant(unittest.TestCase):
     # default), the routing fixtures' claude-sub effort="high" above, or the
     # resume_session_id kwarg below -- the positive control pins every
     # token, keeping the negative assertions honest.
-    SWEEP_EXTRA_ARGS = [
+    SWEEP_EXTRA_ARGS: ClassVar = [
         "--strict-mcp-config",
         "--tools",
         "Read",
@@ -2360,13 +2366,13 @@ class ParseStreamJsonSessionId(unittest.TestCase):
 
     def test_parse_stream_json_extracts_session_id(self):
         raw = self._result_line(session_id="sess-abc123")
-        text, usage, tools, skills, sid = spawnlib._parse_stream_json(raw)
+        text, _usage, _tools, _skills, sid = spawnlib._parse_stream_json(raw)
         self.assertEqual(sid, "sess-abc123")
         self.assertEqual(text, "done")
 
     def test_parse_stream_json_missing_session_id(self):
         raw = self._result_line()  # no session_id key
-        text, usage, tools, skills, sid = spawnlib._parse_stream_json(raw)
+        _text, _usage, _tools, _skills, sid = spawnlib._parse_stream_json(raw)
         self.assertEqual(sid, "")
 
     def test_spawn_result_session_id_default(self):

@@ -293,6 +293,7 @@ class AutoResolveAddAddInitTests(unittest.TestCase):
         )
         m = subprocess.run(
             ["git", "-C", str(repo), "merge", "--no-edit", other],
+            check=False,
             capture_output=True,
             text=True,
         )
@@ -309,6 +310,7 @@ class AutoResolveAddAddInitTests(unittest.TestCase):
             # Tree is clean (merge committed, no unmerged paths).
             status = subprocess.run(
                 ["git", "-C", str(repo), "status", "--porcelain"],
+                check=False,
                 capture_output=True,
                 text=True,
             ).stdout
@@ -361,6 +363,7 @@ class AutoResolveAddAddInitTests(unittest.TestCase):
             # Conflict state is preserved for the fallback path.
             status = subprocess.run(
                 ["git", "-C", str(repo), "status", "--porcelain"],
+                check=False,
                 capture_output=True,
                 text=True,
             ).stdout

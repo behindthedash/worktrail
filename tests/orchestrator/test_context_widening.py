@@ -69,7 +69,10 @@ def _commit_file(wt: Path, name: str, content: str) -> str:
         capture_output=True,
     )
     return subprocess.run(
-        ["git", "-C", str(wt), "rev-parse", "HEAD"], capture_output=True, text=True
+        ["git", "-C", str(wt), "rev-parse", "HEAD"],
+        check=False,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
 
 
@@ -110,7 +113,10 @@ class _BaseRecordingSpawn:
         if role == dispatch.ROLE_FIX:
             self.fix_extra_reads_seen = list(task.get("_extra_reads") or [])
         sha = subprocess.run(
-            ["git", "-C", str(wt), "rev-parse", "HEAD"], capture_output=True, text=True
+            ["git", "-C", str(wt), "rev-parse", "HEAD"],
+            check=False,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
         if role in ("implement", "fix"):
             sha = _commit_file(wt, "foo.py", f"{role}\n")

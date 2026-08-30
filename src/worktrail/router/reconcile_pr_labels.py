@@ -148,6 +148,7 @@ def _open_prs(repo: Path) -> list[dict[str, Any]] | None:
                 "--limit",
                 "200",
             ],
+            check=False,
             capture_output=True,
             text=True,
             timeout=30,

@@ -134,6 +134,7 @@ class FakeSpawn:
         sha = (
             subprocess.run(
                 ["git", "-C", str(wt), "rev-parse", "HEAD"],
+                check=False,
                 capture_output=True,
                 text=True,
             ).stdout.strip()[:8]
@@ -294,9 +295,8 @@ class OverlapTest(unittest.TestCase):
                 quarantined,
                 **kwargs,
             ):
-                if g["name"] == "base":
-                    if feature_fanout_started.wait(timeout=10):
-                        overlap_confirmed.set()
+                if g["name"] == "base" and feature_fanout_started.wait(timeout=10):
+                    overlap_confirmed.set()
                 return base_fn(
                     g,
                     repo_,
@@ -572,7 +572,7 @@ class IsolationTest(unittest.TestCase):
             integrate_one, _ = _make_integrate_one(raise_for={"feature-1"})
             try:
                 _run(repo, tmp, FakeSpawn(), integrate_one, FakeVerifier())
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 self.fail(
                     f"Run was aborted by a group exception (should be isolated): {exc!r}"
                 )
@@ -1173,7 +1173,7 @@ class PipelineResumeTest(unittest.TestCase):
                 result = _run(
                     repo, tmp, FakeSpawn(), integrate_one, FakeVerifier(), resume=True
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 self.fail(f"Corrupt journal must not cause a crash; got {exc!r}")
             for key in ("group_prs", "final", "quarantined", "merged"):
                 self.assertIn(

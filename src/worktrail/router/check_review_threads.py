@@ -102,7 +102,7 @@ query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
     }
   }
 }
-"""
+"""  # noqa: UP031 -- %d inside a GraphQL template string, not worth escaping braces for
     % PAGE_SIZE
 )
 

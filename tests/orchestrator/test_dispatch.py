@@ -11,6 +11,8 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
 
+from typing import ClassVar
+
 from worktrail.orchestrator.dispatch import (
     _ROLE_ACTION,
     ROLE_ASSEMBLY_RESOLVE,
@@ -355,7 +357,7 @@ class TestTransitionReviewRouting(unittest.TestCase):
             "status": "failed",
             "review_status": "FAILED",
         }
-        new_status, retry = transition(
+        new_status, _retry = transition(
             ROLE_REVIEW, report, retry_count=2, max_retries=3
         )
         self.assertEqual(new_status, "escalated")
@@ -364,7 +366,7 @@ class TestTransitionReviewRouting(unittest.TestCase):
         """Non-review roles with status:"failed" must still return "failed" (no regression)."""
         for role in (ROLE_IMPLEMENT, ROLE_FIX, ROLE_CLEANUP):
             report = {"task": "TASK-001", "step": role, "status": "failed"}
-            new_status, retry = transition(role, report, retry_count=0)
+            new_status, _retry = transition(role, report, retry_count=0)
             self.assertEqual(
                 new_status,
                 "failed",
@@ -686,14 +688,16 @@ class TestExtraReadsContextWidening(unittest.TestCase):
 class TestAgentForPrecedence(unittest.TestCase):
     """worktrail.orchestrator.dispatch.agent_for(): 4-tier precedence + judgment-role guard (TASK-006)."""
 
-    TIER_MAP = {
+    TIER_MAP: ClassVar = {
         ("complex", "backend"): {
             "agent_cli": "codex",
             "agent_model": "gpt-tier",
             "effort": "high",
         }
     }
-    ROLE_MAP = {"implement": {"agent_cli": "opencode", "agent_model": "oc-model"}}
+    ROLE_MAP: ClassVar = {
+        "implement": {"agent_cli": "opencode", "agent_model": "oc-model"}
+    }
 
     def _task(self, **overrides):
         task = {
@@ -897,12 +901,12 @@ class TestAgentForPrecedence(unittest.TestCase):
     def test_deterministic_same_inputs_same_output(self):
         """REQ-NR002: same inputs always produce the same output."""
         task = self._task()
-        kwargs = dict(
-            reviewer_agent="code-reviewer",
-            default_agent="claude",
-            role_agent_map=self.ROLE_MAP,
-            tier_map=self.TIER_MAP,
-        )
+        kwargs = {
+            "reviewer_agent": "code-reviewer",
+            "default_agent": "claude",
+            "role_agent_map": self.ROLE_MAP,
+            "tier_map": self.TIER_MAP,
+        }
         for role in (
             ROLE_IMPLEMENT,
             ROLE_REVIEW,
@@ -921,9 +925,9 @@ class TestAgentForPurposeTierPrecedence(unittest.TestCase):
     """worktrail.orchestrator.dispatch.agent_for(): purpose-derived tier
     precedence + agent-aware tier_map lookup (task-purpose-classification 4.2/4.3)."""
 
-    PURPOSE_TIER_MAP = {"architecture-design": "t1-deep"}
+    PURPOSE_TIER_MAP: ClassVar = {"architecture-design": "t1-deep"}
 
-    TIER_MAP = {
+    TIER_MAP: ClassVar = {
         ("t1-deep", "backend"): {
             "agent_cli": "codex",
             "agent_model": None,
@@ -936,7 +940,7 @@ class TestAgentForPurposeTierPrecedence(unittest.TestCase):
         },
     }
 
-    AGENT_AWARE_TIER_MAP = {
+    AGENT_AWARE_TIER_MAP: ClassVar = {
         ("t1-deep-codex", "backend"): {
             "agent_cli": "codex",
             "agent_model": "codex-model",
@@ -1097,21 +1101,21 @@ class ResolvedDecisionDispatchGateTests(unittest.TestCase):
         self.queue_base = Path(self.tmp.name) / "queue"
 
     def _ask(self, decision_id=DECISION_ID, **kw):
-        params = dict(
-            question="Which scope should this request take?",
-            background="The shipped spec already covers the requested scope.",
-            why="Scope direction is a product call.",
-            context="verify() confirmed Implemented status and git-tracked files.",
-            options=[
+        params = {
+            "question": "Which scope should this request take?",
+            "background": "The shipped spec already covers the requested scope.",
+            "why": "Scope direction is a product call.",
+            "context": "verify() confirmed Implemented status and git-tracked files.",
+            "options": [
                 "extend: continue the existing spec",
                 "proceed-anyway: dispatch despite the collision",
             ],
-            source="check_spec_collision",
-            repo="/tmp/some-repo",
-            subject="spec-a",
-            decision_id=decision_id,
-            queue_base=self.queue_base,
-        )
+            "source": "check_spec_collision",
+            "repo": "/tmp/some-repo",
+            "subject": "spec-a",
+            "decision_id": decision_id,
+            "queue_base": self.queue_base,
+        }
         params.update(kw)
         result = decisions_mod.ask(**params)
         self.assertEqual(result["status"], "created")
@@ -1174,9 +1178,8 @@ class ResolvedDecisionDispatchGateTests(unittest.TestCase):
 
     def test_malformed_dispatch_input_is_rejected(self):
         for bad in ({}, None, "not-json", ["nope"], 42):
-            with self.subTest(bad=bad):
-                with self.assertRaises(DecisionDispatchError):
-                    validate_resolved_decision_input(bad)
+            with self.subTest(bad=bad), self.assertRaises(DecisionDispatchError):
+                validate_resolved_decision_input(bad)
 
     def test_wrong_schema_or_version_is_rejected(self):
         envelope = self._answered_envelope()

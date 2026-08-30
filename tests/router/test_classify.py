@@ -500,29 +500,29 @@ class TestDocsOnlyRiskSignalGuard(unittest.TestCase):
     (20260822-005150)."""
 
     def test_incidental_comments_mention_does_not_score_docs_only(self):
-        risk, labels = classify_risk(
+        _risk, labels = classify_risk(
             "classify.py's own comments document the RISK_SIGNALS table, but "
             "the regex still has a bare-word collision bug"
         )
         self.assertFalse(any(l.endswith(":docs-only") for l in labels))
 
     def test_incidental_docs_only_category_mention_does_not_score_docs_only(self):
-        risk, labels = classify_risk(
+        _risk, labels = classify_risk(
             "auto-merge.yml has no docs-only skip gate, so docs-only changes "
             "burn CI minutes on every self-hosted job"
         )
         self.assertFalse(any(l.endswith(":docs-only") for l in labels))
 
     def test_update_readme_docs_phrasing_still_scores_docs_only(self):
-        risk, labels = classify_risk("update the readme docs")
+        _risk, labels = classify_risk("update the readme docs")
         self.assertIn("low:docs-only", labels)
 
     def test_fix_a_typo_phrasing_still_scores_docs_only(self):
-        risk, labels = classify_risk("fix a typo in the README")
+        _risk, labels = classify_risk("fix a typo in the README")
         self.assertIn("low:docs-only", labels)
 
     def test_add_comments_phrasing_still_scores_docs_only(self):
-        risk, labels = classify_risk(
+        _risk, labels = classify_risk(
             "add some clarifying comments to explain this function"
         )
         self.assertIn("low:docs-only", labels)

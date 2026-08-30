@@ -121,7 +121,7 @@ def _set_fm_list_field(content: str, key: str, values: list[str]) -> str:
 
     for line in lines:
         if skip_continuations:
-            if line.startswith("  ") or line.startswith("\t"):
+            if line.startswith(("  ", "\t")):
                 continue
             skip_continuations = False
         if key_re.match(line):

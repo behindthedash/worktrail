@@ -898,17 +898,17 @@ def test_write_iteration_transcript_write_failure_returns_none(tmp_path):
 
 
 def make_state(**kw):
-    defaults = dict(
-        iteration=0,
-        items_completed=0,
-        max_items=0,
-        deadline=None,
-        consecutive_failures=0,
-        failure_threshold=2,
-        ready_count=3,
-        last_outcome=None,
-        agent_capacity_gated=False,
-    )
+    defaults = {
+        "iteration": 0,
+        "items_completed": 0,
+        "max_items": 0,
+        "deadline": None,
+        "consecutive_failures": 0,
+        "failure_threshold": 2,
+        "ready_count": 3,
+        "last_outcome": None,
+        "agent_capacity_gated": False,
+    }
     defaults.update(kw)
     return LoopState(**defaults)
 
@@ -1122,13 +1122,13 @@ class FakeQueue:
 def make_config(tmp_path, **kw):
     wq = tmp_path / "work_queue.py"
     wq.write_text("# placeholder; list_queue is monkeypatched in tests\n")
-    defaults = dict(
-        work_queue_py=wq,
-        runs_dir=tmp_path / "runs",
-        capacity_cache=tmp_path / "capacity.json",
-        lock_file=tmp_path / "drain.lock",
-        agent="claude",
-    )
+    defaults = {
+        "work_queue_py": wq,
+        "runs_dir": tmp_path / "runs",
+        "capacity_cache": tmp_path / "capacity.json",
+        "lock_file": tmp_path / "drain.lock",
+        "agent": "claude",
+    }
     defaults.update(kw)
     return DrainConfig(**defaults)
 
@@ -2199,7 +2199,7 @@ def test_find_resumable_quarantines_discovers_across_repos(tmp_path):
     repo_a = _make_repo(tmp_path, "repo-a")
     (repo_a / "docs" / "specs" / "spec-a").mkdir(parents=True)
     _write_journal(repo_a, "spec-a", _BUDGET_EXHAUSTED_GROUPS)
-    repo_b = _make_repo(tmp_path, "repo-b")  # clean repo, no journal at all
+    _make_repo(tmp_path, "repo-b")  # clean repo, no journal at all
     found = find_resumable_quarantines(tmp_path)
     assert [f["repo_name"] for f in found] == ["repo-a"]
     assert found[0]["spec_id"] == "spec-a"
@@ -2266,7 +2266,7 @@ def _write_verify_pending_spec(repo: Path, spec_id: str, pr_url: str) -> None:
 def test_find_verify_pending_specs_discovers_across_repos(tmp_path):
     repo_a = _make_repo(tmp_path, "repo-a")
     _write_verify_pending_spec(repo_a, "spec-a", "https://github.com/test/repo/pull/1")
-    repo_b = _make_repo(tmp_path, "repo-b")  # clean repo, nothing verify-pending
+    _make_repo(tmp_path, "repo-b")  # clean repo, nothing verify-pending
     found = find_verify_pending_specs(tmp_path)
     assert [f["repo_name"] for f in found] == ["repo-a"]
     assert found[0]["spec_id"] == "spec-a"
@@ -2331,7 +2331,7 @@ def test_find_verify_pending_specs_excludes_non_verify_pending_stages(tmp_path):
 def test_find_verify_pending_specs_skips_spec_with_no_resolvable_path(
     tmp_path, monkeypatch
 ):
-    repo = _make_repo(tmp_path, "repo-a")
+    _make_repo(tmp_path, "repo-a")
     # dashboard.scan reports a verify-pending row for "spec-a", but no
     # docs/specs/spec-a or openspec/changes/spec-a folder exists on disk --
     # e.g. the spec was since deleted/archived after the scan ran.
@@ -2392,7 +2392,7 @@ def _write_openspec_sync_pending_change(
 def test_find_sync_pending_specs_discovers_across_repos(tmp_path):
     repo_a = _make_repo(tmp_path, "repo-a")
     _write_sync_pending_spec(repo_a, "spec-a")
-    repo_b = _make_repo(tmp_path, "repo-b")  # clean repo, nothing sync-pending
+    _make_repo(tmp_path, "repo-b")  # clean repo, nothing sync-pending
     found = find_sync_pending_specs(tmp_path)
     assert [f["repo_name"] for f in found] == ["repo-a"]
     assert found[0]["spec_id"] == "spec-a"
@@ -2425,7 +2425,7 @@ def test_find_sync_pending_specs_excludes_non_sync_pending_stages(tmp_path):
 def test_find_sync_pending_specs_skips_spec_with_no_resolvable_path(
     tmp_path, monkeypatch
 ):
-    repo = _make_repo(tmp_path, "repo-a")
+    _make_repo(tmp_path, "repo-a")
     # dashboard.scan reports a sync-pending row for "spec-a", but no
     # docs/specs/spec-a or openspec/changes/spec-a folder exists on disk --
     # e.g. the spec was since deleted/archived after the scan ran.
@@ -2478,16 +2478,15 @@ def _write_devkit_complete_spec(repo: Path, spec_id: str) -> None:
         "---\nid: TASK-001\nstatus: completed\nkind: impl\ndependencies: []\n---\n# TASK-001\n"
     )
     (spec_dir / "knowledge-graph.json").write_text(
-        '{"metadata": {"spec_id": "%s", "analysis_sources": '
+        f'{{"metadata": {{"spec_id": "{spec_id}", "analysis_sources": '
         '[{"agent": "spec-sync", "timestamp": "2026-05-31T10:05:00Z", "mode": "full"}]}}'
-        % spec_id
     )
 
 
 def test_find_complete_openspec_changes_discovers_across_repos(tmp_path):
     repo_a = _make_repo(tmp_path, "repo-a")
     _write_openspec_complete_change(repo_a, "add-export")
-    repo_b = _make_repo(tmp_path, "repo-b")  # clean repo, nothing complete
+    _make_repo(tmp_path, "repo-b")  # clean repo, nothing complete
 
     found = find_complete_openspec_changes(tmp_path)
 
@@ -4390,7 +4389,7 @@ def _no_gh(fn, *args, **kwargs):
 def test_find_stale_branches_discovers_merged_branch_across_repos(tmp_path):
     repo_a = _init_branch_repo(tmp_path, "repo-a")
     _merged_branch(repo_a, "topic")
-    repo_b = _init_branch_repo(tmp_path, "repo-b")  # nothing merged
+    _init_branch_repo(tmp_path, "repo-b")  # nothing merged
 
     found = _no_gh(find_stale_branches, tmp_path)
 

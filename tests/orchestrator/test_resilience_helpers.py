@@ -362,6 +362,7 @@ class AddStackedWorktreeIdempotent(unittest.TestCase):
             self.assertTrue(wt2.exists())
             head = subprocess.run(
                 ["git", "-C", str(wt2), "rev-parse", "--abbrev-ref", "HEAD"],
+                check=False,
                 capture_output=True,
                 text=True,
             ).stdout.strip()
@@ -417,6 +418,7 @@ class AddStackedWorktreeCrossSpecFallback(unittest.TestCase):
             self.assertTrue(wt.exists())
             head = subprocess.run(
                 ["git", "-C", str(wt), "rev-parse", "--abbrev-ref", "HEAD"],
+                check=False,
                 capture_output=True,
                 text=True,
             ).stdout.strip()
@@ -551,6 +553,7 @@ class CleanupInPython(unittest.TestCase):
             )
             head_before = subprocess.run(
                 ["git", "-C", str(wt), "rev-parse", "HEAD"],
+                check=False,
                 capture_output=True,
                 text=True,
             ).stdout.strip()
@@ -563,12 +566,14 @@ class CleanupInPython(unittest.TestCase):
             self.assertNotIn("status: completed", tf.read_text())
             head_after = subprocess.run(
                 ["git", "-C", str(wt), "rev-parse", "HEAD"],
+                check=False,
                 capture_output=True,
                 text=True,
             ).stdout.strip()
             self.assertEqual(head_before, head_after, "cleanup must add no commit")
             porcelain = subprocess.run(
                 ["git", "-C", str(wt), "status", "--porcelain"],
+                check=False,
                 capture_output=True,
                 text=True,
             ).stdout.strip()
@@ -595,6 +600,7 @@ class WriteGroupTaskStatus(unittest.TestCase):
             repo = self._repo_with_tasks(tmp)
             head_before = subprocess.run(
                 ["git", "-C", str(repo), "rev-parse", "HEAD"],
+                check=False,
                 capture_output=True,
                 text=True,
             ).stdout.strip()
@@ -623,6 +629,7 @@ class WriteGroupTaskStatus(unittest.TestCase):
                         "--oneline",
                         f"{head_before}..HEAD",
                     ],
+                    check=False,
                     capture_output=True,
                     text=True,
                 )
@@ -636,6 +643,7 @@ class WriteGroupTaskStatus(unittest.TestCase):
             repo = self._repo_with_tasks(tmp)
             head_before = subprocess.run(
                 ["git", "-C", str(repo), "rev-parse", "HEAD"],
+                check=False,
                 capture_output=True,
                 text=True,
             ).stdout.strip()
@@ -649,6 +657,7 @@ class WriteGroupTaskStatus(unittest.TestCase):
 
             head_after = subprocess.run(
                 ["git", "-C", str(repo), "rev-parse", "HEAD"],
+                check=False,
                 capture_output=True,
                 text=True,
             ).stdout.strip()

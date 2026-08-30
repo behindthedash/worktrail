@@ -257,6 +257,7 @@ class TestCLI(unittest.TestCase):
                 "--max-iterations",
                 "1",
             ],
+            check=False,
             capture_output=True,
             text=True,
         )
@@ -277,6 +278,7 @@ class TestCLI(unittest.TestCase):
                 "--max-iterations",
                 "2",
             ],
+            check=False,
             capture_output=True,
             text=True,
         )
@@ -423,6 +425,7 @@ class PendingDecisionSurfacingTests(unittest.TestCase):
                 "--max-iterations",
                 "1",
             ],
+            check=False,
             capture_output=True,
             text=True,
             env=env,

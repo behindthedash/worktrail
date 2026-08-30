@@ -292,6 +292,7 @@ class ClusterDashboardE2E(unittest.TestCase):
         before feeding the result into `dashboard.py --queue-json`."""
         r = subprocess.run(
             [sys.executable, "-m", "worktrail.workqueue.work_queue", "list", "--json"],
+            check=False,
             capture_output=True,
             text=True,
             env=env,
@@ -316,7 +317,7 @@ class ClusterDashboardE2E(unittest.TestCase):
         ]
         if queue_json is not None:
             args += ["--queue-json", queue_json]
-        r = subprocess.run(args, capture_output=True, text=True, env=env)
+        r = subprocess.run(args, check=False, capture_output=True, text=True, env=env)
         self.assertEqual(r.returncode, 0, msg=r.stderr)
         return json.loads(r.stdout)
 
@@ -613,6 +614,7 @@ class ConsolidateClusterE2E(ClusterDashboardE2E):
                 *member_ids,
                 "--json",
             ],
+            check=False,
             capture_output=True,
             text=True,
             env=env,
@@ -643,7 +645,7 @@ class ConsolidateClusterE2E(ClusterDashboardE2E):
             "--confirm" if confirm else "--decline",
             "--json",
         ]
-        r = subprocess.run(args, capture_output=True, text=True, env=env)
+        r = subprocess.run(args, check=False, capture_output=True, text=True, env=env)
         self.assertEqual(r.returncode, 0, msg=r.stderr)
         return json.loads(r.stdout)
 
@@ -660,6 +662,7 @@ class ConsolidateClusterE2E(ClusterDashboardE2E):
                 identifier,
                 "--json",
             ],
+            check=False,
             capture_output=True,
             text=True,
             env=env,
@@ -999,6 +1002,7 @@ class SupplementalPerformance(unittest.TestCase):
                     str(specs_root),
                     "--json",
                 ],
+                check=False,
                 capture_output=True,
                 text=True,
                 env=env,

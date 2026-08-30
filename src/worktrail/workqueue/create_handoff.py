@@ -54,7 +54,7 @@ def _semantic_slug_summary(focus: str, repo: str | None) -> str | None:
     try:
         policy = load_policy(repo_path)
         routing = resolve_routing(policy)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
     tier = routing.get("default_tier")
     if not tier:
@@ -74,7 +74,7 @@ def _semantic_slug_summary(focus: str, repo: str | None) -> str | None:
             retries=0,
             session_limit_waits=0,
         )
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
     summary = result.text.strip()
     return summary or None
@@ -197,6 +197,7 @@ def _open_pr_titles(remote: str | None) -> list[str]:
                 "--json",
                 "title,number",
             ],
+            check=False,
             capture_output=True,
             text=True,
             timeout=_OVERLAP_SCAN_GH_TIMEOUT_SECONDS,
@@ -414,7 +415,7 @@ def create_handoff(
         overlap_hits = _scan_durable_artifact_overlaps(
             focus, resolved_repo, remote or None
         )
-    except Exception:
+    except Exception:  # noqa: BLE001
         overlap_hits = []
     overlap_warnings = overlap_hits[:_OVERLAP_WARNING_LIMIT]
 

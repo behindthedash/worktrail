@@ -326,7 +326,7 @@ class TransitionTests(unittest.TestCase):
             "status": "success",
             "review_status": "FAILED",
         }
-        status, retry = dispatch.transition(
+        status, _retry = dispatch.transition(
             dispatch.ROLE_REVIEW, rep, retry_count=2, max_retries=3
         )
         self.assertEqual(status, "escalated")

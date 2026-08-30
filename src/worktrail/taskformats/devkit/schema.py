@@ -90,7 +90,7 @@ def read_task_file(path: Path) -> tuple[dict | None, str | None, str]:
 
         frontmatter = yaml.safe_load(parts[1])
         return frontmatter, None, parts[2]
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return None, str(e), ""
 
 
@@ -210,7 +210,7 @@ def update_status(filepath: str):
         print(f"Status updated: {old_status} -> {new_status}")
 
         # Auto-set dates
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = datetime.now().strftime("%Y-%m-%d")  # noqa: DTZ005
         if new_status == TaskStatus.IN_PROGRESS and not frontmatter.get("started_date"):
             frontmatter["started_date"] = today
         elif new_status == TaskStatus.IMPLEMENTED and not frontmatter.get(

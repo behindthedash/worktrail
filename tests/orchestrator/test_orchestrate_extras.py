@@ -129,7 +129,7 @@ class BuildCassetteTests(unittest.TestCase):
             json.dump(cassette_data, f)
             cass_path = f.name
         try:
-            spec_id, tasks, spawn = orchestrate._build(str(_FIXTURE), None, cass_path)
+            _spec_id, tasks, _spawn = orchestrate._build(str(_FIXTURE), None, cass_path)
             ids = {t["id"] for t in tasks}
             self.assertIn("TASK-001", ids)
             # Tasks not in cassette are filtered out

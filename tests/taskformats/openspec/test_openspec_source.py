@@ -357,6 +357,7 @@ def test_archive_accepts_checkboxes_this_adapter_wrote(tmp_path):
 
     r = subprocess.run(
         ["openspec", "archive", "add-export", "--yes"],
+        check=False,
         cwd=tmp_path,
         capture_output=True,
         text=True,
@@ -376,6 +377,7 @@ def test_parser_agrees_with_the_shipped_schema_template(tmp_path):
     template the installed CLI actually resolves, not a copy pinned in this repo."""
     r = subprocess.run(
         ["openspec", "templates", "--json"],
+        check=False,
         cwd=tmp_path,
         capture_output=True,
         text=True,

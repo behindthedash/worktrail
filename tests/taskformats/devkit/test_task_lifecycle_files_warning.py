@@ -13,14 +13,13 @@ def _make_task(frontmatter: dict, body: str) -> str:
     """Write a temporary task file and return its path."""
     import yaml
 
-    tmp = tempfile.NamedTemporaryFile(
+    with tempfile.NamedTemporaryFile(
         mode="w", suffix=".md", delete=False, encoding="utf-8"
-    )
-    tmp.write("---\n")
-    tmp.write(yaml.dump(frontmatter, sort_keys=False))
-    tmp.write("---\n")
-    tmp.write(body)
-    tmp.close()
+    ) as tmp:
+        tmp.write("---\n")
+        tmp.write(yaml.dump(frontmatter, sort_keys=False))
+        tmp.write("---\n")
+        tmp.write(body)
     return tmp.name
 
 

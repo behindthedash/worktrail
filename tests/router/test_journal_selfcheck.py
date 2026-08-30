@@ -70,7 +70,7 @@ class TestStrandedTail:
             {"integrate_complete": True, "pending_tail_tasks": ["3.1"]},
         )
         lock = repo.parent / "myapp-worktrees" / "run-008-x.lock"
-        fh = open(lock, "a")
+        fh = open(lock, "a")  # noqa: SIM115 -- held across the surrounding scope as a lock file
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:
             assert journal_selfcheck.check_repo(repo)["findings"] == []
@@ -126,7 +126,7 @@ class TestUnreconciledTailEvidence:
             {"unreconciled_tail_evidence": [{"task": "T022"}]},
         )
         lock = repo.parent / "myapp-worktrees" / "run-008-x.lock"
-        fh = open(lock, "a")
+        fh = open(lock, "a")  # noqa: SIM115 -- held across the surrounding scope as a lock file
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:
             assert journal_selfcheck.check_repo(repo)["findings"] == []

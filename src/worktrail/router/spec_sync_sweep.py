@@ -112,7 +112,7 @@ def run_sweep(repos_root: Path, queue_base: Path, lock_path: Path) -> dict[str, 
     lock_path = Path(lock_path)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
 
-    lock_file = open(lock_path, "a+")
+    lock_file = open(lock_path, "a+")  # noqa: SIM115 -- held across the surrounding scope as a lock file
     try:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:

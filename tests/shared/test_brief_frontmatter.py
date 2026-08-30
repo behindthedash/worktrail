@@ -119,7 +119,7 @@ class ValidateBriefText(unittest.TestCase):
         self.assertIn("focus", err)
 
     def test_whitespace_only_field_fails(self):
-        ok, err = bf.validate_brief_text('---\nid: a\nstatus: "   "\n---\nbody\n')
+        ok, _err = bf.validate_brief_text('---\nid: a\nstatus: "   "\n---\nbody\n')
         self.assertFalse(ok)
 
     def test_non_string_field_fails(self):

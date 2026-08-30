@@ -205,6 +205,7 @@ def _run_tests() -> int:
             env.update(env_overrides or {})
             result = subprocess.run(
                 [sys.executable, __file__] + args,
+                check=False,
                 capture_output=True,
                 text=True,
                 env=env,
@@ -378,7 +379,7 @@ def _run_tests() -> int:
 
         def test_relative_path_validation(self) -> None:
             """Test error when a path argument is relative."""
-            code, stdout, stderr = self._run_cli(
+            code, _stdout, stderr = self._run_cli(
                 [
                     "--repo",
                     "./relative/path",

@@ -21,23 +21,11 @@ Proc = namedtuple("Proc", "returncode stdout stderr")
 
 
 def _claude_ok_stream() -> str:
-    return "\n".join(
-        [
-            '{"type":"system","subtype":"init"}',
-            '{"type":"assistant","message":{"content":[]}}',
-            '{"type":"result","result":"ok","usage":{},"session_id":"abc"}',
-        ]
-    )
+    return '{"type":"system","subtype":"init"}\n{"type":"assistant","message":{"content":[]}}\n{"type":"result","result":"ok","usage":{},"session_id":"abc"}'
 
 
 def _opencode_ok_stream() -> str:
-    return "\n".join(
-        [
-            '{"type":"step_start","sessionID":"s1"}',
-            '{"type":"text","part":{"text":"ok"}}',
-            '{"type":"step_finish","part":{"tokens":{}}}',
-        ]
-    )
+    return '{"type":"step_start","sessionID":"s1"}\n{"type":"text","part":{"text":"ok"}}\n{"type":"step_finish","part":{"tokens":{}}}'
 
 
 def _raw_fallback_stream() -> str:

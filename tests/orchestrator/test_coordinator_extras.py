@@ -38,7 +38,7 @@ class SimulateTests(unittest.TestCase):
 
     def test_parallel_independent_tasks_same_batch(self):
         tasks = [_task("TASK-001"), _task("TASK-002"), _task("TASK-003")]
-        batches, tail = coordinator.simulate(tasks, max_workers=3)
+        batches, _tail = coordinator.simulate(tasks, max_workers=3)
         self.assertEqual(len(batches), 1)
         self.assertEqual(sorted(batches[0]), ["TASK-001", "TASK-002", "TASK-003"])
 

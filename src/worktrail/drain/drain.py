@@ -335,7 +335,9 @@ def list_queue(work_queue_py: Path, queue_dir: Path | None) -> dict:
     if queue_dir is not None:
         env["WORK_QUEUE_DIR"] = str(queue_dir)
     argv = build_work_queue_argv(work_queue_py, ["list", "--json"])
-    out = subprocess.run(argv, capture_output=True, text=True, env=env, timeout=60)
+    out = subprocess.run(
+        argv, check=False, capture_output=True, text=True, env=env, timeout=60
+    )
     if out.returncode != 0:
         raise RuntimeError(f"work_queue.py list failed: {out.stderr.strip()[:300]}")
     return json.loads(out.stdout)
@@ -903,7 +905,7 @@ def find_complete_openspec_changes(
 def _base_branch_for(repo: Path) -> str:
     try:
         return load_policy(repo).get("base_branch") or "dev"
-    except Exception:
+    except Exception:  # noqa: BLE001
         return "dev"
 
 
@@ -969,6 +971,7 @@ def _existing_sync_pending_pr(repo: Path, branch: str, timeout: int) -> str | No
             "--jq",
             ".[0].url",
         ],
+        check=False,
         capture_output=True,
         text=True,
         cwd=str(repo),
@@ -1002,11 +1005,13 @@ def _open_sync_pending_pr(
         "--title",
         f"chore({spec_id}): sync specs from change",
         "--body",
-        f"Runs `/opsx:sync {spec_id}` and commits whatever it wrote into "
-        f"main specs.\n\nOpened by drain's sync-pending sweep.",
+        (
+            f"Runs `/opsx:sync {spec_id}` and commits whatever it wrote into "
+            f"main specs.\n\nOpened by drain's sync-pending sweep."
+        ),
     ]
     result = subprocess.run(
-        cmd, capture_output=True, text=True, cwd=str(wt), timeout=timeout
+        cmd, check=False, capture_output=True, text=True, cwd=str(wt), timeout=timeout
     )
     out = (
         (result.stdout or result.stderr).strip().splitlines()[-1]
@@ -1074,6 +1079,7 @@ def _run_sync_pending(
         if outcome.exit_code == 0:
             status = subprocess.run(
                 ["git", "status", "--porcelain"],
+                check=False,
                 capture_output=True,
                 text=True,
                 cwd=str(wt),
@@ -1105,12 +1111,13 @@ def _run_sync_pending(
         try:
             subprocess.run(
                 ["git", "worktree", "remove", "--force", str(wt)],
+                check=False,
                 capture_output=True,
                 text=True,
                 cwd=str(repo),
                 timeout=timeout,
             )
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
 
     return {
@@ -1251,7 +1258,12 @@ def _resolve_stale_task_path(repo: Path, spec_id: str, task_id: str) -> Path | N
 
 def _run_git(cwd: Path, *args: str, timeout: int) -> None:
     result = subprocess.run(
-        ["git", *args], capture_output=True, text=True, cwd=str(cwd), timeout=timeout
+        ["git", *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=str(cwd),
+        timeout=timeout,
     )
     if result.returncode != 0:
         raise RuntimeError(
@@ -1342,6 +1354,7 @@ def _existing_stale_bookkeeping_pr(repo: Path, branch: str, timeout: int) -> str
             "--jq",
             ".[0].url",
         ],
+        check=False,
         capture_output=True,
         text=True,
         cwd=str(repo),
@@ -1369,9 +1382,14 @@ def _reset_stale_bookkeeping_worktree(
     ):
         try:
             subprocess.run(
-                cmd, capture_output=True, text=True, cwd=str(repo), timeout=timeout
+                cmd,
+                check=False,
+                capture_output=True,
+                text=True,
+                cwd=str(repo),
+                timeout=timeout,
             )
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
 
 
@@ -1409,12 +1427,14 @@ def _open_stale_bookkeeping_pr(
         "--title",
         f"chore({spec_id}): close stale bookkeeping",
         "--body",
-        f"Flips `status:` to `completed` for already-shipped task(s) "
-        f"{', '.join(task_ids)} in `{spec_id}` -- their `files:` are already merged "
-        f"on `{base}`; no code change.\n\nOpened by drain's stale-bookkeeping sweep.",
+        (
+            f"Flips `status:` to `completed` for already-shipped task(s) "
+            f"{', '.join(task_ids)} in `{spec_id}` -- their `files:` are already merged "
+            f"on `{base}`; no code change.\n\nOpened by drain's stale-bookkeeping sweep."
+        ),
     ]
     result = subprocess.run(
-        cmd, capture_output=True, text=True, cwd=str(wt), timeout=timeout
+        cmd, check=False, capture_output=True, text=True, cwd=str(wt), timeout=timeout
     )
     out = (
         (result.stdout or result.stderr).strip().splitlines()[-1]
@@ -1541,12 +1561,13 @@ def close_stale_bookkeeping(
         try:
             subprocess.run(
                 ["git", "worktree", "remove", "--force", str(wt)],
+                check=False,
                 capture_output=True,
                 text=True,
                 cwd=str(repo),
                 timeout=timeout,
             )
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
 
     log(f"close-stale-bookkeeping result: {repo_name} {spec_id} -> {pr_url}")
@@ -1587,6 +1608,7 @@ def _run_openspec_archive(wt: Path, spec_id: str, timeout: int) -> None:
             )
     result = subprocess.run(
         ["openspec", "archive", "-y", spec_id],
+        check=False,
         capture_output=True,
         text=True,
         cwd=str(wt),
@@ -1621,12 +1643,14 @@ def _open_openspec_archive_pr(
         "--title",
         f"chore({spec_id}): archive completed change",
         "--body",
-        f"Runs `openspec archive -y {spec_id}` for the completed change "
-        f"`{spec_id}` and commits whatever it moved/wrote.\n\n"
-        "Opened by drain's OpenSpec archive sweep.",
+        (
+            f"Runs `openspec archive -y {spec_id}` for the completed change "
+            f"`{spec_id}` and commits whatever it moved/wrote.\n\n"
+            "Opened by drain's OpenSpec archive sweep."
+        ),
     ]
     result = subprocess.run(
-        cmd, capture_output=True, text=True, cwd=str(wt), timeout=timeout
+        cmd, check=False, capture_output=True, text=True, cwd=str(wt), timeout=timeout
     )
     out = (
         (result.stdout or result.stderr).strip().splitlines()[-1]
@@ -1706,12 +1730,13 @@ def archive_openspec_change(
         try:
             subprocess.run(
                 ["git", "worktree", "remove", "--force", str(wt)],
+                check=False,
                 capture_output=True,
                 text=True,
                 cwd=str(repo),
                 timeout=timeout,
             )
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
 
     log(f"archive-openspec-change result: {repo_name} {spec_id} -> {pr_url}")

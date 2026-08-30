@@ -32,7 +32,7 @@ def _mk_epic(
     epic_id: str,
     features: int,
     status: str = "Proposed",
-    future_spec_ids: dict = None,
+    future_spec_ids: dict | None = None,
 ) -> Path:
     epics = repo / "docs" / "specs" / "epics"
     epics.mkdir(parents=True, exist_ok=True)

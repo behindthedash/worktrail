@@ -76,7 +76,7 @@ def test_ac003_failed_dependent_dropped():
         {"id": "TASK-Y", "deps": ["TASK-X"], "files": ["y.ts"], "kind": "impl"},
     ]
     status = {"TASK-X": "failed", "TASK-Y": "pending"}
-    deliverable, dropped = coordinator.deliverable_subset(
+    _deliverable, dropped = coordinator.deliverable_subset(
         ["TASK-X", "TASK-Y"], tasks, status
     )
     # Failed dependency DOES cascade-drop

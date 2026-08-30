@@ -124,6 +124,7 @@ def flip_and_archive(
 
     proc = subprocess.run(
         ["openspec", "archive", "-y", change_id, "--json"],
+        check=False,
         capture_output=True,
         text=True,
         cwd=str(worktree),

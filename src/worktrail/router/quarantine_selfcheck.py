@@ -80,6 +80,7 @@ def _files_on_base(repo: Path, files: list[str], base: str = "") -> bool:
     if not base:
         result = subprocess.run(
             ["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"],
+            check=False,
             capture_output=True,
             text=True,
             timeout=30,
@@ -90,6 +91,7 @@ def _files_on_base(repo: Path, files: list[str], base: str = "") -> bool:
     for path in files:
         result = subprocess.run(
             ["git", "-C", str(repo), "ls-tree", base, "--", path],
+            check=False,
             capture_output=True,
             text=True,
             timeout=30,
@@ -120,6 +122,7 @@ def _merged_pr_matching(repo: Path, files: list[str]) -> str | None:
                 "--limit",
                 "50",
             ],
+            check=False,
             capture_output=True,
             text=True,
             timeout=30,

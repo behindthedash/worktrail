@@ -51,7 +51,7 @@ def _worktrees_dir(canonical: Path) -> Path:
     return canonical.parent / f"{canonical.name}-worktrees"
 
 
-def _add_worktree(canonical: Path, branch: str, dir_name: str = None) -> Path:
+def _add_worktree(canonical: Path, branch: str, dir_name: str | None = None) -> Path:
     # Directory names never contain slashes (worktree.py's real convention uses
     # `{spec_id}-{task_id}`, not the branch name itself, as the checkout dir).
     wt = _worktrees_dir(canonical) / (dir_name or branch.replace("/", "-"))

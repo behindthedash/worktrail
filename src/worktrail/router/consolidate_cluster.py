@@ -147,7 +147,7 @@ def _member_created_at(text: str) -> datetime.datetime | None:
                 dt = datetime.datetime.fromisoformat(candidate)
             except ValueError:
                 try:
-                    dt = datetime.datetime.strptime(raw, "%Y-%m-%d")
+                    dt = datetime.datetime.strptime(raw, "%Y-%m-%d")  # noqa: DTZ007
                 except ValueError:
                     return None
         else:
@@ -287,7 +287,7 @@ def resolvable_members(member_ids: list[str], queue_dir: Path) -> list[str]:
         try:
             if _local_resolve(member_id, queue_dir) is not None:
                 resolvable.append(member_id)
-        except Exception:  # noqa: BLE001 -- degrade, never crash the preview
+        except Exception:  # noqa: BLE001, S112 -- degrade, never crash the preview
             continue
     return resolvable
 
@@ -349,7 +349,7 @@ def draft_consolidated_brief(member_ids: list[str], queue_dir: Path) -> dict[str
                 earliest_created is None or member_created < earliest_created
             ):
                 earliest_created = member_created
-        except Exception:  # noqa: BLE001 -- degrade, never crash the preview
+        except Exception:  # noqa: BLE001, S112 -- degrade, never crash the preview
             continue
 
     if focuses:
@@ -511,6 +511,7 @@ def _run_work_queue_cli(
     try:
         result = subprocess.run(
             argv,
+            check=False,
             capture_output=True,
             text=True,
             timeout=30,
@@ -566,9 +567,11 @@ def _build_nested_consolidation_note(member_text: str) -> str | None:
     if not sub_ids:
         return None
     lines = [
-        "Re-consolidating a nested consolidation-batch brief. Each sub-item below "
-        "was already marked done and stamped `## Superseded` when this brief was "
-        "authored by consolidate_cluster.py:",
+        (
+            "Re-consolidating a nested consolidation-batch brief. Each sub-item below "
+            "was already marked done and stamped `## Superseded` when this brief was "
+            "authored by consolidate_cluster.py:"
+        ),
         "```",
     ]
     lines.extend(
@@ -757,7 +760,7 @@ def _resolve_draft_payload(raw: str) -> dict[str, Any]:
         raise ValueError(f"--draft is not valid JSON: {exc}") from exc
 
     if not isinstance(payload, dict):
-        raise ValueError("--draft must be a JSON object")
+        raise ValueError("--draft must be a JSON object")  # noqa: TRY004 -- ValueError is this function's uniform malformed-input contract; callers catch ValueError specifically
 
     draft = payload.get("draft", payload) if "draft" in payload else payload
 
@@ -880,7 +883,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 elif result.get("status") == "declined":
                     cluster_telemetry.log_outcome("declined", args.member_ids)
-            except Exception:  # noqa: BLE001 - degrade, never break the CLI
+            except Exception:  # noqa: BLE001, S110 - degrade, never break the CLI
                 pass
 
     if args.json:
