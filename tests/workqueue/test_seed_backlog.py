@@ -963,3 +963,41 @@ def test_sequencing_gated_epic_in_returned_summary(tmp_path):
     assert summary["sequencing_gated_epics"] == [
         {"repo": "repo-a", "id": "001-blocked"}
     ]
+
+
+def test_epic_without_gate_prose_seeds_as_before(tmp_path):
+    """Regression case: an epic without gate prose (no sequencing-gate conditions)
+    seeds a brief exactly as it did before the gate detection feature was added.
+    This ensures backward compatibility — gate detection does not change the
+    behavior of epics that have no gate prose."""
+    repos_root = tmp_path / "projects"
+    repo = _mk_repo(repos_root, "repo-a")
+
+    # Create a simple epic with 3 features, no gate prose
+    _mk_epic(repo, "001-simple", features=3)
+    # One spec cites the epic (Feature 1 is cited)
+    _mk_citing_spec(repo, "020-simple-impl", "001-simple")
+
+    qbase = tmp_path / "wq"
+    summary = seed_backlog.seed_backlog(
+        repos_root, queue_base=qbase, log=lambda _m: None
+    )
+
+    # Should seed exactly one brief with the expected key
+    assert len(summary["seeded"]) == 1
+    seeded = summary["seeded"][0]
+    assert seeded["repo"] == "repo-a"
+    assert seeded["id"] == "001-simple"
+    assert seeded["seed_key"] == "repo-a:epic:001-simple:cited=1"
+    assert seeded["kind"] == "epic"
+
+    # Brief should be created with the expected properties
+    briefs = _queued_briefs(qbase)
+    assert len(briefs) == 1
+    _path, fm = briefs[0]
+    assert fm["recommended-route"] == "C"
+    assert fm["implementation-intent"] == "planning-only"
+
+    # Most importantly: no epic should be in sequencing_gated_epics
+    # (gate detection only applies to epics WITH gate prose)
+    assert summary.get("sequencing_gated_epics", []) == []
