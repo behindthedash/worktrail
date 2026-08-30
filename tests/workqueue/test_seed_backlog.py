@@ -347,7 +347,52 @@ def test_sequencing_gated_epic_logs_one_line_and_is_not_seeded(tmp_path):
     assert "001-payments" in line
     assert "Feature 2" in line
     assert "Feature 1" in line
-    assert "020-payments-core" in line or "not yet specced" in line
+    assert "not yet specced" in line
+
+
+def test_sequencing_gated_epic_reports_blocked_feature_and_gate_state(tmp_path):
+    """Task 5.3: Verify log output includes blocked feature and gate's resolved state.
+
+    The seeder must log a line that names the epic ID, the blocked feature number,
+    the gating feature number, and the gate's resolved state (either a spec name
+    or "not yet specced").
+    """
+    repos_root = tmp_path / "projects"
+    repo = _mk_repo(repos_root, "repo-a")
+    _mk_epic(
+        repo,
+        "002-accounting",
+        features=3,
+        future_spec_ids={2: "030-accounting-ledger"},
+    )
+    epic_path = repo / "docs" / "specs" / "epics" / "002-accounting.md"
+    epic_path.write_text(
+        epic_path.read_text(encoding="utf-8")
+        + "\nFeature 2 depends on Feature 1.\n",
+        encoding="utf-8",
+    )
+    # One spec cites the epic id, so cited=1, next_n=2. The prose gates
+    # Feature 2 on Feature 1. Since Feature 1 is unspecced (no citing spec),
+    # the gate is open and Feature 2 is blocked.
+    _mk_citing_spec(repo, "031-unrelated", "002-accounting")
+
+    messages: list[str] = []
+    summary = seed_backlog.seed_backlog(
+        repos_root, queue_base=tmp_path / "wq", log=messages.append
+    )
+
+    assert summary["seeded"] == []
+    gated_lines = [m for m in messages if "epic-sequencing-gated" in m]
+    assert len(gated_lines) == 1
+    line = gated_lines[0]
+    # Log must include epic id
+    assert "002-accounting" in line
+    # Log must include blocked feature number
+    assert "Feature 2" in line
+    # Log must include gating feature number
+    assert "Feature 1" in line
+    # Log must include resolved state (in this fixture, unspecced since no spec cites Feature 1)
+    assert "not yet specced" in line
 
 
 def test_openspec_spec_citation_counts_toward_epic(tmp_path):
