@@ -1059,7 +1059,9 @@ class TestDoneImplementationEvidenceGate(QueueTestBase):
         q.claim("20260531-141200-auth")
 
         res = q.done(
-            "20260531-141200-auth", implementation_complete=True, note="Fixed via PR #824"
+            "20260531-141200-auth",
+            implementation_complete=True,
+            note="Fixed via PR #824",
         )
 
         self.assertEqual(res["status"], "done")
