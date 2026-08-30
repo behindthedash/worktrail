@@ -5059,6 +5059,42 @@ class EpicStageDetection(unittest.TestCase):
         self.assertEqual(result["cited"], 1)
         self.assertIn("020-welcome", result["citing_specs"])
 
+    def test_epic_sequencing_gated_pairwise_prose_no_citing_spec(self):
+        # Epic with 2 features; Feature 1 is cited by a spec; Feature 2
+        # depends on Feature 1 per pairwise gate prose but Feature 1's spec
+        # cites a future-spec-id with no implementing spec yet.
+        epics = self.repo / "docs" / "specs" / "epics"
+        epics.mkdir(parents=True, exist_ok=True)
+        body = [
+            "# Epic: 005-sequenced",
+            "",
+            "### Feature 1",
+            "Feature 1 body.",
+            "**Future spec id:** `feature-1-contract`",
+            "",
+            "### Feature 2",
+            "Feature 2 depends on Feature 1's contract to be finalized.",
+            "",
+        ]
+        epic_file = epics / "005-sequenced.md"
+        epic_file.write_text("\n".join(body), encoding="utf-8")
+
+        # Feature 1 is cited by 010-feature-one
+        self._mk_citing_spec("010-feature-one", "005-sequenced")
+
+        result = dashboard.detect_epic_stage(epic_file, self.repo)
+
+        self.assertEqual(result["stage"], "epic-sequencing-gated")
+        self.assertEqual(result["features"], 2)
+        self.assertEqual(result["cited"], 1)
+        self.assertEqual(result["blocked_feature"], 2)
+        self.assertEqual(len(result["gates"]), 1)
+        gate = result["gates"][0]
+        self.assertEqual(gate["feature"], 1)
+        self.assertEqual(gate["spec_id"], "feature-1-contract")
+        self.assertIsNone(gate["resolved_name"])
+        self.assertFalse(gate["closed"])
+
     def test_non_epic_named_file_is_ignored_by_epic_id_pattern_against_real_directory(
         self,
     ):
