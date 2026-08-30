@@ -44,6 +44,7 @@ import datetime as dt
 import json
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -386,9 +387,73 @@ _NO_BACKGROUND_TASK_RULES = (
 )
 
 
-def _spec_prefix(ctx: dict[str, Any]) -> str:
+@dataclass(kw_only=True)
+class WorkerPromptCtx:
+    """Required + optional ctx fields for build_worker_prompt, common to every
+    role (implement/review/fix/cleanup). Missing a required field (spec_id,
+    spec_folder, worktree_path, branch) raises TypeError -- naming every
+    missing field at once -- the moment the caller's dict is coerced into this
+    type, before any role-specific rendering starts. Replaces the old ad-hoc
+    per-field bracket-access checks that surfaced one missing field at a time,
+    at whatever line happened to touch it (the PR #825/#837/#850 pattern)."""
+
+    spec_id: str
+    spec_folder: str
+    worktree_path: str
+    branch: str
+    base_commit: str | None = None
+    spec_root_prefix: str | None = None
+    task_brief: dict[str, Any] | None = None
+    gitnexus_capability: dict[str, Any] | None = None
+    reviewer_agent: str | None = None
+    default_agent: str | None = None
+
+
+@dataclass(kw_only=True)
+class ReviewWorkerPromptCtx(WorkerPromptCtx):
+    """ROLE_REVIEW additionally requires base_commit resolved to a concrete
+    commit in the canonical repo -- see build_worker_prompt's docstring."""
+
+    def __post_init__(self) -> None:
+        if not self.base_commit:
+            raise ValueError(
+                "build_worker_prompt(ROLE_REVIEW, ...) requires ctx['base_commit'] "
+                "resolved to a concrete commit in the canonical repo -- the bare "
+                "'HEAD' sentinel is worktree-relative and silently produces a "
+                "no-op HEAD..HEAD diff when the template runs inside the review "
+                "worker's own worktree (see PR #825, PR #837)."
+            )
+
+
+# role -> the ctx type build_worker_prompt validates that role's ctx against.
+# A role absent here validates against the base WorkerPromptCtx.
+_CTX_TYPE_BY_ROLE: dict[str, type[WorkerPromptCtx]] = {
+    ROLE_REVIEW: ReviewWorkerPromptCtx,
+}
+
+
+def _coerce_worker_prompt_ctx(
+    role: str, ctx: WorkerPromptCtx | dict[str, Any]
+) -> WorkerPromptCtx:
+    if isinstance(ctx, WorkerPromptCtx):
+        return ctx
+    return _CTX_TYPE_BY_ROLE.get(role, WorkerPromptCtx)(**ctx)
+
+
+def _ctx_get(
+    ctx: WorkerPromptCtx | dict[str, Any], key: str, default: Any = None
+) -> Any:
+    """Read `key` from either ctx shape. `_spec_prefix`/`_task_brief` are unit-
+    tested directly with plain dicts predating the WorkerPromptCtx seam (see
+    tests/taskformats/test_task_brief_ref.py), so they keep accepting either."""
+    return (
+        ctx.get(key, default) if isinstance(ctx, dict) else getattr(ctx, key, default)
+    )
+
+
+def _spec_prefix(ctx: WorkerPromptCtx | dict[str, Any]) -> str:
     """Spec-root prefix for this run's task format (see build_worker_prompt)."""
-    return ctx.get("spec_root_prefix") or "docs/specs/"
+    return _ctx_get(ctx, "spec_root_prefix") or "docs/specs/"
 
 
 # The review role's checklist behaviour depends on whether the brief is the
@@ -455,7 +520,7 @@ def _review_clauses(anchor: str) -> tuple:
     return _REVIEW_CHECKLIST_OWN_FILE, _REVIEW_VERDICT_OWN_FILE
 
 
-def _task_brief(ctx: dict, task_id: str) -> tuple:
+def _task_brief(ctx: WorkerPromptCtx | dict[str, Any], task_id: str) -> tuple:
     """`(path, note)` for the brief this worker opens.
 
     `path` is repo-relative. `note` is a clause the read list appends when the
@@ -466,8 +531,10 @@ def _task_brief(ctx: dict, task_id: str) -> tuple:
     Falls back to devkit's file-per-task rendering when `ctx` predates the seam,
     so existing callers and cassettes are unaffected.
     """
-    b = ctx.get("task_brief") or {}
-    path_fmt = b.get("path_fmt") or (ctx.get("spec_folder", "") + "tasks/{task_id}.md")
+    b = _ctx_get(ctx, "task_brief") or {}
+    path_fmt = b.get("path_fmt") or (
+        _ctx_get(ctx, "spec_folder", "") + "tasks/{task_id}.md"
+    )
     anchor = (b.get("anchor_fmt") or "").format(task_id=task_id)
     path = path_fmt.format(task_id=task_id)
     if not anchor:
@@ -485,15 +552,21 @@ def _task_brief(ctx: dict, task_id: str) -> tuple:
 def build_worker_prompt(
     role: str,
     task: dict[str, Any],
-    ctx: dict[str, Any],
+    ctx: WorkerPromptCtx | dict[str, Any],
     extra_reads: list[str] | None = None,
     by_id: dict[str, Any] | None = None,
     external_deps_by_ref: dict[str, Any] | None = None,
 ) -> str:
-    """Render the filled cold-worker brief. ctx: spec_id, spec_folder,
-    worktree_path, branch, base_commit (review), reviewer_agent (optional),
-    default_agent (optional — resolved from invocation context; defaults to
-    "claude" for backward compatibility).
+    """Render the filled cold-worker brief. ctx is a WorkerPromptCtx (a plain
+    dict is also accepted and coerced -- see _coerce_worker_prompt_ctx): the
+    required fields are spec_id, spec_folder, worktree_path, branch;
+    base_commit is additionally required for ROLE_REVIEW. A missing required
+    field raises immediately at that coercion, before any role-specific
+    rendering starts, naming every missing field at once rather than
+    surfacing one at a time deep in this function (the PR #825/#837/#850
+    pattern this replaces). Optional fields: reviewer_agent, default_agent
+    (resolved from invocation context; defaults to "claude" for backward
+    compatibility), spec_root_prefix, task_brief, gitnexus_capability.
     extra_reads: additional paths injected into 'Read first, in order' when a
     prior worker reported context_quality=insufficient (adaptive read-widening).
     by_id: task-id -> task dict lookup for the whole spec, used (ROLE_IMPLEMENT
@@ -510,20 +583,7 @@ def build_worker_prompt(
     aren't (contracts/worker-context-worktree-stacking.md Part A)."""
     if role not in ROLES:
         raise ValueError(f"unknown role: {role}")
-    # ROLE_REVIEW's action template runs `git diff {base_commit}..HEAD` inside the
-    # review worker's OWN task worktree, so a bare "HEAD" here is worktree-relative
-    # and renders as a silent no-op HEAD..HEAD diff -- the exact defect fixed in
-    # PR #825 and PR #837, both times because a caller silently fell through to this
-    # sentinel instead of resolving base_commit against the canonical repo. Refuse to
-    # repeat that: require the caller to have resolved it, rather than defaulting.
-    if role == ROLE_REVIEW and not ctx.get("base_commit"):
-        raise ValueError(
-            "build_worker_prompt(ROLE_REVIEW, ...) requires ctx['base_commit'] "
-            "resolved to a concrete commit in the canonical repo -- the bare "
-            "'HEAD' sentinel is worktree-relative and silently produces a "
-            "no-op HEAD..HEAD diff when the template runs inside the review "
-            "worker's own worktree (see PR #825, PR #837)."
-        )
+    ctx = _coerce_worker_prompt_ctx(role, ctx)
     # The worker's hard rules must name the spec root of whatever format this run
     # is driving -- `docs/specs/` for devkit, `openspec/` for an OpenSpec change.
     # Naming the wrong one turns a real safety guard into decoration: the worker
@@ -542,8 +602,8 @@ def build_worker_prompt(
         )
     action = _ROLE_ACTION[role].format(
         task_id=tid,
-        base_commit=ctx.get("base_commit", ""),  # non-review roles ignore this kwarg
-        spec_folder=ctx["spec_folder"],
+        base_commit=ctx.base_commit or "",  # non-review roles ignore this kwarg
+        spec_folder=ctx.spec_folder,
         task_brief=brief,
         review_checklist=review_checklist,
         review_verdict_rule=review_verdict_rule,
@@ -565,11 +625,11 @@ def build_worker_prompt(
         ]
         if task.get("needs_spec"):
             reads.append(
-                f"{ctx['spec_folder']}spec.md + data-model.md + contracts/   "
+                f"{ctx.spec_folder}spec.md + data-model.md + contracts/   "
                 f"(read only the sections referenced by this task's imp-requirements; skip unrelated phases)"
             )
             reads.append(
-                f"{ctx['spec_folder']}knowledge-graph.json   (existing patterns -- do NOT re-explore the repo)"
+                f"{ctx.spec_folder}knowledge-graph.json   (existing patterns -- do NOT re-explore the repo)"
             )
         if task.get("deps") and by_id:
             for dep_id in task["deps"]:
@@ -601,7 +661,7 @@ def build_worker_prompt(
         ]
     elif role == ROLE_FIX:
         reads = [
-            f"{ctx['spec_folder']}reviews/{tid}-review.md   (the findings to fix — read this first)",
+            f"{ctx.spec_folder}reviews/{tid}-review.md   (the findings to fix — read this first)",
             (
                 f"{brief}{brief_note}   "
                 f"(AC only — verify your fixes meet acceptance criteria; "
@@ -619,9 +679,9 @@ def build_worker_prompt(
             for p in extra_reads
         )
 
-    gitnexus_capability = ctx.get("gitnexus_capability")
+    gitnexus_capability = ctx.gitnexus_capability
     if not isinstance(gitnexus_capability, dict):
-        gitnexus_capability = gitnexus_check(Path(ctx["worktree_path"]))
+        gitnexus_capability = gitnexus_check(Path(ctx.worktree_path))
 
     return "\n".join(
         [
@@ -629,12 +689,12 @@ def build_worker_prompt(
             # file-per-task format it is a convenience; in OpenSpec the task
             # line IS the brief, so a worker that failed to locate its item
             # inside a shared tasks.md would otherwise know only its id.
-            f"You are the {role.upper()} worker for {tid} of spec {ctx['spec_id']}."
+            f"You are the {role.upper()} worker for {tid} of spec {ctx.spec_id}."
             + (f"\nTask title: {task['title']}" if task.get("title") else ""),
-            f"Agent: {agent_for(role, task, ctx.get('reviewer_agent', DEFAULT_REVIEWER_AGENT), ctx.get('default_agent'))['agent_cli']}",
+            f"Agent: {agent_for(role, task, ctx.reviewer_agent or DEFAULT_REVIEWER_AGENT, ctx.default_agent)['agent_cli']}",
             "",
-            f"Worktree (operate ONLY here): {ctx['worktree_path']}",
-            f"Branch (already checked out): {ctx['branch']}",
+            f"Worktree (operate ONLY here): {ctx.worktree_path}",
+            f"Branch (already checked out): {ctx.branch}",
             "",
             "Read first, in order:",
             *[f"  {i}. {r}" for i, r in enumerate(reads, 1)],

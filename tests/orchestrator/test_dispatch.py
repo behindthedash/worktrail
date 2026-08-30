@@ -23,6 +23,8 @@ from worktrail.orchestrator.dispatch import (
     ROLE_RESOLVE,
     ROLE_REVIEW,
     DecisionDispatchError,
+    ReviewWorkerPromptCtx,
+    WorkerPromptCtx,
     agent_for,
     build_worker_prompt,
     transition,
@@ -120,8 +122,13 @@ class TestReviewPathRendering(unittest.TestCase):
         # No hardcoded docs/specs/ prefix outside the custom folder
         self.assertNotIn("docs/specs/000", review_prompt)
 
-    def test_missing_spec_folder_raises_key_error(self):
-        """REQ-NR006: missing spec_folder fails fast (KeyError), no silent bare-path fallback."""
+    def test_missing_spec_folder_raises_type_error(self):
+        """REQ-NR006: missing spec_folder fails fast, no silent bare-path fallback.
+        ctx is coerced into a WorkerPromptCtx at the top of build_worker_prompt
+        (see its docstring); a required field absent from ctx now raises
+        TypeError there -- naming every missing required field at once -- rather
+        than the old ad-hoc KeyError raised deep in the function at whichever
+        line happened to touch that one field."""
         ctx = {
             "spec_id": "004-test",
             # spec_folder intentionally omitted
@@ -130,8 +137,9 @@ class TestReviewPathRendering(unittest.TestCase):
             "base_commit": "abc1234",
         }
         task = _make_task("TASK-001")
-        with self.assertRaises(KeyError):
+        with self.assertRaises(TypeError) as cm:
             build_worker_prompt(ROLE_REVIEW, task, ctx)
+        self.assertIn("spec_folder", str(cm.exception))
 
     def test_missing_base_commit_raises_instead_of_head_sentinel_fallback(self):
         """A bare 'HEAD' base_commit is worktree-relative and renders ROLE_REVIEW's
@@ -164,6 +172,47 @@ class TestReviewPathRendering(unittest.TestCase):
         build_worker_prompt(ROLE_IMPLEMENT, task, ctx)  # must not raise
         build_worker_prompt(ROLE_FIX, task, ctx)  # must not raise
         build_worker_prompt(ROLE_CLEANUP, task, ctx)  # must not raise
+
+
+class TestWorkerPromptCtxContract(unittest.TestCase):
+    """The role-keyed dataclass build_worker_prompt coerces ctx into (see its
+    docstring): required fields raise together, at construction, instead of
+    one at a time as the old ad-hoc per-field checks did."""
+
+    def test_a_worker_prompt_ctx_instance_passes_through_unchanged(self):
+        """Callers may also construct the typed ctx themselves and skip the
+        dict-coercion step entirely."""
+        ctx = WorkerPromptCtx(**_make_ctx())
+        prompt = build_worker_prompt(ROLE_IMPLEMENT, _make_task(), ctx)
+        self.assertIn("IMPLEMENT worker", prompt)
+
+    def test_review_worker_prompt_ctx_requires_base_commit_at_construction(self):
+        """Constructing ReviewWorkerPromptCtx directly (not via
+        build_worker_prompt's dict coercion) is validated the same way."""
+        kwargs = _make_ctx()
+        del kwargs["base_commit"]
+        with self.assertRaises(ValueError) as cm:
+            ReviewWorkerPromptCtx(**kwargs)
+        self.assertIn("base_commit", str(cm.exception))
+
+    def test_multiple_missing_required_fields_are_named_together(self):
+        """The whole point of moving to a dataclass: every missing required
+        field for this role is reported in one error, not discovered one at a
+        time across separate lines/roles."""
+        with self.assertRaises(TypeError) as cm:
+            build_worker_prompt(ROLE_IMPLEMENT, _make_task(), {"spec_id": "004-test"})
+        message = str(cm.exception)
+        for field_name in ("spec_folder", "worktree_path", "branch"):
+            self.assertIn(field_name, message)
+
+    def test_unexpected_ctx_key_raises_at_construction(self):
+        """A typo'd or stale field name is now rejected up front instead of
+        silently ignored, the way a plain dict's .get() would ignore it."""
+        ctx = _make_ctx()
+        ctx["group_branch"] = "run-001/base"  # not part of WorkerPromptCtx
+        with self.assertRaises(TypeError) as cm:
+            build_worker_prompt(ROLE_IMPLEMENT, _make_task(), ctx)
+        self.assertIn("group_branch", str(cm.exception))
 
 
 class TestReviewChecksAcDodCheckboxes(unittest.TestCase):
