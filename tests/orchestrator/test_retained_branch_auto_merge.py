@@ -93,6 +93,24 @@ class RetainedBranchAutoMergeTests(unittest.TestCase):
         self.assertEqual(_git(self.wt, "rev-parse", "HEAD").stdout.strip(), head_before)
         self.assertEqual((self.wt / "shared.txt").read_text(), "task version\n")
 
+    def test_root_task_head_sentinel_auto_merges_against_canonical_repo(self):
+        """A root task (deps=[]) gets start_ref='HEAD' from `dependency_start_ref`.
+
+        Run literally inside `wt`, "HEAD" resolves to `wt`'s own current commit
+        (a self-merge no-op) since `wt` is already checked out on `branch` --
+        confirmed live 2026-08-29 across repeated resume attempts on root tasks.
+        The repair must resolve `start_ref` against `repo` (the canonical
+        checkout) instead, so the merge actually pulls in the advanced base.
+        """
+        self._advance_main("other.txt", "advanced\n")
+        events = live._validate_retained_task_branch(
+            self.repo, "spec/t1", "HEAD", self.task_head, wt=self.wt
+        )
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["event"], "retained_branch_auto_merged")
+        _git(self.repo, "merge-base", "--is-ancestor", "main", "spec/t1")
+        self.assertEqual((self.wt / "task.txt").read_text(), "task work\n")
+
     def test_stale_branch_without_worktree_raises_unchanged(self):
         self._advance_main("other.txt", "advanced\n")
         with self.assertRaises(live.WorktreeAddError) as ctx:
