@@ -261,6 +261,72 @@ class TestUnreconciledTailEvidence:
         assert "T024" not in detail
 
 
+class TestCheckboxStatusDivergence:
+    """PR #414/#847's bug class: a task the run's own record calls DONE whose
+    task-source artifact (tasks.md checkbox / TASK-*.md status) does not show
+    it done on the live base branch -- generalized by
+    `integrate.detect_checkbox_status_divergence`."""
+
+    def test_divergence_is_flagged(self, tmp_path):
+        repo = _repo_with_journal(
+            tmp_path,
+            "008-x",
+            {
+                "integrate_complete": True,
+                "checkbox_status_divergence": [
+                    {"task": "1.2", "base_status": "pending"}
+                ],
+            },
+        )
+        findings = journal_selfcheck.check_repo(repo)["findings"]
+        assert len(findings) == 1
+        assert findings[0]["kind"] == "checkbox-status-divergence"
+        assert findings[0]["spec_id"] == "008-x"
+        assert "1.2" in findings[0]["detail"]
+        assert "pending" in findings[0]["detail"]
+
+    def test_no_divergence_is_clean(self, tmp_path):
+        repo = _repo_with_journal(
+            tmp_path,
+            "008-x",
+            {"integrate_complete": True, "checkbox_status_divergence": []},
+        )
+        assert journal_selfcheck.check_repo(repo)["findings"] == []
+
+    def test_live_runlock_suppresses_the_finding(self, tmp_path):
+        import fcntl
+
+        repo = _repo_with_journal(
+            tmp_path,
+            "008-x",
+            {"checkbox_status_divergence": [{"task": "1.2", "base_status": "pending"}]},
+        )
+        lock = repo.parent / "myapp-worktrees" / "run-008-x.lock"
+        fh = open(lock, "a")  # noqa: SIM115 -- held across the surrounding scope as a lock file
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            assert journal_selfcheck.check_repo(repo)["findings"] == []
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            fh.close()
+
+    def test_composes_with_unreconciled_tail_evidence_for_the_same_spec(self, tmp_path):
+        repo = _repo_with_journal(
+            tmp_path,
+            "008-x",
+            {
+                "integrate_complete": True,
+                "unreconciled_tail_evidence": [{"task": "T022"}],
+                "checkbox_status_divergence": [
+                    {"task": "1.2", "base_status": "pending"}
+                ],
+            },
+        )
+        findings = journal_selfcheck.check_repo(repo)["findings"]
+        kinds = {f["kind"] for f in findings}
+        assert kinds == {"unreconciled-tail-evidence", "checkbox-status-divergence"}
+
+
 class TestMalformedJournal:
     def test_unparseable_journal_is_flagged(self, tmp_path):
         repo = _repo_with_journal(

@@ -25,6 +25,18 @@ production incidents that were only caught by an operator noticing manually:
   informational wording naming the PR, and entries the auto-reconciliation
   already merged are dropped from the finding entirely. See
   `integrate.detect_unreconciled_tail_evidence`.
+- **checkbox-status-divergence** — `checkbox_status_divergence` non-empty: a
+  task this run's in-memory record calls DONE whose task-source artifact (a
+  devkit `TASK-*.md` status field, or an OpenSpec/speckit `tasks.md` checkbox)
+  does not show it done on the live base branch -- the class of bug behind
+  PR #414 (a stale reconcile merge silently reverting a different group's
+  already-ticked checkboxes) and PR #847 (a synthetic tail group's checkbox
+  write scoped to only its own leaf task, leaving every superseded ancestor's
+  checkbox untouched), each of which was previously caught only by a human
+  manually diffing `origin/<base>` against the spec artifact after the fact.
+  Detection only, no auto-reconciliation attempt (unlike
+  unreconciled-tail-evidence above) -- a human/agent must inspect and correct
+  the artifact. See `integrate.detect_checkbox_status_divergence`.
 - **malformed-journal** — the journal no longer parses as JSON. State files
   are written only by the orchestrator's atomic writer, so a parse failure
   means something else rewrote it (observed 2026-08-08: a worker hand-edited
@@ -230,6 +242,25 @@ def check_repo(repo: Path, run_record_dir: Path | None = None) -> dict[str, Any]
                         "detail": "; ".join(detail_parts),
                     }
                 )
+        checkbox_divergence = journal.get("checkbox_status_divergence")
+        if isinstance(checkbox_divergence, list) and checkbox_divergence:
+            entries = ", ".join(
+                f"{d.get('task', d)} (base status: {d.get('base_status', 'unknown')})"
+                if isinstance(d, dict)
+                else str(d)
+                for d in checkbox_divergence
+            )
+            findings.append(
+                {
+                    "kind": "checkbox-status-divergence",
+                    "spec_id": spec_id,
+                    "journal": str(journal_file),
+                    "detail": (
+                        f"task(s) reported DONE but diverge from the task-source "
+                        f"artifact on base: {entries}"
+                    ),
+                }
+            )
     return {"findings": findings}
 
 
