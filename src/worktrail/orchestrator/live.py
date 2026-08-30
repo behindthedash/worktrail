@@ -5429,7 +5429,9 @@ def _pipeline_scheduler(
         ],
         git_lock=iv_lock,
     )
-    integrate_module._record_checkbox_status_divergence(journal_path, checkbox_divergence)
+    integrate_module._record_checkbox_status_divergence(
+        journal_path, checkbox_divergence
+    )
     checkbox_note = _format_checkbox_divergence_note(checkbox_divergence)
     if checkbox_note:
         print(f"{_ts()} {checkbox_note}")
@@ -5730,7 +5732,10 @@ def _full_real_inner(
         # own DONE status without ever having reached base -- expected, not a
         # divergence.
         _quarantined_task_ids = {
-            tid for g in groups if g["name"] in quarantined for tid in g.get("tasks", [])
+            tid
+            for g in groups
+            if g["name"] in quarantined
+            for tid in g.get("tasks", [])
         }
         checkbox_divergence = integrate.detect_checkbox_status_divergence(
             repo,

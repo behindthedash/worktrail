@@ -122,9 +122,7 @@ class CheckboxStatusDivergence(unittest.TestCase):
             repo = self._init_repo_with_tasks_md(
                 tmpdir, "add-export", TASKS_MD_ALL_TICKED
             )
-            self._rewrite_tasks_md_on_base(
-                repo, "add-export", TASKS_MD_ONE_REVERTED
-            )
+            self._rewrite_tasks_md_on_base(repo, "add-export", TASKS_MD_ONE_REVERTED)
 
             findings = integrate.detect_checkbox_status_divergence(
                 repo, "origin", "main", "add-export", [_task("1.1"), _task("1.2")]
@@ -142,7 +140,11 @@ class CheckboxStatusDivergence(unittest.TestCase):
                 tmpdir, "add-export", TASKS_MD_ONE_REVERTED
             )
             findings = integrate.detect_checkbox_status_divergence(
-                repo, "origin", "main", "add-export", [_task("1.2", status="implementing")]
+                repo,
+                "origin",
+                "main",
+                "add-export",
+                [_task("1.2", status="implementing")],
             )
             self.assertEqual(findings, [])
 
@@ -170,7 +172,11 @@ class CheckboxStatusDivergence(unittest.TestCase):
                 tmpdir, "add-export", TASKS_MD_ALL_TICKED
             )
             findings = integrate.detect_checkbox_status_divergence(
-                repo, "origin", "main", "add-export", [_task("1.1", status="implementing")]
+                repo,
+                "origin",
+                "main",
+                "add-export",
+                [_task("1.1", status="implementing")],
             )
             self.assertEqual(findings, [])
 

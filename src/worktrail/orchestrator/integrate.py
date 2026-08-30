@@ -782,7 +782,13 @@ def detect_checkbox_status_divergence(
     with lock:
         _git(repo, "worktree", "prune", check=False)
         r = _git(
-            repo, "worktree", "add", "-f", "--detach", str(wt), remote_base_ref,
+            repo,
+            "worktree",
+            "add",
+            "-f",
+            "--detach",
+            str(wt),
+            remote_base_ref,
             check=False,
         )
     if r.returncode != 0:
@@ -797,7 +803,9 @@ def detect_checkbox_status_divergence(
         for tid in done_ids:
             status_on_base = base_status.get(tid)
             if status_on_base not in coordinator.DONE:
-                findings.append({"task": tid, "base_status": status_on_base or "missing"})
+                findings.append(
+                    {"task": tid, "base_status": status_on_base or "missing"}
+                )
         return findings
     finally:
         with lock:
@@ -805,7 +813,9 @@ def detect_checkbox_status_divergence(
         shutil.rmtree(wt, ignore_errors=True)
 
 
-def _record_checkbox_status_divergence(journal_path: str | None, findings: list) -> None:
+def _record_checkbox_status_divergence(
+    journal_path: str | None, findings: list
+) -> None:
     """Persist `detect_checkbox_status_divergence`'s findings into the run
     journal as `checkbox_status_divergence`, mirroring
     `_record_unreconciled_tail_evidence` -- `journal_selfcheck.check_repo()`
