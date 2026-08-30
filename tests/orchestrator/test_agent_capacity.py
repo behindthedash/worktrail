@@ -871,7 +871,9 @@ def test_gate_for_agent_never_substitutes_a_different_target(tmp_path):
         path=path,
         now=now,
     )
-    agent_capacity.record("codex-sub", "gpt-5.6-terra", outcome="available", path=path, now=now)
+    agent_capacity.record(
+        "codex-sub", "gpt-5.6-terra", outcome="available", path=path, now=now
+    )
     gate = agent_capacity.gate_for_agent(
         _routing_fixture(), "claude", path=path, now=now
     )
