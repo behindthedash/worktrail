@@ -331,6 +331,7 @@ class TestLifecycle(unittest.TestCase):
                 "epic",
                 "feature",
                 "specification",
+                "expected_files",
                 "handoffs_consumed",
                 "handoffs_created",
                 "skills_loaded",
@@ -1719,6 +1720,8 @@ class TestReconcile(unittest.TestCase):
 
 def _claim(run, **over):
     argv = ["claim", run, "--specification", over.get("specification", "spec-a")]
+    if over.get("expected_files") is not None:
+        argv += ["--expected-files", "\n".join(over["expected_files"])]
     out = StringIO()
     with patch("sys.stdout", out):
         rc = main(argv)
@@ -1860,6 +1863,158 @@ class TestClaim(unittest.TestCase):
         self.assertEqual(out["status"], "claimed")
         self.assertEqual(len(out["warnings"]), 1)
         self.assertIn(str(corrupted), out["warnings"][0])
+
+    def test_claim_with_overlapping_expected_files_under_different_specifications_is_a_conflict(
+        self,
+    ):
+        """The gap `#fix-branch-worktree-setup`'s advisory sibling-diff scan
+        only warned about: two `fix:$SLUG` claims under DIFFERENT slugs (so
+        the specification-keyed lock/scan above never sees them) converging
+        on the same file must hard stop, not just print a warning.
+        """
+        session_a = _start(self.tmp, request="session A fixes the null check")
+        session_b = _start(self.tmp, request="session B fixes the same bug")
+
+        rc_a, out_a = _claim(
+            session_a["path"],
+            specification="fix:slug-a",
+            expected_files=["src/pkg/handler.py", "tests/test_handler.py"],
+        )
+        rc_b, out_b = _claim(
+            session_b["path"],
+            specification="fix:slug-b",
+            expected_files=["src/pkg/handler.py"],
+        )
+
+        self.assertEqual(rc_a, 0)
+        self.assertEqual(out_a["status"], "claimed")
+        self.assertEqual(rc_b, 1)
+        self.assertEqual(out_b["status"], "conflict")
+        self.assertEqual(out_b["reason"], "file-overlap")
+        self.assertEqual(len(out_b["conflicts"]), 1)
+        self.assertEqual(out_b["conflicts"][0]["run_id"], session_a["run_id"])
+        self.assertEqual(out_b["conflicts"][0]["overlap"], ["src/pkg/handler.py"])
+
+        # A rejected claim must not leave a partial specification write behind.
+        record_b = _load(Path(session_b["path"]))
+        self.assertIsNone(record_b["specification"])
+
+    def test_claim_with_disjoint_expected_files_under_different_specifications_succeeds(
+        self,
+    ):
+        session_a = _start(self.tmp, request="session A fixes bug one")
+        session_b = _start(self.tmp, request="session B fixes bug two")
+
+        rc_a, out_a = _claim(
+            session_a["path"],
+            specification="fix:slug-a",
+            expected_files=["src/pkg/a.py"],
+        )
+        rc_b, out_b = _claim(
+            session_b["path"],
+            specification="fix:slug-b",
+            expected_files=["src/pkg/b.py"],
+        )
+
+        self.assertEqual(rc_a, 0)
+        self.assertEqual(rc_b, 0)
+        self.assertEqual(out_a["status"], "claimed")
+        self.assertEqual(out_b["status"], "claimed")
+
+    def test_claim_registers_expected_files_on_the_run_record(self):
+        session = _start(self.tmp, request="session registers its file set")
+
+        rc, out = _claim(
+            session["path"],
+            specification="fix:slug-a",
+            expected_files=["src/pkg/a.py", "src/pkg/b.py"],
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(out["status"], "claimed")
+        record = _load(Path(session["path"]))
+        self.assertEqual(record["expected_files"], ["src/pkg/a.py", "src/pkg/b.py"])
+
+    def test_claim_without_expected_files_never_engages_the_overlap_check(self):
+        """Omitting `--expected-files` (the pre-existing call shape) must
+        behave exactly as before this change, even against a sibling claim
+        that registered an otherwise-overlapping file set.
+        """
+        session_a = _start(self.tmp, request="session A registers files")
+        session_b = _start(self.tmp, request="session B registers none")
+
+        rc_a, out_a = _claim(
+            session_a["path"],
+            specification="fix:slug-a",
+            expected_files=["src/pkg/shared.py"],
+        )
+        rc_b, out_b = _claim(session_b["path"], specification="fix:slug-b")
+
+        self.assertEqual(rc_a, 0)
+        self.assertEqual(out_a["status"], "claimed")
+        self.assertEqual(rc_b, 0)
+        self.assertEqual(out_b["status"], "claimed")
+        self.assertNotIn("reason", out_b)
+        record_b = _load(Path(session_b["path"]))
+        self.assertEqual(record_b.get("expected_files"), [])
+
+
+class TestClaimFileOverlapStaleness(unittest.TestCase):
+    """Mirrors `TestReconcile`'s real-git fixture: a sibling claim whose
+    worktree is gone and whose registered files already landed on the base
+    branch is stale, not a live contender, and must not block a new claim
+    that overlaps its file set.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo_root = Path(self.tmp) / "target-repo"
+        self.repo_root.mkdir()
+        self._git("init", "-b", "main")
+        self._git("config", "user.email", "test@example.com")
+        self._git("config", "user.name", "Test")
+        (self.repo_root / "shared.py").write_text("shared", encoding="utf-8")
+        self._git("add", "shared.py")
+        self._git("commit", "-m", "initial")
+        self.runs_dir = Path(self.tmp) / "runs"
+
+    def _git(self, *args):
+        subprocess.run(
+            ["git", "-C", str(self.repo_root), *args], check=True, capture_output=True
+        )
+
+    def test_stale_sibling_file_overlap_does_not_block(self):
+        session_a = _start(
+            str(self.runs_dir), request="session A, now stale", repo=str(self.repo_root)
+        )
+        rc_a, _out_a = _claim(
+            session_a["path"],
+            specification="fix:slug-a",
+            expected_files=["shared.py"],
+        )
+        self.assertEqual(rc_a, 0)
+        main(["set", session_a["path"], "base_branch", "main"])
+        main(
+            [
+                "set",
+                session_a["path"],
+                "worktree",
+                str(Path(self.tmp) / "worktree-gone"),
+            ]
+        )
+        main(["append", session_a["path"], "files_changed", "shared.py"])
+
+        session_b = _start(
+            str(self.runs_dir), request="session B, same file", repo=str(self.repo_root)
+        )
+        rc_b, out_b = _claim(
+            session_b["path"],
+            specification="fix:slug-b",
+            expected_files=["shared.py"],
+        )
+
+        self.assertEqual(rc_b, 0)
+        self.assertEqual(out_b["status"], "claimed")
 
 
 @pytest.fixture()
