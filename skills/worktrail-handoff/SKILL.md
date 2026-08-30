@@ -62,6 +62,31 @@ BASE="${WORK_QUEUE_DIR:-$HOME/work-queue}"      # queue/ and picked/ live under 
 was left incomplete in this conversation. Ask once via `AskUserQuestion` only if genuinely
 ambiguous. Redact API keys, passwords, tokens, and PII before passing content to the command.
 
+**Step 1.5 — Pre-write duplicate check.** Before creating anything, check whether a same-repo,
+high-confidence match already exists — this runs the same scoring Step 2 would otherwise only
+run *after* writing a new file, early enough to skip the duplicate file entirely:
+
+```bash
+worktrail-check-duplicate-brief --focus "$FOCUS_TEXT" --queue-dir "$BASE" \
+  [--repo "$REPO"] [--context "$CONTEXT"] [--approach "$APPROACH"] \
+  [--artifacts "$ARTIFACTS"] [--questions "$QUESTIONS"] \
+  [--suggested-skill skill.name]...
+```
+
+Returns `{"match": {"path", "id", "focus", "total_score"} | null}`. On `match: null`, proceed to
+Step 2 unchanged. On a match, ask via `AskUserQuestion` (three options, no default-yes):
+
+- **Confirm as duplicate** — this is the same underlying work. Append instead of creating:
+  `worktrail-append-duplicate-signal --path "<match.path>" --focus "$FOCUS_TEXT" [--context
+  "$CONTEXT"]`. Report the *existing* brief's id (`match.id`) to the user, per Step 3 — no new
+  file was written.
+- **Reject as false positive** — different work that merely reads similarly. Proceed to Step 2
+  normally, then cross-link for traceability: `worktrail-work-queue link <new-id> <match.id>`.
+- *(No interactive tool available — headless/unattended capture, e.g. a Stop hook auto-capture
+  or a drain one-shot)*: skip this step entirely and proceed to Step 2 unchanged — today's
+  post-write `auto_linked`/`confirm` behavior is the fail-open default when no human is present
+  to judge the match.
+
 **Step 2 — Create through Worktrail.** The CLI owns filename generation, frontmatter, route
 classification, validation, candidate scoring, and high-confidence related linking. Pass the
 focus and any known context instead of writing Markdown directly:
@@ -98,6 +123,9 @@ error and do not hand-write a fallback document.
 Closure runs through the front door, which owns `worktrail-work-queue done` and its
 `--planning-only` / `--implementation-complete` qualifiers. One rule belongs here, with the
 brief document itself:
+
+Closing a brief with `related:` entries surfaces any siblings still open in `queue/`/`picked/`
+in the `done` result — see the front door's `#handoff-seed` Step 7.
 
 **Closing with a re-verification claim requires showing the re-run, not just asserting it.**
 A `--note` that claims a result was "disproven", "re-verified", or "no longer flags/triggers"

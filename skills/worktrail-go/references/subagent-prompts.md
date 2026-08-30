@@ -1690,6 +1690,11 @@ planning-only Route-C runs, use `--planning-only`; an unqualified completion
 is rejected as `awaiting_implementation_decision`.
 Report: "Handoff brief `<filename>` marked done."
 
+If the result carries `related_still_open` (this brief's `related:` siblings still sitting in
+`queue/` or `picked/` with a non-`done` status), surface them to the closer — name each id and
+its status; this is advisory only, never a reason to hold the current closure. Deciding whether
+to also close a sibling is the closer's judgment call, not automatic.
+
 If the pipeline is aborted before completion, **leave the brief in `picked/`** (advisory — it
 keeps `status: picked`; `release` it only if you want another session to retry it).
 

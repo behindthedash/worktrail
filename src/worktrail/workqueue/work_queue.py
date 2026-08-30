@@ -437,6 +437,14 @@ def _read_frontmatter(path: Path) -> dict[str, Any]:
     return read_frontmatter(path)
 
 
+def _coerce_id_list(val: Any) -> list[str]:
+    if isinstance(val, list):
+        return [str(x) for x in val if x is not None]
+    if isinstance(val, str) and val:
+        return [val]
+    return []
+
+
 def _focus_of(path: Path) -> str:
     """Frontmatter focus, falling back to the first line of the ## Focus body."""
     fm = _read_frontmatter(path)
@@ -1244,6 +1252,54 @@ def claim_batch(
     }
 
 
+def _related_still_open(fm: dict[str, Any], own_stem: str) -> list[dict[str, Any]]:
+    """Related briefs (frontmatter `related:`) still sitting in `picked/` or
+    `queue/` with a non-`done` status, surfaced to whoever closes `own_stem`.
+
+    Closing one half of a `related:`-linked pair previously surfaced nothing
+    about the other half -- only `batch-primary:` companions (claim-batch,
+    same-dispatch) got any closure-time attention, and even that was never
+    actually checked inside `done()` itself. A generic `related:` link (formed
+    by `link()`, or auto-formed by `score_candidates.py`'s capture-time
+    auto-link) got no closer-facing surfacing at all, so a sibling describing
+    the same root cause could sit unclosed in `queue/` indefinitely after its
+    pair already landed (observed live: briefs 20260824-164124 and
+    20260825-152530).
+
+    Best-effort and purely advisory: an unresolvable or ambiguous `related:`
+    id is skipped, never fatal to closure. `picked/` is checked before
+    `queue/` per id so a claimed-but-not-done sibling is reported in
+    preference to a stale duplicate resolution in the other folder.
+    """
+    related_ids = _coerce_id_list(fm.get("related"))
+    open_siblings: list[dict[str, Any]] = []
+    seen_stems: set[str] = set()
+    for related_id in related_ids:
+        related_id = str(related_id or "").strip()
+        if not related_id:
+            continue
+        for folder in (picked_dir(), queue_dir()):
+            try:
+                res = resolve(related_id, folder)
+            except OSError:
+                continue
+            if res.get("status") != "match":
+                continue
+            candidate = Path(res["candidates"][0])
+            if candidate.stem == own_stem or candidate.stem in seen_stems:
+                continue
+            cand_fm = _read_frontmatter(candidate)
+            status = cand_fm.get("status")
+            if status == "done":
+                continue
+            seen_stems.add(candidate.stem)
+            open_siblings.append(
+                {"id": candidate.stem, "status": status, "path": str(candidate)}
+            )
+            break  # found in this folder; don't also check the other
+    return open_siblings
+
+
 def done(
     identifier: str,
     *,
@@ -1297,6 +1353,12 @@ def done(
     closure note -- the target spec's `tasks.md` is never written. The lookup
     never blocks closure: a cache miss, unreadable `tasks.md`, or missing
     target spec directory silently degrades to no signal.
+
+    When the closing brief carries `related:` entries, the result additionally
+    carries ``related_still_open`` -- siblings from that list still sitting in
+    `picked/` or `queue/` with a non-`done` status (see
+    `_related_still_open`) -- so the closer can check/close them too. Purely
+    advisory: never blocks or alters closure.
     """
     if planning_only and implementation_complete:
         return {
@@ -1447,6 +1509,9 @@ def done(
     result = {"status": "done", "path": str(path), "candidates": [], "error": None}
     if checkbox_out_of_sync:
         result["checkbox_out_of_sync"] = True
+    related_open = _related_still_open(fm, path.stem)
+    if related_open:
+        result["related_still_open"] = related_open
     return result
 
 
@@ -1612,20 +1677,13 @@ def link(id_a: str, id_b: str) -> dict[str, Any]:
     stem_a = path_a.stem
     stem_b = path_b.stem
 
-    def _coerce_ids(val: Any) -> list[str]:
-        if isinstance(val, list):
-            return [str(x) for x in val if x is not None]
-        if isinstance(val, str) and val:
-            return [val]
-        return []
-
     try:
         original_a = path_a.read_text(encoding="utf-8")
         original_b = path_b.read_text(encoding="utf-8")
         fm_a = _read_frontmatter(path_a)
         fm_b = _read_frontmatter(path_b)
-        related_a = _coerce_ids(fm_a.get("related"))
-        related_b = _coerce_ids(fm_b.get("related"))
+        related_a = _coerce_id_list(fm_a.get("related"))
+        related_b = _coerce_id_list(fm_b.get("related"))
         if stem_b not in related_a:
             related_a.append(stem_b)
             _set_fm_list_field(path_a, "related", related_a)
