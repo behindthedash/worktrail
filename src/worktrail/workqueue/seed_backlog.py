@@ -355,7 +355,7 @@ def seed_backlog(
     """
     queue_base = Path(queue_base or work_queue.base_dir()).expanduser()
     candidates = find_needs_tasks_specs(repos_root, go_repo)
-    epic_findings, _sequencing_gated = find_epic_gaps(repos_root, go_repo)
+    epic_findings, sequencing_gated = find_epic_gaps(repos_root, go_repo)
     unparseable = [f for f in epic_findings if f.get("unparseable")]
     candidates += [f for f in epic_findings if not f.get("unparseable")]
     candidates += find_ready_specs(repos_root, go_repo)
@@ -363,6 +363,16 @@ def seed_backlog(
         log(
             f"seed-backlog: skipping epic {finding['repo_name']} "
             f"{finding['id']}: no '### Feature' decomposition headings found"
+        )
+    for finding in sequencing_gated:
+        gates_desc = ", ".join(
+            f"Feature {gate['feature']} ({gate['resolved_name'] or 'not yet specced'})"
+            for gate in finding["gates"]
+        )
+        log(
+            f"seed-backlog: skipping epic {finding['repo_name']} "
+            f"{finding['id']}: Feature {finding['blocked_feature']} is "
+            f"sequencing-gated by {gates_desc} (stage: epic-sequencing-gated)"
         )
 
     known = existing_seed_keys(queue_base)

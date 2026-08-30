@@ -316,6 +316,40 @@ def test_epic_with_unspecced_features_seeds_brief(tmp_path):
     assert fm["implementation-intent"] == "planning-only"
 
 
+def test_sequencing_gated_epic_logs_one_line_and_is_not_seeded(tmp_path):
+    repos_root = tmp_path / "projects"
+    repo = _mk_repo(repos_root, "repo-a")
+    _mk_epic(
+        repo,
+        "001-payments",
+        features=3,
+        future_spec_ids={1: "020-payments-core"},
+    )
+    epic_path = repo / "docs" / "specs" / "epics" / "001-payments.md"
+    epic_path.write_text(
+        epic_path.read_text(encoding="utf-8")
+        + "\nFeature 2 depends on Feature 1's contract.\n",
+        encoding="utf-8",
+    )
+    # cited=1 (unrelated spec citing the epic id) so next_n = 2, which the
+    # appended prose above gates on Feature 1 (still unspecced -- open).
+    _mk_citing_spec(repo, "030-unrelated", "001-payments")
+
+    messages: list[str] = []
+    summary = seed_backlog.seed_backlog(
+        repos_root, queue_base=tmp_path / "wq", log=messages.append
+    )
+
+    assert summary["seeded"] == []
+    gated_lines = [m for m in messages if "epic-sequencing-gated" in m]
+    assert len(gated_lines) == 1
+    line = gated_lines[0]
+    assert "001-payments" in line
+    assert "Feature 2" in line
+    assert "Feature 1" in line
+    assert "020-payments-core" in line or "not yet specced" in line
+
+
 def test_openspec_spec_citation_counts_toward_epic(tmp_path):
     repos_root = tmp_path / "projects"
     repo = _mk_repo(repos_root, "repo-a")
