@@ -1,0 +1,40 @@
+name: Ruff autofix bootstrap
+
+on:
+  push:
+    branches:
+      - chg/fleet-ci-standard-rollout
+
+permissions:
+  contents: write
+
+jobs:
+  autofix:
+    if: github.repository == 'behindthedash/worktrail'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: '3.14'
+
+      - name: Install package and Ruff
+        run: pip install -e ".[dev]" ruff
+
+      - name: Apply Ruff safe fixes and formatting
+        run: |
+          ruff check . --fix || true
+          ruff format .
+
+      - name: Commit mechanical cleanup
+        run: |
+          if git diff --quiet; then
+            echo "Ruff produced no mechanical changes."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "style: apply Ruff safe fixes and formatting"
+          git push origin HEAD:chg/fleet-ci-standard-rollout
