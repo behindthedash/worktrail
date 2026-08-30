@@ -33,7 +33,9 @@ SCAN_DIRS = [
 # `.get("some_commit_or_ref_key", "HEAD")` / `.get('key', 'HEAD')` -- a dict
 # read that silently falls back to the worktree-relative sentinel instead of
 # requiring the caller to have resolved it.
-BARE_HEAD_DEFAULT_RE = re.compile(r"""\.get\(\s*['"][^'"]+['"]\s*,\s*['"]HEAD['"]\s*\)""")
+BARE_HEAD_DEFAULT_RE = re.compile(
+    r"""\.get\(\s*['"][^'"]+['"]\s*,\s*['"]HEAD['"]\s*\)"""
+)
 
 
 def _iter_source_files():
@@ -51,10 +53,12 @@ def test_no_bare_head_literal_as_ctx_dict_default():
         text = path.read_text(encoding="utf-8")
         for match in BARE_HEAD_DEFAULT_RE.finditer(text):
             line_no = text.count("\n", 0, match.start()) + 1
-            offenders.append(f"{path.relative_to(REPO_ROOT)}:{line_no}: {match.group(0)}")
+            offenders.append(
+                f"{path.relative_to(REPO_ROOT)}:{line_no}: {match.group(0)}"
+            )
 
     assert not offenders, (
-        "Found dict.get(..., \"HEAD\") default(s) -- this is the "
+        'Found dict.get(..., "HEAD") default(s) -- this is the '
         "worktree-relative-HEAD-sentinel defect class fixed in PR #825 and "
         "PR #837. Resolve the value against the canonical repo at the point "
         "it is produced instead of defaulting it here:\n" + "\n".join(offenders)
