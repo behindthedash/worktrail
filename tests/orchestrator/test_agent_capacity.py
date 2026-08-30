@@ -812,3 +812,112 @@ def test_preflight_reports_all_providers_gated_without_spawning(tmp_path, monkey
     else:
         raise AssertionError("all gated providers should stop before spawn")
     assert called == []
+
+
+def _routing_fixture():
+    return {
+        "targets": {
+            "claude-sub": {"harness": "claude", "pool": "subscription"},
+            "codex-sub": {"harness": "codex", "pool": "subscription"},
+        },
+        "tiers": {
+            "t2-build": {
+                "claude-sub": {"model": "sonnet"},
+                "codex-sub": {"model": "gpt-5.6-terra"},
+            }
+        },
+        "default_tier": "t2-build",
+    }
+
+
+def test_gate_for_agent_returns_none_when_available(tmp_path):
+    path = tmp_path / "capacity.json"
+    assert (
+        agent_capacity.gate_for_agent(_routing_fixture(), "claude", path=path) is None
+    )
+
+
+def test_gate_for_agent_returns_gate_when_resolved_target_is_unavailable(tmp_path):
+    path = tmp_path / "capacity.json"
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    agent_capacity.record(
+        "claude-sub",
+        "sonnet",
+        outcome="unavailable",
+        failure_class="billing",
+        retry_after=now + timedelta(hours=1),
+        path=path,
+        now=now,
+    )
+    gate = agent_capacity.gate_for_agent(
+        _routing_fixture(), "claude", path=path, now=now
+    )
+    assert gate is not None
+    assert gate["target"] == "claude-sub"
+    assert gate["failure_class"] == "billing"
+
+
+def test_gate_for_agent_never_substitutes_a_different_target(tmp_path):
+    """codex-sub sitting healthy must never mask claude-sub's own gate --
+    this check answers "is claude gated," not "is anything available"."""
+    path = tmp_path / "capacity.json"
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    agent_capacity.record(
+        "claude-sub",
+        "sonnet",
+        outcome="unavailable",
+        failure_class="billing",
+        retry_after=now + timedelta(hours=1),
+        path=path,
+        now=now,
+    )
+    agent_capacity.record(
+        "codex-sub", "gpt-5.6-terra", outcome="available", path=path, now=now
+    )
+    gate = agent_capacity.gate_for_agent(
+        _routing_fixture(), "claude", path=path, now=now
+    )
+    assert gate is not None and gate["target"] == "claude-sub"
+
+
+def test_gate_for_agent_no_matching_target_degrades_to_proceed(tmp_path):
+    path = tmp_path / "capacity.json"
+    routing = {"targets": {}, "tiers": {}, "default_tier": None}
+    assert agent_capacity.gate_for_agent(routing, "claude", path=path) is None
+
+
+def test_check_agent_cli_exits_zero_when_available(tmp_path):
+    path = tmp_path / "capacity.json"
+    rc = agent_capacity.main(
+        [
+            "--cache",
+            str(path),
+            "check-agent",
+            "--agent",
+            "claude",
+            "--routing",
+            json.dumps(_routing_fixture()),
+        ]
+    )
+    assert rc == 0
+
+
+def test_check_agent_cli_exits_one_when_gated(tmp_path, capsys):
+    path = tmp_path / "capacity.json"
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    agent_capacity.record(
+        "claude-sub",
+        "sonnet",
+        outcome="unavailable",
+        failure_class="billing",
+        retry_after=now + timedelta(hours=1),
+        path=path,
+        now=now,
+    )
+    rc = agent_capacity.cmd_check_agent(
+        "claude", json.dumps(_routing_fixture()), None, path=path, now=now
+    )
+    assert rc == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["gated"] is True
+    assert out["target"] == "claude-sub"

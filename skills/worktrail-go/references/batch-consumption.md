@@ -67,8 +67,10 @@ would ride the same route/worktree/PR; when in doubt, leave a candidate in the q
    forcing it in.
 
 5. On completion mark EACH brief done individually. Use
-   `worktrail-work-queue done <id> --implementation-complete --by "$INVOCATION_CONTEXT_DISPATCH_ID"`
-   after implementation, or `--planning-only` only when the run explicitly stopped at planning.
+   `worktrail-work-queue done <id> --implementation-complete --run "$RUN" --by "$INVOCATION_CONTEXT_DISPATCH_ID"`
+   after implementation (the shared batch run record from step 4, verified against a
+   PR-owning `finish()` state — see `work_queue.py`'s "Implementation closure evidence
+   gate"), or `--planning-only` only when the run explicitly stopped at planning.
    — batch execution never blurs per-brief completion state. A companion whose scope did
    NOT actually land must be released back to the queue
    (`worktrail-work-queue release <id> --by "$INVOCATION_CONTEXT_DISPATCH_ID"`), not marked done.

@@ -35,10 +35,15 @@ CLI (all subcommands accept --json):
                                         re-verification with no shown re-run output
                                         is rejected, and closing a consolidation-batch
                                         brief with no per-sub-item evidence is rejected
-                                        (see "Closure evidence gate"). --by, when given,
-                                        is compared against the brief's claimed-by
-                                        (see "Ownership check on done/release" below);
-                                        --force overrides a mismatch.
+                                        (see "Closure evidence gate"). --implementation-
+                                        complete with no --run also requires --note to
+                                        cite a landed PR or a pre-existing-collision
+                                        closure; --run <path> verifies a run record
+                                        reached a PR-owning finish() state instead (see
+                                        "Implementation closure evidence gate"). --by,
+                                        when given, is compared against the brief's
+                                        claimed-by (see "Ownership check on done/release"
+                                        below); --force overrides a mismatch.
   queue.py release  IDENTIFIER [--by L] move picked/ -> queue/ (abandoned claim)
                     [--force]           same --by/--force ownership check as done
 
@@ -68,6 +73,23 @@ claim like "disproven -- corrected detector no longer flags this file" was
 accepted on prose alone; re-executing the cited detector later showed it still
 flagged the file (brief
 20260817-101013-datalena-release-notes-consolidate-yml-missing-docs-skip-gate).
+
+Implementation closure evidence gate (done --implementation-complete)
+------------------------------------------------------------------------
+`done(implementation_complete=True)` refuses to close on prose alone. With `--run
+<path>`, the named run record must have reached one of run_record.py's three
+PR-owning `finish()` states (`completed_and_merged`/`completed_pr_open`/
+`completed_awaiting_human_approval`) with a recorded `pull_request`
+(`{"status": "implementation_run_not_verified"}`, no mutation, otherwise) -- see
+`_run_record_implementation_evidence_missing`. Without `--run`, `--note` must
+instead cite a landed PR (a `github.com/.../pull/N` URL or `PR #N`) or use the
+established pre-existing-collision closure sentinel
+(`spec-collision-check.md`'s Route C/D auto-close path)
+(`{"status": "unverified_implementation_closure"}` otherwise) -- see
+`_implementation_completion_missing_evidence`. This closes the gap where brief
+20260825-205045-worktrail-skill-dispatch-should-strip was closed
+`--implementation-complete` on a note that named neither, while its referenced
+worktree still held uncommitted changes and no PR was ever opened.
 
 Ownership check on done/release
 --------------------------------
@@ -238,6 +260,99 @@ def _consolidation_closure_missing_evidence(body: str, note: str | None) -> list
     if not note or not _EVIDENCE_MARKER_RE.search(note):
         return member_ids
     return [member_id for member_id in member_ids if member_id not in note]
+
+
+# A GitHub PR reference in either shape a closure note plausibly cites it.
+_PR_REFERENCE_RE = re.compile(
+    r"github\.com/[^/\s]+/[^/\s]+/pull/\d+|\bPR\s*#\d+\b", re.IGNORECASE
+)
+
+# spec-collision-check.md's Route C/D auto-close path (worktrail-go/SKILL.md
+# Phase 5.5): closes a brief as already covered by separate, prior work, so
+# it legitimately has no PR of its own to cite.
+_COLLISION_CLOSURE_PREFIX = "Closed as a pre-existing collision with"
+
+# The three PR-owning terminal states a run record's `final_status` must
+# land in for `_run_record_implementation_evidence_missing` to accept it
+# (run_record.py's own IMPLEMENTATION_COMPLETION_STATES).
+_IMPLEMENTATION_TERMINAL_STATES = frozenset(
+    {"completed_and_merged", "completed_pr_open", "completed_awaiting_human_approval"}
+)
+
+
+def _implementation_completion_missing_evidence(note: str | None) -> bool:
+    """True when an `--implementation-complete` closure with no `--run` given
+    also carries no note evidence that anything actually landed.
+
+    A deliberately narrow, code-enforced "show your work" check for the case
+    with no run record to verify mechanically, mirroring
+    `_reverification_claim_missing_evidence`: brief
+    20260825-205045-worktrail-skill-dispatch-should-strip was closed
+    `--implementation-complete` with a note naming neither a PR nor a
+    collision ("Scrub WORKTRAIL_* ... verified with pytest ..."), while its
+    referenced worktree still held uncommitted changes and no PR was ever
+    opened. Accepts either a recognizable PR reference or the established
+    pre-existing-collision closure sentinel; anything else is unverified.
+    """
+    if not note:
+        return True
+    if note.strip().startswith(_COLLISION_CLOSURE_PREFIX):
+        return False
+    return not _PR_REFERENCE_RE.search(note)
+
+
+def _run_record_implementation_evidence_missing(run_path: str) -> str | None:
+    """`None` when `run_path`'s run record proves PR-owning implementation
+    actually landed; otherwise a human-readable reason `done()` refuses the
+    closure with.
+
+    Requires a terminal `final_status` in one of the three PR-owning
+    completion states plus a recorded `pull_request` URL, then -- best
+    effort, only when the record's own `worktree` field still resolves to a
+    directory on disk -- checks that worktree has no uncommitted changes
+    left behind (the exact shape of the 20260825-205045 false closure: an
+    uncommitted implementation the closure note never mentioned). This
+    transitively relies on `run_record.py finish()`'s own scope-completeness/
+    merge-state/review-thread gates: a run cannot reach one of these three
+    states without already having passed them, so this does not re-verify
+    CI/merge state itself.
+    """
+    from ..router.run_record import _load as _load_run_record
+
+    path = Path(run_path)
+    if not path.is_file():
+        return f"run record {run_path} does not exist"
+    try:
+        record = _load_run_record(path)
+    except OSError as exc:
+        return f"could not read run record {run_path}: {exc}"
+    final_status = record.get("final_status")
+    if record.get("status") != "done" or final_status is None:
+        return f"run record {run_path} has no final_status -- it never reached finish()"
+    if final_status not in _IMPLEMENTATION_TERMINAL_STATES:
+        return (
+            f"run record {run_path} finished with '{final_status}', not a "
+            "PR-owning completion state"
+        )
+    if not record.get("pull_request"):
+        return f"run record {run_path} carries no pull_request field"
+    worktree = record.get("worktree")
+    if worktree and Path(worktree).is_dir():
+        try:
+            import subprocess
+
+            status = subprocess.run(
+                ["git", "-C", worktree, "status", "--porcelain"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            status = None
+        if status is not None and status.returncode == 0 and status.stdout.strip():
+            return f"worktree {worktree} still has uncommitted changes"
+    return None
 
 
 def _target_task_checkbox_out_of_sync(fm: dict[str, Any]) -> bool:
@@ -1135,10 +1250,20 @@ def done(
     planning_only: bool = False,
     implementation_complete: bool = False,
     note: str | None = None,
+    run: str | None = None,
     by: str | None = None,
     force: bool = False,
 ) -> dict[str, Any]:
     """Stamp a picked brief as completed.
+
+    ``run``, with ``implementation_complete``: path to the run record that
+    implemented this brief. When given, it is verified (`status:
+    implementation_run_not_verified`, no mutation, on failure) instead of
+    inspecting ``note`` -- see `_run_record_implementation_evidence_missing`.
+    Omitted, ``note`` must instead carry a PR reference or the established
+    pre-existing-collision closure sentinel (`status:
+    unverified_implementation_closure` otherwise) -- see
+    `_implementation_completion_missing_evidence`.
 
     ``by``/``force``: see `_ownership_block` -- omitted `by` (every existing
     caller today) is unaffected; a supplied `by` that mismatches the brief's
@@ -1217,6 +1342,29 @@ def done(
                 "'Command:'/'Output:' pair) and retry."
             ),
         }
+    if implementation_complete:
+        if run:
+            run_missing = _run_record_implementation_evidence_missing(run)
+            if run_missing:
+                return {
+                    "status": "implementation_run_not_verified",
+                    "path": str(path),
+                    "candidates": [],
+                    "error": run_missing,
+                }
+        elif _implementation_completion_missing_evidence(note):
+            return {
+                "status": "unverified_implementation_closure",
+                "path": str(path),
+                "candidates": [],
+                "error": (
+                    "Closing --implementation-complete with no --run and no PR "
+                    "reference in --note (a github.com/.../pull/N URL or 'PR #N') "
+                    "or a pre-existing-collision closure. Pass --run <path> to a "
+                    "run record that reached a PR-owning finish() state, or cite "
+                    "the landed PR in --note, and retry."
+                ),
+            }
     try:
         original = path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -1628,6 +1776,13 @@ def main(argv=None) -> int:
         help="append a ## Closure Note section to the brief body before closing it",
     )
     dp.add_argument(
+        "--run",
+        default=None,
+        help="with --implementation-complete: run record path to verify "
+        "instead of inspecting --note (must have reached a PR-owning "
+        "finish() state)",
+    )
+    dp.add_argument(
         "--by",
         default=None,
         help="caller identity; rejected if it mismatches the brief's claimed-by",
@@ -1687,6 +1842,7 @@ def main(argv=None) -> int:
             planning_only=args.planning_only,
             implementation_complete=args.implementation_complete,
             note=args.note,
+            run=args.run,
             by=args.by,
             force=args.force,
         )
