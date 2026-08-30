@@ -5131,10 +5131,13 @@ class EpicStageDetection(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        (spec_dir / "tasks").mkdir()
-        (spec_dir / "tasks" / "TASK-001.md").write_text(
-            "---\nid: TASK-001\nstatus: pending\nkind: impl\n---\n"
-        )
+        tasks_dir = spec_dir / "tasks"
+        tasks_dir.mkdir()
+        # Create 0/16 tasks (ready-to-implement shape): 16 pending tasks, none completed
+        for i in range(1, 17):
+            (tasks_dir / f"TASK-{i:03d}.md").write_text(
+                f"---\nid: TASK-{i:03d}\nstatus: pending\nkind: impl\n---\n"
+            )
 
         result = dashboard.detect_epic_stage(epic_file, self.repo)
 
@@ -5151,6 +5154,12 @@ class EpicStageDetection(unittest.TestCase):
         self.assertEqual(gate["spec_id"], "feature-1-contract")
         self.assertEqual(gate["resolved_name"], "010-feature-implementation")
         self.assertFalse(gate["closed"])  # ready-to-implement is open, not closed
+
+        # Verify that dashboard.scan() on the citing spec folder returns ready-to-implement stage
+        spec_scan_rows = dashboard.scan(self.repo / "docs" / "specs")
+        citing_spec_rows = [r for r in spec_scan_rows if r["id"] == "010-feature-implementation"]
+        self.assertEqual(len(citing_spec_rows), 1)
+        self.assertEqual(citing_spec_rows[0]["stage"], "ready-to-implement")
 
     def test_non_epic_named_file_is_ignored_by_epic_id_pattern_against_real_directory(
         self,
