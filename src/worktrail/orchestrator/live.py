@@ -41,8 +41,6 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
-from typing_extensions import Self
-
 from ..router import invocation_context
 from ..taskformats import resolve as taskformats
 from . import agent_capacity, coordinator, dispatch, orchestrate, progress, spawnlib
@@ -318,7 +316,7 @@ class RunLock:
             self._fh.close()
             self._fh = None
 
-    def __enter__(self) -> Self:
+    def __enter__(self) -> RunLock:  # noqa: PYI034 -- avoid a typing_extensions dependency for one hint
         return self.acquire()
 
     def __exit__(self, *_) -> None:
