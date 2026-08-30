@@ -167,6 +167,12 @@ class BuildRulesetsDriftGuardWorkflowTests(unittest.TestCase):
         self.assertEqual(doc[True]["pull_request"]["branches"], ["dev", "stg", "prd"])
         self.assertEqual(doc[True]["push"]["branches"], ["dev", "stg", "prd"])
 
+    def test_job_display_name_matches_workflow_title_and_doctrine(self):
+        text = repo_init.build_rulesets_drift_guard_workflow(["dev", "prd"])
+        doc = yaml.safe_load(text)
+        self.assertEqual(doc["name"], "CI: Rulesets Drift Guard")
+        self.assertEqual(doc["jobs"]["rulesets-check"]["name"], "Rulesets drift guard")
+
     def test_has_app_token_step_and_no_secrets_github_token_for_rulesets_api(self):
         text = repo_init.build_rulesets_drift_guard_workflow(["dev", "prd"])
         doc = yaml.safe_load(text)
