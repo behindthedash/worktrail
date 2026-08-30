@@ -1761,6 +1761,20 @@ def build_external_deps_by_ref(
     return external_deps_by_ref
 
 
+def _resolve_ref_to_sha(repo: Path, ref: str) -> str:
+    """Resolve `ref` to a commit SHA in `repo` (the canonical checkout).
+
+    `dependency_start_ref` can return the literal sentinel string "HEAD" for a
+    root task with no dependency branch to stack on. "HEAD" is worktree-relative:
+    run literally inside a task's own worktree, it resolves to that worktree's
+    OWN current commit, not the canonical repo's base tip. Resolving it here,
+    against `repo`, gives the actual starting commit instead. Falls back to the
+    unresolved `ref` string if it cannot be verified.
+    """
+    resolved = _git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}", check=False)
+    return resolved.stdout.strip() if resolved.returncode == 0 else ref
+
+
 def dependency_start_ref(repo: Path, spec_id: str, task: dict, by_id: dict) -> tuple:
     """Pick the git ref a task's worktree should branch FROM so it STACKS on its
     dependencies' commits instead of bare HEAD.
@@ -1838,19 +1852,12 @@ def _validate_retained_task_branch(
         )
         if wt is None:
             raise stale_error
-        # Resolve `start_ref` in `repo` (the canonical checkout) before merging it
-        # into `wt` (the branch's own retained worktree, already checked out on
-        # `branch`) -- `dependency_start_ref` falls back to the literal sentinel
-        # string "HEAD" for a root task (no dependency branch to stack on), and
-        # "HEAD" is worktree-relative: run literally inside `wt`, it resolves to
-        # `wt`'s OWN current commit, not the canonical repo's base tip, making the
+        # Resolve `start_ref` in `repo` (the canonical checkout, see
+        # `_resolve_ref_to_sha`'s "HEAD sentinel" note) before merging it into
+        # `wt` (the branch's own retained worktree, already checked out on
+        # `branch`) -- an unresolved worktree-relative "HEAD" would make the
         # merge a no-op that leaves the branch just as stale as before.
-        merge_target = (
-            _git(
-                repo, "rev-parse", "--verify", f"{start_ref}^{{commit}}", check=False
-            ).stdout.strip()
-            or start_ref
-        )
+        merge_target = _resolve_ref_to_sha(repo, start_ref)
         merged = _git(wt, "merge", "--no-edit", merge_target, check=False)
         if merged.returncode != 0:
             _git(wt, "merge", "--abort", check=False)
@@ -2434,11 +2441,17 @@ class LiveSpawn:
         fallback_chain: list[str] | None = None,
         effort: str | None = None,
         dispatch_id: str | None = None,
+        repo: Path | None = None,
     ) -> None:
         self.agent = agent
         self.label = f"LIVE {agent}"
         self.spec_id = spec_id
         self.spec_folder_rel = spec_folder_rel.rstrip("/") + "/"
+        # The canonical repo checkout (not any task worktree) -- needed to resolve
+        # each task's real starting commit for the review-worker's diff context
+        # (see __call__'s base_commit resolution). None is safe: base_commit falls
+        # back to the literal "HEAD" sentinel, matching pre-fix behavior.
+        self.repo = repo
         self.timeout = timeout
         # Accepted for CLI/caller backward compatibility only -- __call__'s
         # tier-based dispatch (task 4.2) never reads self.model; a spawn's
@@ -2537,12 +2550,24 @@ class LiveSpawn:
             if role == dispatch.ROLE_FIX
             else []
         )
+        # The task's actual starting commit, resolved in the canonical repo --
+        # not the literal "HEAD" sentinel, which is worktree-relative and, run
+        # inside the task's own worktree, would render `git diff {base_commit}..HEAD`
+        # (dispatch.py's review-worker prompt) as a no-op HEAD..HEAD (see
+        # _resolve_ref_to_sha). Falls back to "HEAD" when no canonical repo was
+        # given (e.g. unit tests exercising __call__ directly).
+        base_commit = "HEAD"
+        if self.repo is not None:
+            start_ref, _ = dependency_start_ref(
+                self.repo, self.spec_id, task, self.by_id or {}
+            )
+            base_commit = _resolve_ref_to_sha(self.repo, start_ref)
         ctx = {
             "spec_id": self.spec_id,
             "spec_folder": self.spec_folder_rel,
             "worktree_path": str(worktree),
             "branch": "(checked out)",
-            "base_commit": "HEAD",
+            "base_commit": base_commit,
             "default_agent": self.agent,
             "spec_root_prefix": taskformats.spec_root_prefix_for(self.spec_folder_rel),
             "task_brief": self._task_brief_ctx(),
@@ -2732,7 +2757,7 @@ def spawn_one(
     _git(repo, "worktree", "add", "-b", branch, str(wt), "HEAD")
 
     print(f"== LIVE spawn: {role} {task_id} in {wt} ==")
-    _spawn_result = LiveSpawn(spec_id, SAMPLE_SPEC_REL)(role, task, wt)
+    _spawn_result = LiveSpawn(spec_id, SAMPLE_SPEC_REL, repo=repo)(role, task, wt)
     out = _spawn_result.text
     print("---- worker final message (tail) ----")
     print(out[-1500:] if out else "(no stdout)")
@@ -2783,7 +2808,9 @@ def live_run(
     for t in tasks:
         t["status"], t["retry_count"] = "pending", 0
     by_id = {t["id"]: t for t in tasks}
-    spawn = spawn or LiveSpawn(spec_id, SAMPLE_SPEC_REL, agent=agent, model=model)
+    spawn = spawn or LiveSpawn(
+        spec_id, SAMPLE_SPEC_REL, agent=agent, model=model, repo=repo
+    )
     wt_base = repo.parent / f"{repo.name}-wt"
     entries: list = []
 
@@ -2944,7 +2971,7 @@ def full(
             print(f"  integration conflict merging {gb} -- skipped from final branch")
 
     print("=== TAIL (e2e + cleanup) live on integrated branch ===")
-    spawn = LiveSpawn(spec_id, SAMPLE_SPEC_REL, agent=agent, model=model)
+    spawn = LiveSpawn(spec_id, SAMPLE_SPEC_REL, agent=agent, model=model, repo=repo)
     pending_tail = [t for t in tasks if t.get("kind") in ("e2e", "cleanup")]
     while pending_tail:
         progressed = False
@@ -3570,6 +3597,7 @@ def live_run_real(
         purpose_tier_map=purpose_tier_map,
         fallback_chain=fallback_chain,
         effort=effort,
+        repo=repo,
     )
     # Set unconditionally (default-constructed or caller-injected, e.g. the
     # --fork-research spawn built by the live-run-real CLI handler) so
@@ -4492,6 +4520,7 @@ def _pipeline_scheduler(
         fallback_chain=fallback_chain,
         effort=effort,
         dispatch_id=dispatch_id,
+        repo=repo,
     )
     # See live_run_real's identical guard: surfaces dependency files to
     # ROLE_IMPLEMENT prompts, default-constructed or caller-injected alike.
@@ -6288,6 +6317,7 @@ def main(argv=None) -> int:
                     timeout=args.timeout,
                     agent=args.agent,
                     model=args.model,
+                    repo=Path(args.repo),
                 )
                 spawn.research_session_id = sid
         live_run_real(
