@@ -792,3 +792,61 @@ def test_cli_missing_repos_root_fails(tmp_path, capsys):
     rc = seed_backlog.main(["--repos-root", str(tmp_path / "nope")])
     assert rc == 2
     assert "does not exist" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# epic-sequencing-gated (gate blocking next feature)
+
+
+def test_epic_in_sequencing_gated_stage_produces_no_brief(tmp_path):
+    """An epic with gate prose blocking its next unspecced feature produces
+    no queued brief and no seed_key collision on a second sweep."""
+    from worktrail.router import dashboard
+
+    repos_root = tmp_path / "projects"
+    repo = _mk_repo(repos_root, "repo-a")
+
+    # Epic with 2 features: Feature 1 has a future spec id and is cited by
+    # a spec that doesn't implement that future spec id (so the gate is open).
+    # Feature 2 has gate prose "Feature 2 depends on Feature 1", so Feature 2
+    # is blocked by the still-open Feature 1 gate.
+    _mk_epic(
+        repo,
+        "001-gated",
+        features=2,
+        future_spec_ids={1: "feature-one-impl"},
+    )
+    # Create a spec that cites the epic (counts Feature 1 as cited)
+    _mk_citing_spec(repo, "020-gated-epic-user", "001-gated")
+    # Add gate prose to Feature 2
+    epics = repo / "docs" / "specs" / "epics"
+    epic_file = epics / "001-gated.md"
+    epic_text = epic_file.read_text(encoding="utf-8")
+    # Insert gate prose into Feature 2's block
+    epic_text = epic_text.replace(
+        "### Feature 2 — thing 2",
+        "### Feature 2 — thing 2\n\nFeature 2 depends on Feature 1.",
+    )
+    epic_file.write_text(epic_text, encoding="utf-8")
+
+    # Verify dashboard detects the gate correctly
+    result = dashboard.detect_epic_stage(epic_file, repo)
+    assert result["stage"] == "epic-sequencing-gated"
+
+    qbase = tmp_path / "wq"
+
+    # First sweep: should not seed because Feature 2 is gated on Feature 1
+    # (whose future spec id "feature-one-impl" has no citing spec, so gate is open)
+    summary = seed_backlog.seed_backlog(
+        repos_root, queue_base=qbase, log=lambda _m: None
+    )
+
+    assert summary["seeded"] == []
+    briefs = _queued_briefs(qbase)
+    assert len(briefs) == 0
+
+    # Second sweep: still no brief, no collision issues
+    summary2 = seed_backlog.seed_backlog(
+        repos_root, queue_base=qbase, log=lambda _m: None
+    )
+    assert summary2["seeded"] == []
