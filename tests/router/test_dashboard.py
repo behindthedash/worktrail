@@ -832,6 +832,15 @@ class OpenSpecStaleBookkeeping(unittest.TestCase):
         change.mkdir(parents=True)
         (change / "proposal.md").write_text("# Add exporter\n")
         (change / "tasks.md").write_text(f"## 1. Export\n\n{tasks}")
+        rel = change.relative_to(self.repo)
+        subprocess.run(
+            ["git", "-C", str(self.repo), "add", str(rel / "proposal.md"), str(rel / "tasks.md")],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repo), "commit", "-qm", "change created"],
+            check=True,
+        )
         return change
 
     def _cache(self, change: Path, files_by_task: dict[str, list[str]]) -> None:
@@ -856,6 +865,20 @@ class OpenSpecStaleBookkeeping(unittest.TestCase):
         subprocess.run(["git", "-C", str(self.repo), "add", *files], check=True)
         subprocess.run(
             ["git", "-C", str(self.repo), "commit", "-qm", "ship"], check=True
+        )
+
+    def _commit_at(self, paths: list[Path], message: str, timestamp: int) -> None:
+        rel = [str(p.relative_to(self.repo)) for p in paths]
+        subprocess.run(["git", "-C", str(self.repo), "add", *rel], check=True)
+        env = dict(
+            os.environ,
+            GIT_AUTHOR_DATE=str(timestamp),
+            GIT_COMMITTER_DATE=str(timestamp),
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repo), "commit", "-qm", message],
+            check=True,
+            env=env,
         )
 
     def test_cached_shipped_scope_is_stale_bookkeeping(self):
@@ -922,6 +945,81 @@ class OpenSpecStaleBookkeeping(unittest.TestCase):
         result = dashboard._safe_detect_openspec(change)
 
         self.assertEqual(result["stage"], "ready-to-implement")
+        self.assertEqual(result["stale_task_ids"], ["1.1"])
+
+    def test_preexisting_unchanged_file_is_not_stale(self):
+        declared = self.repo / "src" / "export.py"
+        declared.parent.mkdir(parents=True, exist_ok=True)
+        declared.write_text("shipped\n")
+        self._commit_at([declared], "preexisting file", 1_000_000_000)
+
+        change = self.repo / "openspec" / "changes" / "add-export"
+        change.mkdir(parents=True)
+        (change / "proposal.md").write_text("# Add exporter\n")
+        (change / "tasks.md").write_text(
+            "## 1. Export\n\n- [ ] 1.1 Implement exporter\n"
+        )
+        self._commit_at(
+            [change / "proposal.md", change / "tasks.md"],
+            "change created",
+            1_000_000_100,
+        )
+        self._cache(change, {"1.1": ["src/export.py"]})
+
+        result = dashboard._safe_detect_openspec(change)
+
+        self.assertEqual(result["stage"], "ready-to-implement")
+        self.assertNotIn("stale_task_ids", result)
+
+    def test_new_file_since_creation_is_stale(self):
+        change = self.repo / "openspec" / "changes" / "add-export"
+        change.mkdir(parents=True)
+        (change / "proposal.md").write_text("# Add exporter\n")
+        (change / "tasks.md").write_text(
+            "## 1. Export\n\n- [ ] 1.1 Implement exporter\n"
+        )
+        self._commit_at(
+            [change / "proposal.md", change / "tasks.md"],
+            "change created",
+            1_000_000_000,
+        )
+        self._cache(change, {"1.1": ["src/export.py"]})
+
+        declared = self.repo / "src" / "export.py"
+        declared.parent.mkdir(parents=True, exist_ok=True)
+        declared.write_text("shipped\n")
+        self._commit_at([declared], "ship export", 1_000_000_100)
+
+        result = dashboard._safe_detect_openspec(change)
+
+        self.assertEqual(result["stage"], "stale-bookkeeping")
+        self.assertEqual(result["stale_task_ids"], ["1.1"])
+
+    def test_preexisting_file_modified_after_creation_is_stale(self):
+        declared = self.repo / "src" / "export.py"
+        declared.parent.mkdir(parents=True, exist_ok=True)
+        declared.write_text("shipped\n")
+        self._commit_at([declared], "preexisting file", 1_000_000_000)
+
+        change = self.repo / "openspec" / "changes" / "add-export"
+        change.mkdir(parents=True)
+        (change / "proposal.md").write_text("# Add exporter\n")
+        (change / "tasks.md").write_text(
+            "## 1. Export\n\n- [ ] 1.1 Implement exporter\n"
+        )
+        self._commit_at(
+            [change / "proposal.md", change / "tasks.md"],
+            "change created",
+            1_000_000_100,
+        )
+        self._cache(change, {"1.1": ["src/export.py"]})
+
+        declared.write_text("shipped again\n")
+        self._commit_at([declared], "update export", 1_000_000_200)
+
+        result = dashboard._safe_detect_openspec(change)
+
+        self.assertEqual(result["stage"], "stale-bookkeeping")
         self.assertEqual(result["stale_task_ids"], ["1.1"])
 
 
@@ -2736,7 +2834,14 @@ class StaleBookkeeping(unittest.TestCase):
     def _spec_dir(self) -> Path:
         d = self.repo / "docs" / "specs" / "068-x"
         d.mkdir(parents=True)
-        (d / "2026-05-29--feature.md").write_text(SPEC_CLARIFIED)
+        feature_md = d / "2026-05-29--feature.md"
+        feature_md.write_text(SPEC_CLARIFIED)
+        rel = feature_md.relative_to(self.repo)
+        subprocess.run(["git", "-C", str(self.repo), "add", str(rel)], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo), "commit", "-qm", "spec created"],
+            check=True,
+        )
         return d
 
     def _task(
@@ -2865,6 +2970,13 @@ class StaleBookkeeping(unittest.TestCase):
         spec = primary / "docs" / "specs" / "001-cross-repo"
         spec.mkdir(parents=True)
         (spec / "2026-05-29--feature.md").write_text(SPEC_CLARIFIED)
+        subprocess.run(
+            ["git", "-C", str(primary), "add", "docs/specs/001-cross-repo/2026-05-29--feature.md"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(primary), "commit", "-qm", "spec created"], check=True
+        )
         tasks = spec / "changes" / "2026-07-20--persistence" / "tasks"
         tasks.mkdir(parents=True)
         (tasks / "TASK-001.md").write_text(

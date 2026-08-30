@@ -3540,8 +3540,15 @@ def _write_stale_bookkeeping_spec(
     spec_dir = repo / "docs" / "specs" / spec_id
     tasks_dir = spec_dir / "tasks"
     tasks_dir.mkdir(parents=True)
-    (spec_dir / "2026-05-29--feature.md").write_text(
+    feature_md = spec_dir / "2026-05-29--feature.md"
+    feature_md.write_text(
         f"# Feature Specification: X\n\n**ID**: {spec_id}\n\n## Summary\nstuff\n"
+    )
+    feature_rel = feature_md.relative_to(repo)
+    subprocess.run(["git", "-C", str(repo), "add", str(feature_rel)], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-qm", "spec created"],
+        check=True,
     )
     shipped_rel = f"src/{spec_id}/shipped.py"
     (tasks_dir / f"{task_id}.md").write_text(
