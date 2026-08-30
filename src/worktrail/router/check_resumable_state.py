@@ -150,8 +150,9 @@ def check(
 ) -> dict[str, Any]:
     """Does the claimed brief at `brief_path` have real resumable state?
 
-    Returns `{"checked": bool, "resumable": bool, "evidence": {"run_record":
-    str|None, "worktree": str|None, "open_pr": dict|None}, "warning": str|None}`.
+    Returns `{"checked": bool, "resumable": bool, "malformed": bool,
+    "evidence": {"run_record": str|None, "worktree": str|None, "open_pr":
+    dict|None}, "warning": str|None}`.
     `checked=False` means the question is unanswered -- either the brief itself
     couldn't be read, or it carries no `repo:` frontmatter and no `repo_override`
     was given, so evidence-gathering had nothing to scan. Callers must treat
@@ -162,6 +163,18 @@ def check(
     cleaned up post-merge) is surfaced as evidence but is not "resumable" on
     its own.
 
+    `malformed=True` (only possible alongside `checked=False`) means `brief_path`
+    itself is the wrong shape for a claimed brief -- a directory (e.g. a
+    picked-brief path missing its `.md` filename) or a path with no `.md`
+    suffix. This is deliberately distinct from the generic "couldn't read it"
+    `checked=False` case: that one is a legitimately unknown/stale reference
+    (fails open, caller proceeds without a resumability signal); a malformed
+    path is a caller bug in path construction and must fail loud instead --
+    `main()` exits non-zero on it so a shell caller can stop the dispatch
+    rather than silently dropping the whole disqualification check. Never
+    inferred/normalized to a nearby `.md` file -- that guessing was
+    explicitly rejected in favor of surfacing the error.
+
     `repo_override` is used only when the brief's own `repo:` frontmatter is
     absent -- the caller's already-resolved dispatch target repo (e.g. `/go`
     SKILL.md's Phase 3 `$REPO`), not a second source of truth to reconcile
@@ -170,10 +183,28 @@ def check(
     result: dict[str, Any] = {
         "checked": False,
         "resumable": False,
+        "malformed": False,
         "evidence": {"run_record": None, "worktree": None, "open_pr": None},
         "warning": None,
     }
     brief_path = Path(brief_path)
+
+    if brief_path.is_dir():
+        result["malformed"] = True
+        result["warning"] = (
+            f"claimed brief path is a directory, not the .md file: {brief_path} "
+            "-- pass the full picked-brief .md path, not its containing directory"
+        )
+        return result
+
+    if brief_path.suffix != ".md":
+        result["malformed"] = True
+        result["warning"] = (
+            f"claimed brief path is missing its .md filename: {brief_path} "
+            "-- pass the full picked-brief .md path"
+        )
+        return result
+
     try:
         brief_path.stat()
     except OSError as exc:
@@ -244,6 +275,8 @@ def main(argv=None) -> int:
     )
     if args.json:
         print(json.dumps(res))
+    elif res["malformed"]:
+        print(f"MALFORMED: {res['warning']}", file=sys.stderr)
     elif not res["checked"]:
         print(f"unknown: {res['warning']}")
     elif res["resumable"]:
@@ -255,6 +288,14 @@ def main(argv=None) -> int:
         if res.get("warning"):
             line += f"\n  warning: {res['warning']}"
         print(line)
+
+    # A malformed path is a caller bug in path construction, not a
+    # legitimately-unknown brief -- exit non-zero (distinct from every other
+    # case, which always exits 0) so a shell caller can fail loud instead of
+    # silently dropping the resumability signal. Applies under --json too,
+    # where the diagnostic above is skipped in favor of the JSON payload.
+    if res["malformed"]:
+        return 2
     return 0
 
 
