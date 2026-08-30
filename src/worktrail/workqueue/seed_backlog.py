@@ -174,6 +174,13 @@ def find_epic_gaps(
     there is no terminal condition, and seeding it would loop forever. An
     unreadable epic file (dashboard stage `error`) is skipped silently, same
     as before this module delegated to the dashboard's scan.
+
+    An `epic-gap` whose next unspecced feature is blocked by the epic's own
+    sequencing-gate prose (dashboard stage `epic-sequencing-gated`) is
+    likewise skipped and reported (`sequencing_gated: True`, plus
+    `blocked_feature` and `gates` carried through from the dashboard row) --
+    seeding it would produce a brief for a feature the epic author has
+    explicitly said cannot be worked yet.
     """
     names = discover_repo_names(repos_root)
     if go_repo:
@@ -194,6 +201,19 @@ def find_epic_gaps(
                         "repo_name": name,
                         "id": epic_id,
                         "unparseable": True,
+                    }
+                )
+                continue
+            if stage == "epic-sequencing-gated":
+                found.append(
+                    {
+                        "kind": "epic",
+                        "repo": repo_path,
+                        "repo_name": name,
+                        "id": epic_id,
+                        "sequencing_gated": True,
+                        "blocked_feature": row["blocked_feature"],
+                        "gates": row["gates"],
                     }
                 )
                 continue
