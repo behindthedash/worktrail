@@ -1,11 +1,11 @@
 ## 1. Creation-baseline helpers
 
-- [ ] 1.1 In `src/worktrail/router/dashboard.py`, add an `lru_cache`d
+- [x] 1.1 In `src/worktrail/router/dashboard.py`, add an `lru_cache`d
       `_dir_creation_timestamp(repo_value: str, directory_value: str) -> int | None` that runs
       `git log --format=%ct --reverse -- <directory_value>` in `repo_value` and returns the
       oldest commit's epoch timestamp, or `None` on git failure or no history (mirrors the
       existing `_rename_destinations` cache shape/error handling in the same module).
-- [ ] 1.2 Add an `lru_cache`d `_latest_commit_timestamp(repo_value: str, relative_value: str) ->
+- [x] 1.2 Add an `lru_cache`d `_latest_commit_timestamp(repo_value: str, relative_value: str) ->
       int | None` that runs `git log -1 --format=%ct -- <relative_value>` and returns that
       commit's epoch timestamp, or `None` on git failure or no history.
 
