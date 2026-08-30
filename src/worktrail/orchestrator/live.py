@@ -1845,9 +1845,12 @@ def _validate_retained_task_branch(
         # "HEAD" is worktree-relative: run literally inside `wt`, it resolves to
         # `wt`'s OWN current commit, not the canonical repo's base tip, making the
         # merge a no-op that leaves the branch just as stale as before.
-        merge_target = _git(
-            repo, "rev-parse", "--verify", f"{start_ref}^{{commit}}", check=False
-        ).stdout.strip() or start_ref
+        merge_target = (
+            _git(
+                repo, "rev-parse", "--verify", f"{start_ref}^{{commit}}", check=False
+            ).stdout.strip()
+            or start_ref
+        )
         merged = _git(wt, "merge", "--no-edit", merge_target, check=False)
         if merged.returncode != 0:
             _git(wt, "merge", "--abort", check=False)
