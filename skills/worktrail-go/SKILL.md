@@ -714,8 +714,19 @@ different provider. A trusted Codex child inherits the parent's verified ChatGPT
 subscription session by default; use `--no-inherit-codex-auth` only for an
 intentionally isolated child. The default path accepts only a private file-backed
 ChatGPT `auth.json` and never copies general parent configuration. **Verify the outcome from the run record, not the return
-code** — same rule as `#openspec-authoring`: assert `$RUN`'s `finish` entry
-before treating the dispatch as done. Skill slash-names (unlike the OpenSpec
+code** — same rule as `#openspec-authoring`. `worktrail-skill-dispatch` already blocks on the
+child process's exit (`child.wait()`), so a return only proves the *process* ended — not that
+it ever called `finish` before dying (a crash, kill, or interruption mid-CI-watch leaves `$RUN`
+non-terminal with no other signal). Run the check as a hard gate, not a narrated read:
+
+```bash
+worktrail-run-record assert-terminal "$RUN"
+```
+
+A non-zero exit means the dispatch ended without a terminal `final_status` — treat this as a
+failure the parent must act on (Route E's stalled-run recovery on the next `/go` invocation, or
+an immediate `finish --status failed_recoverable` here), never as silent success inferred from
+the child's own exit code. Skill slash-names (unlike the OpenSpec
 `commands/` bundle) resolve bare — `worktrail-sdd-workflow`, not
 `worktrail:worktrail-sdd-workflow` — because `_prompt` types the frontmatter
 `name:` directly and Claude Code matches an installed Skill by that name with
