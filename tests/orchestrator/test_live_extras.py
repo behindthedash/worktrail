@@ -93,12 +93,14 @@ class ReadOrCreateRunIdTests(unittest.TestCase):
             self.assertEqual(data["run_id"], run_id)
             self.assertEqual(len(data["entries"]), 1)  # entries preserved
 
-    def test_corrupted_journal_creates_fresh(self):
+    def test_corrupted_journal_raises_instead_of_silently_discarding(self):
         with tempfile.TemporaryDirectory() as t:
             path = Path(t) / "run.json"
             path.write_text("{not valid json")
-            run_id = live.read_or_create_run_id(path)
-            self.assertTrue(run_id.startswith("full-"))
+            with self.assertRaises(RuntimeError):
+                live.read_or_create_run_id(path)
+            # Must not have overwritten the corrupt file on disk.
+            self.assertEqual(path.read_text(), "{not valid json")
 
 
 class TaskFileInWorktreeTests(unittest.TestCase):

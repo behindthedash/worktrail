@@ -73,5 +73,29 @@ class LegacyJournalInheritance(unittest.TestCase):
             self.assertEqual(updated.get("run_id"), run_id)
 
 
+class CorruptJournalFailsLoud(unittest.TestCase):
+    """Existing-but-unparseable journal must raise, never be silently discarded.
+
+    Regression for docs/specs/research/full-real-premature-teardown-and-journal-wipe-on-resume.md:
+    `read_or_create_run_id` used to treat "exists but json.loads failed" the same as
+    "file absent," silently overwriting the on-disk journal (including any prior run
+    history, e.g. MERGED group PR URLs) with an empty one.
+    """
+
+    def test_malformed_json_raises_and_does_not_overwrite(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            journal_path = Path(tmpdir) / "run-test.json"
+            malformed = '{"run_id": "full-1", "entries": [{"task": "3.4"},],}'
+            journal_path.write_text(malformed)
+
+            with self.assertRaises(RuntimeError) as ctx:
+                live.read_or_create_run_id(journal_path)
+            self.assertIn(str(journal_path), str(ctx.exception))
+            self.assertIn("--fresh", str(ctx.exception))
+
+            # The on-disk file must be untouched -- no silent overwrite.
+            self.assertEqual(journal_path.read_text(), malformed)
+
+
 if __name__ == "__main__":
     unittest.main()

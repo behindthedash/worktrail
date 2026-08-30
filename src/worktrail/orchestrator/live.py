@@ -666,24 +666,31 @@ def read_or_create_run_id(journal_path: Path) -> str:
     - Journal exists without ``run_id`` (legacy PR-16 journal) → inject a new
       ``run_id``, persist it, and return it (existing ``entries`` preserved).
     - Journal absent → write a minimal journal with the new ``run_id`` and return it.
+    - Journal exists but fails to parse → raise loud rather than silently
+      overwriting it with an empty journal, which would permanently discard
+      any run history (e.g. MERGED group PR URLs) it holds. Mirrors the
+      ``foreign_ids`` precedent elsewhere in this module.
     """
     p = Path(journal_path)
     if p.exists():
         try:
             data = json.loads(p.read_text())
-            existing = data.get("run_id")
-            if existing:
-                return existing
-            # Legacy journal: inject run_id, preserve entries
-            run_id = f"full-{int(time.time())}"
-            data["run_id"] = run_id
-            progress.atomic_write_text(
-                p, json.dumps(data, indent=2, sort_keys=True) + "\n"
-            )
-            return run_id
-        except (OSError, json.JSONDecodeError):
-            pass
-    # No journal or unreadable: write a fresh one
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                f"Run journal at {p} exists but failed to parse ({exc}). Refusing to "
+                f"silently discard it and start a fresh one -- it may hold run history "
+                f"(e.g. MERGED group PR URLs) a fresh journal would permanently lose. "
+                f"Re-run with --fresh to discard this journal and start clean."
+            ) from exc
+        existing = data.get("run_id")
+        if existing:
+            return existing
+        # Legacy journal: inject run_id, preserve entries
+        run_id = f"full-{int(time.time())}"
+        data["run_id"] = run_id
+        progress.atomic_write_text(p, json.dumps(data, indent=2, sort_keys=True) + "\n")
+        return run_id
+    # No journal: write a fresh one
     run_id = f"full-{int(time.time())}"
     p.parent.mkdir(parents=True, exist_ok=True)
     progress.atomic_write_text(
