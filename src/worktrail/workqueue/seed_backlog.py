@@ -351,7 +351,9 @@ def seed_backlog(
     Returns a summary dict: `seeded` (one entry per created brief),
     `skipped_existing` (candidates whose seed key already exists in the
     queue), `dropped_over_cap` (candidates deferred to the next sweep),
-    and `unparseable_epics` (epic files with no feature decomposition).
+    `unparseable_epics` (epic files with no feature decomposition), and
+    `sequencing_gated_epics` (epic files whose next feature is blocked by
+    an open gate).
     """
     queue_base = Path(queue_base or work_queue.base_dir()).expanduser()
     candidates = find_needs_tasks_specs(repos_root, go_repo)
@@ -425,6 +427,9 @@ def seed_backlog(
         "dropped_over_cap": dropped,
         "unparseable_epics": [
             {"repo": f["repo_name"], "id": f["id"]} for f in unparseable
+        ],
+        "sequencing_gated_epics": [
+            {"repo": f["repo_name"], "id": f["id"]} for f in sequencing_gated
         ],
     }
 
