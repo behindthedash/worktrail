@@ -5405,6 +5405,55 @@ class EpicStageDetection(unittest.TestCase):
         self.assertNotIn("blocked_feature", result)
         self.assertNotIn("gates", result)
 
+    def test_epic_gap_with_no_gate_prose_at_all(self):
+        # Regression case: an epic with no gate prose at all (e.g. shaped like
+        # 001-managed-codex-runtime-validation.md). With 2 features where
+        # Feature 1 is cited (cited=1, next_n=2), there is no gate prose
+        # mentioning Feature 2. Result is epic-gap (unchanged from pre-change
+        # behavior), and the stage/fields are identical to what they would have
+        # been before the gate detection logic was added.
+        epics = self.repo / "docs" / "specs" / "epics"
+        epics.mkdir(parents=True, exist_ok=True)
+        body = [
+            "# Epic: 012-no-gate-prose",
+            "",
+            "### Feature 1",
+            "Feature 1 body.",
+            "**Future spec id:** `feature-1-contract`",
+            "",
+            "### Feature 2",
+            "Feature 2 body without any gate prose mentioning Feature 1.",
+            "",
+        ]
+        epic_file = epics / "012-no-gate-prose.md"
+        epic_file.write_text("\n".join(body), encoding="utf-8")
+
+        # Feature 1 is cited by a spec
+        self._mk_citing_spec("010-feature-one-impl", "012-no-gate-prose")
+
+        result = dashboard.detect_epic_stage(epic_file, self.repo)
+
+        # Feature 1 is cited (cited=1), next_n=2. There is no gate prose
+        # at all, so no gate applies. Result is epic-gap, with no gating
+        # information in the result. Verify all fields remain identical to
+        # pre-change behavior.
+        expected = {
+            "id": "012-no-gate-prose",
+            "epic_file": "012-no-gate-prose.md",
+            "status_header": None,
+            "stage": "epic-gap",
+            "features": 2,
+            "cited": 1,
+            "citing_specs": ["010-feature-one-impl"],
+            "next_action": (
+                "spec the next unspecced feature from its decomposition "
+                "(docs/specs/epics/012-no-gate-prose.md)"
+            ),
+        }
+        self.assertEqual(result, expected)
+        self.assertNotIn("blocked_feature", result)
+        self.assertNotIn("gates", result)
+
     def test_non_epic_named_file_is_ignored_by_epic_id_pattern_against_real_directory(
         self,
     ):
