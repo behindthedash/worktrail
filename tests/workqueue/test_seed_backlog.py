@@ -367,8 +367,7 @@ def test_sequencing_gated_epic_reports_blocked_feature_and_gate_state(tmp_path):
     )
     epic_path = repo / "docs" / "specs" / "epics" / "002-accounting.md"
     epic_path.write_text(
-        epic_path.read_text(encoding="utf-8")
-        + "\nFeature 2 depends on Feature 1.\n",
+        epic_path.read_text(encoding="utf-8") + "\nFeature 2 depends on Feature 1.\n",
         encoding="utf-8",
     )
     # One spec cites the epic id, so cited=1, next_n=2. The prose gates

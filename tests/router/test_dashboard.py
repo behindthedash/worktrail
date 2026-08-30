@@ -5282,7 +5282,9 @@ class EpicStageDetection(unittest.TestCase):
 
         # Verify that dashboard.scan() on the citing spec folder returns ready-to-implement stage
         spec_scan_rows = dashboard.scan(self.repo / "docs" / "specs")
-        citing_spec_rows = [r for r in spec_scan_rows if r["id"] == "010-feature-implementation"]
+        citing_spec_rows = [
+            r for r in spec_scan_rows if r["id"] == "010-feature-implementation"
+        ]
         self.assertEqual(len(citing_spec_rows), 1)
         self.assertEqual(citing_spec_rows[0]["stage"], "ready-to-implement")
 
@@ -5333,7 +5335,9 @@ class EpicStageDetection(unittest.TestCase):
 
         # Verify that dashboard.scan() on the citing spec folder returns done stage
         spec_scan_rows = dashboard.scan(self.repo / "docs" / "specs")
-        citing_spec_rows = [r for r in spec_scan_rows if r["id"] == "010-feature-backfilled"]
+        citing_spec_rows = [
+            r for r in spec_scan_rows if r["id"] == "010-feature-backfilled"
+        ]
         self.assertEqual(len(citing_spec_rows), 1)
         self.assertEqual(citing_spec_rows[0]["stage"], "done")
 
@@ -5362,7 +5366,10 @@ class EpicStageDetection(unittest.TestCase):
         # Create an archived folder under openspec/changes/archive/ with a date prefix.
         # The folder name does not match the future spec id, but the content does.
         archived_change_dir = (
-            self.repo / "openspec" / "changes" / "archive"
+            self.repo
+            / "openspec"
+            / "changes"
+            / "archive"
             / "2026-08-29-old-feature-1-implementation"
         )
         spec_dir = archived_change_dir / "specs" / "feature-1-contract"
