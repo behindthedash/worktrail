@@ -28,11 +28,17 @@ best-effort-only steps, mirroring `check_repo_freshness.py`'s shape:
 
   2. `verify(repo, spec_id, root)` -- artifact verification for a single
      candidate the calling agent has already judged a semantic match
-     (Collision Candidate -> Confirmed Collision). Checks the candidate's
-     `**Status**:` header and whether its task `files:` are git-tracked at
-     the repo's base branch, reusing `dashboard.py`'s own stale-bookkeeping
-     helpers (`_git_tracked`, `_task_files_are_shipped`, `_load_tasks`)
-     rather than reimplementing them.
+     (Collision Candidate -> Confirmed Collision). For a devkit-shaped
+     `root`, checks the candidate's `**Status**:` header and whether its task
+     `files:` are git-tracked at the repo's base branch, reusing
+     `dashboard.py`'s own stale-bookkeeping helpers (`_git_tracked`,
+     `_task_files_are_shipped`, `_load_tasks`) rather than reimplementing
+     them. For an OpenSpec-shaped `root`, delegates to `_verify_openspec()`:
+     confirmed once the candidate has been archived into `root/specs/` (the
+     settled-state signal, in place of `Status: Implemented`) AND its
+     `spec.md` is git-tracked at the base checkout (in place of task
+     `files:`); a candidate still under `root/changes/` is in-flight and
+     never confirmed.
 
 When `verify()` confirms a collision, its result additionally carries
 `pending_decision`: the provider-neutral, versioned pending-decision
@@ -78,7 +84,10 @@ from .dashboard import (
 )
 
 # overlap_check is a sibling module -- reused for the candidate index rather
-# than re-implementing its extraction logic.
+# than re-implementing its extraction logic. `_is_openspec_root` is also
+# reused by `verify()` below to detect an OpenSpec-shaped root and branch to
+# `_verify_openspec()` instead of the devkit `**Status**:`/`files:` path.
+from .overlap_check import _is_openspec_root
 from .overlap_check import scan as _scan
 from .overlap_check import task_candidates as _task_candidates
 
@@ -370,6 +379,90 @@ def _task_level_candidates(specs_root: Path, target: str) -> list[dict[str, Any]
 # --- verify(): artifact verification for a single judged candidate ------------
 
 
+def _verify_openspec(
+    repo: Path,
+    spec_id: str,
+    openspec_root: Path,
+    *,
+    run_id: str | None,
+    dispatch_mode: str | None,
+) -> dict[str, object]:
+    """Confirm an OpenSpec-sourced candidate against `openspec_root` (an
+    `openspec/`-shaped directory containing `changes/` and/or `specs/`).
+
+    OpenSpec has no `**Status**:` header and its `tasks.md` declares no
+    per-task `files:` frontmatter (`OpenSpecTaskSource` deliberately emits
+    `files: []` -- see `taskformats/openspec/source.py`), so the devkit
+    path's checks do not apply. OpenSpec's own archival lifecycle is the
+    settled-state signal instead: `/opsx:archive` moves a change's delta
+    specs into `openspec_root/specs/<capability>/spec.md` only once that
+    change is done, so a candidate found there (`overlap_check.scan()`
+    reports `stage: "complete"` for exactly these entries) is confirmed once
+    its `spec.md` is git-tracked at the repo's base checkout -- the same
+    "settled record actually committed, not just present locally" evidence
+    `files:` git-tracking gives the devkit path. A candidate still under
+    `openspec_root/changes/<spec_id>/` is in-flight, unshipped work and is
+    never confirmed here, mirroring the existing task-level-match "never
+    auto-close on open work" rule -- confirming it would require re-deriving
+    the change's own file scope, a fundamentally different, less certain
+    signal than a fact already recorded by the archival move itself.
+    """
+    result: dict[str, object] = {
+        "spec_id": spec_id,
+        "confirmed": False,
+        "status": None,
+        "files": [],
+        "note": None,
+        "warning": None,
+        "pending_decision": None,
+    }
+
+    spec_file = openspec_root / "specs" / spec_id / "spec.md"
+    if not spec_file.is_file():
+        if (openspec_root / "changes" / spec_id).is_dir():
+            result["status"] = "active"
+            result["warning"] = (
+                f"{spec_id} is an in-flight OpenSpec change under "
+                f"{openspec_root / 'changes' / spec_id} -- OpenSpec has no "
+                "partial-shipped confirmation, only archived-and-complete"
+            )
+        else:
+            result["warning"] = (
+                f"no OpenSpec spec or change found for {spec_id} under {openspec_root}"
+            )
+        return result
+
+    result["status"] = "complete"
+
+    if _git_tracked is None:
+        result["warning"] = (
+            "dashboard git-tracking helpers unavailable; cannot verify artifacts"
+        )
+        return result
+
+    try:
+        rel_path = spec_file.relative_to(repo).as_posix()
+    except ValueError as exc:
+        result["warning"] = f"spec file {spec_file} is not under repo {repo}: {exc!r}"
+        return result
+
+    try:
+        tracked = _git_tracked(repo, [rel_path])
+    except Exception as exc:  # noqa: BLE001 - best-effort, never raise to caller
+        result["warning"] = f"artifact verification failed: {exc!r}"
+        return result
+
+    result["files"] = [rel_path]
+    result["confirmed"] = rel_path in tracked
+    if result["confirmed"]:
+        result["pending_decision"] = build_pending_decision(
+            repo, spec_id, run_id=run_id, dispatch_mode=dispatch_mode
+        )
+    else:
+        result["warning"] = f"{rel_path} is not git-tracked at the base checkout"
+    return result
+
+
 def verify(
     repo: Path,
     spec_id: str,
@@ -384,17 +477,39 @@ def verify(
     Returns `{"spec_id", "confirmed": bool, "status": str|None,
     "files": [str], "note": str|None, "warning": str|None,
     "pending_decision": envelope|None}`.
-    `confirmed=True` only when the candidate's `**Status**:` header reads
-    `Implemented` AND every task `files:` entry is git-tracked at the repo's
-    base checkout. A confirmed collision additionally carries
+
+    When `repo/root` is devkit-shaped, `confirmed=True` only when the
+    candidate's `**Status**:` header reads `Implemented` AND every task
+    `files:` entry is git-tracked at the repo's base checkout.
+
+    When `repo/root` is OpenSpec-shaped (has a `changes/` and/or `specs/`
+    subdirectory), delegates to `_verify_openspec()`: OpenSpec has no
+    `**Status**:` header or task `files:` frontmatter, so it is confirmed
+    instead via OpenSpec's own archival lifecycle -- a capability under
+    `root/specs/<spec_id>/spec.md` has already been archived and synced
+    (`/opsx:archive`), the same settled-state guarantee `Status: Implemented`
+    gives the devkit path -- AND that `spec.md` is git-tracked at the base
+    checkout (the shipped-artifact evidence). A candidate still under
+    `root/changes/<spec_id>/` is in-flight, unshipped work and is never
+    confirmed, mirroring the existing task-level-match "never auto-close on
+    open work" rule.
+
+    A confirmed collision (either path) additionally carries
     `pending_decision`: `build_pending_decision()`'s provider-neutral
     envelope for the human's proceed/extend/redirect call. Any non-file
     artifact claim found in the spec's prose is surfaced via `note` and never
-    affects `confirmed`. Never raises --
+    affects `confirmed` (devkit path only -- an OpenSpec `spec.md` has no
+    equivalent freeform artifact-claim convention). Never raises --
     every failure path (missing spec dir, unreadable spec file, no files to
     verify, git failure) degrades to `confirmed: false` plus a `warning`.
     """
     repo = Path(repo)
+    root_dir = repo / root
+    if _is_openspec_root(root_dir):
+        return _verify_openspec(
+            repo, spec_id, root_dir, run_id=run_id, dispatch_mode=dispatch_mode
+        )
+
     result: dict[str, object] = {
         "spec_id": spec_id,
         "confirmed": False,
@@ -405,7 +520,7 @@ def verify(
         "pending_decision": None,
     }
 
-    spec_dir = repo / root / spec_id
+    spec_dir = root_dir / spec_id
     if not spec_dir.is_dir():
         result["warning"] = f"spec directory not found: {spec_dir}"
         return result

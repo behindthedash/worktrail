@@ -7,7 +7,9 @@ running `specs.consolidate` receives this JSON and applies semantic judgment
 to decide which pairs are true duplicates worth merging.
 
 Algorithm:
-  1. Extract feature summaries via overlap_check.scan()
+  1. Extract feature summaries via overlap_check.scan() -- from `--root` and,
+     when given, every `--extra-root` (e.g. an OpenSpec `openspec` tree
+     alongside a devkit `docs/specs`), merged into one corpus
   2. Tokenise each summary (lowercase words, stop-word removal)
   3. Compute pairwise Jaccard similarity on the token sets
   4. Return pairs above MIN_SCORE, ranked highest first
@@ -36,6 +38,7 @@ import argparse
 import json
 import re
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -166,8 +169,24 @@ def _strip_for_output(spec: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def audit(specs_root: Path, min_score: float = MIN_SCORE) -> dict[str, Any]:
-    specs = _scan_specs(specs_root)
+def audit(
+    specs_root: Path,
+    min_score: float = MIN_SCORE,
+    extra_roots: Iterable[Path] | None = None,
+) -> dict[str, Any]:
+    """Audit the spec corpus under `specs_root` (and any `extra_roots`, e.g.
+    an OpenSpec `openspec` tree alongside a devkit `docs/specs`) for
+    overlapping pairs. Candidates from every root are merged into one corpus
+    before pairwise scoring, so a spec under one root can be flagged as
+    overlapping a spec under another. `extra_roots` defaults to none,
+    reproducing prior single-root behavior exactly."""
+    specs: list[dict[str, Any]] = list(_scan_specs(specs_root))
+    seen_ids = {s["spec_id"] for s in specs}
+    for extra_root in extra_roots or []:
+        for spec in _scan_specs(Path(extra_root)):
+            if spec["spec_id"] not in seen_ids:
+                seen_ids.add(spec["spec_id"])
+                specs.append(spec)
 
     scored: list[tuple[float, dict[str, Any], dict[str, Any]]] = []
     unscored: list[dict[str, str]] = []
@@ -222,6 +241,14 @@ def main(argv=None) -> int:
         "--root", default="docs/specs", help="specs root to scan (default: docs/specs)"
     )
     p.add_argument(
+        "--extra-root",
+        action="append",
+        default=None,
+        metavar="ROOT",
+        help="additional root to scan alongside --root and merge into the same "
+        "corpus, e.g. 'openspec'; repeatable",
+    )
+    p.add_argument(
         "--min-score",
         type=float,
         default=MIN_SCORE,
@@ -229,7 +256,8 @@ def main(argv=None) -> int:
     )
     args = p.parse_args(argv)
 
-    result = audit(Path(args.root), min_score=args.min_score)
+    extra_roots = [Path(r) for r in args.extra_root] if args.extra_root else None
+    result = audit(Path(args.root), min_score=args.min_score, extra_roots=extra_roots)
     print(json.dumps(result, indent=2))
     return 0
 

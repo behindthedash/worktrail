@@ -172,13 +172,12 @@ class TestCheckExtraRoots(unittest.TestCase):
             self.assertEqual(len(res["candidates"]), 1)
             self.assertEqual(res["candidates"][0]["spec_id"], "backlog-seeding")
 
-    def test_verify_never_raises_against_an_openspec_sourced_candidate(self):
-        """`verify()` looks up `repo/root/spec_id` directly and has no
-        OpenSpec `changes/`-vs-`specs/` indirection of its own (unlike
-        `check()`, which delegates that to `overlap_check.scan()`) -- an
-        OpenSpec-sourced candidate's `root` tag is for the calling agent's own
-        judgment, not necessarily a directly verifiable `--verify` root.
-        Passing it through anyway must still degrade cleanly, never raise."""
+    def test_verify_against_an_uncommitted_openspec_candidate_is_not_confirmed(self):
+        """`verify()` detects the OpenSpec-shaped root from the candidate's
+        own `root` field and confirms via OpenSpec's archival lifecycle
+        (see `TestVerifyOpenSpec`) rather than the devkit `**Status**:`
+        path -- an uncommitted (no `.git`) `spec.md` degrades to
+        `confirmed: false` with a warning, never a crash."""
         with tempfile.TemporaryDirectory() as tmp:
             _write(
                 Path(tmp) / "openspec" / "specs" / "backlog-seeding" / "spec.md",
@@ -294,6 +293,74 @@ class TestVerifyEdgeCases(unittest.TestCase):
         res = csc.verify(Path(repo), "999-does-not-exist")
         self.assertFalse(res["confirmed"])
         self.assertIsNotNone(res["warning"])
+
+
+class TestVerifyOpenSpec(unittest.TestCase):
+    """OpenSpec has no `**Status**:` header or task `files:` frontmatter, so
+    a candidate sourced from an OpenSpec root is confirmed via its own
+    archival lifecycle instead: archived into `root/specs/<id>/spec.md`
+    (settled) AND that file git-tracked at the base checkout (shipped)."""
+
+    def _write_capability(self, repo: str, capability_id: str) -> Path:
+        spec_file = Path(repo) / "openspec" / "specs" / capability_id / "spec.md"
+        _write(
+            spec_file,
+            f"# {capability_id}\n\n## Purpose\n\nOpenSpec-format capability.\n",
+        )
+        return spec_file
+
+    def test_archived_and_committed_capability_is_confirmed(self):
+        repo = _init_repo()
+        self._write_capability(repo, "backlog-seeding")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-q", "-m", "archive backlog-seeding")
+
+        res = csc.verify(Path(repo), "backlog-seeding", root="openspec")
+        self.assertTrue(res["confirmed"])
+        self.assertEqual(res["status"], "complete")
+        self.assertEqual(res["files"], ["openspec/specs/backlog-seeding/spec.md"])
+        self.assertIsNone(res["warning"])
+
+    def test_archived_but_uncommitted_capability_is_not_confirmed(self):
+        repo = _init_repo()
+        self._write_capability(repo, "backlog-seeding")
+        # Written but never `git add`/`commit`.
+
+        res = csc.verify(Path(repo), "backlog-seeding", root="openspec")
+        self.assertFalse(res["confirmed"])
+        self.assertEqual(res["status"], "complete")
+        self.assertIsNotNone(res["warning"])
+
+    def test_in_flight_change_is_never_confirmed(self):
+        repo = _init_repo()
+        _write(
+            Path(repo) / "openspec" / "changes" / "add-auth" / "proposal.md",
+            "## Why\n\nUsers can log in.\n",
+        )
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-q", "-m", "propose add-auth")
+
+        res = csc.verify(Path(repo), "add-auth", root="openspec")
+        self.assertFalse(res["confirmed"])
+        self.assertEqual(res["status"], "active")
+        self.assertIsNotNone(res["warning"])
+
+    def test_unknown_spec_id_under_openspec_root_degrades_without_raising(self):
+        repo = _init_repo()
+        (Path(repo) / "openspec" / "specs").mkdir(parents=True)
+        res = csc.verify(Path(repo), "does-not-exist", root="openspec")
+        self.assertFalse(res["confirmed"])
+        self.assertIsNone(res["status"])
+        self.assertIsNotNone(res["warning"])
+
+    def test_confirmed_openspec_candidate_carries_pending_decision(self):
+        repo = _init_repo()
+        self._write_capability(repo, "backlog-seeding")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-q", "-m", "archive backlog-seeding")
+
+        res = csc.verify(Path(repo), "backlog-seeding", root="openspec")
+        self.assertIsNotNone(res["pending_decision"])
 
 
 class TestCheckThenVerifyIntegration(unittest.TestCase):
