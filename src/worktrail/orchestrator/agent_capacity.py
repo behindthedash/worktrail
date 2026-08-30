@@ -203,6 +203,52 @@ def check(
         raise ProviderUnavailable(key, state)
 
 
+def gate_for_agent(
+    routing: dict,
+    agent: str,
+    *,
+    tier: str | None = None,
+    path: Path | None = None,
+    now: datetime | None = None,
+) -> dict | None:
+    """Pre-launch, single-provider capacity check for a dispatch that has
+    already committed to one resolved agent (the go front door's adapter
+    boundary) rather than selecting across a tier row (`select_cell`).
+
+    Finds the routing target(s) whose ``harness`` matches ``agent`` in the
+    resolved tier row (``tier`` or ``routing["default_tier"]``) and checks
+    each with `check()`. Returns ``None`` when nothing is gated -- including
+    when routing has no target for this agent at all, which degrades to
+    "nothing to check, proceed" rather than blocking a repo with no routing
+    configured. Returns the first gate's state dict (plus its target name)
+    when every matching target is gated. Never substitutes a different
+    provider -- this only answers "is the one resolved agent currently
+    unavailable," the fail-fast alternative to `select_cell`'s fallback.
+    """
+    resolved_tier = tier or routing.get("default_tier")
+    tier_row = (routing.get("tiers") or {}).get(resolved_tier) or {}
+    targets = routing.get("targets") or {}
+    matching = [
+        name
+        for name, cfg in targets.items()
+        if isinstance(cfg, dict) and cfg.get("harness") == agent and name in tier_row
+    ]
+    if not matching:
+        return None
+    last_gate: dict | None = None
+    for target in matching:
+        model = (tier_row.get(target) or {}).get("model")
+        if not model:
+            return None
+        try:
+            check(target, model, path=path, now=now)
+        except ProviderUnavailable as exc:
+            last_gate = {"target": target, "model": model, **exc.state}
+            continue
+        return None
+    return last_gate
+
+
 def record(
     target: str,
     model: str,
@@ -448,6 +494,43 @@ def cmd_clear(
         return 0
 
 
+def cmd_check_agent(
+    agent: str,
+    routing_json: str,
+    tier: str | None,
+    path: Path | None = None,
+    now: datetime | None = None,
+) -> int:
+    """Fail-fast pre-launch check for the go front door's adapter dispatch
+    boundary: is the one already-resolved ``agent`` currently capacity-gated?
+    Never selects a different provider -- see `gate_for_agent`'s docstring."""
+    try:
+        routing = json.loads(routing_json)
+    except json.JSONDecodeError as exc:
+        print(f"error: --routing must be valid JSON: {exc}", file=sys.stderr)
+        return 2
+    if not isinstance(routing, dict):
+        print("error: --routing must be a JSON object", file=sys.stderr)
+        return 2
+    gate = gate_for_agent(routing, agent, tier=tier, path=path, now=now)
+    if gate is None:
+        print(json.dumps({"gated": False}))
+        return 0
+    retry_at = _parse_time(gate.get("retry_after")) or _parse_time(gate.get("reset_at"))
+    print(
+        json.dumps(
+            {
+                "gated": True,
+                "target": gate.get("target"),
+                "model": gate.get("model"),
+                "failure_class": gate.get("failure_class"),
+                "retry_after": retry_at.isoformat() if retry_at else None,
+            }
+        )
+    )
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
@@ -472,11 +555,30 @@ def main(argv: list[str] | None = None) -> int:
         "--reason", type=str, default="", help="required reason for clearing"
     )
 
+    check_agent_parser = sub.add_parser(
+        "check-agent",
+        help=(
+            "fail-fast pre-launch check: is this one resolved agent gated? "
+            "(never selects a different provider)"
+        ),
+    )
+    check_agent_parser.add_argument(
+        "--agent", required=True, help="resolved harness, e.g. claude/codex/opencode"
+    )
+    check_agent_parser.add_argument(
+        "--routing",
+        required=True,
+        help="JSON object from resolve_routing() (targets/tiers/default_tier)",
+    )
+    check_agent_parser.add_argument(
+        "--tier", default=None, help="tier row to check (default: routing.default_tier)"
+    )
+
     args = parser.parse_args(argv)
 
     if not args.command:
         parser.print_usage()
-        print("error: specify 'status' or 'clear'", file=sys.stderr)
+        print("error: specify 'status', 'clear', or 'check-agent'", file=sys.stderr)
         return 1
 
     cache = Path(args.cache).expanduser() if args.cache else None
@@ -494,6 +596,9 @@ def main(argv: list[str] | None = None) -> int:
             print("error: specify a provider key or --all", file=sys.stderr)
             return 1
         return cmd_clear(scope, args.reason, path=cache)
+
+    if args.command == "check-agent":
+        return cmd_check_agent(args.agent, args.routing, args.tier, path=cache)
 
     return 1
 
