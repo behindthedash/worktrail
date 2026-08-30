@@ -1249,7 +1249,21 @@ create their own `$WT`/branch and duplicate the fix with nothing to stop either.
 `run_record.py claim`'s exclusivity primitive is generic over its `--specification`
 string (it slugifies whatever key it's given into a lock filename — see
 `#active-conflicts-scan`), so reuse it here keyed on `fix:$SLUG` — namespaced with a
-`fix:` prefix so it can never collide with a real spec id's lock:
+`fix:` prefix so it can never collide with a real spec id's lock. Set `$EXPECTED_FILES`
+(repo-relative paths, one per line) from the root-cause step (Route F step 3) — the
+files this fix already knows it will touch — and pass it as `--expected-files`: `claim`
+registers that set on the run record and hard-stops the claim itself,
+`{"status": "conflict", "reason": "file-overlap", ...}`, when it overlaps a
+**different** live `fix:$SLUG` claim's own registered set. Live-verified 2026-08-29:
+two concurrent `/go` dispatches fixed the identical unspecced defect under different
+slugs, each in its own worktree, and produced a line-for-line duplicate diff to the
+same two files with nothing tracking either — the first PR merged and the second
+session's work was already stale. `fix:$SLUG`-keyed exclusivity alone cannot catch
+that (different slugs never share a lock file); registering `--expected-files` closes
+exactly that gap at claim time instead of only warning about it after the worktree
+already exists. Leave `$EXPECTED_FILES` empty when the fix hasn't narrowed to specific
+files yet — the claim still succeeds, this guard just has nothing to compare against
+yet (the sibling diff scan below is the fallback for that case):
 
 ```bash
 CLAIM_KEY="fix:$SLUG"
@@ -1265,39 +1279,34 @@ for r in json.load(sys.stdin)["stale"]:
     --note "auto-reconciled: fix-branch-active-conflicts-staleness-reconciliation"
 done
 
-CLAIM=$(worktrail-run-record claim "$RUN" --specification "$CLAIM_KEY")
+CLAIM=$(worktrail-run-record claim "$RUN" --specification "$CLAIM_KEY" \
+  --expected-files "$EXPECTED_FILES")
 CLAIM_STATUS=$(echo "$CLAIM" | python3 -c 'import sys, json; print(json.load(sys.stdin)["status"])')
 
 if [ "$CLAIM_STATUS" != "claimed" ]; then
-  echo "BLOCKED: active run(s) already target $CLAIM_KEY ($CLAIM_STATUS):" >&2
+  echo "BLOCKED: active run(s) already target $CLAIM_KEY, or overlap its files ($CLAIM_STATUS):" >&2
   echo "$CLAIM" | python3 -c "
 import sys, json
 c = json.load(sys.stdin)
 for r in (c.get('conflicts') or [c]):
-    print(f'  run_id={r.get(\"run_id\",\"?\")} started_at={r.get(\"started_at\",\"?\")} request_summary={r.get(\"request_summary\",\"?\")} path={r.get(\"path\",\"?\")}')
+    print(f'  run_id={r.get(\"run_id\",\"?\")} started_at={r.get(\"started_at\",\"?\")} request_summary={r.get(\"request_summary\",\"?\")} path={r.get(\"path\",\"?\")} overlap={r.get(\"overlap\",\"?\")}')
 " >&2
   worktrail-run-record finish "$RUN" \
     --status blocked_external_dependency \
-    --merge-result "claim on $CLAIM_KEY failed ($CLAIM_STATUS) — another run already targets this fix"
+    --merge-result "claim on $CLAIM_KEY failed ($CLAIM_STATUS) — another run already targets this fix or its files"
   # Stop here — do not create $WT, do not touch any repo file.
 fi
 ```
 
-Unlike `#active-conflicts-scan`'s sibling worktree/branch grep (advisory, spec-only,
-keyed on `$SPEC_ID`), this hard stop is keyed on the caller-chosen `$SLUG` alone — it
-cannot catch two different slugs converging on the same underlying files. Live-verified
-2026-08-29: two concurrent `/go` dispatches fixed the identical unspecced defect under
-different slugs, each in its own worktree, and produced a line-for-line duplicate diff
-to the same two files with nothing tracking either — the first PR merged and the second
-session's work was already stale. The sibling diff overlap scan below is the fallback
-for exactly that gap. If `$CLAIM_STATUS` is `claimed`, run the scan, then proceed to the
-worktree creation below. The claim releases automatically when `$RUN` reaches any
-`finish` completion state, same recovery path as `#active-conflicts-scan`.
+If `$CLAIM_STATUS` is `claimed`, run the sibling diff scan below (it still catches files
+`$EXPECTED_FILES` didn't anticipate), then proceed to the worktree creation below. The
+claim releases automatically when `$RUN` reaches any `finish` completion state, same
+recovery path as `#active-conflicts-scan`.
 
-**Sibling diff overlap scan (advisory).** Set `$EXPECTED_FILES` (repo-relative paths,
-one per line) from the root-cause step (Route F step 3) — the files this fix already
-knows it will touch. Skip the scan (not a stop) when the fix hasn't narrowed to specific
-files yet; there is nothing to compare against.
+**Sibling diff overlap scan (advisory).** This is now the fallback for the residual gap
+the claim-time file-overlap check above cannot cover: a fix that discovers it must also
+touch a file no one registered in `$EXPECTED_FILES` at claim time has no claim-time
+record to compare against.
 
 `git diff --name-only HEAD` alone only sees tracked-file changes — the same blind spot
 `#sync-before-teardown` step 4 already documents: a brand-new file never appears in a
@@ -1324,12 +1333,12 @@ if [ -n "$EXPECTED_FILES" ] && [ -d "$SIBLING_ROOT" ]; then
 fi
 ```
 
-This is **advisory, not a hard stop** — mirrors `#sibling-worktree-check`'s framing:
-`/go auto` runs unattended and must not stall on it. On a hit, inspect the sibling's
-diff (`git -C <sibling-worktree> diff`) before proceeding and reconcile rather than
-duplicating work already in flight. Cross-machine detection is out of scope here for
-the same reason as `#sibling-worktree-check`: this only sees worktrees this machine
-already has.
+This is **advisory, not a hard stop** — mirrors `#sibling-worktree-check`'s
+framing: `/go auto` runs unattended and must not stall on it. On a hit, inspect the
+sibling's diff (`git -C <sibling-worktree> diff`) before proceeding and reconcile
+rather than duplicating work already in flight. Cross-machine detection is out of
+scope here for the same reason as `#sibling-worktree-check`: this only sees worktrees
+this machine already has.
 
 ```bash
 WT="$REPO-worktrees/fix-$SLUG"

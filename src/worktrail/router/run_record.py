@@ -86,6 +86,14 @@ finish PATH --status completed_pr_open [--pr URL] [--merge-result ...]
             one (older than its own TTL) is reclaimed. Without `--remote`,
             behavior and network usage are unchanged from before this layer
             existed.
+            With `--expected-files` (newline-separated repo-relative paths),
+            also registers this claim's file set on the run record and hard
+            stops -- {"status": "conflict", "reason": "file-overlap", ...} --
+            when it overlaps a DIFFERENT live claim's own registered set,
+            even under a different `--specification`. This is the guard
+            `active-conflicts`/the specification-keyed check above cannot
+            provide: two `fix:$SLUG` claims under different slugs never
+            collide there. Without `--expected-files`, behavior is unchanged.
   prune  [--dir DIR] [--repo REPO] [--keep-count N] [--keep-days N] [--dry-run]
          -> delete old run records under <dir>/<repo-name>/*.yaml. Hybrid
             retention: a record is kept if it is among the --keep-count most
@@ -472,6 +480,7 @@ def cmd_start(args: argparse.Namespace) -> int:
         "epic": None,
         "feature": None,
         "specification": None,
+        "expected_files": [],
         "handoffs_consumed": [],
         "handoffs_created": [],
         "skills_loaded": [],
@@ -1099,6 +1108,54 @@ def _active_conflicts(
     return {"live": live, "stale": stale, "warnings": warnings}
 
 
+def _file_overlap_conflicts(
+    repo_dir: Path, repo_root: Path, expected_files: list[str], exclude: Path | None
+) -> dict[str, list[Any]]:
+    """Other non-terminal run records under `repo_dir` whose own registered
+    `expected_files` overlap `expected_files`, regardless of `specification`.
+
+    This is the cross-slug guard `_active_conflicts()` cannot provide: two
+    unspecced fixes claimed under different `fix:$SLUG` specifications never
+    collide on that check (different lock files, different specification
+    strings) even when they target the identical file set. Partitioned into
+    `{"live": [...], "stale": [...], "warnings": [...]}` via `_is_stale()`,
+    same as `_active_conflicts()`. A record with no registered `expected_files`
+    is never a match -- there is nothing to compare against.
+    """
+    live: list[dict[str, Any]] = []
+    stale: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    if not expected_files or not repo_dir.is_dir():
+        return {"live": live, "stale": stale, "warnings": warnings}
+    wanted = set(expected_files)
+    for path in sorted(repo_dir.glob("*.yaml")):
+        if exclude and path.resolve() == exclude:
+            continue
+        record, warning = _load_lenient(path)
+        if warning is not None:
+            warnings.append(warning)
+            continue
+        if record.get("final_status") is not None:
+            continue
+        other_files = set(record.get("expected_files") or [])
+        overlap = sorted(wanted & other_files)
+        if not overlap:
+            continue
+        entry = {
+            "run_id": record.get("run_id"),
+            "path": str(path),
+            "started_at": record.get("started_at"),
+            "request_summary": record.get("request_summary"),
+            "agent": record.get("agent"),
+            "specification": record.get("specification"),
+            "overlap": overlap,
+        }
+        base_branch = record.get("base_branch")
+        is_stale = bool(base_branch) and _is_stale(record, repo_root, base_branch)
+        (stale if is_stale else live).append(entry)
+    return {"live": live, "stale": stale, "warnings": warnings}
+
+
 def cmd_active_conflicts(args: argparse.Namespace) -> int:
     """Read-only scan for other non-terminal runs on the same repo+specification.
 
@@ -1606,6 +1663,9 @@ def cmd_claim(args: argparse.Namespace) -> int:
     repo_dir = run_path.parent
     lock_path = _lock_path(run_path, args.specification)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
+    expected_files = [
+        line.strip() for line in (args.expected_files or "").splitlines() if line.strip()
+    ]
 
     def _try_acquire() -> int | None:
         try:
@@ -1710,6 +1770,39 @@ def cmd_claim(args: argparse.Namespace) -> int:
         )
         return 1
 
+    # File-overlap hard stop -- catches two DIFFERENT `specification` claims
+    # (e.g. two `fix:$SLUG` slugs) converging on the same underlying files,
+    # which the specification-keyed check above cannot see by design (see
+    # docs/specs/research/concurrent-go-dispatch-brief-claim-race.md, the
+    # live-verified 2026-08-29 duplicate-fix collision this closes). Only
+    # engaged when the caller registers `--expected-files`; omitting it keeps
+    # `claim` exactly as before this change.
+    file_conflicts = _file_overlap_conflicts(
+        repo_dir, repo_root, expected_files, run_path.resolve()
+    )
+    live_file_conflicts = file_conflicts.get("live") or []
+    file_scan_warnings = file_conflicts.get("warnings") or []
+    if live_file_conflicts:
+        os.close(fd)
+        lock_path.unlink(missing_ok=True)
+        if remote_project_repo_dir is not None and remote_ref is not None:
+            _delete_remote_claim(remote_project_repo_dir, remote_ref)
+        print(
+            json.dumps(
+                {
+                    "status": "conflict",
+                    "reason": "file-overlap",
+                    "conflicts": live_file_conflicts,
+                    **(
+                        {"warnings": file_scan_warnings}
+                        if file_scan_warnings
+                        else {}
+                    ),
+                }
+            )
+        )
+        return 1
+
     lock_payload: dict[str, Any] = {
         "run_id": record.get("run_id"),
         "path": str(run_path),
@@ -1720,13 +1813,16 @@ def cmd_claim(args: argparse.Namespace) -> int:
     with os.fdopen(fd, "w") as f:
         f.write(json.dumps(lock_payload))
     record["specification"] = args.specification
+    if expected_files:
+        record["expected_files"] = expected_files
     _save(run_path, record)
+    all_warnings = scan_warnings + file_scan_warnings
     print(
         json.dumps(
             {
                 "status": "claimed",
                 "specification": args.specification,
-                **({"warnings": scan_warnings} if scan_warnings else {}),
+                **({"warnings": all_warnings} if all_warnings else {}),
             }
         )
     )
@@ -2016,6 +2112,15 @@ def main(argv=None) -> int:
     s.add_argument("--specification", required=True)
     s.add_argument("--remote", action="store_true")
     s.add_argument("--remote-ttl-seconds", type=int, default=86400)
+    s.add_argument(
+        "--expected-files",
+        default=None,
+        help=(
+            "newline-separated repo-relative paths this claim will touch; "
+            "checked for overlap against every other live claim's own "
+            "registered set, regardless of specification"
+        ),
+    )
     s.set_defaults(func=cmd_claim)
 
     s = sub.add_parser("reconcile")
