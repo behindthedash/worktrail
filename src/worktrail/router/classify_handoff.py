@@ -16,7 +16,11 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-from ..shared.brief_frontmatter import read_frontmatter, split_frontmatter
+from ..shared.brief_frontmatter import (
+    read_frontmatter,
+    split_frontmatter,
+    validate_brief_path,
+)
 
 _WORD_RE = re.compile(r"[a-z0-9][a-z0-9_-]{2,}", re.IGNORECASE)
 _PATH_RE = re.compile(r"(?:[\w.-]+/)+[\w.-]+")
@@ -133,6 +137,24 @@ def _candidate_specs(
 
 
 def classify_handoff(brief: Path, specs_root: Path) -> dict[str, Any]:
+    # A malformed brief path (a picked-brief directory, or a path missing its
+    # `.md` suffix) used to fall through silently: `read_frontmatter` and
+    # `_sections_text` both swallow the resulting OSError into `{}`/"", so
+    # this returned a normal-looking, all-empty result with no signal that
+    # the input itself was wrong. Checked first so the caller gets an
+    # explicit, actionable error instead.
+    valid, shape_error = validate_brief_path(brief)
+    if not valid:
+        return {
+            "hint": None,
+            "change_kind": None,
+            "target_spec": None,
+            "recommended_route": None,
+            "candidate_specs": [],
+            "signals": [],
+            "error": shape_error,
+        }
+
     fm = read_frontmatter(brief)
     raw_kind = str(fm.get("change-kind") or "").strip().lower()
     change_kind = raw_kind if raw_kind in _CHANGE_KIND_TO_ROUTE else None
@@ -169,6 +191,7 @@ def classify_handoff(brief: Path, specs_root: Path) -> dict[str, Any]:
         "recommended_route": recommended_route,
         "candidate_specs": candidates,
         "signals": signals,
+        "error": None,
     }
 
 
@@ -184,13 +207,15 @@ def main(argv: Iterable[str] | None = None) -> int:
     result = classify_handoff(Path(args.brief), Path(args.specs_root))
     if args.json:
         print(json.dumps(result))
+    elif result["error"]:
+        print(f"error: {result['error']}", file=sys.stderr)
     else:
         print(f"hint: {result['hint']}")
         for candidate in result["candidate_specs"]:
             print(
                 f"{candidate['spec_id']}: score={candidate['score']} {candidate['title']}"
             )
-    return 0
+    return 1 if result["error"] else 0
 
 
 if __name__ == "__main__":

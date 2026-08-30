@@ -50,6 +50,25 @@ def _picked_brief(focus: str, status: str = "picked") -> str:
     return "---\n" + "\n".join(fm) + "\n---\n\n## Focus\n\n" + focus + "\n"
 
 
+def _write_verified_run_record(
+    tmp_dir: str,
+    *,
+    final_status: str = "completed_and_merged",
+    pr: str = "https://github.com/behindthedash/worktrail/pull/999",
+    worktree: str | None = None,
+) -> str:
+    """A run record already stamped by run_record.py `finish()` with a
+    PR-owning `final_status` and `pull_request` -- the fixture
+    `_run_record_implementation_evidence_missing`'s tests verify against, in
+    the same key: value format `run_record._load`/`_render` use."""
+    path = Path(tmp_dir) / "run.yaml"
+    lines = ["status: done", f"final_status: {final_status}", f"pull_request: {pr}"]
+    if worktree:
+        lines.append(f"worktree: {worktree}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return str(path)
+
+
 def _consolidated_brief(focus: str, member_ids: list, status: str = "picked") -> str:
     """A picked brief carrying a `## Consolidated from` section, mirroring
     `_build_consolidated_brief_content` in `consolidate_cluster.py`."""
@@ -493,7 +512,11 @@ class TestDoneRelease(QueueTestBase):
 
     def test_route_c_can_complete_after_implementation(self):
         path = self._write_route_c_picked()
-        res = q.done("20260531-141200-feature", implementation_complete=True)
+        res = q.done(
+            "20260531-141200-feature",
+            implementation_complete=True,
+            note="Implemented in PR #123",
+        )
         self.assertEqual(res["status"], "done")
         self.assertEqual(q._read_frontmatter(path)["status"], "done")
 
@@ -635,7 +658,7 @@ class TestDoneNote(QueueTestBase):
         res = q.done(
             "20260531-141200-feature",
             implementation_complete=True,
-            note="Superseded by spec-042",
+            note="Superseded by spec-042, PR #123",
         )
 
         self.assertEqual(res["status"], "done")
@@ -658,7 +681,7 @@ class TestDoneNote(QueueTestBase):
         q.done(
             "20260531-141200-feature",
             implementation_complete=True,
-            note="Superseded by spec-042",
+            note="Superseded by spec-042, PR #123",
         )
 
         # Independent read from disk, not the buffer done() wrote from.
@@ -750,7 +773,7 @@ class TestDoneNote(QueueTestBase):
                         "20260531-141200-cli",
                         "--implementation-complete",
                         "--note",
-                        "closed via CLI",
+                        "closed via CLI, PR #123",
                         "--json",
                     ]
                 )
@@ -758,7 +781,7 @@ class TestDoneNote(QueueTestBase):
             q.done(
                 "20260531-141200-direct",
                 implementation_complete=True,
-                note="closed via CLI",
+                note="closed via CLI, PR #123",
             )
 
         cli_content = (self.picked / "20260531-141200-cli.md").read_text(
@@ -835,7 +858,11 @@ class TestDoneCheckboxSync(QueueTestBase):
         path = self._write_picked("20260801-000000-brief.md")
         original_tasks_md = (change / "tasks.md").read_text(encoding="utf-8")
 
-        res = q.done("20260801-000000-brief", implementation_complete=True)
+        res = q.done(
+            "20260801-000000-brief",
+            implementation_complete=True,
+            note="Implemented, PR #123",
+        )
 
         self.assertEqual(res["status"], "done")
         self.assertTrue(res.get("checkbox_out_of_sync"))
@@ -853,8 +880,9 @@ class TestDoneCheckboxSync(QueueTestBase):
         change = self._change("- [x] 1.1 Implement exporter\n")
         self._cache(change)
         path = self._write_picked("20260801-000000-brief.md")
+        run = _write_verified_run_record(tempfile.mkdtemp())
 
-        res = q.done("20260801-000000-brief", implementation_complete=True)
+        res = q.done("20260801-000000-brief", implementation_complete=True, run=run)
 
         self.assertEqual(res["status"], "done")
         self.assertNotIn("checkbox_out_of_sync", res)
@@ -865,8 +893,9 @@ class TestDoneCheckboxSync(QueueTestBase):
         self.write("20260531-141200-auth.md", focus="auth")
         q.claim("20260531-141200-auth")
         moved = self.picked / "20260531-141200-auth.md"
+        run = _write_verified_run_record(tempfile.mkdtemp())
 
-        res = q.done("20260531-141200-auth", implementation_complete=True)
+        res = q.done("20260531-141200-auth", implementation_complete=True, run=run)
 
         self.assertEqual(res["status"], "done")
         self.assertNotIn("checkbox_out_of_sync", res)
@@ -876,8 +905,9 @@ class TestDoneCheckboxSync(QueueTestBase):
     def test_cache_miss_degrades_to_no_signal(self):
         self._change()  # no RunPlan ever cached for this change
         path = self._write_picked("20260801-000000-brief.md")
+        run = _write_verified_run_record(tempfile.mkdtemp())
 
-        res = q.done("20260801-000000-brief", implementation_complete=True)
+        res = q.done("20260801-000000-brief", implementation_complete=True, run=run)
 
         self.assertEqual(res["status"], "done")
         self.assertNotIn("checkbox_out_of_sync", res)
@@ -886,8 +916,9 @@ class TestDoneCheckboxSync(QueueTestBase):
     def test_missing_target_spec_directory_degrades_to_no_signal(self):
         # No openspec/changes/add-export directory exists at all.
         path = self._write_picked("20260801-000000-brief.md")
+        run = _write_verified_run_record(tempfile.mkdtemp())
 
-        res = q.done("20260801-000000-brief", implementation_complete=True)
+        res = q.done("20260801-000000-brief", implementation_complete=True, run=run)
 
         self.assertEqual(res["status"], "done")
         self.assertNotIn("checkbox_out_of_sync", res)
@@ -974,6 +1005,168 @@ class TestDoneClosureEvidenceGate(QueueTestBase):
         )
 
         self.assertEqual(code, 1)
+
+
+class TestDoneImplementationEvidenceGate(QueueTestBase):
+    """`done(implementation_complete=True)` refuses to close on prose alone.
+
+    With no `--run`, `--note` must cite a landed PR or use the established
+    pre-existing-collision sentinel. With `--run`, the named run record must
+    have reached a PR-owning `finish()` state -- reproducing (and closing)
+    brief 20260825-205045-worktrail-skill-dispatch-should-strip's false
+    closure: `--implementation-complete` on a note naming neither, while its
+    worktree still held uncommitted changes and no PR was ever opened."""
+
+    def test_rejects_no_note_no_run(self):
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth")
+
+        res = q.done("20260531-141200-auth", implementation_complete=True)
+
+        self.assertEqual(res["status"], "unverified_implementation_closure")
+        self.assertIsNotNone(res["error"])
+        fm = q._read_frontmatter(self.picked / "20260531-141200-auth.md")
+        self.assertEqual(fm["status"], "picked", "must not stamp done unverified")
+
+    def test_rejects_note_with_no_pr_reference(self):
+        """Reproduces the exact false-closure note shape: real prose,
+        real evidence of *something* verified, but no PR ever cited."""
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth")
+
+        res = q.done(
+            "20260531-141200-auth",
+            implementation_complete=True,
+            note="Scrub WORKTRAIL_* dispatch bookkeeping; verified with pytest",
+        )
+
+        self.assertEqual(res["status"], "unverified_implementation_closure")
+
+    def test_accepts_note_with_pr_url(self):
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth")
+
+        res = q.done(
+            "20260531-141200-auth",
+            implementation_complete=True,
+            note="Landed in https://github.com/behindthedash/worktrail/pull/824",
+        )
+
+        self.assertEqual(res["status"], "done")
+
+    def test_accepts_note_with_pr_number(self):
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth")
+
+        res = q.done(
+            "20260531-141200-auth",
+            implementation_complete=True,
+            note="Fixed via PR #824",
+        )
+
+        self.assertEqual(res["status"], "done")
+
+    def test_accepts_collision_closure_sentinel_with_no_pr(self):
+        """spec-collision-check.md's Route C/D auto-close: closes as
+        already covered by separate, prior work -- legitimately has no PR
+        of its own to cite."""
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth")
+
+        res = q.done(
+            "20260531-141200-auth",
+            implementation_complete=True,
+            note="Closed as a pre-existing collision with 042-example "
+            "(Example) -- Status: Implemented, files: src/x.py all git-tracked on main.",
+        )
+
+        self.assertEqual(res["status"], "done")
+
+    def test_rejects_run_with_no_final_status(self):
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth")
+        tmp = tempfile.mkdtemp()
+        run = Path(tmp) / "run.yaml"
+        run.write_text("status: executing\n", encoding="utf-8")
+
+        res = q.done("20260531-141200-auth", implementation_complete=True, run=str(run))
+
+        self.assertEqual(res["status"], "implementation_run_not_verified")
+        self.assertIn("never reached finish()", res["error"])
+
+    def test_rejects_run_with_non_pr_owning_final_status(self):
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth")
+        run = _write_verified_run_record(
+            tempfile.mkdtemp(), final_status="investigation_complete"
+        )
+
+        res = q.done("20260531-141200-auth", implementation_complete=True, run=run)
+
+        self.assertEqual(res["status"], "implementation_run_not_verified")
+        self.assertIn("not a PR-owning completion state", res["error"])
+
+    def test_rejects_run_with_no_pull_request(self):
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth")
+        tmp = tempfile.mkdtemp()
+        run = Path(tmp) / "run.yaml"
+        run.write_text(
+            "status: done\nfinal_status: completed_pr_open\n", encoding="utf-8"
+        )
+
+        res = q.done("20260531-141200-auth", implementation_complete=True, run=str(run))
+
+        self.assertEqual(res["status"], "implementation_run_not_verified")
+        self.assertIn("no pull_request field", res["error"])
+
+    def test_rejects_run_with_uncommitted_worktree(self):
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth")
+        worktree = tempfile.mkdtemp()
+        subprocess.run(["git", "init", "-q", worktree], check=True)
+        (Path(worktree) / "dirty.txt").write_text("uncommitted\n", encoding="utf-8")
+        run = _write_verified_run_record(tempfile.mkdtemp(), worktree=worktree)
+
+        res = q.done("20260531-141200-auth", implementation_complete=True, run=run)
+
+        self.assertEqual(res["status"], "implementation_run_not_verified")
+        self.assertIn("uncommitted changes", res["error"])
+
+    def test_accepts_verified_run(self):
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth")
+        run = _write_verified_run_record(tempfile.mkdtemp())
+
+        res = q.done("20260531-141200-auth", implementation_complete=True, run=run)
+
+        self.assertEqual(res["status"], "done")
+
+    def test_run_takes_precedence_over_note(self):
+        """--run is authoritative -- a satisfying note does not paper over
+        a run that never reached finish()."""
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth")
+        tmp = tempfile.mkdtemp()
+        run = Path(tmp) / "run.yaml"
+        run.write_text("status: executing\n", encoding="utf-8")
+
+        res = q.done(
+            "20260531-141200-auth",
+            implementation_complete=True,
+            note="Fixed via PR #824",
+            run=str(run),
+        )
+
+        self.assertEqual(res["status"], "implementation_run_not_verified")
+
+    def test_planning_only_is_unaffected(self):
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth")
+
+        res = q.done("20260531-141200-auth", planning_only=True)
+
+        self.assertEqual(res["status"], "done")
 
 
 class TestConsolidationClosureEvidenceGate(QueueTestBase):

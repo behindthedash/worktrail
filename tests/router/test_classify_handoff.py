@@ -85,6 +85,21 @@ class TestClassifyHandoff(unittest.TestCase):
         self.assertEqual(result["change_kind"], "bugfix")
         self.assertEqual(result["hint"], "F")
 
+    def test_directory_path_surfaces_error_instead_of_silent_empty_result(self):
+        """Before the shared shape check, a picked-brief directory passed as
+        `brief` hit `read_frontmatter`/`_sections_text`, both of which
+        swallow the resulting OSError into `{}`/"" -- so this returned a
+        normal-looking, all-empty result with no signal the input was wrong."""
+        claimed_dir = self.root / "20260101-000000-some-brief"
+        claimed_dir.mkdir()
+
+        result = ch.classify_handoff(claimed_dir, self.specs)
+
+        self.assertIsNotNone(result["error"])
+        self.assertIn("directory", result["error"])
+        self.assertIsNone(result["hint"])
+        self.assertEqual(result["candidate_specs"], [])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
