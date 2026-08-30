@@ -5161,6 +5161,57 @@ class EpicStageDetection(unittest.TestCase):
         self.assertEqual(len(citing_spec_rows), 1)
         self.assertEqual(citing_spec_rows[0]["stage"], "ready-to-implement")
 
+    def test_epic_sequencing_gated_pairwise_prose_citing_spec_done_stage(self):
+        # Same epic as 4.1 and 4.2: Feature 2 depends on Feature 1's contract.
+        # But now Feature 1's future spec id is cited by a spec folder
+        # whose stage is done (Status: Backfill). The gate for Feature 2 is closed
+        # because the gating spec has stage done, so the result is epic-gap
+        # (unchanged from today's behavior: the feature can be seeded).
+        epics = self.repo / "docs" / "specs" / "epics"
+        epics.mkdir(parents=True, exist_ok=True)
+        body = [
+            "# Epic: 007-sequenced-done",
+            "",
+            "### Feature 1",
+            "Feature 1 body.",
+            "**Future spec id:** `feature-1-contract`",
+            "",
+            "### Feature 2",
+            "Feature 2 depends on Feature 1's contract to be finalized.",
+            "",
+        ]
+        epic_file = epics / "007-sequenced-done.md"
+        epic_file.write_text("\n".join(body), encoding="utf-8")
+
+        # Create a spec that cites the future-spec-id with done stage
+        # (using Status: Backfill to achieve done stage)
+        spec_dir = self.repo / "docs" / "specs" / "010-feature-backfilled"
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        (spec_dir / "spec.md").write_text(
+            (
+                "# Feature 1 Implementation\n\n"
+                "**Status**: Backfill\n\n"
+                "Implements Epic 007 Feature 1's contract (feature-1-contract).\n"
+            ),
+            encoding="utf-8",
+        )
+
+        result = dashboard.detect_epic_stage(epic_file, self.repo)
+
+        # The gate for Feature 2 is closed (because the citing spec's stage is done),
+        # so the result is epic-gap, not epic-sequencing-gated.
+        self.assertEqual(result["stage"], "epic-gap")
+        self.assertEqual(result["features"], 2)
+        self.assertEqual(result["cited"], 1)
+        self.assertNotIn("blocked_feature", result)
+        self.assertNotIn("gates", result)
+
+        # Verify that dashboard.scan() on the citing spec folder returns done stage
+        spec_scan_rows = dashboard.scan(self.repo / "docs" / "specs")
+        citing_spec_rows = [r for r in spec_scan_rows if r["id"] == "010-feature-backfilled"]
+        self.assertEqual(len(citing_spec_rows), 1)
+        self.assertEqual(citing_spec_rows[0]["stage"], "done")
+
     def test_non_epic_named_file_is_ignored_by_epic_id_pattern_against_real_directory(
         self,
     ):
