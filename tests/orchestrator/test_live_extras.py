@@ -1435,5 +1435,123 @@ class ResumeQuarantineStalenessWarningTests(unittest.TestCase):
             self.assertIn("7 commit(s)", out.getvalue())
 
 
+class LiveSpawnBaseCommitTests(unittest.TestCase):
+    """Handoff 20260829-215209: base_commit must resolve to a real commit in the
+    canonical repo, not the literal sentinel "HEAD" -- run inside the task's own
+    worktree, "HEAD" is worktree-relative and renders the review-worker's
+    `git diff {base_commit}..HEAD` instruction as a no-op HEAD..HEAD."""
+
+    @staticmethod
+    def _fake_result():
+        return type(
+            "R",
+            (),
+            {
+                "text": "ok",
+                "usage": {},
+                "tools_used": [],
+                "skills_used": [],
+                "paused_s": 0.0,
+            },
+        )()
+
+    def _make_repo(self, tmp: Path) -> Path:
+        repo = tmp / "repo"
+        repo.mkdir()
+        _run_git(repo, "init", "-q")
+        _run_git(repo, "config", "user.email", "t@example.com")
+        _run_git(repo, "config", "user.name", "Test")
+        (repo / "README.md").write_text("base\n")
+        _run_git(repo, "add", "-A")
+        _run_git(repo, "commit", "-q", "-m", "base")
+        return repo
+
+    def _spawn_and_capture_ctx(self, spawn, task, wt) -> dict:
+        captured_ctx = {}
+
+        def _capture_prompt(_role, _task, ctx, **_kw):
+            captured_ctx.update(ctx)
+            return "prompt"
+
+        with (
+            patch(
+                "worktrail.orchestrator.live.dispatch.build_worker_prompt",
+                side_effect=_capture_prompt,
+            ),
+            patch(
+                "worktrail.orchestrator.live.spawnlib.spawn_claude_p",
+                return_value=self._fake_result(),
+            ),
+        ):
+            spawn("review", task, wt)
+        return captured_ctx
+
+    def test_root_task_resolves_base_commit_to_real_sha_not_head(self):
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            repo = self._make_repo(tmp)
+            base_sha = _run_git(repo, "rev-parse", "HEAD").stdout.strip()
+            wt = tmp / "wt"
+            _run_git(
+                repo, "worktree", "add", "-b", "spec-001/task-001", str(wt), "HEAD"
+            )
+
+            task = {"id": "TASK-001", "deps": [], "files": ["src/foo.py"]}
+            spawn = live.LiveSpawn(
+                "spec-001", "docs/specs/001-spec", agent="claude", repo=repo
+            )
+            spawn.by_id = {"TASK-001": task}
+
+            ctx = self._spawn_and_capture_ctx(spawn, task, wt)
+
+            self.assertEqual(ctx.get("base_commit"), base_sha)
+            self.assertNotEqual(ctx.get("base_commit"), "HEAD")
+
+    def test_dependent_task_resolves_base_commit_to_dependency_branch_tip(self):
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            repo = self._make_repo(tmp)
+            base = _run_git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+            _run_git(repo, "checkout", "-q", "-B", "spec-001/task-001", "HEAD")
+            (repo / "helper.py").write_text("x = 1\n")
+            _run_git(repo, "add", "-A")
+            _run_git(repo, "commit", "-q", "-m", "add helper")
+            dep_sha = _run_git(repo, "rev-parse", "spec-001/task-001").stdout.strip()
+            _run_git(repo, "checkout", "-q", base)
+
+            wt = tmp / "wt"
+            _run_git(
+                repo,
+                "worktree",
+                "add",
+                "-b",
+                "spec-001/task-002",
+                str(wt),
+                "spec-001/task-001",
+            )
+
+            task = {"id": "TASK-002", "deps": ["TASK-001"], "files": ["src/bar.py"]}
+            spawn = live.LiveSpawn(
+                "spec-001", "docs/specs/001-spec", agent="claude", repo=repo
+            )
+            spawn.by_id = {"TASK-001": {"id": "TASK-001", "deps": []}, "TASK-002": task}
+
+            ctx = self._spawn_and_capture_ctx(spawn, task, wt)
+
+            self.assertEqual(ctx.get("base_commit"), dep_sha)
+            self.assertNotEqual(ctx.get("base_commit"), "HEAD")
+
+    def test_no_repo_falls_back_to_head_sentinel(self):
+        # Backward compatibility: a caller (or test) that constructs LiveSpawn
+        # without a canonical repo (repo=None, the default) keeps the pre-fix
+        # literal "HEAD" behavior.
+        spawn = live.LiveSpawn("spec-001", "docs/specs/001-spec", agent="claude")
+        task = {"id": "TASK-001", "deps": [], "files": []}
+
+        ctx = self._spawn_and_capture_ctx(spawn, task, Path("/tmp/wt"))
+
+        self.assertEqual(ctx.get("base_commit"), "HEAD")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
