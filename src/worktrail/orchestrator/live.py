@@ -1813,9 +1813,10 @@ def _validate_retained_task_branch(
     Retained branches may contain user work, so this function never resets,
     deletes, or recreates them. With `wt` (the branch's own retained worktree,
     already checked out on `branch`), a stale-ancestry failure first attempts
-    the one repair that preserves all work: `git merge --no-edit <start_ref>`
-    in that worktree -- the exact mechanical fix operators applied by hand
-    every time the base advanced while a task sat quarantined/killed (observed
+    the one repair that preserves all work: merging `start_ref` (resolved in
+    `repo`, the canonical checkout -- see the "HEAD sentinel" note below) into
+    that worktree -- the exact mechanical fix operators applied by hand every
+    time the base advanced while a task sat quarantined/killed (observed
     repeatedly 2026-08-28). A clean merge returns a journal-ready repair-event
     list; a conflicted one is aborted and raises exactly as before, so
     conflicting user work still gets a human. Without `wt` (no checkout to
@@ -1837,7 +1838,17 @@ def _validate_retained_task_branch(
         )
         if wt is None:
             raise stale_error
-        merged = _git(wt, "merge", "--no-edit", start_ref, check=False)
+        # Resolve `start_ref` in `repo` (the canonical checkout) before merging it
+        # into `wt` (the branch's own retained worktree, already checked out on
+        # `branch`) -- `dependency_start_ref` falls back to the literal sentinel
+        # string "HEAD" for a root task (no dependency branch to stack on), and
+        # "HEAD" is worktree-relative: run literally inside `wt`, it resolves to
+        # `wt`'s OWN current commit, not the canonical repo's base tip, making the
+        # merge a no-op that leaves the branch just as stale as before.
+        merge_target = _git(
+            repo, "rev-parse", "--verify", f"{start_ref}^{{commit}}", check=False
+        ).stdout.strip() or start_ref
+        merged = _git(wt, "merge", "--no-edit", merge_target, check=False)
         if merged.returncode != 0:
             _git(wt, "merge", "--abort", check=False)
             raise WorktreeAddError(
