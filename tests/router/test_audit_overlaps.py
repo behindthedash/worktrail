@@ -194,6 +194,46 @@ class TestAudit(unittest.TestCase):
             payload = json.loads(json.dumps(result))
             self.assertIn("pairs", payload)
 
+    def test_extra_root_candidates_are_merged_into_the_same_corpus(self):
+        """Same bug class as check_spec_collision.py/classify_handoff.py
+        (brief 20260830-005833): `audit()` only ever scanned one root, so an
+        overlap between a devkit-format spec and an OpenSpec-format spec was
+        silently invisible."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "docs" / "specs"
+            _make_spec(
+                root,
+                "001-donor-search",
+                "Donors search nonprofits by cause location rating before donating.",
+            )
+            openspec_specs = Path(tmp) / "openspec" / "specs"
+            (openspec_specs / "nonprofit-search").mkdir(parents=True)
+            (openspec_specs / "nonprofit-search" / "spec.md").write_text(
+                "# Nonprofit Search\n\n## Purpose\n\n"
+                "Donors search nonprofits by cause category and location.\n"
+            )
+            result = audit(root, min_score=0.1, extra_roots=[Path(tmp) / "openspec"])
+            self.assertEqual(result["total_specs"], 2)
+            ids = {
+                result["pairs"][0]["spec_a"]["spec_id"],
+                result["pairs"][0]["spec_b"]["spec_id"],
+            }
+            self.assertEqual(ids, {"001-donor-search", "nonprofit-search"})
+
+    def test_no_extra_roots_matches_prior_single_root_behavior(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _make_spec(root, "001-auth", "Login sessions passwords expiry management.")
+            result = audit(root, min_score=0.1)
+            self.assertEqual(result["total_specs"], 1)
+
+    def test_nonexistent_extra_root_is_a_silent_noop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _make_spec(root, "001-auth", "Login sessions passwords expiry management.")
+            result = audit(root, min_score=0.1, extra_roots=[Path(tmp) / "openspec"])
+            self.assertEqual(result["total_specs"], 1)
+
     def test_three_specs_pairwise(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

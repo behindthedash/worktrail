@@ -69,19 +69,22 @@ if [ "$ROUTE" = "C" ] || [ "$ROUTE" = "D" ] || [ "$ROUTE" = "F" ] || [ "$ROUTE" 
 fi
 ```
 
-**A matched candidate sourced from an OpenSpec root (`root: "openspec"`) may
-not be mechanically `--verify`-able.** `verify()` looks up `repo/root/spec_id`
-directly and has no `changes/`-vs-`specs/` indirection of its own (unlike
-`check()`, which delegates that to `overlap_check.scan()`) — an OpenSpec spec
-also carries no `**Status**:` header or task `files:` frontmatter for the
-shipped-artifact check to read. In practice this degrades to `confirmed:
-false` with a warning, never a crash, so it is safe to attempt — but never
-expect an OpenSpec-sourced candidate to auto-close a Route C/D brief the way a
-confirmed devkit candidate does. Surfacing the candidate to the calling
-agent's own semantic judgment (before `--verify` even runs) is the fix this
-guard exists to provide for OpenSpec-format repos; a human/agent redirecting
-the dispatch based on that candidate alone is the expected outcome, not a
-mechanically confirmed collision.
+**A matched candidate sourced from an OpenSpec root (`root: "openspec"`) is
+mechanically `--verify`-able too, just via a different signal.** OpenSpec
+carries no `**Status**:` header or task `files:` frontmatter, so `verify()`
+auto-detects an OpenSpec-shaped `root` and confirms instead via OpenSpec's own
+archival lifecycle: a candidate already archived into `root/specs/<id>/spec.md`
+(`/opsx:archive` only moves it there once the change is done — the same
+settled-state guarantee `Status: Implemented` gives the devkit path) AND that
+`spec.md` git-tracked at the base checkout (the shipped-artifact evidence, in
+place of task `files:`) is `confirmed: true`. A candidate still under
+`root/changes/<id>/` is in-flight, unshipped work and is **never** confirmed —
+its `status` reads `"active"` rather than `"complete"`, and there is no
+partial-shipped signal to check it against (re-deriving that change's own file
+scope would be a fundamentally less certain signal than the archival move
+itself). Confirmed-collision handling for an OpenSpec candidate follows the
+exact same auto-close/ask rules by route as the devkit path below — the only
+difference is which artifact evidence produced `confirmed: true`.
 
 **Confirmed-collision handling differs by route** — C/D auto-closes on a brief-sourced match
 (the target work is new or not yet `Implemented`, so a match is always a genuine duplicate);
@@ -314,10 +317,12 @@ whole-spec candidate or task-level candidate is a strong match against `$COMPARI
 applying the exact actor + capability + primary domain rule
 `references/subagent-prompts.md#overlap-check` already documents. Only when the agent judges a
 whole-spec candidate a match does `--verify <spec_id> --root <its root>
---json` run, checking the matched spec's `**Status**:` header (must read `Implemented`) and
-whether every task `files:` entry is git-tracked at `$REPO`'s base branch — `confirmed: true`
-only when both hold (see the OpenSpec-sourced-candidate note above `--verify`'s limits there).
-A task-level match is never passed to `--verify`; see "Task-level matches:
+--json` run. For a devkit-shaped root this checks the matched spec's
+`**Status**:` header (must read `Implemented`) and whether every task `files:`
+entry is git-tracked at `$REPO`'s base branch — `confirmed: true` only when
+both hold. For an OpenSpec-shaped root, see the note above instead — the
+signal is archival (`root/specs/`) + git-tracked `spec.md`, same outcome
+shape. A task-level match is never passed to `--verify`; see "Task-level matches:
 redirect, never auto-close" above.
 
 **Best-effort, never a hard dependency.** `checked: false` (none of the scanned roots exist, an
