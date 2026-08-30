@@ -316,6 +316,84 @@ def test_epic_with_unspecced_features_seeds_brief(tmp_path):
     assert fm["implementation-intent"] == "planning-only"
 
 
+def test_sequencing_gated_epic_logs_one_line_and_is_not_seeded(tmp_path):
+    repos_root = tmp_path / "projects"
+    repo = _mk_repo(repos_root, "repo-a")
+    _mk_epic(
+        repo,
+        "001-payments",
+        features=3,
+        future_spec_ids={1: "020-payments-core"},
+    )
+    epic_path = repo / "docs" / "specs" / "epics" / "001-payments.md"
+    epic_path.write_text(
+        epic_path.read_text(encoding="utf-8")
+        + "\nFeature 2 depends on Feature 1's contract.\n",
+        encoding="utf-8",
+    )
+    # cited=1 (unrelated spec citing the epic id) so next_n = 2, which the
+    # appended prose above gates on Feature 1 (still unspecced -- open).
+    _mk_citing_spec(repo, "030-unrelated", "001-payments")
+
+    messages: list[str] = []
+    summary = seed_backlog.seed_backlog(
+        repos_root, queue_base=tmp_path / "wq", log=messages.append
+    )
+
+    assert summary["seeded"] == []
+    gated_lines = [m for m in messages if "epic-sequencing-gated" in m]
+    assert len(gated_lines) == 1
+    line = gated_lines[0]
+    assert "001-payments" in line
+    assert "Feature 2" in line
+    assert "Feature 1" in line
+    assert "not yet specced" in line
+
+
+def test_sequencing_gated_epic_reports_blocked_feature_and_gate_state(tmp_path):
+    """Task 5.3: Verify log output includes blocked feature and gate's resolved state.
+
+    The seeder must log a line that names the epic ID, the blocked feature number,
+    the gating feature number, and the gate's resolved state (either a spec name
+    or "not yet specced").
+    """
+    repos_root = tmp_path / "projects"
+    repo = _mk_repo(repos_root, "repo-a")
+    _mk_epic(
+        repo,
+        "002-accounting",
+        features=3,
+        future_spec_ids={2: "030-accounting-ledger"},
+    )
+    epic_path = repo / "docs" / "specs" / "epics" / "002-accounting.md"
+    epic_path.write_text(
+        epic_path.read_text(encoding="utf-8") + "\nFeature 2 depends on Feature 1.\n",
+        encoding="utf-8",
+    )
+    # One spec cites the epic id, so cited=1, next_n=2. The prose gates
+    # Feature 2 on Feature 1. Since Feature 1 is unspecced (no citing spec),
+    # the gate is open and Feature 2 is blocked.
+    _mk_citing_spec(repo, "031-unrelated", "002-accounting")
+
+    messages: list[str] = []
+    summary = seed_backlog.seed_backlog(
+        repos_root, queue_base=tmp_path / "wq", log=messages.append
+    )
+
+    assert summary["seeded"] == []
+    gated_lines = [m for m in messages if "epic-sequencing-gated" in m]
+    assert len(gated_lines) == 1
+    line = gated_lines[0]
+    # Log must include epic id
+    assert "002-accounting" in line
+    # Log must include blocked feature number
+    assert "Feature 2" in line
+    # Log must include gating feature number
+    assert "Feature 1" in line
+    # Log must include resolved state (in this fixture, unspecced since no spec cites Feature 1)
+    assert "not yet specced" in line
+
+
 def test_openspec_spec_citation_counts_toward_epic(tmp_path):
     repos_root = tmp_path / "projects"
     repo = _mk_repo(repos_root, "repo-a")
@@ -792,3 +870,133 @@ def test_cli_missing_repos_root_fails(tmp_path, capsys):
     rc = seed_backlog.main(["--repos-root", str(tmp_path / "nope")])
     assert rc == 2
     assert "does not exist" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# epic-sequencing-gated (gate blocking next feature)
+
+
+def test_epic_in_sequencing_gated_stage_produces_no_brief(tmp_path):
+    """An epic with gate prose blocking its next unspecced feature produces
+    no queued brief and no seed_key collision on a second sweep."""
+    from worktrail.router import dashboard
+
+    repos_root = tmp_path / "projects"
+    repo = _mk_repo(repos_root, "repo-a")
+
+    # Epic with 2 features: Feature 1 has a future spec id and is cited by
+    # a spec that doesn't implement that future spec id (so the gate is open).
+    # Feature 2 has gate prose "Feature 2 depends on Feature 1", so Feature 2
+    # is blocked by the still-open Feature 1 gate.
+    _mk_epic(
+        repo,
+        "001-gated",
+        features=2,
+        future_spec_ids={1: "feature-one-impl"},
+    )
+    # Create a spec that cites the epic (counts Feature 1 as cited)
+    _mk_citing_spec(repo, "020-gated-epic-user", "001-gated")
+    # Add gate prose to Feature 2
+    epics = repo / "docs" / "specs" / "epics"
+    epic_file = epics / "001-gated.md"
+    epic_text = epic_file.read_text(encoding="utf-8")
+    # Insert gate prose into Feature 2's block
+    epic_text = epic_text.replace(
+        "### Feature 2 — thing 2",
+        "### Feature 2 — thing 2\n\nFeature 2 depends on Feature 1.",
+    )
+    epic_file.write_text(epic_text, encoding="utf-8")
+
+    # Verify dashboard detects the gate correctly
+    result = dashboard.detect_epic_stage(epic_file, repo)
+    assert result["stage"] == "epic-sequencing-gated"
+
+    qbase = tmp_path / "wq"
+
+    # First sweep: should not seed because Feature 2 is gated on Feature 1
+    # (whose future spec id "feature-one-impl" has no citing spec, so gate is open)
+    summary = seed_backlog.seed_backlog(
+        repos_root, queue_base=qbase, log=lambda _m: None
+    )
+
+    assert summary["seeded"] == []
+    briefs = _queued_briefs(qbase)
+    assert len(briefs) == 0
+
+    # Second sweep: still no brief, no collision issues
+    summary2 = seed_backlog.seed_backlog(
+        repos_root, queue_base=qbase, log=lambda _m: None
+    )
+    assert summary2["seeded"] == []
+
+
+def test_sequencing_gated_epic_in_returned_summary(tmp_path):
+    """seed_backlog() returns the sequencing-gated epic in its summary
+    under the sequencing_gated_epics key."""
+    repos_root = tmp_path / "projects"
+    repo = _mk_repo(repos_root, "repo-a")
+
+    # Epic with 2 features: Feature 1 is cited, Feature 2 is blocked by
+    # a gate on Feature 1 (which is still open).
+    _mk_epic(
+        repo,
+        "001-blocked",
+        features=2,
+        future_spec_ids={1: "feature-one-spec"},
+    )
+    _mk_citing_spec(repo, "020-feature-one-user", "001-blocked")
+    epics = repo / "docs" / "specs" / "epics"
+    epic_file = epics / "001-blocked.md"
+    epic_text = epic_file.read_text(encoding="utf-8")
+    epic_text = epic_text.replace(
+        "### Feature 2 — thing 2",
+        "### Feature 2 — thing 2\n\nFeature 2 depends on Feature 1.",
+    )
+    epic_file.write_text(epic_text, encoding="utf-8")
+
+    qbase = tmp_path / "wq"
+    summary = seed_backlog.seed_backlog(
+        repos_root, queue_base=qbase, log=lambda _m: None
+    )
+
+    assert summary["sequencing_gated_epics"] == [
+        {"repo": "repo-a", "id": "001-blocked"}
+    ]
+
+
+def test_epic_without_gate_prose_seeds_as_before(tmp_path):
+    """Regression case: an epic without gate prose (no sequencing-gate conditions)
+    seeds a brief exactly as it did before the gate detection feature was added.
+    This ensures backward compatibility — gate detection does not change the
+    behavior of epics that have no gate prose."""
+    repos_root = tmp_path / "projects"
+    repo = _mk_repo(repos_root, "repo-a")
+
+    # Create a simple epic with 3 features, no gate prose
+    _mk_epic(repo, "001-simple", features=3)
+    # One spec cites the epic (Feature 1 is cited)
+    _mk_citing_spec(repo, "020-simple-impl", "001-simple")
+
+    qbase = tmp_path / "wq"
+    summary = seed_backlog.seed_backlog(
+        repos_root, queue_base=qbase, log=lambda _m: None
+    )
+
+    # Should seed exactly one brief with the expected key
+    assert len(summary["seeded"]) == 1
+    seeded = summary["seeded"][0]
+    assert seeded["repo"] == "repo-a"
+    assert seeded["id"] == "001-simple"
+    assert seeded["seed_key"] == "repo-a:epic:001-simple:cited=1"
+    assert seeded["kind"] == "epic"
+
+    # Brief should be created with the expected properties
+    briefs = _queued_briefs(qbase)
+    assert len(briefs) == 1
+    _path, fm = briefs[0]
+    assert fm["recommended-route"] == "C"
+    assert fm["implementation-intent"] == "planning-only"
+
+    # Most importantly: no epic should be in sequencing_gated_epics
+    # (gate detection only applies to epics WITH gate prose)
+    assert summary.get("sequencing_gated_epics", []) == []

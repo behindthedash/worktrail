@@ -1507,10 +1507,60 @@ TERMINAL_EPIC_STATUSES = frozenset(
 
 _EPIC_STATUS_LINE_RE = re.compile(r"^\*\*Status:\*\*\s*(.+?)\s*$", re.MULTILINE)
 _EPIC_FEATURE_HEADING_RE = re.compile(r"^###\s+Feature\b", re.MULTILINE)
+_EPIC_FEATURE_HEADING_NUM_RE = re.compile(r"^###\s+Feature\s+(\d+)\b", re.MULTILINE)
 _EPIC_NUMBER_RE = re.compile(r"^(\d{3})-")
 _EPIC_FUTURE_SPEC_ID_RE = re.compile(
     r"\*\*Future spec id:\*\*\s*`([a-z][a-z0-9-]*)`", re.IGNORECASE
 )
+
+# Sequencing-gate prose an epic author writes when a later feature is
+# intentionally blocked on an earlier one shipping first. Two shapes, per
+# design.md Decision 3:
+#   - pairwise: "Feature <next_n> depends on Feature <M>" -- names the exact
+#     blocked feature, so `_EPIC_GATE_PAIRWISE_TEMPLATE` is a `str.format`
+#     template rather than a precompiled pattern: the caller substitutes the
+#     specific `next_n` it is checking, then compiles via
+#     `_epic_gate_pairwise_re` (always case-insensitive, matching
+#     `_EPIC_GATE_BLANKET_RE`), so a match only fires for that feature and
+#     not any other "Feature X depends on Feature Y" prose elsewhere in the
+#     document.
+#   - blanket: "Feature <M> gates the rest/remaining (features)/later
+#     features/all later features" -- names only the gating feature and
+#     covers every feature after it, so this one needs no per-call
+#     substitution; callers instead filter matches to `< next_n` rather than
+#     matching an exact number.
+_EPIC_GATE_PAIRWISE_TEMPLATE = r"Feature\s+{next_n}\s+depends\s+on\s+Feature\s+(\d+)"
+_EPIC_GATE_BLANKET_RE = re.compile(
+    r"Feature\s+(\d+)\s+gates\s+(?:the\s+rest|the\s+remaining(?:\s+"
+    r"features?)?|later\s+features?|all\s+later\s+features?)",
+    re.IGNORECASE,
+)
+
+
+def _epic_gate_pairwise_re(next_n: int) -> re.Pattern[str]:
+    """Compile the pairwise gate pattern for a specific feature number.
+
+    Always case-insensitive, matching `_EPIC_GATE_BLANKET_RE`.
+    """
+    return re.compile(_EPIC_GATE_PAIRWISE_TEMPLATE.format(next_n=next_n), re.IGNORECASE)
+
+
+def _epic_gate_candidates(next_n: int, epic_text: str) -> set[int]:
+    """Candidate gating feature numbers for `next_n`, from both gate shapes.
+
+    Pairwise matches name `next_n` exactly, so every match is a candidate.
+    Blanket matches name only the gating feature and cover every later
+    feature, so a blanket match only counts if it precedes `next_n`
+    (`< next_n`) -- a blanket gate on `next_n` itself or a later feature
+    does not block `next_n`.
+    """
+    candidates: set[int] = {
+        int(m) for m in _epic_gate_pairwise_re(next_n).findall(epic_text)
+    }
+    candidates.update(
+        int(m) for m in _EPIC_GATE_BLANKET_RE.findall(epic_text) if int(m) < next_n
+    )
+    return candidates
 
 
 def _epic_status_header(text: str) -> str | None:
@@ -1520,6 +1570,45 @@ def _epic_status_header(text: str) -> str | None:
 
 def _count_epic_features(text: str) -> int:
     return len(_EPIC_FEATURE_HEADING_RE.findall(text))
+
+
+def _epic_feature_blocks(text: str) -> dict[int, str]:
+    """Split epic text into per-`### Feature N` blocks, keyed by feature number.
+
+    A block runs from its own heading up to the next `### Feature` heading (or
+    end of document), so per-feature signals -- `**Future spec id:**`, gate
+    prose -- can be read from one feature instead of the whole document.
+
+    Headings are delimited by `_EPIC_FEATURE_HEADING_RE` (the same matcher
+    `_count_epic_features` counts) so block boundaries never disagree with the
+    feature count; a heading whose number is unparseable (`### Feature A`) is
+    dropped from the mapping but still ends the preceding block, and repeated
+    numbers are concatenated so no feature text is silently lost.
+    """
+    headings = list(_EPIC_FEATURE_HEADING_RE.finditer(text))
+    blocks: dict[int, str] = {}
+    for index, heading in enumerate(headings):
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(text)
+        block = text[heading.start() : end]
+        number_match = _EPIC_FEATURE_HEADING_NUM_RE.match(block)
+        if not number_match:
+            continue
+        number = int(number_match.group(1))
+        blocks[number] = blocks[number] + block if number in blocks else block
+    return blocks
+
+
+def _epic_block_future_spec_id(block: str) -> str | None:
+    """Extract one feature block's `**Future spec id:**` value, if present.
+
+    Reuses `_EPIC_FUTURE_SPEC_ID_RE`, the same matcher `_epic_citation_patterns`
+    applies to a whole epic's text, but scoped to a single block returned by
+    `_epic_feature_blocks` so a gate can be resolved against the specific
+    feature it names instead of the first (or any) `**Future spec id:**` in
+    the document.
+    """
+    match = _EPIC_FUTURE_SPEC_ID_RE.search(block)
+    return match.group(1) if match else None
 
 
 def _epic_citation_patterns(epic_id: str, epic_text: str) -> list[re.Pattern]:
@@ -1599,6 +1688,90 @@ def _epic_citing_spec_ids(repo: Path, patterns: list[re.Pattern]) -> list[str]:
     return citing
 
 
+# A citing spec/change in one of these stages counts the gating feature as
+# *closed* -- the work it named is finished, so a feature it gates is
+# unblocked. `done` is the devkit terminal stage, `complete` the OpenSpec one.
+# An archived OpenSpec change is closed too, but it never appears in a
+# `scan()` row at all (archived changes are excluded from the scan), so
+# `_epic_gate_resolution` checks the archive directory directly instead of
+# looking for a stage here.
+_EPIC_GATE_CLOSED_STAGES = frozenset({"done", "complete"})
+
+
+def _epic_gate_resolution(
+    feature_n: int,
+    epic_text: str,
+    repo: Path,
+    stage_by_id: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Resolve one candidate gating feature number to closed/open.
+
+    A gate is only a real block while the feature it names is still *open*.
+    Resolution walks from the gating feature to whatever spec/change actually
+    carries it, per design.md Decision 4:
+
+      - No `**Future spec id:**` on feature `feature_n`'s block -> **open**:
+        the gating feature has not even been named, so nothing can have
+        closed it.
+      - A future spec id with no citing spec/change at all -> **open**: the
+        gating feature is unspecced.
+      - Otherwise **closed iff** some citing folder resolves closed --
+        archived under `openspec/changes/archive/<name>/`, or carrying a
+        `scan()` stage in `_EPIC_GATE_CLOSED_STAGES`. A citing folder that
+        merely exists (e.g. `ready-to-implement` with 0/16 tasks done) leaves
+        the gate **open**.
+
+    The citation pattern is the escaped future spec id -- the same signal
+    `_epic_citation_patterns` contributes for each `**Future spec id:**` in an
+    epic, but built for one feature's id alone so a match attributes to that
+    feature instead of any of the epic's others.
+
+    Returns the per-gate detail dict `detect_epic_stage()` reports for
+    logging: `{feature, spec_id, resolved_name, closed}`. `resolved_name` is
+    the citing folder that closed the gate, or the first citing folder found
+    when none did (`None` when there is no future spec id or no citation).
+
+    `stage_by_id` is an optional precomputed id -> stage map (as built from
+    `scan(repo / "docs" / "specs")`); callers resolving several candidate
+    gates for one epic pass it so the repo is scanned once, not per gate. It
+    is only consulted -- and, when omitted, only computed -- once a citing
+    folder exists that the archive check did not already close.
+    """
+    repo = Path(repo)
+    block = _epic_feature_blocks(epic_text).get(feature_n)
+    spec_id = _epic_block_future_spec_id(block) if block is not None else None
+    detail: dict[str, Any] = {
+        "feature": feature_n,
+        "spec_id": spec_id,
+        "resolved_name": None,
+        "closed": False,
+    }
+    if not spec_id:
+        return detail
+
+    citing = _epic_citing_spec_ids(repo, [re.compile(re.escape(spec_id))])
+    if not citing:
+        return detail
+    detail["resolved_name"] = citing[0]
+
+    archive_root = repo / "openspec" / "changes" / "archive"
+    for name in citing:
+        if (archive_root / name).is_dir():
+            detail.update(resolved_name=name, closed=True)
+            return detail
+
+    if stage_by_id is None:
+        stage_by_id = {
+            row.get("id"): row.get("stage") for row in scan(repo / "docs" / "specs")
+        }
+    for name in citing:
+        if stage_by_id.get(name) in _EPIC_GATE_CLOSED_STAGES:
+            detail.update(resolved_name=name, closed=True)
+            return detail
+
+    return detail
+
+
 def detect_epic_stage(epic_file: Path, repo: Path) -> dict[str, Any]:
     """Stage-detect one `docs/specs/epics/*.md` decomposition document.
 
@@ -1606,6 +1779,15 @@ def detect_epic_stage(epic_file: Path, repo: Path) -> dict[str, Any]:
       - `epic-complete`    -- terminal `**Status:**`, or every `### Feature`
                               has a citing spec/change.
       - `epic-gap`         -- fewer citing specs than decomposed features.
+      - `epic-sequencing-gated`
+                           -- an `epic-gap` whose next unspecced feature is
+                              named by the epic's own gate prose as depending
+                              on a feature that is still open. Carries
+                              `blocked_feature` (the feature number that would
+                              otherwise be seeded) and `gates` (one
+                              `{feature, spec_id, resolved_name, closed}`
+                              detail per candidate gate, for logging). Neither
+                              key is set on any other stage.
       - `epic-unparseable` -- no `### Feature` headings found at all (with no
                               feature count there is no terminal condition,
                               so this must never be conflated with epic-gap).
@@ -1655,13 +1837,55 @@ def detect_epic_stage(epic_file: Path, repo: Path) -> dict[str, Any]:
             next_action=f"none (fully cited: {len(citing)}/{features} features)",
         )
     else:
-        info.update(
-            stage="epic-gap",
-            next_action=(
-                f"spec the next unspecced feature from its decomposition "
-                f"(docs/specs/epics/{epic_id}.md)"
-            ),
-        )
+        # The epic would be seeded as `epic-gap` today. Before that, check the
+        # epic's own prose for a sequencing gate naming the very feature the
+        # seeder is about to write a brief for (`cited + 1`, the seeder's own
+        # notion of "the next unspecced feature" -- design.md Decision 5). Gate
+        # prose is only parsed here, on the would-be-seeded path: a terminal,
+        # unparseable, or fully cited epic has nothing to gate.
+        next_n = len(citing) + 1
+        candidates = sorted(_epic_gate_candidates(next_n, text))
+        gates: list[dict[str, Any]] = []
+        if candidates:
+            # One id -> stage map shared by every candidate gate, so an epic
+            # naming several gates still costs a single `scan()`.
+            stage_by_id = {
+                row.get("id"): row.get("stage") for row in scan(repo / "docs" / "specs")
+            }
+            gates = [
+                _epic_gate_resolution(feature_n, text, repo, stage_by_id)
+                for feature_n in candidates
+            ]
+        open_gates = [gate for gate in gates if not gate["closed"]]
+        if open_gates:
+            blockers = ", ".join(
+                f"Feature {gate['feature']}"
+                + (
+                    f" ({gate['resolved_name']})"
+                    if gate["resolved_name"]
+                    else f" ({gate['spec_id']}, not yet specced)"
+                    if gate["spec_id"]
+                    else ""
+                )
+                for gate in open_gates
+            )
+            info.update(
+                stage="epic-sequencing-gated",
+                blocked_feature=next_n,
+                gates=gates,
+                next_action=(
+                    f"none (Feature {next_n} is gated by still-open {blockers} "
+                    f"per docs/specs/epics/{epic_id}.md)"
+                ),
+            )
+        else:
+            info.update(
+                stage="epic-gap",
+                next_action=(
+                    f"spec the next unspecced feature from its decomposition "
+                    f"(docs/specs/epics/{epic_id}.md)"
+                ),
+            )
     return info
 
 

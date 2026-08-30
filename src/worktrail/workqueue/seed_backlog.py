@@ -161,7 +161,7 @@ def find_ready_specs(
 
 def find_epic_gaps(
     repos_root: Path, go_repo: str | None = None
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Every epic under `docs/specs/epics/` with fewer citing specs than
     decomposed `### Feature` headings and a non-terminal `**Status:**`.
 
@@ -169,16 +169,26 @@ def find_epic_gaps(
     `dashboard.scan_epics()`/`detect_epic_stage()` so this module carries no
     duplicated status/feature-count/citation parsing of its own.
 
-    An epic file with no parseable feature decomposition is skipped and
-    reported (`unparseable: True`) rather than seeded -- with no feature count
-    there is no terminal condition, and seeding it would loop forever. An
-    unreadable epic file (dashboard stage `error`) is skipped silently, same
-    as before this module delegated to the dashboard's scan.
+    Returns `(found, sequencing_gated)`. `found` holds seedable candidates
+    plus `unparseable: True` entries for epic files with no parseable feature
+    decomposition -- with no feature count there is no terminal condition,
+    and seeding it would loop forever. An unreadable epic file (dashboard
+    stage `error`) is skipped silently, same as before this module delegated
+    to the dashboard's scan.
+
+    `sequencing_gated` is a separate local list -- not part of `found`, so it
+    can never reach a seed-key lookup -- of epic-gaps whose next unspecced
+    feature is blocked by the epic's own sequencing-gate prose (dashboard
+    stage `epic-sequencing-gated`): `repo`, `repo_name`, `id`,
+    `blocked_feature`, and `gates`, carried through from the dashboard row.
+    Seeding one would produce a brief for a feature the epic author has
+    explicitly said cannot be worked yet.
     """
     names = discover_repo_names(repos_root)
     if go_repo:
         names = [n for n in names if n == go_repo]
     found: list[dict[str, Any]] = []
+    sequencing_gated: list[dict[str, Any]] = []
     for name in names:
         repo_path = repos_root / name
         for row in dashboard.scan_epics(repo_path):
@@ -197,6 +207,18 @@ def find_epic_gaps(
                     }
                 )
                 continue
+            if stage == "epic-sequencing-gated":
+                sequencing_gated.append(
+                    {
+                        "kind": "epic",
+                        "repo": repo_path,
+                        "repo_name": name,
+                        "id": epic_id,
+                        "blocked_feature": row["blocked_feature"],
+                        "gates": row["gates"],
+                    }
+                )
+                continue
             cited = row["citing_specs"]
             found.append(
                 {
@@ -210,7 +232,7 @@ def find_epic_gaps(
                     "seed_key": f"{name}:epic:{epic_id}:cited={row['cited']}",
                 }
             )
-    return found
+    return found, sequencing_gated
 
 
 # ---------------------------------------------------------------------------
@@ -329,11 +351,13 @@ def seed_backlog(
     Returns a summary dict: `seeded` (one entry per created brief),
     `skipped_existing` (candidates whose seed key already exists in the
     queue), `dropped_over_cap` (candidates deferred to the next sweep),
-    and `unparseable_epics` (epic files with no feature decomposition).
+    `unparseable_epics` (epic files with no feature decomposition), and
+    `sequencing_gated_epics` (epic files whose next feature is blocked by
+    an open gate).
     """
     queue_base = Path(queue_base or work_queue.base_dir()).expanduser()
     candidates = find_needs_tasks_specs(repos_root, go_repo)
-    epic_findings = find_epic_gaps(repos_root, go_repo)
+    epic_findings, sequencing_gated = find_epic_gaps(repos_root, go_repo)
     unparseable = [f for f in epic_findings if f.get("unparseable")]
     candidates += [f for f in epic_findings if not f.get("unparseable")]
     candidates += find_ready_specs(repos_root, go_repo)
@@ -341,6 +365,16 @@ def seed_backlog(
         log(
             f"seed-backlog: skipping epic {finding['repo_name']} "
             f"{finding['id']}: no '### Feature' decomposition headings found"
+        )
+    for finding in sequencing_gated:
+        gates_desc = ", ".join(
+            f"Feature {gate['feature']} ({gate['resolved_name'] or 'not yet specced'})"
+            for gate in finding["gates"]
+        )
+        log(
+            f"seed-backlog: skipping epic {finding['repo_name']} "
+            f"{finding['id']}: Feature {finding['blocked_feature']} is "
+            f"sequencing-gated by {gates_desc} (stage: epic-sequencing-gated)"
         )
 
     known = existing_seed_keys(queue_base)
@@ -393,6 +427,9 @@ def seed_backlog(
         "dropped_over_cap": dropped,
         "unparseable_epics": [
             {"repo": f["repo_name"], "id": f["id"]} for f in unparseable
+        ],
+        "sequencing_gated_epics": [
+            {"repo": f["repo_name"], "id": f["id"]} for f in sequencing_gated
         ],
     }
 
