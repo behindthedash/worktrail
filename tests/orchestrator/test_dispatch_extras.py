@@ -372,11 +372,11 @@ class DecisionGateFailClosedDegradationTests(unittest.TestCase):
     instead of letting an unvalidated envelope through."""
 
     def test_unavailable_primitives_refuse_fail_closed(self):
-        with mock.patch.object(
-            dispatch, "_decision_helpers", return_value=(None, None)
+        with (
+            mock.patch.object(dispatch, "_decision_helpers", return_value=(None, None)),
+            self.assertRaises(DecisionDispatchError) as cm,
         ):
-            with self.assertRaises(DecisionDispatchError) as cm:
-                validate_resolved_decision_input(_gate_envelope())
+            validate_resolved_decision_input(_gate_envelope())
         self.assertIn("unavailable", str(cm.exception))
         self.assertIn("fail-closed", str(cm.exception))
 

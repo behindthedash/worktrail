@@ -182,9 +182,9 @@ class FullRealInnerForeignJournalRaisesTest(unittest.TestCase):
                 patch(
                     "worktrail.orchestrator.live.live_run_real"
                 ) as mock_live_run_real,
+                self.assertRaises(RuntimeError) as ctx,
             ):
-                with self.assertRaises(RuntimeError) as ctx:
-                    live._full_real_inner("/tmp/fake-repo", spec_rel, resume=True)
+                live._full_real_inner("/tmp/fake-repo", spec_rel, resume=True)
 
             mock_live_run_real.assert_not_called()
             return str(ctx.exception), journal_path

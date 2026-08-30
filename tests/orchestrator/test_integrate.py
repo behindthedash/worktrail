@@ -1253,61 +1253,61 @@ class EdgeCases(unittest.TestCase):
     def test_pr_view_invalid_json_falls_back(self):
         """Verify invalid JSON from gh pr view falls back to creating PR."""
         # Use a Proc that returns invalid JSON
-        with patch(
-            "worktrail.orchestrator.integrate.coordinator.plan_groups"
-        ) as mock_groups:
-            with patch("worktrail.orchestrator.integrate._git") as mock_git:
-                with patch(
-                    "worktrail.orchestrator.integrate.subprocess.run"
-                ) as mock_run:
-                    group = mock_group("base", ["T001"])
-                    mock_groups.return_value = [group]
+        with (
+            patch(
+                "worktrail.orchestrator.integrate.coordinator.plan_groups"
+            ) as mock_groups,
+            patch("worktrail.orchestrator.integrate._git") as mock_git,
+        ):
+            with patch("worktrail.orchestrator.integrate.subprocess.run") as mock_run:
+                group = mock_group("base", ["T001"])
+                mock_groups.return_value = [group]
 
-                    # ls-remote succeeds but pr-view returns invalid JSON
-                    def run_side_effect(*args, **kwargs):
-                        # Handle both _git (Path first) and subprocess.run (list first)
-                        if args and isinstance(args[0], (str, Path)):
-                            cmd = list(args[1:])
-                        else:
-                            cmd = args[0] if args else []
-                        if "ls-remote" in cmd:
-                            return Proc(1, "", "")  # no remote branch
-                        if "pr" in cmd and "view" in cmd:
-                            return Proc(0, "not json", "")  # invalid JSON
-                        if "checkout" in cmd:
-                            return Proc(0, "", "")
-                        if "merge" in cmd:
-                            return Proc(0, "", "")
-                        if "push" in cmd:
-                            return Proc(0, "", "")
-                        if "pr" in cmd and "create" in cmd:
-                            return Proc(0, "https://github.com/o/r/pull/99\n", "")
-                        if cmd[:2] == ["diff", "--quiet"]:
-                            return Proc(1, "", "")
+                # ls-remote succeeds but pr-view returns invalid JSON
+                def run_side_effect(*args, **kwargs):
+                    # Handle both _git (Path first) and subprocess.run (list first)
+                    if args and isinstance(args[0], (str, Path)):
+                        cmd = list(args[1:])
+                    else:
+                        cmd = args[0] if args else []
+                    if "ls-remote" in cmd:
+                        return Proc(1, "", "")  # no remote branch
+                    if "pr" in cmd and "view" in cmd:
+                        return Proc(0, "not json", "")  # invalid JSON
+                    if "checkout" in cmd:
                         return Proc(0, "", "")
+                    if "merge" in cmd:
+                        return Proc(0, "", "")
+                    if "push" in cmd:
+                        return Proc(0, "", "")
+                    if "pr" in cmd and "create" in cmd:
+                        return Proc(0, "https://github.com/o/r/pull/99\n", "")
+                    if cmd[:2] == ["diff", "--quiet"]:
+                        return Proc(1, "", "")
+                    return Proc(0, "", "")
 
-                    mock_git.side_effect = run_side_effect
-                    mock_run.side_effect = run_side_effect
+                mock_git.side_effect = run_side_effect
+                mock_run.side_effect = run_side_effect
 
-                    prs, gb, _ = integrate_groups(
-                        Path("/repo"),
-                        "spec-001",
-                        [mock_task("T001")],
-                        "origin",
-                        "run-bad-json",
-                        "main",
-                        cleanup=False,
-                    )
+                prs, gb, _ = integrate_groups(
+                    Path("/repo"),
+                    "spec-001",
+                    [mock_task("T001")],
+                    "origin",
+                    "run-bad-json",
+                    "main",
+                    cleanup=False,
+                )
 
-                    # Should still create PR (invalid JSON treated as error)
-                    create_calls = [
-                        c
-                        for c in mock_run.call_args_list
-                        if c[0][0][:3] == ["gh", "pr", "create"]
-                    ]
-                    self.assertTrue(
-                        create_calls, "Should fallback to create on invalid JSON"
-                    )
+                # Should still create PR (invalid JSON treated as error)
+                create_calls = [
+                    c
+                    for c in mock_run.call_args_list
+                    if c[0][0][:3] == ["gh", "pr", "create"]
+                ]
+                self.assertTrue(
+                    create_calls, "Should fallback to create on invalid JSON"
+                )
 
 
 class MultipleGroupsReconciliation(unittest.TestCase):
@@ -2163,32 +2163,34 @@ class PrePrDriftGate(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             journal_path = str(Path(tmpdir) / "journal.json")
-            with patch(
-                "worktrail.orchestrator.integrate.coordinator.plan_groups"
-            ) as mock_groups:
-                with patch(
+            with (
+                patch(
+                    "worktrail.orchestrator.integrate.coordinator.plan_groups"
+                ) as mock_groups,
+                patch(
                     "worktrail.orchestrator.integrate._git", side_effect=failing_gate
-                ):
-                    with patch(
-                        "worktrail.orchestrator.integrate.subprocess.run",
-                        side_effect=failing_gate,
-                    ):
-                        with patch(
-                            "worktrail.orchestrator.integrate._resolve_pre_pr_gate",
-                            return_value=Path("/fake/pre_pr_gate.py"),
-                        ):
-                            mock_groups.return_value = [mock_group("base", ["T001"])]
-                            integrate_groups(
-                                Path("/repo"),
-                                "spec-001",
-                                [mock_task("T001")],
-                                "origin",
-                                "run-drift-fail",
-                                "main",
-                                cleanup=False,
-                                pr_labels=["go:risk-low"],
-                                journal_path=journal_path,
-                            )
+                ),
+                patch(
+                    "worktrail.orchestrator.integrate.subprocess.run",
+                    side_effect=failing_gate,
+                ),
+                patch(
+                    "worktrail.orchestrator.integrate._resolve_pre_pr_gate",
+                    return_value=Path("/fake/pre_pr_gate.py"),
+                ),
+            ):
+                mock_groups.return_value = [mock_group("base", ["T001"])]
+                integrate_groups(
+                    Path("/repo"),
+                    "spec-001",
+                    [mock_task("T001")],
+                    "origin",
+                    "run-drift-fail",
+                    "main",
+                    cleanup=False,
+                    pr_labels=["go:risk-low"],
+                    journal_path=journal_path,
+                )
 
             self.assertEqual(
                 run.find_calls("gh", "pr", "create"),
@@ -2222,32 +2224,32 @@ class PrePrDriftGate(unittest.TestCase):
                 return Proc(0, "", "")
             return run(*args, **kwargs)
 
-        with patch(
-            "worktrail.orchestrator.integrate.coordinator.plan_groups"
-        ) as mock_groups:
-            with patch(
-                "worktrail.orchestrator.integrate._git", side_effect=failing_gate
-            ):
-                with patch(
-                    "worktrail.orchestrator.integrate.subprocess.run",
-                    side_effect=failing_gate,
-                ):
-                    with patch(
-                        "worktrail.orchestrator.integrate._resolve_pre_pr_gate",
-                        return_value=Path("/fake/pre_pr_gate.py"),
-                    ):
-                        mock_groups.return_value = [mock_group("base", ["T001"])]
-                        integrate_groups(
-                            Path("/repo"),
-                            "spec-001",
-                            [mock_task("T001")],
-                            "origin",
-                            "run-drift-order",
-                            "main",
-                            cleanup=False,
-                            pr_labels=["go:risk-low"],
-                            smoke_cmd="pytest -q",
-                        )
+        with (
+            patch(
+                "worktrail.orchestrator.integrate.coordinator.plan_groups"
+            ) as mock_groups,
+            patch("worktrail.orchestrator.integrate._git", side_effect=failing_gate),
+            patch(
+                "worktrail.orchestrator.integrate.subprocess.run",
+                side_effect=failing_gate,
+            ),
+            patch(
+                "worktrail.orchestrator.integrate._resolve_pre_pr_gate",
+                return_value=Path("/fake/pre_pr_gate.py"),
+            ),
+        ):
+            mock_groups.return_value = [mock_group("base", ["T001"])]
+            integrate_groups(
+                Path("/repo"),
+                "spec-001",
+                [mock_task("T001")],
+                "origin",
+                "run-drift-order",
+                "main",
+                cleanup=False,
+                pr_labels=["go:risk-low"],
+                smoke_cmd="pytest -q",
+            )
 
         self.assertEqual(
             smoke_ran, [], "smoke command must not run after the drift gate fails"

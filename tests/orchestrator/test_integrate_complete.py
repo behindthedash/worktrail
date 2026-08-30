@@ -1523,27 +1523,27 @@ class DepBranchGonePRBase(unittest.TestCase):
         group_branch = {"base": self.GONE_BRANCH}
         g = mock_group("feature-1", ["T010"], depends_on=["base"])
 
-        with patch(
-            "worktrail.orchestrator.integrate.coordinator.deliverable_subset",
-            return_value=(["T010"], []),
+        with (
+            patch(
+                "worktrail.orchestrator.integrate.coordinator.deliverable_subset",
+                return_value=(["T010"], []),
+            ),
+            patch("worktrail.orchestrator.integrate._git", side_effect=run),
+            patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run),
         ):
-            with patch("worktrail.orchestrator.integrate._git", side_effect=run):
-                with patch(
-                    "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
-                ):
-                    result = integrate.integrate_one(
-                        g,
-                        Path("/repo"),
-                        "spec-001",
-                        [mock_task("T010")],
-                        "origin",
-                        "full-X",
-                        "main",
-                        None,
-                        {"T010": "done"},
-                        group_branch,
-                        {},
-                    )
+            result = integrate.integrate_one(
+                g,
+                Path("/repo"),
+                "spec-001",
+                [mock_task("T010")],
+                "origin",
+                "full-X",
+                "main",
+                None,
+                {"T010": "done"},
+                group_branch,
+                {},
+            )
 
         # The fallback must have fired (dep branch ref verified-missing).
         self.assertTrue(

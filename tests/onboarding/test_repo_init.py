@@ -366,11 +366,13 @@ class ProposeTests(unittest.TestCase):
         )
         for key, value in overrides.items():
             setattr(args, key, value)
-        with mock.patch.object(
-            repo_init, "init_openspec", side_effect=_fake_init_openspec
+        with (
+            mock.patch.object(
+                repo_init, "init_openspec", side_effect=_fake_init_openspec
+            ),
+            mock.patch("builtins.print") as printed,
         ):
-            with mock.patch("builtins.print") as printed:
-                rc = repo_init.cmd_propose(args)
+            rc = repo_init.cmd_propose(args)
         return rc, json.loads(printed.call_args[0][0])
 
     def test_fresh_repo_writes_everything(self):

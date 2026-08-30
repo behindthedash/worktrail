@@ -819,11 +819,12 @@ class PendingDecisionBoundaryTests(unittest.TestCase):
 
     def _run_main(self, agent, extra=(), run_mock=None):
         stdout, stderr = StringIO(), StringIO()
-        with redirect_stdout(stdout), redirect_stderr(stderr):
-            with patch.object(
-                skill_dispatch, "bootstrap_codex_skills", return_value=True
-            ):
-                rc = skill_dispatch.main(self._dispatch_args(agent, extra))
+        with (
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+            patch.object(skill_dispatch, "bootstrap_codex_skills", return_value=True),
+        ):
+            rc = skill_dispatch.main(self._dispatch_args(agent, extra))
         if run_mock is not None:
             return rc, stdout.getvalue(), stderr.getvalue(), run_mock
         return rc, stdout.getvalue(), stderr.getvalue()
@@ -990,15 +991,16 @@ class PendingDecisionBoundaryTests(unittest.TestCase):
         run.return_value.returncode = 0
         self._answer()
         out = StringIO()
-        with redirect_stdout(out), redirect_stderr(StringIO()):
-            with patch.object(
-                skill_dispatch, "bootstrap_codex_skills", return_value=True
-            ):
-                rc = skill_dispatch.main(
-                    self._dispatch_args(
-                        "codex", ["--resume-decision", self.DECISION_ID, "--dry-run"]
-                    )
+        with (
+            redirect_stdout(out),
+            redirect_stderr(StringIO()),
+            patch.object(skill_dispatch, "bootstrap_codex_skills", return_value=True),
+        ):
+            rc = skill_dispatch.main(
+                self._dispatch_args(
+                    "codex", ["--resume-decision", self.DECISION_ID, "--dry-run"]
                 )
+            )
         self.assertEqual(rc, 0)
         self.assertIn(f"decision:{self.DECISION_ID}", out.getvalue())
         run.assert_not_called()

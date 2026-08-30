@@ -52,13 +52,15 @@ class WriteGroupJournalTests(unittest.TestCase):
         integrate._write_group_journal(None, "base", "", "", "OPEN")
 
     def test_exception_is_printed_not_raised(self):
-        with patch.object(
-            progress, "atomic_write_text", side_effect=OSError("disk full")
+        with (
+            patch.object(
+                progress, "atomic_write_text", side_effect=OSError("disk full")
+            ),
+            tempfile.TemporaryDirectory() as t,
         ):
-            with tempfile.TemporaryDirectory() as t:
-                path = os.path.join(t, "journal.json")
-                # Should not raise — exception is swallowed and printed
-                integrate._write_group_journal(path, "base", "", "", "OPEN")
+            path = os.path.join(t, "journal.json")
+            # Should not raise — exception is swallowed and printed
+            integrate._write_group_journal(path, "base", "", "", "OPEN")
 
 
 class MarkIntegrateCompleteTests(unittest.TestCase):
@@ -119,28 +121,30 @@ class MarkIntegrateCompleteTests(unittest.TestCase):
         self.assertFalse(result)
 
     def test_exception_returns_false(self):
-        with patch.object(
-            progress, "atomic_write_text", side_effect=OSError("disk full")
+        with (
+            patch.object(
+                progress, "atomic_write_text", side_effect=OSError("disk full")
+            ),
+            tempfile.TemporaryDirectory() as t,
         ):
-            with tempfile.TemporaryDirectory() as t:
-                path = os.path.join(t, "journal.json")
-                Path(path).write_text(
-                    json.dumps(
-                        {
-                            "groups": {
-                                "base": {
-                                    "state": "MERGED",
-                                    "pr_url": "",
-                                    "head_branch": "",
-                                }
+            path = os.path.join(t, "journal.json")
+            Path(path).write_text(
+                json.dumps(
+                    {
+                        "groups": {
+                            "base": {
+                                "state": "MERGED",
+                                "pr_url": "",
+                                "head_branch": "",
                             }
                         }
-                    )
+                    }
                 )
-                result = integrate._mark_integrate_complete_if_terminal(
-                    path, self._groups(["base"])
-                )
-                self.assertFalse(result)
+            )
+            result = integrate._mark_integrate_complete_if_terminal(
+                path, self._groups(["base"])
+            )
+            self.assertFalse(result)
 
 
 class SyntheticFanoutTests(unittest.TestCase):
