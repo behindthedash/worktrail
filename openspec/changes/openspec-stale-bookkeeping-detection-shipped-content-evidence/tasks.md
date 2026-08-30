@@ -17,7 +17,8 @@
       via `_moved_tracked_path` (existing behavior), additionally require
       `_latest_commit_timestamp(str(target_repo), final_relative_path) >= since_ts` (with
       `since_ts is None` always failing this check). A file that fails the check is not shipped;
-      a task is shipped only when every declared file is.
+      a task is shipped only when every declared file is. (Requirement: A pending task is stale
+      only when its cached file scope shows evidence of shipped content)
 - [ ] 2.2 Update the three existing calls inside `dashboard.py` (`_pending_impl_stale`,
       `_pending_openspec_stale`, `_pending_tail_stale`) to compute `since_ts =
       _dir_creation_timestamp(str(repo), str(spec_dir))` (devkit callers) or
@@ -39,9 +40,9 @@
 - [ ] 4.2 In `tests/router/test_dashboard.py`'s `OpenSpecStaleBookkeeping._change()`, `git add` +
       `git commit` `proposal.md`/`tasks.md` immediately after writing them, so every test in that
       class has a creation baseline before any "shipped" file is committed.
-- [ ] 4.3 Run the full `StaleBookkeeping` and `OpenSpecStaleBookkeeping` test classes and confirm
-      every existing test still passes unmodified with the strengthened criterion (no assertion
-      changes expected — only the two helper methods above change).
+- [ ] 4.3 [e2e] Run the full `StaleBookkeeping` and `OpenSpecStaleBookkeeping` test classes and
+      confirm every existing test still passes unmodified with the strengthened criterion (no
+      assertion changes expected — only the two helper methods above change).
 
 ## 5. New coverage for the strengthened criterion
 
@@ -65,7 +66,7 @@
 
 ## 6. Verify
 
-- [ ] 6.1 Run `PYTHONPATH=src pytest -q` and confirm the full suite is green, including
+- [ ] 6.1 [e2e] Run `PYTHONPATH=src pytest -q` and confirm the full suite is green, including
       `tests/router/test_dashboard.py` and `tests/router/test_check_spec_collision.py`.
-- [ ] 6.2 Run `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` (golden
+- [ ] 6.2 [e2e] Run `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` (golden
       record/replay regression) and confirm it passes.
