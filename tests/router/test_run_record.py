@@ -2487,6 +2487,37 @@ class TestSweepOrphans(unittest.TestCase):
         )
 
 
+class TestAssertTerminal(unittest.TestCase):
+    """Did this run actually reach `finish()`, or did a blocking adapter/
+    headless spawn's child process just exit without ever writing a
+    final_status? `child.wait()` proves the process exited, not that."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def test_non_terminal_run_exits_one(self):
+        res = _start(self.tmp)
+        out = StringIO()
+        with patch("sys.stdout", out):
+            rc = main(["assert-terminal", res["path"]])
+        self.assertEqual(rc, 1)
+        payload = json.loads(out.getvalue())
+        self.assertFalse(payload["terminal"])
+        self.assertIsNone(payload["final_status"])
+
+    def test_finished_run_exits_zero_with_final_status(self):
+        res = _start(self.tmp)
+        _complete_scope_review(res["path"])
+        main(["finish", res["path"], "--status", "investigation_complete"])
+        out = StringIO()
+        with patch("sys.stdout", out):
+            rc = main(["assert-terminal", res["path"]])
+        self.assertEqual(rc, 0)
+        payload = json.loads(out.getvalue())
+        self.assertTrue(payload["terminal"])
+        self.assertEqual(payload["final_status"], "investigation_complete")
+
+
 class TestLiveness(unittest.TestCase):
     """`updated_at` heartbeat + `dispatch_id` identity -- the Active-run-resume
     evidence test's missing signal, per docs/specs/research/
