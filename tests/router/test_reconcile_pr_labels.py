@@ -202,7 +202,7 @@ def test_load_run_index_handles_repo_labeled_list_entries(tmp_path):
 def test_reconcile_repo_applies_risk_label_from_matching_run_record(
     monkeypatch, tmp_path
 ):
-    def fake_run(cmd, capture_output, text, cwd, timeout):
+    def fake_run(cmd, capture_output, text, cwd, timeout, check=False):
         if cmd[:3] == ["gh", "pr", "list"]:
             return _FakeCompleted(
                 0,
@@ -243,7 +243,7 @@ def test_reconcile_repo_applies_risk_label_from_matching_run_record(
 
 
 def test_reconcile_repo_skips_prs_already_fully_labeled(monkeypatch, tmp_path):
-    def fake_run(cmd, capture_output, text, cwd, timeout):
+    def fake_run(cmd, capture_output, text, cwd, timeout, check=False):
         if cmd[:3] == ["gh", "pr", "list"]:
             return _FakeCompleted(
                 0,
@@ -284,7 +284,7 @@ def test_reconcile_repo_skips_prs_already_fully_labeled(monkeypatch, tmp_path):
 def test_reconcile_repo_reports_unreconciled_when_no_matching_run_record(
     monkeypatch, tmp_path
 ):
-    def fake_run(cmd, capture_output, text, cwd, timeout):
+    def fake_run(cmd, capture_output, text, cwd, timeout, check=False):
         if cmd[:3] == ["gh", "pr", "list"]:
             return _FakeCompleted(
                 0,
@@ -311,7 +311,7 @@ def test_reconcile_repo_reports_unreconciled_when_no_matching_run_record(
 
 
 def test_reconcile_repo_dry_run_never_edits(monkeypatch, tmp_path):
-    def fake_run(cmd, capture_output, text, cwd, timeout):
+    def fake_run(cmd, capture_output, text, cwd, timeout, check=False):
         if cmd[:3] == ["gh", "pr", "list"]:
             return _FakeCompleted(
                 0,
@@ -350,7 +350,7 @@ def test_reconcile_repo_dry_run_never_edits(monkeypatch, tmp_path):
 
 
 def test_reconcile_repo_reports_error_when_gh_pr_list_fails(monkeypatch, tmp_path):
-    def fake_run(cmd, capture_output, text, cwd, timeout):
+    def fake_run(cmd, capture_output, text, cwd, timeout, check=False):
         return _FakeCompleted(1, "")
 
     monkeypatch.setattr(rpl.subprocess, "run", fake_run)
@@ -366,7 +366,7 @@ def test_reconcile_repo_reports_error_when_gh_pr_list_fails(monkeypatch, tmp_pat
 
 
 def test_reconcile_repo_adds_no_automerge_when_ineligible(monkeypatch, tmp_path):
-    def fake_run(cmd, capture_output, text, cwd, timeout):
+    def fake_run(cmd, capture_output, text, cwd, timeout, check=False):
         if cmd[:3] == ["gh", "pr", "list"]:
             return _FakeCompleted(
                 0,
@@ -408,7 +408,7 @@ def test_reconcile_repo_adds_no_automerge_when_ineligible(monkeypatch, tmp_path)
 
 
 def test_reconcile_repo_applies_both_labels_when_both_missing(monkeypatch, tmp_path):
-    def fake_run(cmd, capture_output, text, cwd, timeout):
+    def fake_run(cmd, capture_output, text, cwd, timeout, check=False):
         if cmd[:3] == ["gh", "pr", "list"]:
             return _FakeCompleted(
                 0,
@@ -456,7 +456,7 @@ def test_reconcile_repo_skips_no_automerge_recompute_when_gates_absent(
     gates were, and guessing "no gates" could wrongly mark an ineligible PR
     eligible."""
 
-    def fake_run(cmd, capture_output, text, cwd, timeout):
+    def fake_run(cmd, capture_output, text, cwd, timeout, check=False):
         if cmd[:3] == ["gh", "pr", "list"]:
             return _FakeCompleted(
                 0,
@@ -505,7 +505,7 @@ def test_reconcile_repo_never_removes_existing_no_automerge(monkeypatch, tmp_pat
     """A PR already carrying go:no-automerge is left untouched, even if it
     would recompute as eligible -- this corrector is additive-only."""
 
-    def fake_run(cmd, capture_output, text, cwd, timeout):
+    def fake_run(cmd, capture_output, text, cwd, timeout, check=False):
         if cmd[:3] == ["gh", "pr", "list"]:
             return _FakeCompleted(
                 0,
@@ -548,7 +548,7 @@ def test_reconcile_repo_never_removes_existing_no_automerge(monkeypatch, tmp_pat
 
 
 def test_reconcile_repo_no_automerge_dry_run_never_edits(monkeypatch, tmp_path):
-    def fake_run(cmd, capture_output, text, cwd, timeout):
+    def fake_run(cmd, capture_output, text, cwd, timeout, check=False):
         if cmd[:3] == ["gh", "pr", "list"]:
             return _FakeCompleted(
                 0,
@@ -590,7 +590,7 @@ def test_reconcile_repo_no_automerge_dry_run_never_edits(monkeypatch, tmp_path):
 def test_reconcile_repo_no_op_when_eligible_and_no_automerge_absent(
     monkeypatch, tmp_path
 ):
-    def fake_run(cmd, capture_output, text, cwd, timeout):
+    def fake_run(cmd, capture_output, text, cwd, timeout, check=False):
         if cmd[:3] == ["gh", "pr", "list"]:
             return _FakeCompleted(
                 0,
@@ -634,7 +634,7 @@ def test_reconcile_repo_no_op_when_eligible_and_no_automerge_absent(
 def test_reconcile_repo_reports_unreconciled_when_no_automerge_edit_fails(
     monkeypatch, tmp_path
 ):
-    def fake_run(cmd, capture_output, text, cwd, timeout):
+    def fake_run(cmd, capture_output, text, cwd, timeout, check=False):
         if cmd[:3] == ["gh", "pr", "list"]:
             return _FakeCompleted(
                 0,
@@ -690,7 +690,7 @@ def test_main_requires_repo_or_repos_root():
 def test_main_single_repo_json_output(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(rpl, "load_run_index", lambda runs_dir: {})
 
-    def fake_run(cmd, capture_output, text, cwd, timeout):
+    def fake_run(cmd, capture_output, text, cwd, timeout, check=False):
         if cmd[:3] == ["gh", "pr", "list"]:
             return _FakeCompleted(0, json.dumps([]))
         raise AssertionError(f"unexpected command: {cmd}")
@@ -728,7 +728,7 @@ def test_main_repos_root_only_sweeps_managed_repos(monkeypatch, tmp_path, capsys
     monkeypatch.setattr(rpl, "load_run_index", lambda runs_dir: {})
     calls = []
 
-    def fake_run(cmd, capture_output, text, cwd, timeout):
+    def fake_run(cmd, capture_output, text, cwd, timeout, check=False):
         calls.append(cwd)
         if cmd[:3] == ["gh", "pr", "list"]:
             return _FakeCompleted(0, json.dumps([]))
