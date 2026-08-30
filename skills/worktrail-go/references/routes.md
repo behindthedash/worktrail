@@ -251,7 +251,16 @@ hypothesis-gated rule.
 3. Output an investigation note `docs/specs/research/<slug>.md` (or the
    relevant spec's `research/`) + **recommended next route**.
 4. If root cause is confirmed and the fix is small + clearly in scope, continue
-   into Route F in the same run (record the transition); otherwise stop.
+   into Route F in the same run (record the transition); otherwise stop —
+   and capture a `worktrail-handoff` brief (`--focus` citing the note's path
+   and its recommended next route) before finishing. Investigation notes
+   under `docs/specs/research/` are deliberately excluded from the
+   dashboard's spec scan (its non-spec-directory list treats `research/` the
+   same as `epics/`/scaffolding), so a confirmed, actionable finding that
+   just stops here is invisible to the dashboard, the picker, and
+   `auto_pick` — it only resurfaces if a human happens to notice the PR.
+   `$AUTO_MODE=true`: capture unconditionally on this branch too — there is
+   no human here either to notice the PR by hand.
 
 Completion: `investigation_complete` (or the F completion if continued).
 
