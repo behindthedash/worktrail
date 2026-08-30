@@ -335,6 +335,14 @@ longer silently disables this check:
 
 ```bash
 RESUMABLE_JSON=$(worktrail-check-resumable-state --brief "<primary-claimed-path>" --repo "$REPO" --json)
+RESUMABLE_RC=$?
+if [ "$RESUMABLE_RC" -eq 2 ]; then
+  MALFORMED_WARNING=$(echo "$RESUMABLE_JSON" | python3 -c "import sys, json; print(json.load(sys.stdin).get('warning') or '')")
+  echo "BLOCKED: malformed brief path passed to resumable-state check: $MALFORMED_WARNING" >&2
+  # Stop here — this is a caller bug in path construction (e.g. a picked-brief
+  # directory missing its .md filename), not a legitimately-unknown brief; do
+  # not proceed to classification with a silently-dropped resumability signal.
+fi
 RESUMABLE=$(echo "$RESUMABLE_JSON" | python3 -c "import sys, json; d = json.load(sys.stdin); print(str(d['resumable']).lower() if d.get('checked') else '')")
 RESUMABLE_FLAG=(); [ -n "$RESUMABLE" ] && RESUMABLE_FLAG=(--resumable-state "$RESUMABLE")
 
@@ -343,9 +351,12 @@ worktrail-classify --request "$ARG_INTENT" --state "$STATE_JSON" "${HANDOFF_ROUT
 
 `checked: false` (the claimed brief itself couldn't be read — `--repo "$REPO"` covers the
 missing-frontmatter case now) leaves `$RESUMABLE` empty and `--resumable-state` omitted —
-fail-open to classify.py's prior behavior, never a reason to block dispatch. `auto` mode
-runs this exactly the same way; there is no human here either, which is the whole reason a
-mechanical check replaces agent judgment for this signal.
+fail-open to classify.py's prior behavior, never a reason to block dispatch. A `malformed:
+true` result (exit code 2, distinct from every other `checked: false` case) is different:
+the path itself was the wrong shape for a claimed brief — fail loud per the block above
+instead of silently losing the whole disqualification signal. `auto` mode runs this exactly
+the same way; there is no human here either, which is the whole reason a mechanical check
+replaces agent judgment for this signal.
 
 For free-text/level-2-item dispatches with no claimed brief, omit both `--handoff-route` and
 `--resumable-state` (no hint to weigh, nothing to check):

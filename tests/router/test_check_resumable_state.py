@@ -369,6 +369,68 @@ class TestIncidentReproduction(unittest.TestCase):
             self.assertIsNone(res["evidence"]["open_pr"])
 
 
+class TestMalformedBriefPath(unittest.TestCase):
+    """Brief 20260826-094718: worktrail-go once passed a picked-brief
+    directory (missing the .md filename) to this check. The old behavior
+    folded that into the generic OSError-derived checked=False/warning path
+    indistinguishably from a genuinely-unknown brief -- the caller had no way
+    to tell "malformed input, fix your caller" apart from "nothing to know
+    here, proceed". A malformed path must be reported distinctly (checked
+    stays False; malformed becomes True) so a caller can fail loud instead of
+    silently losing the whole resumability signal."""
+
+    def test_directory_path_is_malformed(self):
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            brief_dir = tmp / "20260826-093449-you-ve-hit-your-weekly"
+            brief_dir.mkdir()
+            (brief_dir / "20260826-093449-you-ve-hit-your-weekly.md").write_text(
+                "---\nid: b\nrepo: /x\n---\n", encoding="utf-8"
+            )
+
+            res = crs.check(brief_dir)
+
+            self.assertFalse(res["checked"])
+            self.assertFalse(res["resumable"])
+            self.assertTrue(res["malformed"])
+            self.assertIn("directory", res["warning"])
+
+    def test_missing_md_suffix_is_malformed(self):
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            # Mirrors the real incident: the picked/ filename minus its
+            # ".md" extension, which never exists on disk as such.
+            path = tmp / "20260826-093449-you-ve-hit-your-weekly"
+
+            res = crs.check(path)
+
+            self.assertFalse(res["checked"])
+            self.assertFalse(res["resumable"])
+            self.assertTrue(res["malformed"])
+            self.assertIn(".md", res["warning"])
+
+    def test_valid_md_path_is_not_malformed(self):
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            repo = str(tmp / "myrepo")
+            brief = _write_brief(tmp, "b", repo)
+
+            with patch.object(crs, "_find_open_pr", return_value=None):
+                res = crs.check(brief, runs_dir=tmp / "no-runs", do_gh=True)
+
+            self.assertFalse(res["malformed"])
+            self.assertTrue(res["checked"])
+
+    def test_missing_but_correctly_suffixed_path_is_not_malformed(self):
+        # A stale/typo'd reference that still names a .md file is a
+        # different failure mode (genuinely unknown, fails open) from a
+        # caller passing the wrong kind of path entirely.
+        with tempfile.TemporaryDirectory() as t:
+            res = crs.check(Path(t) / "does-not-exist.md")
+            self.assertFalse(res["malformed"])
+            self.assertFalse(res["checked"])
+
+
 class TestCli(unittest.TestCase):
     def test_json_output_matches_check_result(self):
         import io
@@ -411,6 +473,18 @@ class TestCli(unittest.TestCase):
                 )
             self.assertEqual(rc, 0)
             mock_find.assert_not_called()
+
+    def test_malformed_path_exits_nonzero(self):
+        import io
+        from contextlib import redirect_stdout
+
+        with tempfile.TemporaryDirectory() as t:
+            path = Path(t) / "picked-brief-without-extension"
+
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = crs.main(["--brief", str(path), "--no-gh", "--json"])
+            self.assertEqual(rc, 2)
 
     def test_repo_flag_is_wired_as_fallback(self):
         import io
