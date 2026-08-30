@@ -4,19 +4,22 @@
       build a wheel and sdist via a `python -m build` subprocess into a
       `tempfile.TemporaryDirectory()` when no artifact paths are supplied,
       and to accept `--wheel`/`--sdist` paths instead (skipping the build)
-      for the CI invocation.
+      for the CI invocation. (Requirement: Hermetic artifact build)
 - [ ] 1.2 Add wheel metadata extraction: read `METADATA` and
       `entry_points.txt` from the built/given wheel via `zipfile`, parse
       `METADATA`'s `Version` header with `email.parser`, and parse
       `entry_points.txt`'s `[console_scripts]` section with `configparser`
       (treating a missing section as an empty set, not an error).
+      (Requirement: Built-artifact metadata extraction)
 - [ ] 1.3 Add sdist metadata extraction: read `PKG-INFO` from the
       built/given sdist via `tarfile`, parsing its `Version` header the
-      same way as the wheel's `METADATA`.
+      same way as the wheel's `METADATA`. (Requirement: Built-artifact
+      metadata extraction)
 - [ ] 1.4 Raise a clear, distinguishable error (not an unhandled exception)
       when the build subprocess fails, or when a built/given artifact is
       missing its expected metadata file (`METADATA`, `entry_points.txt`,
-      or `PKG-INFO`).
+      or `PKG-INFO`). (Requirement: Deterministic failure on malformed or
+      missing artifact metadata)
 
 ## 2. Parity comparison and CLI
 
@@ -26,10 +29,12 @@
       `pyproject.toml`.
 - [ ] 2.2 Compare the wheel's and sdist's extracted version against the
       checkout's declared version (exact string equality); on mismatch,
-      report which artifact disagreed and both values.
+      report which artifact disagreed and both values. (Requirement:
+      Version and console-script parity)
 - [ ] 2.3 Compare the wheel's extracted `console_scripts` name set against
       the checkout's declared `[project.scripts]` name set; on mismatch,
-      report missing and/or extra names.
+      report missing and/or extra names. (Requirement: Version and
+      console-script parity)
 - [ ] 2.4 Add a `main()`/CLI entry point mirroring
       `check_packaging_metadata.py`'s shape: `--repo` (default cwd),
       optional `--wheel`/`--sdist`, non-zero exit and stderr messages on
@@ -68,20 +73,24 @@
       add a step that runs `scripts/check_built_artifact_packaging.py`
       pointed at the `dist/*.whl` and `dist/*.tar.gz` that step just
       produced, gated the same way (`if:
-      needs.changes.outputs.bookkeeping == 'false'`).
+      needs.changes.outputs.bookkeeping == 'false'`). (Requirement: CI
+      integration without a new required check)
 - [ ] 4.2 Confirm no new job or required-status-check name is introduced —
       the existing `Lint, Test & Build` check name continues to reflect
-      this step's pass/fail result.
+      this step's pass/fail result. (Requirement: CI integration without a
+      new required check)
 
 ## 5. Verification
 
-- [ ] 5.1 Run `PYTHONPATH=src pytest -q` and confirm the new tests pass
-      alongside the full suite.
-- [ ] 5.2 Run `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate
-      check` (golden regression) and confirm it remains green.
-- [ ] 5.3 Run `python3 scripts/check_built_artifact_packaging.py --repo
-      .` locally against this checkout and confirm it reports success.
-- [ ] 5.4 Confirm `tests/test_plugin_surface.py` still passes (no changes
-      to skills/commands in this change, but it also imports
+- [ ] 5.1 [e2e] Run `PYTHONPATH=src pytest -q` and confirm the new tests
+      pass alongside the full suite.
+- [ ] 5.2 [e2e] Run `PYTHONPATH=src python3 -m
+      worktrail.orchestrator.orchestrate check` (golden regression) and
+      confirm it remains green.
+- [ ] 5.3 [e2e] Run `python3 scripts/check_built_artifact_packaging.py
+      --repo .` locally against this checkout and confirm it reports
+      success.
+- [ ] 5.4 [e2e] Confirm `tests/test_plugin_surface.py` still passes (no
+      changes to skills/commands in this change, but it also imports
       `check_packaging_metadata`, so verify the new script's reuse of that
       module doesn't introduce an import cycle or path issue).
