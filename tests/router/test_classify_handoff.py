@@ -101,5 +101,64 @@ class TestClassifyHandoff(unittest.TestCase):
         self.assertEqual(result["candidate_specs"], [])
 
 
+class TestClassifyHandoffExtraRoots(unittest.TestCase):
+    """Requirement: a repo whose specs live under an OpenSpec tree (or a
+    devkit `docs/specs/` tree plus an OpenSpec `openspec/` tree during
+    migration) is not blind to the OpenSpec side just because the caller's
+    primary `specs_root` points at `docs/specs/` (the classify-handoff half
+    of the gap behind brief 20260830-005833)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.specs = self.root / "docs" / "specs"
+        self.openspec_changes = self.root / "openspec" / "changes"
+        _write(
+            self.openspec_changes / "handoff-routing-cleanup" / "proposal.md",
+            "# Handoff Routing Cleanup\n\n## Why\n\n"
+            "The handoff queue seeds the conductor through work_queue.py and handoff_seed.py.\n",
+        )
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def brief(self, body: str, fm: str = "") -> Path:
+        text = (
+            "---\nfocus: Update handoff conductor routing\nstatus: picked\n"
+            + fm
+            + "---\n\n"
+            + body
+        )
+        return _write(self.root / "brief.md", text)
+
+    def test_extra_root_candidate_is_surfaced(self):
+        brief = self.brief(
+            "Change the handoff queue integration to delegate through sdd-workflow."
+        )
+        result = ch.classify_handoff(
+            brief, self.specs, extra_roots=[self.openspec_changes]
+        )
+        ids = {c["spec_id"] for c in result["candidate_specs"]}
+        self.assertIn("handoff-routing-cleanup", ids)
+
+    def test_missing_primary_root_still_surfaces_extra_root_candidate(self):
+        """`self.specs` (`docs/specs/`) is never created in this test --
+        an absent primary root must not suppress a real OpenSpec candidate."""
+        brief = self.brief(
+            "Change the handoff queue integration to delegate through sdd-workflow."
+        )
+        result = ch.classify_handoff(
+            brief, self.specs, extra_roots=[self.openspec_changes]
+        )
+        self.assertEqual(
+            result["candidate_specs"][0]["spec_id"], "handoff-routing-cleanup"
+        )
+
+    def test_no_extra_roots_matches_prior_single_root_behavior(self):
+        brief = self.brief("Investigate how handoff route selection behaves.")
+        result = ch.classify_handoff(brief, self.specs)
+        self.assertEqual(result["candidate_specs"], [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
