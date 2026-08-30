@@ -1433,9 +1433,11 @@ _EPIC_FUTURE_SPEC_ID_RE = re.compile(
 #   - pairwise: "Feature <next_n> depends on Feature <M>" -- names the exact
 #     blocked feature, so `_EPIC_GATE_PAIRWISE_TEMPLATE` is a `str.format`
 #     template rather than a precompiled pattern: the caller substitutes the
-#     specific `next_n` it is checking before compiling, so a match only
-#     fires for that feature and not any other "Feature X depends on
-#     Feature Y" prose elsewhere in the document.
+#     specific `next_n` it is checking, then compiles via
+#     `_epic_gate_pairwise_re` (always case-insensitive, matching
+#     `_EPIC_GATE_BLANKET_RE`), so a match only fires for that feature and
+#     not any other "Feature X depends on Feature Y" prose elsewhere in the
+#     document.
 #   - blanket: "Feature <M> gates the rest/remaining (features)/later
 #     features/all later features" -- names only the gating feature and
 #     covers every feature after it, so this one needs no per-call
@@ -1447,6 +1449,14 @@ _EPIC_GATE_BLANKET_RE = re.compile(
     r"features?)?|later\s+features?|all\s+later\s+features?)",
     re.IGNORECASE,
 )
+
+
+def _epic_gate_pairwise_re(next_n: int) -> re.Pattern[str]:
+    """Compile the pairwise gate pattern for a specific feature number.
+
+    Always case-insensitive, matching `_EPIC_GATE_BLANKET_RE`.
+    """
+    return re.compile(_EPIC_GATE_PAIRWISE_TEMPLATE.format(next_n=next_n), re.IGNORECASE)
 
 
 def _epic_status_header(text: str) -> str | None:
