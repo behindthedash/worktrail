@@ -884,3 +884,37 @@ def test_epic_in_sequencing_gated_stage_produces_no_brief(tmp_path):
         repos_root, queue_base=qbase, log=lambda _m: None
     )
     assert summary2["seeded"] == []
+
+
+def test_sequencing_gated_epic_in_returned_summary(tmp_path):
+    """seed_backlog() returns the sequencing-gated epic in its summary
+    under the sequencing_gated_epics key."""
+    repos_root = tmp_path / "projects"
+    repo = _mk_repo(repos_root, "repo-a")
+
+    # Epic with 2 features: Feature 1 is cited, Feature 2 is blocked by
+    # a gate on Feature 1 (which is still open).
+    _mk_epic(
+        repo,
+        "001-blocked",
+        features=2,
+        future_spec_ids={1: "feature-one-spec"},
+    )
+    _mk_citing_spec(repo, "020-feature-one-user", "001-blocked")
+    epics = repo / "docs" / "specs" / "epics"
+    epic_file = epics / "001-blocked.md"
+    epic_text = epic_file.read_text(encoding="utf-8")
+    epic_text = epic_text.replace(
+        "### Feature 2 — thing 2",
+        "### Feature 2 — thing 2\n\nFeature 2 depends on Feature 1.",
+    )
+    epic_file.write_text(epic_text, encoding="utf-8")
+
+    qbase = tmp_path / "wq"
+    summary = seed_backlog.seed_backlog(
+        repos_root, queue_base=qbase, log=lambda _m: None
+    )
+
+    assert summary["sequencing_gated_epics"] == [
+        {"repo": "repo-a", "id": "001-blocked"}
+    ]
