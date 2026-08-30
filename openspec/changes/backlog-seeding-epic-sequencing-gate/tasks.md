@@ -85,7 +85,7 @@
 - [ ] 6.1 [e2e] Run `PYTHONPATH=src pytest -q` (full suite).
 - [ ] 6.2 [e2e] Run `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` (golden
       record/replay regression, per AGENTS.md).
-- [ ] 6.3 [e2e] Manually sanity-check `docs/specs/epics/002-safe-work-queue-dependency-references.md`
+- [x] 6.3 [e2e] Manually sanity-check `docs/specs/epics/002-safe-work-queue-dependency-references.md`
       against `detect_epic_stage()` (all three features now closed/archived) still reports
       `epic-complete`, not a new gated/gap stage — confirms the design's "no existing epic
       changes behavior" claim.
