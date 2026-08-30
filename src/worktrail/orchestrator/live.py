@@ -4168,6 +4168,7 @@ def full_real(
     route: str | None = None,
     gates: str = "",
     migration_patterns: list[str] | None = None,
+    dispatch_id: str | None = None,
 ) -> dict:
     """End-to-end on a REAL repo (the public entry); see `_full_real_inner` for the
     full pipeline doc.
@@ -4223,6 +4224,7 @@ def full_real(
             route=route,
             gates=gates,
             migration_patterns=migration_patterns,
+            dispatch_id=dispatch_id,
         )
     finally:
         _lock.release()
@@ -4340,6 +4342,7 @@ def _pipeline_scheduler(
     effort: str | None = None,
     re_integrate: bool = False,
     migration_patterns: list[str] | None = None,
+    dispatch_id: str | None = None,
     # Injectable seams (default to production implementations)
     _spawn=None,
     _integrate_one=None,
@@ -4466,6 +4469,7 @@ def _pipeline_scheduler(
         purpose_tier_map=purpose_tier_map,
         fallback_chain=fallback_chain,
         effort=effort,
+        dispatch_id=dispatch_id,
     )
     # See live_run_real's identical guard: surfaces dependency files to
     # ROLE_IMPLEMENT prompts, default-constructed or caller-injected alike.
@@ -5411,6 +5415,7 @@ def _full_real_inner(
     route: str | None = None,
     gates: str = "",
     migration_patterns: list[str] | None = None,
+    dispatch_id: str | None = None,
 ) -> dict:
     """End-to-end on a REAL repo: fan-out -> integrate -> grouped PRs into base branch.
 
@@ -5674,6 +5679,7 @@ def _full_real_inner(
         route=route,
         gates=gates,
         migration_patterns=migration_patterns,
+        dispatch_id=dispatch_id,
     )
 
 
@@ -6164,6 +6170,12 @@ def main(argv=None) -> int:
         help="Comma-separated classifier gates for this run, forwarded to the group-PR "
         "label refresh's --gates for the same eligibility check as the one-off PR path.",
     )
+    fr.add_argument(
+        "--dispatch-id",
+        default=None,
+        dest="dispatch_id",
+        help="Dispatch identifier to thread through all worker spawns for run tracking.",
+    )
     pc = sub.add_parser(
         "precheck",
         help="Check whether pending impl tasks have their declared files already present",
@@ -6350,6 +6362,7 @@ def main(argv=None) -> int:
             route=args.route,
             gates=args.gates,
             migration_patterns=args.migration_patterns,
+            dispatch_id=args.dispatch_id,
         )
         return 0
     if args.cmd == "precheck":
