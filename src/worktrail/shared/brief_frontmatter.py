@@ -145,6 +145,44 @@ def split_frontmatter(content: str) -> tuple[dict[str, Any], str]:
     return frontmatter, body
 
 
+def validate_brief_path(path: Path) -> tuple[bool, str | None]:
+    """Validate that `path` has the right *shape* for a claimed brief: not a
+    directory, and named with a `.md` suffix.
+
+    This is a shape check only -- it touches the filesystem no further than
+    `Path.is_dir()`, and does not confirm the file exists or is readable
+    (callers needing that should still `.stat()`/`.read_text()` themselves).
+
+    Returns `(True, None)` when the path's shape is valid, or `(False,
+    "<message>")` naming which rule failed. Every caller that accepts a
+    claimed brief path (a picked-brief `.md` file -- from `work_queue.py
+    claim`, `worktrail-go`'s resolved `$BRIEF_PATH`, or a `handoff:<id>`
+    dispatch token) should validate through this one function instead of
+    re-deriving its own directory/suffix check, so the most common malformed
+    input -- a picked-brief *directory* passed instead of its `.md` file --
+    is diagnosed identically everywhere. Before this helper existed, that
+    same input degraded differently at each call site: a clear, actionable
+    error at `check_resumable_state.py` (the one call site that already
+    special-cased it), a generic `OSError` string at `handoff_seed.py`, and
+    a silently empty frontmatter dict at `check_related_brief_claims.py` and
+    `classify_handoff.py` -- both of the latter never surfaced the bad input
+    at all because `Path.is_dir()` was never checked and `Path.stat()`
+    succeeds on a directory.
+    """
+    path = Path(path)
+    if path.is_dir():
+        return False, (
+            f"claimed brief path is a directory, not the .md file: {path} "
+            "-- pass the full picked-brief .md path, not its containing directory"
+        )
+    if path.suffix != ".md":
+        return False, (
+            f"claimed brief path is missing its .md filename: {path} "
+            "-- pass the full picked-brief .md path"
+        )
+    return True, None
+
+
 def read_frontmatter(path: Path) -> dict[str, Any]:
     """Read and parse a brief frontmatter block, returning ``{}`` on I/O error."""
     try:

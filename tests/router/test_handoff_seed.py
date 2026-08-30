@@ -259,6 +259,21 @@ class TestSafety(unittest.TestCase):
         # Must not contain bare yaml.load( call
         self.assertNotIn("yaml.load(", source)
 
+    def test_directory_path_returns_actionable_error_in_parse_brief(self):
+        """A picked-brief directory used to hit `Path.read_text()` and
+        surface only the generic `IsADirectoryError` string; the shared
+        shape check now names the problem explicitly before that read."""
+        with tempfile.TemporaryDirectory() as t:
+            claimed_dir = Path(t) / "20260101-000000-some-brief"
+            claimed_dir.mkdir()
+
+            result = hs.parse_brief(claimed_dir)
+
+            self.assertIsNotNone(result["error"])
+            self.assertIn("directory", result["error"])
+            self.assertEqual(result["frontmatter"], {})
+            self.assertEqual(result["sections"], {})
+
     @unittest.skipIf(os.getuid() == 0, "root can read any file; skip chmod test")
     def test_unreadable_file_returns_error_in_parse_brief(self):
         with tempfile.TemporaryDirectory() as t:

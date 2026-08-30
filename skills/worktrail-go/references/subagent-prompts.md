@@ -1299,13 +1299,23 @@ one per line) from the root-cause step (Route F step 3) — the files this fix a
 knows it will touch. Skip the scan (not a stop) when the fix hasn't narrowed to specific
 files yet; there is nothing to compare against.
 
+`git diff --name-only HEAD` alone only sees tracked-file changes — the same blind spot
+`#sync-before-teardown` step 4 already documents: a brand-new file never appears in a
+diff against `HEAD` because it has nothing tracked to diff against. Two concurrent
+`/go` dispatches that each independently create the SAME NEW file for the same
+unspecced fix would produce no overlap signal from the diff alone, so also check
+`git status --porcelain --untracked-files=all` (`??`-prefixed paths) and fold both
+sources into the same comparison:
+
 ```bash
 SIBLING_ROOT="$REPO-worktrees"
 if [ -n "$EXPECTED_FILES" ] && [ -d "$SIBLING_ROOT" ]; then
   find "$SIBLING_ROOT" -maxdepth 1 -type d -name 'fix-*' | while IFS= read -r SIBLING_WT; do
     SIBLING_DIFF=$(git -C "$SIBLING_WT" diff --name-only HEAD 2>/dev/null | sort -u)
-    [ -z "$SIBLING_DIFF" ] && continue
-    OVERLAP=$(comm -12 <(echo "$EXPECTED_FILES" | sort -u) <(echo "$SIBLING_DIFF"))
+    SIBLING_UNTRACKED=$(git -C "$SIBLING_WT" status --porcelain --untracked-files=all 2>/dev/null | sed -n 's/^?? //p' | sort -u)
+    SIBLING_CHANGED=$(printf '%s\n%s\n' "$SIBLING_DIFF" "$SIBLING_UNTRACKED" | sed '/^$/d' | sort -u)
+    [ -z "$SIBLING_CHANGED" ] && continue
+    OVERLAP=$(comm -12 <(echo "$EXPECTED_FILES" | sort -u) <(echo "$SIBLING_CHANGED"))
     if [ -n "$OVERLAP" ]; then
       echo "ADVISORY: sibling fix-branch worktree $SIBLING_WT has an uncommitted diff overlapping expected files:" >&2
       echo "$OVERLAP" >&2
@@ -1396,15 +1406,38 @@ spec-id alone is insufficient for the live `full` path.
 anywhere outside `$WT`), not `$WT` itself — `cd` back first if an earlier step left you
 inside it. See the worktree-lifecycle note above for why.
 
-- **All group PRs auto-merged green:**
+- **All group PRs auto-merged green AND no tail tasks pending:**
 
-  Before removing `$WT`, run `#worktree-deletion-liveness-guard` with `$RUN_RECORDS_DIR`
+  "All group PRs merged" and "the change is actually done" are different states by
+  design — see the "Tail tasks (E2E / cleanup) are not auto-run" note above:
+  `integrate_complete: true` can co-exist with unrun `pending_tail_tasks`. Before
+  removing `$WT`, confirm the run journal reports none outstanding:
+
+  ```bash
+  JOURNAL="$REPO-worktrees/run-$SPEC_ID.json"   # modify/chg pipeline: run-$CHANGE_ID.json
+  PENDING_TAIL=$(python3 -c "
+import json
+try:
+    data = json.load(open('$JOURNAL'))
+except (OSError, json.JSONDecodeError):
+    data = {}
+print(json.dumps(data.get('pending_tail_tasks', [])))
+")
+  if [ "$PENDING_TAIL" != "[]" ]; then
+    echo "BLOCKED: pending tail tasks remain, do not tear down \$WT: $PENDING_TAIL" >&2
+    # Stop here — run those tasks (or mark them completed/backfill per the
+    # "Tail tasks (E2E / cleanup) are not auto-run" note) instead of tearing
+    # down $WT. Do not run the commands below.
+  fi
+  ```
+
+  Then run `#worktree-deletion-liveness-guard` with `$RUN_RECORDS_DIR`
   set to `"$(dirname "$(dirname "$RUN")")"` and `$INVOCATION_CONTEXT_DISPATCH_ID` carried
   through from the invoking shell. If it blocks, stop here — do not run the commands below.
 
   ```bash
   git -C "$REPO" worktree remove "$WT"
-  git -C "$REPO" branch -D "spec/$SPEC_ID"   # only after confirmed merge
+  git -C "$REPO" branch -D "spec/$SPEC_ID"   # modify pipeline: "chg/$CHANGE_ID" — only after confirmed merge
 
   # Sweep leftover orchestrator branches — verify.py deletes green groups' branches but
   # intentionally keeps quarantined/split groups' branches. The sweep below is a backstop
@@ -1627,10 +1660,15 @@ After the `new` pipeline completes (orchestrator PR work done + sync run — see
 `#sync-before-teardown`):
 
 ```bash
-worktrail-work-queue done "<id-or-filename>" --implementation-complete --by "$GO_DISPATCH_ID" --json
+worktrail-work-queue done "<id-or-filename>" --implementation-complete --run "$RUN" --by "$GO_DISPATCH_ID" --json
 ```
 
-This stamps `status: done` in `picked/` (the file stays as a kept log). For
+Always pass `--run "$RUN"` on an `--implementation-complete` closure — it verifies the
+named run record actually reached a PR-owning `finish()` state (a recorded `pull_request`
+plus `completed_and_merged`/`completed_pr_open`/`completed_awaiting_human_approval`) instead
+of trusting closure prose; omitting it falls back to requiring a PR reference in `--note`
+(see `work_queue.py`'s "Implementation closure evidence gate"). This stamps `status: done`
+in `picked/` (the file stays as a kept log). For
 planning-only Route-C runs, use `--planning-only`; an unqualified completion
 is rejected as `awaiting_implementation_decision`.
 Report: "Handoff brief `<filename>` marked done."

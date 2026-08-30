@@ -600,7 +600,9 @@ def _latest_commit_timestamp(repo_value: str, relative_value: str) -> int | None
         return None
 
 
-def _task_files_are_shipped(repo: Path, files: list[str], tracked: set) -> bool:
+def _task_files_are_shipped(
+    repo: Path, files: list[str], tracked: set, since_ts: int | None
+) -> bool:
     for declared in files:
         shipped = False
         for target_repo, relative in _declared_file_targets(repo, declared):
@@ -609,10 +611,25 @@ def _task_files_are_shipped(repo: Path, files: list[str], tracked: set) -> bool:
                 if target_repo == repo and relative == str(declared)
                 else _git_tracked(target_repo, [relative])
             )
+            final_relative_path: str | None = None
             if relative in target_tracked and (target_repo / relative).is_file():
-                shipped = True
-                break
-            if _moved_tracked_path(target_repo, relative) is not None:
+                final_relative_path = relative
+            else:
+                moved = _moved_tracked_path(target_repo, relative)
+                if moved is not None:
+                    final_relative_path = moved
+            if final_relative_path is None:
+                continue
+            if (
+                since_ts is not None
+                and (
+                    commit_ts := _latest_commit_timestamp(
+                        str(target_repo), final_relative_path
+                    )
+                )
+                is not None
+                and commit_ts >= since_ts
+            ):
                 shipped = True
                 break
         if not shipped:
@@ -654,10 +671,11 @@ def _pending_impl_stale(
         return []
     all_files = sorted({f for t in candidates for f in t["files"]})
     tracked = _git_tracked(repo, all_files)
+    since_ts = _dir_creation_timestamp(str(repo), str(spec_dir))
     stale: list[str] = []
     for t in candidates:
         files = t["files"]
-        if _task_files_are_shipped(repo, files, tracked):
+        if _task_files_are_shipped(repo, files, tracked, since_ts):
             stale.append(t["id"])
     return stale
 
@@ -694,10 +712,11 @@ def _pending_openspec_stale(
 
     all_files = sorted({file for task in candidates for file in task["files"]})
     tracked = _git_tracked(repo, all_files)
+    since_ts = _dir_creation_timestamp(str(repo), str(change_dir))
     return [
         task["id"]
         for task in candidates
-        if _task_files_are_shipped(repo, task["files"], tracked)
+        if _task_files_are_shipped(repo, task["files"], tracked, since_ts)
     ]
 
 
@@ -745,10 +764,11 @@ def _pending_tail_stale(
         return [t["id"] for t in empty_cleanup]
     all_files = sorted({f for t in candidates for f in t["files"]})
     tracked = _git_tracked(repo, all_files)
+    since_ts = _dir_creation_timestamp(str(repo), str(spec_dir))
     stale: list[str] = [t["id"] for t in empty_cleanup]
     for t in candidates:
         files = t["files"]
-        if _task_files_are_shipped(repo, files, tracked):
+        if _task_files_are_shipped(repo, files, tracked, since_ts):
             stale.append(t["id"])
     return stale
 
@@ -1487,10 +1507,6 @@ TERMINAL_EPIC_STATUSES = frozenset(
 
 _EPIC_STATUS_LINE_RE = re.compile(r"^\*\*Status:\*\*\s*(.+?)\s*$", re.MULTILINE)
 _EPIC_FEATURE_HEADING_RE = re.compile(r"^###\s+Feature\b", re.MULTILINE)
-# Same heading shape as `_EPIC_FEATURE_HEADING_RE`, but capturing the feature
-# number so a heading can be keyed instead of merely counted (`### Feature 2:
-# Foo` -> 2). Kept as a separate pattern so the counting regex stays a bare
-# `findall`-able heading matcher.
 _EPIC_FEATURE_HEADING_NUM_RE = re.compile(r"^###\s+Feature\s+(\d+)\b", re.MULTILINE)
 _EPIC_NUMBER_RE = re.compile(r"^(\d{3})-")
 _EPIC_FUTURE_SPEC_ID_RE = re.compile(
