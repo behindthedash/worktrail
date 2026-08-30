@@ -1596,10 +1596,15 @@ After the `new` pipeline completes (orchestrator PR work done + sync run — see
 `#sync-before-teardown`):
 
 ```bash
-worktrail-work-queue done "<id-or-filename>" --implementation-complete --by "$GO_DISPATCH_ID" --json
+worktrail-work-queue done "<id-or-filename>" --implementation-complete --run "$RUN" --by "$GO_DISPATCH_ID" --json
 ```
 
-This stamps `status: done` in `picked/` (the file stays as a kept log). For
+Always pass `--run "$RUN"` on an `--implementation-complete` closure — it verifies the
+named run record actually reached a PR-owning `finish()` state (a recorded `pull_request`
+plus `completed_and_merged`/`completed_pr_open`/`completed_awaiting_human_approval`) instead
+of trusting closure prose; omitting it falls back to requiring a PR reference in `--note`
+(see `work_queue.py`'s "Implementation closure evidence gate"). This stamps `status: done`
+in `picked/` (the file stays as a kept log). For
 planning-only Route-C runs, use `--planning-only`; an unqualified completion
 is rejected as `awaiting_implementation_decision`.
 Report: "Handoff brief `<filename>` marked done."
