@@ -5095,6 +5095,63 @@ class EpicStageDetection(unittest.TestCase):
         self.assertIsNone(gate["resolved_name"])
         self.assertFalse(gate["closed"])
 
+    def test_epic_sequencing_gated_pairwise_prose_citing_spec_open_stage(self):
+        # Same epic as 4.1: Feature 2 depends on Feature 1's contract.
+        # But now Feature 1's future spec id is cited by a spec folder
+        # whose stage is ready-to-implement (0/16 tasks -- open).
+        # The gate for Feature 2 remains open because the gating spec
+        # has stage ready-to-implement (not done/complete), even though
+        # that spec is also cited (counting toward Feature 1 being "done").
+        epics = self.repo / "docs" / "specs" / "epics"
+        epics.mkdir(parents=True, exist_ok=True)
+        body = [
+            "# Epic: 006-sequenced-open",
+            "",
+            "### Feature 1",
+            "Feature 1 body.",
+            "**Future spec id:** `feature-1-contract`",
+            "",
+            "### Feature 2",
+            "Feature 2 depends on Feature 1's contract to be finalized.",
+            "",
+        ]
+        epic_file = epics / "006-sequenced-open.md"
+        epic_file.write_text("\n".join(body), encoding="utf-8")
+
+        # Create a single spec that cites both the epic and the future-spec-id
+        # via its markdown. This spec has pending tasks (ready-to-implement stage).
+        # It counts as citing Feature 1 (via both epic citation and future-spec-id
+        # patterns), but the gate resolution will find it with stage ready-to-implement.
+        spec_dir = self.repo / "docs" / "specs" / "010-feature-implementation"
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        (spec_dir / "spec.md").write_text(
+            (
+                "# Feature 1 Implementation\n\n"
+                "Implements Epic 006 Feature 1's contract (feature-1-contract).\n"
+            ),
+            encoding="utf-8",
+        )
+        (spec_dir / "tasks").mkdir()
+        (spec_dir / "tasks" / "TASK-001.md").write_text(
+            "---\nid: TASK-001\nstatus: pending\nkind: impl\n---\n"
+        )
+
+        result = dashboard.detect_epic_stage(epic_file, self.repo)
+
+        # cited = 1 (one spec cites the epic), but the gate for Feature 2
+        # is still open because the citing spec's stage is ready-to-implement.
+        # So the result is epic-sequencing-gated, not epic-gap or epic-complete.
+        self.assertEqual(result["stage"], "epic-sequencing-gated")
+        self.assertEqual(result["features"], 2)
+        self.assertEqual(result["cited"], 1)
+        self.assertEqual(result["blocked_feature"], 2)
+        self.assertEqual(len(result["gates"]), 1)
+        gate = result["gates"][0]
+        self.assertEqual(gate["feature"], 1)
+        self.assertEqual(gate["spec_id"], "feature-1-contract")
+        self.assertEqual(gate["resolved_name"], "010-feature-implementation")
+        self.assertFalse(gate["closed"])  # ready-to-implement is open, not closed
+
     def test_non_epic_named_file_is_ignored_by_epic_id_pattern_against_real_directory(
         self,
     ):
