@@ -1502,8 +1502,10 @@ personal work queue, claims it, and wires its content into the existing `new` pi
   claim/move can never diverge. `sdd-workflow` calls it; it does not reimplement the move.
 - The **seed mapping** is `worktrail-handoff-seed` (sdd-workflow-specific, read-only).
 - The **new-vs-change matcher** is `worktrail-classify-handoff` (sdd-workflow-specific,
-  read-only). It scans the current `docs/specs/` tree plus optional brief hints
-  (`change-kind`, `target-spec`) and emits evidence for the normal route classifier.
+  read-only). It scans the current `docs/specs/` tree (plus any `--extra-specs-root` roots,
+  e.g. `openspec/changes` and `openspec/specs`, so an OpenSpec-format repo's own specs
+  are visible too) plus optional brief hints (`change-kind`, `target-spec`) and emits
+  evidence for the normal route classifier.
 
 The queue lives at `$WORK_QUEUE_DIR` (default `~/work-queue`) with `queue/` + `picked/` only.
 
@@ -1618,8 +1620,14 @@ After repo resolution and dashboard restore, classify the claimed brief against 
 spec tree:
 
 ```bash
+# A repo may hold a devkit docs/specs/ tree, an OpenSpec openspec/ tree, or
+# both (mid-migration) -- scan whichever exist, same idiom as #overlap-check,
+# so an OpenSpec-format repo's own specs are never invisible to this matcher.
+EXTRA_SPECS_ROOT_ARGS=()
+[ -d "$REPO/openspec/changes" ] && EXTRA_SPECS_ROOT_ARGS+=(--extra-specs-root "$REPO/openspec/changes")
+[ -d "$REPO/openspec/specs" ] && EXTRA_SPECS_ROOT_ARGS+=(--extra-specs-root "$REPO/openspec/specs")
 worktrail-classify-handoff "<claimed-path-from-step-3>" \
-  --specs-root "$REPO/docs/specs" --json
+  --specs-root "$REPO/docs/specs" "${EXTRA_SPECS_ROOT_ARGS[@]}" --json
 ```
 
 The helper returns:

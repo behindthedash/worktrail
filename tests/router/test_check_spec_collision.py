@@ -115,6 +115,83 @@ class TestCheckWithCandidates(unittest.TestCase):
             ids = {c["spec_id"] for c in res["candidates"]}
             self.assertEqual(ids, {"001-first", "002-second"})
 
+    def test_candidate_carries_its_source_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_spec(tmp, "001-example")
+            res = csc.check(Path(tmp))
+            self.assertEqual(res["candidates"][0]["root"], "docs/specs")
+
+
+class TestCheckExtraRoots(unittest.TestCase):
+    """Requirement: a repo with both a devkit `docs/specs/` tree and an
+    OpenSpec `openspec/` tree gets candidates from both when the caller
+    passes `extra_roots`, not only whichever root it defaults to (the gap
+    behind brief 20260830-005833: dispatching against worktrail's own
+    OpenSpec-format specs surfaced only an unrelated docs/specs/ candidate
+    and missed the real controlling openspec/specs/ spec entirely)."""
+
+    def test_extra_root_candidates_are_merged_in(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_spec(tmp, "001-example", feature_summary="Devkit-format spec.")
+            _write(
+                Path(tmp) / "openspec" / "specs" / "backlog-seeding" / "spec.md",
+                "# Backlog Seeding\n\n## Purpose\n\nOpenSpec-format capability.\n",
+            )
+            res = csc.check(Path(tmp), extra_roots=["openspec"])
+            self.assertTrue(res["checked"])
+            ids = {c["spec_id"] for c in res["candidates"]}
+            self.assertEqual(ids, {"001-example", "backlog-seeding"})
+
+    def test_merged_candidates_are_tagged_with_their_own_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_spec(tmp, "001-example")
+            _write(
+                Path(tmp) / "openspec" / "specs" / "backlog-seeding" / "spec.md",
+                "# Backlog Seeding\n\n## Purpose\n\nOpenSpec-format capability.\n",
+            )
+            res = csc.check(Path(tmp), extra_roots=["openspec"])
+            roots = {c["spec_id"]: c["root"] for c in res["candidates"]}
+            self.assertEqual(roots["001-example"], "docs/specs")
+            self.assertEqual(roots["backlog-seeding"], "openspec")
+
+    def test_nonexistent_extra_root_is_a_silent_noop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_spec(tmp, "001-example")
+            res = csc.check(Path(tmp), extra_roots=["openspec"])
+            self.assertTrue(res["checked"])
+            self.assertEqual(len(res["candidates"]), 1)
+
+    def test_extra_root_alone_is_checked_when_primary_root_is_absent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _write(
+                Path(tmp) / "openspec" / "specs" / "backlog-seeding" / "spec.md",
+                "# Backlog Seeding\n\n## Purpose\n\nOpenSpec-format capability.\n",
+            )
+            res = csc.check(Path(tmp), extra_roots=["openspec"])
+            self.assertTrue(res["checked"])
+            self.assertEqual(len(res["candidates"]), 1)
+            self.assertEqual(res["candidates"][0]["spec_id"], "backlog-seeding")
+
+    def test_verify_never_raises_against_an_openspec_sourced_candidate(self):
+        """`verify()` looks up `repo/root/spec_id` directly and has no
+        OpenSpec `changes/`-vs-`specs/` indirection of its own (unlike
+        `check()`, which delegates that to `overlap_check.scan()`) -- an
+        OpenSpec-sourced candidate's `root` tag is for the calling agent's own
+        judgment, not necessarily a directly verifiable `--verify` root.
+        Passing it through anyway must still degrade cleanly, never raise."""
+        with tempfile.TemporaryDirectory() as tmp:
+            _write(
+                Path(tmp) / "openspec" / "specs" / "backlog-seeding" / "spec.md",
+                "# Backlog Seeding\n\n## Purpose\n\nOpenSpec-format capability.\n",
+            )
+            res = csc.check(Path(tmp), extra_roots=["openspec"])
+            candidate = res["candidates"][0]
+            verified = csc.verify(
+                Path(tmp), candidate["spec_id"], root=candidate["root"]
+            )
+            self.assertFalse(verified["confirmed"])
+            self.assertIsNotNone(verified["warning"])
+
 
 class TestCheckDegrade(unittest.TestCase):
     def test_scan_import_failure_degrades(self):
@@ -516,6 +593,24 @@ class TestCli(unittest.TestCase):
                 rc = csc.main(["--repo", tmp, "--json"])
             self.assertEqual(rc, 0)
             self.assertEqual(json.loads(buf.getvalue()), csc.check(Path(tmp)))
+
+    def test_extra_root_flag_merges_candidates(self):
+        import io
+        import json
+        from contextlib import redirect_stdout
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_spec(tmp, "001-example")
+            _write(
+                Path(tmp) / "openspec" / "specs" / "backlog-seeding" / "spec.md",
+                "# Backlog Seeding\n\n## Purpose\n\nOpenSpec-format capability.\n",
+            )
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = csc.main(["--repo", tmp, "--extra-root", "openspec", "--json"])
+            self.assertEqual(rc, 0)
+            ids = {c["spec_id"] for c in json.loads(buf.getvalue())["candidates"]}
+            self.assertEqual(ids, {"001-example", "backlog-seeding"})
 
     def test_json_verify_output_matches_verify_result(self):
         import io

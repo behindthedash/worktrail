@@ -94,49 +94,56 @@ def _brief_blob(brief: Path) -> str:
 
 
 def _candidate_specs(
-    brief: Path, specs_root: Path, target_spec: str | None
+    brief: Path,
+    specs_roots: Iterable[Path],
+    target_spec: str | None,
 ) -> list[dict[str, Any]]:
-    if not specs_root.is_dir():
-        return []
-
     brief_text = _brief_blob(brief)
     brief_tokens = _tokens(brief_text)
     brief_paths = _paths(brief_text)
     candidates: list[dict[str, Any]] = []
 
-    for spec_dir in sorted(p for p in specs_root.iterdir() if p.is_dir()):
-        spec_text = _spec_blob(spec_dir)
-        token_overlap = sorted(brief_tokens & _tokens(spec_text))
-        path_overlap = sorted(brief_paths & _paths(spec_text))
-        score = len(token_overlap) + (3 * len(path_overlap))
-        signals: list[str] = []
+    for specs_root in specs_roots:
+        if not specs_root.is_dir():
+            continue
 
-        if target_spec and (
-            spec_dir.name == target_spec or spec_dir.name.endswith(target_spec)
-        ):
-            score += 10
-            signals.append("target-spec")
-        if token_overlap:
-            signals.append("token-overlap")
-        if path_overlap:
-            signals.append("path-overlap")
+        for spec_dir in sorted(p for p in specs_root.iterdir() if p.is_dir()):
+            spec_text = _spec_blob(spec_dir)
+            token_overlap = sorted(brief_tokens & _tokens(spec_text))
+            path_overlap = sorted(brief_paths & _paths(spec_text))
+            score = len(token_overlap) + (3 * len(path_overlap))
+            signals: list[str] = []
 
-        if score:
-            candidates.append(
-                {
-                    "spec_id": spec_dir.name,
-                    "title": _title(spec_dir),
-                    "score": score,
-                    "signals": signals,
-                    "token_overlap": token_overlap[:8],
-                    "path_overlap": path_overlap[:5],
-                }
-            )
+            if target_spec and (
+                spec_dir.name == target_spec or spec_dir.name.endswith(target_spec)
+            ):
+                score += 10
+                signals.append("target-spec")
+            if token_overlap:
+                signals.append("token-overlap")
+            if path_overlap:
+                signals.append("path-overlap")
+
+            if score:
+                candidates.append(
+                    {
+                        "spec_id": spec_dir.name,
+                        "title": _title(spec_dir),
+                        "score": score,
+                        "signals": signals,
+                        "token_overlap": token_overlap[:8],
+                        "path_overlap": path_overlap[:5],
+                    }
+                )
 
     return sorted(candidates, key=lambda c: (-int(c["score"]), str(c["spec_id"])))[:5]
 
 
-def classify_handoff(brief: Path, specs_root: Path) -> dict[str, Any]:
+def classify_handoff(
+    brief: Path,
+    specs_root: Path,
+    extra_roots: Iterable[Path] | None = None,
+) -> dict[str, Any]:
     # A malformed brief path (a picked-brief directory, or a path missing its
     # `.md` suffix) used to fall through silently: `read_frontmatter` and
     # `_sections_text` both swallow the resulting OSError into `{}`/"", so
@@ -163,7 +170,9 @@ def classify_handoff(brief: Path, specs_root: Path) -> dict[str, Any]:
     if recommended_route not in set("ABCDEFGHIJ"):
         recommended_route = None
 
-    candidates = _candidate_specs(brief, specs_root, target_spec)
+    candidates = _candidate_specs(
+        brief, [specs_root, *(extra_roots or [])], target_spec
+    )
     signals: list[str] = []
     if change_kind:
         signals.append(f"change-kind:{change_kind}")
@@ -201,10 +210,21 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
     parser.add_argument("brief", help="claimed handoff brief path")
     parser.add_argument("--specs-root", required=True, help="path to docs/specs")
+    parser.add_argument(
+        "--extra-specs-root",
+        action="append",
+        default=None,
+        metavar="PATH",
+        help="additional specs root to scan alongside --specs-root, e.g. "
+        "an OpenSpec repo's openspec/changes or openspec/specs; repeatable",
+    )
     parser.add_argument("--json", action="store_true", help="emit JSON")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
-    result = classify_handoff(Path(args.brief), Path(args.specs_root))
+    extra_roots = (
+        [Path(r) for r in args.extra_specs_root] if args.extra_specs_root else None
+    )
+    result = classify_handoff(Path(args.brief), Path(args.specs_root), extra_roots)
     if args.json:
         print(json.dumps(result))
     elif result["error"]:

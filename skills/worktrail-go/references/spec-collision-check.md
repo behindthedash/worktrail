@@ -3,8 +3,9 @@
 `/go` classifies a request into a route and, for Route C (spec), Route D (implementation),
 Route F (defect repair), or Route G (spec change), dispatches straight into work against an
 existing or new spec. Neither `classify.py` nor `dashboard.py` ever compares the request
-against `docs/specs/`'s own shipped history — a Route C/D/F/G dispatch has no signal that an
-existing, already-`Implemented` spec covers the same actor + capability + primary domain.
+against the repo's own shipped spec history (`docs/specs/`, `openspec/`, or both) — a Route
+C/D/F/G dispatch has no signal that an existing, already-`Implemented` spec covers the same
+actor + capability + primary domain.
 Incident (2026-07-24): a queued brief was claimed and dispatched straight to Route D before
 anyone checked whether the feature it described had already shipped under an earlier spec
 whose task `files:` were already git-tracked on the base branch — the redundant implementation
@@ -43,16 +44,23 @@ same Route C/D/F/G dispatch.
 ```bash
 if [ "$ROUTE" = "C" ] || [ "$ROUTE" = "D" ] || [ "$ROUTE" = "F" ] || [ "$ROUTE" = "G" ]; then
   COMPARISON_TEXT="${BRIEF_FOCUS:-$ARG_INTENT}"
+  # A repo may hold a devkit docs/specs/ tree, an OpenSpec openspec/ tree, or
+  # both (mid-migration) -- scan whichever exist, same idiom as
+  # subagent-prompts.md#overlap-check, so a repo on the OpenSpec format is
+  # never silently invisible to this guard.
+  EXTRA_ROOT_ARGS=()
+  [ -d "$REPO/openspec" ] && EXTRA_ROOT_ARGS+=(--extra-root openspec)
   # $TARGET_SPEC, when known (e.g. the claimed brief's `target-spec:` field), is passed through
   # --target so task_candidates is populated below; omitted, task_candidates is always empty.
-  COLLISION_JSON=$(worktrail-check-spec-collision --repo "$REPO" ${TARGET_SPEC:+--target "$TARGET_SPEC"} --json 2>/dev/null)
+  COLLISION_JSON=$(worktrail-check-spec-collision --repo "$REPO" "${EXTRA_ROOT_ARGS[@]}" ${TARGET_SPEC:+--target "$TARGET_SPEC"} --json 2>/dev/null)
   CHECKED=$(echo "$COLLISION_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('checked', False))" 2>/dev/null)
   if [ "$CHECKED" = "True" ]; then
-    # Judge each whole-spec candidate (spec_id/title/feature_summary) against $COMPARISON_TEXT
-    # using the same actor + capability + primary domain rule as
+    # Judge each whole-spec candidate (spec_id/title/feature_summary/root) against
+    # $COMPARISON_TEXT using the same actor + capability + primary domain rule as
     # references/subagent-prompts.md#overlap-check. Only when exactly one candidate is judged a
-    # strong match, verify it:
-    VERIFY_JSON=$(worktrail-check-spec-collision --repo "$REPO" --verify "$MATCHED_SPEC_ID" --json 2>/dev/null)
+    # strong match, verify it against its OWN root ($MATCHED_ROOT = that candidate's "root"
+    # field, e.g. "docs/specs" or "openspec") -- never assume the default:
+    VERIFY_JSON=$(worktrail-check-spec-collision --repo "$REPO" --verify "$MATCHED_SPEC_ID" --root "$MATCHED_ROOT" --json 2>/dev/null)
     CONFIRMED=$(echo "$VERIFY_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('confirmed', False))" 2>/dev/null)
   fi
   # Separately -- never merged into the whole-spec candidates or $CONFIRMED above -- inspect any
@@ -60,6 +68,20 @@ if [ "$ROUTE" = "C" ] || [ "$ROUTE" = "D" ] || [ "$ROUTE" = "F" ] || [ "$ROUTE" 
   TASK_CANDIDATES=$(echo "$COLLISION_JSON" | python3 -c "import json,sys; print(json.dumps(json.load(sys.stdin).get('task_candidates', [])))" 2>/dev/null)
 fi
 ```
+
+**A matched candidate sourced from an OpenSpec root (`root: "openspec"`) may
+not be mechanically `--verify`-able.** `verify()` looks up `repo/root/spec_id`
+directly and has no `changes/`-vs-`specs/` indirection of its own (unlike
+`check()`, which delegates that to `overlap_check.scan()`) — an OpenSpec spec
+also carries no `**Status**:` header or task `files:` frontmatter for the
+shipped-artifact check to read. In practice this degrades to `confirmed:
+false` with a warning, never a crash, so it is safe to attempt — but never
+expect an OpenSpec-sourced candidate to auto-close a Route C/D brief the way a
+confirmed devkit candidate does. Surfacing the candidate to the calling
+agent's own semantic judgment (before `--verify` even runs) is the fix this
+guard exists to provide for OpenSpec-format repos; a human/agent redirecting
+the dispatch based on that candidate alone is the expected outcome, not a
+mechanically confirmed collision.
 
 **Confirmed-collision handling differs by route** — C/D auto-closes on a brief-sourced match
 (the target work is new or not yet `Implemented`, so a match is always a genuine duplicate);
@@ -280,20 +302,25 @@ that its `files:` git-tracking check cannot confirm on its own. `note` never aff
 spot-check that artifact by hand before fully trusting the collision.
 
 **What the check does.** `check_spec_collision.py --json` enumerates every spec under
-`docs/specs/` as a candidate (`spec_id`, `stage`, `title`, `feature_summary`) — pure extraction,
-no semantic judgment. Passing `--target <change-id>` additionally populates `task_candidates`
-with that OpenSpec change's open, unchecked tasks — kept in its own key, never merged into
-`candidates`, so a task-level match can never be mistaken for a whole-spec one. The calling agent
-(this SKILL.md's own reasoning turn, not the script) judges whether any whole-spec candidate or
-task-level candidate is a strong match against `$COMPARISON_TEXT`, applying the exact actor +
-capability + primary domain rule `references/subagent-prompts.md#overlap-check` already
-documents. Only when the agent judges a whole-spec candidate a match does `--verify <spec_id>
+`docs/specs/` (and, via `--extra-root openspec` above, `openspec/changes/` and
+`openspec/specs/`) as a candidate (`spec_id`, `stage`, `title`, `feature_summary`, `root`) —
+pure extraction, no semantic judgment. Each candidate's `root` names which scanned root it
+came from (`"docs/specs"` or `"openspec"`), so a `--verify` call later targets the right one
+instead of assuming the default. Passing `--target <change-id>` additionally populates
+`task_candidates` with that OpenSpec change's open, unchecked tasks — kept in its own key,
+never merged into `candidates`, so a task-level match can never be mistaken for a whole-spec
+one. The calling agent (this SKILL.md's own reasoning turn, not the script) judges whether any
+whole-spec candidate or task-level candidate is a strong match against `$COMPARISON_TEXT`,
+applying the exact actor + capability + primary domain rule
+`references/subagent-prompts.md#overlap-check` already documents. Only when the agent judges a
+whole-spec candidate a match does `--verify <spec_id> --root <its root>
 --json` run, checking the matched spec's `**Status**:` header (must read `Implemented`) and
 whether every task `files:` entry is git-tracked at `$REPO`'s base branch — `confirmed: true`
-only when both hold. A task-level match is never passed to `--verify`; see "Task-level matches:
+only when both hold (see the OpenSpec-sourced-candidate note above `--verify`'s limits there).
+A task-level match is never passed to `--verify`; see "Task-level matches:
 redirect, never auto-close" above.
 
-**Best-effort, never a hard dependency.** `checked: false` (no `docs/specs/` directory, an
+**Best-effort, never a hard dependency.** `checked: false` (none of the scanned roots exist, an
 unreadable spec file, a sibling-module import failure) means "no signal" — proceed to Phase 6 as
 if no candidates exist. Likewise, `confirmed: false` from `verify()` — a `Status` other than
 `Implemented`, task `files:` not fully git-tracked, or a `--verify` call that itself raises or

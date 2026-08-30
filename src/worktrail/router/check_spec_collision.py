@@ -4,11 +4,11 @@
 `docs/specs/ontology.md`).
 
 Before dispatching a fresh brief/spec, `/go` should be able to ask: "does an
-existing spec in `docs/specs/` already claim to cover this?" This module
-answers that in two separate, best-effort-only steps, mirroring
-`check_repo_freshness.py`'s shape:
+existing spec in `docs/specs/` (or, via `extra_roots`, an OpenSpec `openspec/`
+tree) already claim to cover this?" This module answers that in two separate,
+best-effort-only steps, mirroring `check_repo_freshness.py`'s shape:
 
-  1. `check(repo, root, target)` -- pure extraction. Delegates to
+  1. `check(repo, root, target, extra_roots)` -- pure extraction. Delegates to
      `overlap_check.scan()` for the whole-spec candidate index (spec_id +
      title + feature_summary per spec) and performs NO semantic judgment of
      its own: deciding whether a candidate is a strong match (same actor +
@@ -56,6 +56,7 @@ import argparse
 import json
 import re
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -236,22 +237,33 @@ def build_pending_decision(
 
 
 def check(
-    repo: Path, root: str = "docs/specs", target: str | None = None
+    repo: Path,
+    root: str = "docs/specs",
+    target: str | None = None,
+    extra_roots: Iterable[str] | None = None,
 ) -> dict[str, object]:
-    """Enumerate `docs/specs/` candidates for the calling agent to judge.
+    """Enumerate spec candidates under `root` (and any `extra_roots`) for the
+    calling agent to judge.
 
     Returns `{"checked": bool, "candidates": [{"spec_id", "stage", "title",
-    "feature_summary"}], "task_candidates": [{"spec_id", "task_id",
+    "feature_summary", "root"}], "task_candidates": [{"spec_id", "task_id",
     "task_text", "checked"}], "warning": str|None,
     "pending_decision": None}`. `pending_decision` is always `None` here:
     `check()` performs no semantic matching of its own, so it never presumes
     a collision worth a decision -- only `verify()`'s confirmed collisions
-    carry an envelope. `checked=False` means
-    the whole-spec index could not be built (no `docs/specs/` dir, or an
-    internal failure) -- callers must treat that as "no signal", never as
-    "no collision". Performs no semantic matching of its own; that judgment
-    is the calling agent's, applying `overlap_check.py`'s existing comparison
-    rule.
+    carry an envelope. `checked=False` means no candidate root existed (or an
+    internal failure occurred) -- callers must treat that as "no signal",
+    never as "no collision". Performs no semantic matching of its own; that
+    judgment is the calling agent's, applying `overlap_check.py`'s existing
+    comparison rule.
+
+    `root` defaults to `docs/specs` for backward compatibility; `extra_roots`
+    scans additional roots (e.g. `"openspec"`) and merges their candidates in,
+    each tagged with the repo-relative root it came from (`candidate["root"]`)
+    so a caller can pass the right `root` back to `verify()`. This is how a
+    repo using both a devkit `docs/specs/` tree and an OpenSpec `openspec/`
+    tree (or migrating between the two) gets candidates from both instead of
+    only whichever root the caller happened to default to.
 
     When `target` names an explicit OpenSpec change id, `task_candidates` is
     additionally populated with that change's open, unchecked tasks (via
@@ -278,35 +290,54 @@ def check(
         )
         return result
 
-    specs_root = repo / root
-    if not specs_root.is_dir():
-        return result
-
-    try:
-        specs = _scan(specs_root)
-    except Exception as exc:  # noqa: BLE001 - best-effort, never raise to caller
-        result["warning"] = f"failed to scan {specs_root}: {exc!r}"
-        return result
+    roots: list[str] = []
+    for r in (root, *(extra_roots or [])):
+        if r not in roots:
+            roots.append(r)
 
     candidates: list[dict[str, Any]] = []
-    for s in specs:
-        try:
-            candidates.append(
-                {
-                    "spec_id": s["spec_id"],
-                    "stage": s.get("stage"),
-                    "title": s.get("title"),
-                    "feature_summary": s.get("feature_summary"),
-                }
-            )
-        except Exception:  # noqa: BLE001, S112 - malformed candidate entry, skip it
+    any_root_dir = False
+    for r in roots:
+        specs_root = repo / r
+        if not specs_root.is_dir():
             continue
+        any_root_dir = True
+
+        try:
+            specs = _scan(specs_root)
+        except Exception as exc:  # noqa: BLE001 - best-effort, never raise to caller
+            result["warning"] = f"failed to scan {specs_root}: {exc!r}"
+            return result
+
+        for s in specs:
+            try:
+                candidates.append(
+                    {
+                        "spec_id": s["spec_id"],
+                        "stage": s.get("stage"),
+                        "title": s.get("title"),
+                        "feature_summary": s.get("feature_summary"),
+                        "root": r,
+                    }
+                )
+            except Exception:  # noqa: BLE001, S112 - malformed candidate entry, skip it
+                continue
+
+    if not any_root_dir:
+        return result
 
     result["checked"] = True
     result["candidates"] = candidates
 
     if target:
-        result["task_candidates"] = _task_level_candidates(specs_root, target)
+        for r in roots:
+            specs_root = repo / r
+            if not specs_root.is_dir():
+                continue
+            task_candidates = _task_level_candidates(specs_root, target)
+            if task_candidates:
+                result["task_candidates"] = task_candidates
+                break
 
     return result
 
@@ -449,6 +480,14 @@ def main(argv=None) -> int:
     p.add_argument("--repo", required=True)
     p.add_argument("--root", default="docs/specs")
     p.add_argument(
+        "--extra-root",
+        action="append",
+        default=None,
+        metavar="ROOT",
+        help="additional root (repo-relative) to scan for candidates alongside "
+        "--root, e.g. 'openspec'; repeatable (ignored with --verify)",
+    )
+    p.add_argument(
         "--verify",
         metavar="SPEC_ID",
         default=None,
@@ -468,7 +507,9 @@ def main(argv=None) -> int:
     if args.verify:
         res = verify(repo, args.verify, root=args.root)
     else:
-        res = check(repo, root=args.root, target=args.target)
+        res = check(
+            repo, root=args.root, target=args.target, extra_roots=args.extra_root
+        )
 
     if args.json:
         print(json.dumps(res))
@@ -488,9 +529,10 @@ def main(argv=None) -> int:
     else:
         if res["checked"]:
             candidates = res["candidates"]
-            print(f"checked {len(candidates)} candidate spec(s) under {args.root}")
+            roots_desc = ", ".join([args.root, *(args.extra_root or [])])
+            print(f"checked {len(candidates)} candidate spec(s) under {roots_desc}")
             for c in candidates:
-                print(f"  - {c['spec_id']}: {c['title']}")
+                print(f"  - {c['spec_id']} ({c['root']}): {c['title']}")
             task_candidates = res["task_candidates"]
             if task_candidates:
                 print(
@@ -499,7 +541,10 @@ def main(argv=None) -> int:
                 for t in task_candidates:
                     print(f"    - {t['task_id']}: {t['task_text']}")
         else:
-            print(f"unknown: {res.get('warning') or 'no docs/specs/ directory found'}")
+            roots_desc = ", ".join([args.root, *(args.extra_root or [])])
+            print(
+                f"unknown: {res.get('warning') or f'no {roots_desc} directory found'}"
+            )
     return 0
 
 
