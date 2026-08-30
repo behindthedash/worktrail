@@ -1763,6 +1763,15 @@ def detect_epic_stage(epic_file: Path, repo: Path) -> dict[str, Any]:
       - `epic-complete`    -- terminal `**Status:**`, or every `### Feature`
                               has a citing spec/change.
       - `epic-gap`         -- fewer citing specs than decomposed features.
+      - `epic-sequencing-gated`
+                           -- an `epic-gap` whose next unspecced feature is
+                              named by the epic's own gate prose as depending
+                              on a feature that is still open. Carries
+                              `blocked_feature` (the feature number that would
+                              otherwise be seeded) and `gates` (one
+                              `{feature, spec_id, resolved_name, closed}`
+                              detail per candidate gate, for logging). Neither
+                              key is set on any other stage.
       - `epic-unparseable` -- no `### Feature` headings found at all (with no
                               feature count there is no terminal condition,
                               so this must never be conflated with epic-gap).
@@ -1812,13 +1821,55 @@ def detect_epic_stage(epic_file: Path, repo: Path) -> dict[str, Any]:
             next_action=f"none (fully cited: {len(citing)}/{features} features)",
         )
     else:
-        info.update(
-            stage="epic-gap",
-            next_action=(
-                f"spec the next unspecced feature from its decomposition "
-                f"(docs/specs/epics/{epic_id}.md)"
-            ),
-        )
+        # The epic would be seeded as `epic-gap` today. Before that, check the
+        # epic's own prose for a sequencing gate naming the very feature the
+        # seeder is about to write a brief for (`cited + 1`, the seeder's own
+        # notion of "the next unspecced feature" -- design.md Decision 5). Gate
+        # prose is only parsed here, on the would-be-seeded path: a terminal,
+        # unparseable, or fully cited epic has nothing to gate.
+        next_n = len(citing) + 1
+        candidates = sorted(_epic_gate_candidates(next_n, text))
+        gates: list[dict[str, Any]] = []
+        if candidates:
+            # One id -> stage map shared by every candidate gate, so an epic
+            # naming several gates still costs a single `scan()`.
+            stage_by_id = {
+                row.get("id"): row.get("stage") for row in scan(repo / "docs" / "specs")
+            }
+            gates = [
+                _epic_gate_resolution(feature_n, text, repo, stage_by_id)
+                for feature_n in candidates
+            ]
+        open_gates = [gate for gate in gates if not gate["closed"]]
+        if open_gates:
+            blockers = ", ".join(
+                f"Feature {gate['feature']}"
+                + (
+                    f" ({gate['resolved_name']})"
+                    if gate["resolved_name"]
+                    else f" ({gate['spec_id']}, not yet specced)"
+                    if gate["spec_id"]
+                    else ""
+                )
+                for gate in open_gates
+            )
+            info.update(
+                stage="epic-sequencing-gated",
+                blocked_feature=next_n,
+                gates=gates,
+                next_action=(
+                    f"none (Feature {next_n} is gated by still-open {blockers} "
+                    f"per docs/specs/epics/{epic_id}.md)"
+                ),
+            )
+        else:
+            info.update(
+                stage="epic-gap",
+                next_action=(
+                    f"spec the next unspecced feature from its decomposition "
+                    f"(docs/specs/epics/{epic_id}.md)"
+                ),
+            )
     return info
 
 
