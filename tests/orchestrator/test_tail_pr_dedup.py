@@ -107,9 +107,15 @@ class ReconcileDedupIntegrationTest(unittest.TestCase):
     def test_only_leaf_findings_call_integrate_one(self):
         findings = [_finding(t["id"]) for t in INCIDENT_TASKS]
         called_with = []
+        checkbox_tasks_by_leaf = {}
 
         def fake_integrate_one(g, *_args, **_kwargs):
             called_with.append(g["tasks"][0])
+            # Merge/deliverable scope must stay the single leaf task id --
+            # only the checkbox-write scope (asserted below) widens to include
+            # superseded ancestors.
+            self.assertEqual(g["tasks"], [g["tasks"][0]])
+            checkbox_tasks_by_leaf[g["tasks"][0]] = g["checkbox_tasks"]
 
         with (
             unittest.mock.patch.object(
@@ -143,6 +149,27 @@ class ReconcileDedupIntegrationTest(unittest.TestCase):
             # a non-leaf intermediate that is itself superseded.
             self.assertIn(by_task[task_id]["reconcile_superseded_by"], {"2.4", "3.1"})
         self.assertEqual(close_mock.call_count, 8)
+
+        # Regression (brief 20260830-005718 / PR #841): the leaf's own worktree
+        # is stacked on its FULL dependency chain, so its cumulative branch
+        # carries every superseded ancestor's commits too. `checkbox_tasks` is
+        # what `_write_group_task_status` reads to decide which checkboxes to
+        # tick -- if it names only the leaf, every superseded ancestor's
+        # checkbox never gets ticked anywhere even though its code landed in
+        # this exact merge (22 of 25 tasks lost live on run
+        # go-20260829-205653 / worktrail PR #841).
+        self.assertEqual(
+            set(checkbox_tasks_by_leaf["2.4"]),
+            {"1.1", "1.2", "1.3", "1.4", "1.5", "2.1", "2.2", "2.3", "2.4"},
+            "leaf 2.4's checkbox_tasks must also tick every ancestor its "
+            "cumulative branch carries, not just its own task id",
+        )
+        self.assertEqual(
+            set(checkbox_tasks_by_leaf["3.1"]),
+            {"3.1"},
+            "3.1's only ancestor dependency (1.5) is superseded by 2.4, not "
+            "3.1, so 3.1's own checkbox_tasks must not double-claim it",
+        )
 
     def test_input_findings_list_not_mutated(self):
         findings = [_finding(t["id"]) for t in INCIDENT_TASKS]

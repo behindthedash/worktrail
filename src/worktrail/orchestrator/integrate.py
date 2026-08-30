@@ -362,6 +362,20 @@ def _write_group_task_status(iw: Path, spec_id: str, group: dict, status: dict) 
     owns resetting any *other* spec-folder drift, and this re-applies only the
     status this group is entitled to write.
 
+    ``group["checkbox_tasks"]``, when present, is used instead of
+    ``group["tasks"]`` for this write only -- it never affects merge/deliverable
+    scope elsewhere in ``integrate_one``. `reconcile_unreconciled_tail_evidence`'s
+    synthetic per-leaf group sets it: a superseded ancestor's checkbox must
+    still get ticked here because the leaf's cumulative branch already carries
+    the ancestor's commits (that's the whole point of skipping the ancestor's
+    own PR), but merging must still see only the leaf's own single task id in
+    ``group["tasks"]`` -- widening that instead would make `integrate_one`'s
+    merge loop redundantly re-merge each ancestor's own task branch
+    individually. Without this split, every superseded ancestor's checkbox
+    goes untouched forever even though its code landed in the leaf's own merge
+    (root-caused live: worktrail PR #841, 22 of 25 tasks' checkboxes lost on
+    run go-20260829-205653; see docs/specs/research/ for the incident).
+
     Goes through ``TaskSource.mark_status`` rather than editing frontmatter
     inline so a non-devkit task format (e.g. an OpenSpec ``tasks.md`` checkbox)
     plugs in here without changing integrate.
@@ -374,7 +388,7 @@ def _write_group_task_status(iw: Path, spec_id: str, group: dict, status: dict) 
     source = taskformats.task_source_for(spec_path)
     spec_ref = taskformats.spec_ref_for(spec_path)
     changed = []
-    for tid in group.get("tasks", []):
+    for tid in group.get("checkbox_tasks") or group.get("tasks", []):
         # DONE ({"done","completed"}), NOT ALREADY_INTEGRATED ({"completed"}):
         # a task finished in THIS run reaches integrate as "done" — filtering on
         # ALREADY_INTEGRATED made this write a silent no-op on every fresh run
@@ -1662,6 +1676,12 @@ def reconcile_unreconciled_tail_evidence(
     status = {t["id"]: t.get("status", "done") for t in tasks}
     by_id = {t["id"]: t for t in tasks}
     superseded_by = _tail_superseded_by_map(findings, by_id)
+    # Every ancestor task id this leaf supersedes -- its cumulative branch
+    # carries their commits, so their checkboxes belong to this leaf's write,
+    # never their own (they get no PR/group of their own at all).
+    superseded_ids_by_leaf: dict = {}
+    for ancestor, leaf in superseded_by.items():
+        superseded_ids_by_leaf.setdefault(leaf, []).append(ancestor)
     verifier_factory = (
         make_verifier
         if make_verifier is not None
@@ -1693,6 +1713,9 @@ def reconcile_unreconciled_tail_evidence(
             g = {
                 "name": name,
                 "tasks": [task_id],
+                "checkbox_tasks": sorted(
+                    [task_id, *superseded_ids_by_leaf.get(task_id, [])]
+                ),
                 "depends_on": [],
                 "reqs": by_id.get(task_id, {}).get("reqs", []),
             }
