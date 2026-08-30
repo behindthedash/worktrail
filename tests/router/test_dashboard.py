@@ -5260,6 +5260,112 @@ class EpicStageDetection(unittest.TestCase):
         self.assertNotIn("blocked_feature", result)
         self.assertNotIn("gates", result)
 
+    def test_epic_sequencing_gated_blanket_prose_open_feature_1(self):
+        # Epic with blanket gate prose ("Feature 1 gates the rest") where
+        # Feature 1 is open (no citing spec implements its contract). The
+        # blanket gate blocks all later features. Test both when next_n=2
+        # (Feature 1 cited, Feature 2 is next) and when next_n=3 (Features
+        # 1&2 cited, Feature 3 is next); in both cases, Feature 1 gates
+        # the later features.
+        epics = self.repo / "docs" / "specs" / "epics"
+        epics.mkdir(parents=True, exist_ok=True)
+
+        # Scenario 1: 2 features, Feature 1 gates the rest, Feature 1 is cited
+        # by the epic but its future spec id is not implemented (open).
+        body_1 = [
+            "# Epic: 009-blanket-gated",
+            "",
+            "### Feature 1",
+            "Feature 1 body.",
+            "**Future spec id:** `feature-1-work`",
+            "",
+            "### Feature 2",
+            "Feature 1 gates the rest, so Feature 2 must wait for Feature 1's spec.",
+            "",
+        ]
+        epic_file_1 = epics / "009-blanket-gated.md"
+        epic_file_1.write_text("\n".join(body_1), encoding="utf-8")
+
+        # Cite the epic to count Feature 1 as cited; but don't implement
+        # Feature 1's future spec id, so the gate is open.
+        self._mk_citing_spec("010-epic-citer", "009-blanket-gated")
+
+        result_1 = dashboard.detect_epic_stage(epic_file_1, self.repo)
+
+        # Feature 1 is cited (cited=1), next_n=2. The blanket gate
+        # "Feature 1 gates the rest" applies to Feature 2 and is open,
+        # so the result is epic-sequencing-gated.
+        self.assertEqual(result_1["stage"], "epic-sequencing-gated")
+        self.assertEqual(result_1["features"], 2)
+        self.assertEqual(result_1["cited"], 1)
+        self.assertEqual(result_1["blocked_feature"], 2)
+        self.assertEqual(len(result_1["gates"]), 1)
+        gate_1 = result_1["gates"][0]
+        self.assertEqual(gate_1["feature"], 1)
+        self.assertEqual(gate_1["spec_id"], "feature-1-work")
+        self.assertIsNone(gate_1["resolved_name"])
+        self.assertFalse(gate_1["closed"])
+
+        # Scenario 2: 3 features, Feature 1 gates the rest, Features 1&2
+        # are cited, Feature 1's future spec id is still not implemented (open).
+        body_2 = [
+            "# Epic: 010-blanket-gated-three",
+            "",
+            "### Feature 1",
+            "Feature 1 body.",
+            "**Future spec id:** `feature-1-contract`",
+            "",
+            "### Feature 2",
+            "Feature 2 body.",
+            "**Future spec id:** `feature-2-contract`",
+            "",
+            "### Feature 3",
+            "Feature 1 gates the rest, so Feature 3 must also wait for Feature 1.",
+            "",
+        ]
+        epic_file_2 = epics / "010-blanket-gated-three.md"
+        epic_file_2.write_text("\n".join(body_2), encoding="utf-8")
+
+        # Create citing specs for Features 1 and 2 by citing their future spec ids.
+        # This counts both as cited.
+        spec_dir_1 = self.repo / "docs" / "specs" / "020-feature-one"
+        spec_dir_1.mkdir(parents=True, exist_ok=True)
+        (spec_dir_1 / "spec.md").write_text(
+            (
+                "# Feature 1 Contract\n\n"
+                "Implements Epic 010 Feature 1's contract (feature-1-contract).\n"
+            ),
+            encoding="utf-8",
+        )
+
+        spec_dir_2 = self.repo / "docs" / "specs" / "021-feature-two"
+        spec_dir_2.mkdir(parents=True, exist_ok=True)
+        (spec_dir_2 / "spec.md").write_text(
+            (
+                "# Feature 2 Contract\n\n"
+                "Implements Epic 010 Feature 2's contract (feature-2-contract).\n"
+            ),
+            encoding="utf-8",
+        )
+
+        result_2 = dashboard.detect_epic_stage(epic_file_2, self.repo)
+
+        # Features 1&2 are cited (cited=2), next_n=3. The blanket gate
+        # "Feature 1 gates the rest" applies to Feature 3 (since 1 < 3).
+        # Feature 1's gate is open (its contract spec is not cited yet),
+        # so the result is epic-sequencing-gated with blocked_feature=3.
+        self.assertEqual(result_2["stage"], "epic-sequencing-gated")
+        self.assertEqual(result_2["features"], 3)
+        self.assertEqual(result_2["cited"], 2)
+        self.assertEqual(result_2["blocked_feature"], 3)
+        self.assertEqual(len(result_2["gates"]), 1)
+        gate_2 = result_2["gates"][0]
+        self.assertEqual(gate_2["feature"], 1)
+        self.assertEqual(gate_2["spec_id"], "feature-1-contract")
+        # Feature 1's contract spec is cited by 020-feature-one
+        self.assertEqual(gate_2["resolved_name"], "020-feature-one")
+        self.assertFalse(gate_2["closed"])  # citing spec is not done
+
     def test_non_epic_named_file_is_ignored_by_epic_id_pattern_against_real_directory(
         self,
     ):
