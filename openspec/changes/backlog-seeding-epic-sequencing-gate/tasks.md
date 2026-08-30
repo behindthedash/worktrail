@@ -65,8 +65,8 @@
 - [ ] 4.7 Add a regression case: an epic with no gate prose at all (e.g. shaped like
       `001-managed-codex-runtime-validation.md`) -> stage and fields identical to pre-change
       behavior.
-- [ ] 4.8 Run existing `tests/router/test_dashboard.py` epic-stage tests to confirm no existing
-      assertions on `epic-gap`/`epic-complete`/`epic-unparseable` regressed.
+- [ ] 4.8 [e2e] Run existing `tests/router/test_dashboard.py` epic-stage tests to confirm no
+      existing assertions on `epic-gap`/`epic-complete`/`epic-unparseable` regressed.
 
 ## 5. Tests: seeder skip-and-report
 
@@ -82,10 +82,10 @@
 
 ## 6. Verification
 
-- [ ] 6.1 Run `PYTHONPATH=src pytest -q` (full suite).
-- [ ] 6.2 Run `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` (golden
+- [ ] 6.1 [e2e] Run `PYTHONPATH=src pytest -q` (full suite).
+- [ ] 6.2 [e2e] Run `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` (golden
       record/replay regression, per AGENTS.md).
-- [ ] 6.3 Manually sanity-check `docs/specs/epics/002-safe-work-queue-dependency-references.md`
+- [ ] 6.3 [e2e] Manually sanity-check `docs/specs/epics/002-safe-work-queue-dependency-references.md`
       against `detect_epic_stage()` (all three features now closed/archived) still reports
       `epic-complete`, not a new gated/gap stage — confirms the design's "no existing epic
       changes behavior" claim.
