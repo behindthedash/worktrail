@@ -1299,13 +1299,23 @@ one per line) from the root-cause step (Route F step 3) — the files this fix a
 knows it will touch. Skip the scan (not a stop) when the fix hasn't narrowed to specific
 files yet; there is nothing to compare against.
 
+`git diff --name-only HEAD` alone only sees tracked-file changes — the same blind spot
+`#sync-before-teardown` step 4 already documents: a brand-new file never appears in a
+diff against `HEAD` because it has nothing tracked to diff against. Two concurrent
+`/go` dispatches that each independently create the SAME NEW file for the same
+unspecced fix would produce no overlap signal from the diff alone, so also check
+`git status --porcelain --untracked-files=all` (`??`-prefixed paths) and fold both
+sources into the same comparison:
+
 ```bash
 SIBLING_ROOT="$REPO-worktrees"
 if [ -n "$EXPECTED_FILES" ] && [ -d "$SIBLING_ROOT" ]; then
   find "$SIBLING_ROOT" -maxdepth 1 -type d -name 'fix-*' | while IFS= read -r SIBLING_WT; do
     SIBLING_DIFF=$(git -C "$SIBLING_WT" diff --name-only HEAD 2>/dev/null | sort -u)
-    [ -z "$SIBLING_DIFF" ] && continue
-    OVERLAP=$(comm -12 <(echo "$EXPECTED_FILES" | sort -u) <(echo "$SIBLING_DIFF"))
+    SIBLING_UNTRACKED=$(git -C "$SIBLING_WT" status --porcelain --untracked-files=all 2>/dev/null | sed -n 's/^?? //p' | sort -u)
+    SIBLING_CHANGED=$(printf '%s\n%s\n' "$SIBLING_DIFF" "$SIBLING_UNTRACKED" | sed '/^$/d' | sort -u)
+    [ -z "$SIBLING_CHANGED" ] && continue
+    OVERLAP=$(comm -12 <(echo "$EXPECTED_FILES" | sort -u) <(echo "$SIBLING_CHANGED"))
     if [ -n "$OVERLAP" ]; then
       echo "ADVISORY: sibling fix-branch worktree $SIBLING_WT has an uncommitted diff overlapping expected files:" >&2
       echo "$OVERLAP" >&2
