@@ -1951,6 +1951,7 @@ class TestClaim(unittest.TestCase):
         rc_b, out_b = _claim(session_b["path"], specification="fix:slug-b")
 
         self.assertEqual(rc_a, 0)
+        self.assertEqual(out_a["status"], "claimed")
         self.assertEqual(rc_b, 0)
         self.assertEqual(out_b["status"], "claimed")
         self.assertNotIn("reason", out_b)

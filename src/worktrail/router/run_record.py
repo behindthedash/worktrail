@@ -1664,7 +1664,9 @@ def cmd_claim(args: argparse.Namespace) -> int:
     lock_path = _lock_path(run_path, args.specification)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     expected_files = [
-        line.strip() for line in (args.expected_files or "").splitlines() if line.strip()
+        line.strip()
+        for line in (args.expected_files or "").splitlines()
+        if line.strip()
     ]
 
     def _try_acquire() -> int | None:
@@ -1793,11 +1795,7 @@ def cmd_claim(args: argparse.Namespace) -> int:
                     "status": "conflict",
                     "reason": "file-overlap",
                     "conflicts": live_file_conflicts,
-                    **(
-                        {"warnings": file_scan_warnings}
-                        if file_scan_warnings
-                        else {}
-                    ),
+                    **({"warnings": file_scan_warnings} if file_scan_warnings else {}),
                 }
             )
         )
