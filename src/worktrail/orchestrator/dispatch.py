@@ -510,6 +510,20 @@ def build_worker_prompt(
     aren't (contracts/worker-context-worktree-stacking.md Part A)."""
     if role not in ROLES:
         raise ValueError(f"unknown role: {role}")
+    # ROLE_REVIEW's action template runs `git diff {base_commit}..HEAD` inside the
+    # review worker's OWN task worktree, so a bare "HEAD" here is worktree-relative
+    # and renders as a silent no-op HEAD..HEAD diff -- the exact defect fixed in
+    # PR #825 and PR #837, both times because a caller silently fell through to this
+    # sentinel instead of resolving base_commit against the canonical repo. Refuse to
+    # repeat that: require the caller to have resolved it, rather than defaulting.
+    if role == ROLE_REVIEW and not ctx.get("base_commit"):
+        raise ValueError(
+            "build_worker_prompt(ROLE_REVIEW, ...) requires ctx['base_commit'] "
+            "resolved to a concrete commit in the canonical repo -- the bare "
+            "'HEAD' sentinel is worktree-relative and silently produces a "
+            "no-op HEAD..HEAD diff when the template runs inside the review "
+            "worker's own worktree (see PR #825, PR #837)."
+        )
     # The worker's hard rules must name the spec root of whatever format this run
     # is driving -- `docs/specs/` for devkit, `openspec/` for an OpenSpec change.
     # Naming the wrong one turns a real safety guard into decoration: the worker
@@ -528,7 +542,7 @@ def build_worker_prompt(
         )
     action = _ROLE_ACTION[role].format(
         task_id=tid,
-        base_commit=ctx.get("base_commit", "HEAD"),
+        base_commit=ctx.get("base_commit", ""),  # non-review roles ignore this kwarg
         spec_folder=ctx["spec_folder"],
         task_brief=brief,
         review_checklist=review_checklist,
