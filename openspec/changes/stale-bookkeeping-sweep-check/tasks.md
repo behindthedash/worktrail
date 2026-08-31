@@ -65,7 +65,7 @@
       `dashboard.scan()` output includes a `stage: "stale-bookkeeping"` row yields matching
       findings; a repo with no such row yields `{"findings": [], "error": None}`; a repo whose
       scan raises is captured in `error` instead of propagating.
-- [ ] 4.2 Add `tests/router/test_spec_sync_sweep_stale_bookkeeping_brief.py`: filing with
+- [x] 4.2 Add `tests/router/test_spec_sync_sweep_stale_bookkeeping_brief.py`: filing with
       multiple findings writes exactly one `.md` file under `queue_base/queue/` with
       `drift-source: stale-bookkeeping-sweep`, valid per `validate_brief`, and a body listing
       every finding.
