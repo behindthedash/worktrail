@@ -67,6 +67,8 @@ from .spec_sync_sweep_checkbox_brief import file_checkbox_drift_brief
 from .spec_sync_sweep_checkbox_check import check_repo_checkbox_drift
 from .spec_sync_sweep_dedup import find_unresolved_drift_brief
 from .spec_sync_sweep_discovery import discover_repos_with_specs
+from .spec_sync_sweep_stale_bookkeeping_brief import file_stale_bookkeeping_brief
+from .spec_sync_sweep_stale_bookkeeping_check import check_repo_stale_bookkeeping
 
 _DEFAULT_LOCK_FILE = str(Path(tempfile.gettempdir()) / "spec-sync-sweep.lock")
 
