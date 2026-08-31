@@ -1005,7 +1005,9 @@ class TestRankChangeCandidates(QueueTriageTestBase):
                 repo_root,
                 f"change-{i}",
                 why="widget export pipeline serializer downstream reporting",
-                tasks=[(False, "widget export pipeline serializer downstream reporting")],
+                tasks=[
+                    (False, "widget export pipeline serializer downstream reporting")
+                ],
             )
         brief_path = self.write(
             "brief.md",
