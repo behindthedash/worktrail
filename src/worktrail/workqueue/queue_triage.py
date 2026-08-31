@@ -21,9 +21,12 @@ import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 
+from ..router import overlap_check
 from ..shared.brief_frontmatter import read_frontmatter, split_frontmatter
 from ..shared.homedir import worktrail_home
+from .score_candidates import _overlap_coefficient, _tokenize
 from .work_queue import claim, done, picked_dir, queue_dir, release, resolve
 
 logger = logging.getLogger(__name__)
@@ -177,6 +180,70 @@ def _brief_focus(path: Path) -> str:
 def _brief_created(path: Path) -> str:
     created = read_frontmatter(path).get("created")
     return str(created) if created else "unknown"
+
+
+def rank_change_candidates(
+    brief: Path, repo: str | None, top_k: int = 5
+) -> list[dict[str, Any]]:
+    """Rank `repo`'s active OpenSpec changes as fold/dedup targets for `brief`.
+
+    Enumerates `repo`'s active changes via `overlap_check.scan()` (filtered to
+    `stage == "active"`, i.e. `changes/*/proposal.md` entries -- `scan()` also
+    returns completed `specs/*/spec.md` entries, which are not fold targets)
+    and scores each against `brief`'s focus tokens using the
+    `duplicate-brief-detection` spec's focus-overlap coefficient
+    (`score_candidates._overlap_coefficient`, `|A ∩ B| / min(|A|, |B|)`), over
+    the union of the change's `proposal.md` feature-summary tokens and its
+    `tasks.md` task-line tokens (both checked and unchecked, via
+    `overlap_check._parse_openspec_tasks()`) -- so a change whose remaining
+    work matches the brief ranks even when its proposal summary is sparse.
+
+    Returns the top `top_k` by score descending (ties keep `scan()`'s
+    alphabetical order), each as `{"id", "feature_summary",
+    "open_task_count", "score"}`. `repo` falsy (`repo: null`) and a repo with
+    no active changes both return `[]` -- there is nothing to rank against.
+    """
+    if not repo:
+        return []
+
+    specs_root = Path(repo) / "openspec"
+    changes = [c for c in overlap_check.scan(specs_root) if c.get("stage") == "active"]
+    if not changes:
+        return []
+
+    brief_tokens = _tokenize(_brief_focus(Path(brief)))
+
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for change in changes:
+        summary = change.get("feature_summary") or ""
+        tasks_file = specs_root / "changes" / change["spec_id"] / "tasks.md"
+        open_task_count = 0
+        task_tokens: set[str] = set()
+        if tasks_file.is_file():
+            try:
+                tasks_text = tasks_file.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                tasks_text = ""
+            for entry in overlap_check._parse_openspec_tasks(tasks_text):
+                task_tokens |= _tokenize(entry["task_text"])
+                if not entry["checked"]:
+                    open_task_count += 1
+
+        score = _overlap_coefficient(brief_tokens, _tokenize(summary) | task_tokens)
+        scored.append(
+            (
+                score,
+                {
+                    "id": change["spec_id"],
+                    "feature_summary": summary,
+                    "open_task_count": open_task_count,
+                    "score": score,
+                },
+            )
+        )
+
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [entry for _, entry in scored[:top_k]]
 
 
 def _memory_index_path(cwd: str | Path) -> Path:
