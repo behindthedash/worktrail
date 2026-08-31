@@ -78,9 +78,7 @@ class KillMidAuthoringResumesViaUpdateTests(unittest.TestCase):
             self.assertTrue(payload["checked"])
             self.assertTrue(payload["resumable"])
             self.assertEqual(payload["present"], ["proposal.md"])
-            self.assertEqual(
-                sorted(payload["missing"]), ["design.md", "tasks.md"]
-            )
+            self.assertEqual(sorted(payload["missing"]), ["design.md", "tasks.md"])
 
             human = subprocess.run(
                 [_CLI, "--worktree", str(worktree), "--change-id", change_id],
