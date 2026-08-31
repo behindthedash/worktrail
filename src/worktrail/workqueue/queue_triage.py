@@ -39,7 +39,28 @@ NO_REPO_KEY = "__none__"
 # caller, owns the harness/model choice for a given tier.
 DEFAULT_TIER = "t2-build"
 
-VALID_VERDICT_TYPES = {"keep", "stale-close", "needs-update", "duplicate-of"}
+VALID_VERDICT_TYPES = {
+    "keep",
+    "stale-close",
+    "needs-update",
+    "duplicate-of",
+    "fold-into-change",
+    "propose-change",
+    "work-directly",
+    "needs-decision",
+}
+
+# `propose-change`'s `proposed_change_name` must be a valid OpenSpec change id:
+# lowercase alphanumerics separated by single hyphens, no leading/trailing/
+# doubled hyphen.
+_KEBAB_CASE_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+# The verdict types `write_report()`/`cmd_evaluate()`'s text summary zero-fill and
+# count today. Deliberately narrower than `VALID_VERDICT_TYPES`: 2.4 is the task
+# that extends the report and verdict-file counts to the four new intake-triage
+# verdict types added here in 2.2 -- until then, those verdicts still parse and
+# apply correctly, they just aren't broken out in this summary.
+REPORT_VERDICT_TYPES = frozenset({"keep", "stale-close", "needs-update", "duplicate-of"})
 
 _TRIAGE_HEADING_RE = re.compile(r"^##\s+Triage\s+(\d{4}-\d{2}-\d{2})\s*$", re.MULTILINE)
 
@@ -358,13 +379,23 @@ def evaluate_group(
 
 @dataclass
 class Verdict:
-    """One brief's triage outcome, per spec's "Evidence-required verdict per brief"."""
+    """One brief's triage outcome, per spec's "Evidence-required verdict per brief".
+
+    `duplicate_of`, `target_change`, `target_repo`, `proposed_change_name`, and
+    `question` are the target fields for the verdict types that need one
+    (`duplicate-of`, `fold-into-change`, `propose-change`, `needs-decision`
+    respectively) -- each stays `None` for every other verdict type.
+    """
 
     brief_id: str
     verdict: str
     duplicate_of: str | None
     evidence: str
     confidence: str | None = None
+    target_change: str | None = None
+    target_repo: str | None = None
+    proposed_change_name: str | None = None
+    question: str | None = None
 
 
 def _extract_json_objects(text: str) -> list[str]:
@@ -414,17 +445,70 @@ def _extract_json_objects(text: str) -> list[str]:
     return objects
 
 
-def parse_verdicts(raw_text: str, expected_brief_ids: list[str]) -> list[Verdict]:
+def _has_valid_target(
+    verdict_type: str,
+    obj: dict,
+    duplicate_of: str | None,
+    presented_candidates: list[str],
+) -> bool:
+    """True if `verdict_type`'s required target field(s) are present and valid in `obj`.
+
+    Each verdict type that names a target validates that target here; every other
+    verdict type (`keep`, `stale-close`, `needs-update`, `work-directly`) has no
+    target field to check and is always valid. `presented_candidates` is the set of
+    change ids actually offered to the evaluator for this brief (per 2.1's
+    `rank_change_candidates()`) -- a `fold-into-change` naming anything else,
+    including a plausible-looking id, is invalid, since accepting it would let the
+    evaluator fold into a change it was never shown.
+    """
+    if verdict_type == "duplicate-of":
+        return duplicate_of is not None
+    if verdict_type == "fold-into-change":
+        target_change = obj.get("target_change")
+        return (
+            isinstance(target_change, str)
+            and target_change in presented_candidates
+        )
+    if verdict_type == "propose-change":
+        target_repo = obj.get("target_repo")
+        proposed_change_name = obj.get("proposed_change_name")
+        return (
+            isinstance(target_repo, str)
+            and target_repo.strip() != ""
+            and isinstance(proposed_change_name, str)
+            and bool(_KEBAB_CASE_RE.match(proposed_change_name))
+        )
+    if verdict_type == "needs-decision":
+        question = obj.get("question")
+        return isinstance(question, str) and question.strip() != ""
+    return True
+
+
+def parse_verdicts(
+    raw_text: str,
+    expected_brief_ids: list[str],
+    candidates_by_brief: dict[str, list[str]] | None = None,
+) -> list[Verdict]:
     """Parse `evaluate_group()`'s raw evaluator text into one `Verdict` per expected brief.
 
     Implements the spec's "Evidence-required verdict per brief" requirement: a verdict
-    must have `verdict` in `VALID_VERDICT_TYPES` and non-empty `evidence` (and, for
-    `duplicate-of`, a non-empty `duplicate_of`) to be accepted as-is. Anything missing,
-    unparsable, or failing that check falls back to `keep` with the evaluator's raw
-    output (the specific malformed JSON snippet if one was found for that brief, else
-    the full `raw_text`) retained as evidence -- every id in `expected_brief_ids`
-    always appears exactly once in the result, in that order, never silently dropped.
+    must have `verdict` in `VALID_VERDICT_TYPES`, non-empty `evidence`, and (per
+    `_has_valid_target()`) a well-formed target for verdict types that require one --
+    `duplicate-of` needs `duplicate_of`, `fold-into-change` needs `target_change`
+    naming one of `candidates_by_brief[brief_id]`'s presented candidates,
+    `propose-change` needs `target_repo` and a kebab-case `proposed_change_name`,
+    and `needs-decision` needs `question` -- to be accepted as-is. `work-directly`
+    and `keep` have no target field. Anything missing, unparsable, or failing that
+    check falls back to `keep` with the evaluator's raw output (the specific
+    malformed JSON snippet if one was found for that brief, else the full
+    `raw_text`) retained as evidence -- every id in `expected_brief_ids` always
+    appears exactly once in the result, in that order, never silently dropped.
+
+    `candidates_by_brief` defaults to no candidates presented for any brief, so a
+    caller that hasn't wired 2.1's ranking through yet still gets a safe,
+    always-downgraded `fold-into-change` rather than an unchecked target.
     """
+    candidates_by_brief = candidates_by_brief or {}
     candidates_by_id: dict[str, list[tuple[str, dict]]] = {
         bid: [] for bid in expected_brief_ids
     }
@@ -443,6 +527,7 @@ def parse_verdicts(raw_text: str, expected_brief_ids: list[str]) -> list[Verdict
     for bid in expected_brief_ids:
         chosen: Verdict | None = None
         fallback_evidence: str | None = None
+        presented_candidates = candidates_by_brief.get(bid, [])
         for snippet, obj in candidates_by_id[bid]:
             verdict_type = obj.get("verdict")
             evidence = obj.get("evidence")
@@ -454,17 +539,29 @@ def parse_verdicts(raw_text: str, expected_brief_ids: list[str]) -> list[Verdict
 
             has_evidence = isinstance(evidence, str) and evidence.strip() != ""
             has_verdict = verdict_type in VALID_VERDICT_TYPES
-            has_duplicate_target = (
-                verdict_type != "duplicate-of" or duplicate_of is not None
+            has_valid_target = has_verdict and _has_valid_target(
+                verdict_type, obj, duplicate_of, presented_candidates
             )
 
-            if has_verdict and has_evidence and has_duplicate_target:
+            if has_verdict and has_evidence and has_valid_target:
+                target_change = obj.get("target_change")
+                target_repo = obj.get("target_repo")
+                proposed_change_name = obj.get("proposed_change_name")
+                question = obj.get("question")
                 chosen = Verdict(
                     brief_id=bid,
                     verdict=verdict_type,
                     duplicate_of=duplicate_of,
                     evidence=evidence,
                     confidence=confidence if isinstance(confidence, str) else None,
+                    target_change=target_change
+                    if isinstance(target_change, str)
+                    else None,
+                    target_repo=target_repo if isinstance(target_repo, str) else None,
+                    proposed_change_name=proposed_change_name
+                    if isinstance(proposed_change_name, str)
+                    else None,
+                    question=question if isinstance(question, str) else None,
                 )
                 break
             if fallback_evidence is None:
@@ -731,7 +828,7 @@ def write_report(
         "## Verdict counts",
         "",
     ]
-    for verdict_type in sorted(VALID_VERDICT_TYPES):
+    for verdict_type in sorted(REPORT_VERDICT_TYPES):
         lines.append(f"- {verdict_type}: {counts.get(verdict_type, 0)}")
 
     lines += ["", "## Skipped via dedup", ""]
@@ -831,7 +928,7 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         )
     else:
         counts_str = ", ".join(
-            f"{vtype}={counts.get(vtype, 0)}" for vtype in sorted(VALID_VERDICT_TYPES)
+            f"{vtype}={counts.get(vtype, 0)}" for vtype in sorted(REPORT_VERDICT_TYPES)
         )
         print(f"report: {report_path}")
         print(
