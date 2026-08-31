@@ -203,6 +203,7 @@ def _proves_generated_automerge_workflow_gates_on_risk_labels():
 FILE_CONSUMERS = {
     "worktrail-go/SKILL.md": _proves_reconcile_repo_self_heals_both_labels,
     "worktrail-go/references/routes.md": _proves_pre_pr_gate_computes_automerge_labels,
+    "worktrail-go/references/subagent-prompts.md": _proves_pre_pr_gate_computes_automerge_labels,
     "worktrail-go/references/ci-watch-loop.md": _proves_ci_watch_loop_stamps_no_automerge_on_blocking,
     "worktrail-sdd-workflow/SKILL.md": _proves_run_record_finish_applies_risk_label_unconditionally,
     "worktrail-repo-init/SKILL.md": _proves_generated_automerge_workflow_gates_on_risk_labels,

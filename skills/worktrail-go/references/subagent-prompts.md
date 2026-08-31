@@ -942,16 +942,49 @@ which reports untracked files too:
 [ -z "$(git -C "$SYNC_WT" status --porcelain -- "$SYNC_PATH")" ] || {
   git -C "$SYNC_WT" add "$SYNC_PATH"
   git -C "$SYNC_WT" commit -m "sync($SPEC_ID): update spec artifacts and task statuses post-orchestrator"
-  git -C "$SYNC_WT" push -u origin "sync/$SPEC_ID"
-  # gh derives owner/repo from the remote; no --repo flag needed for the consuming project
-  PR_URL=$(gh pr create --base "$BASE" --head "sync/$SPEC_ID" \
-    --title "sync($SPEC_ID): post-orchestrator docs update" \
-    --body "Updates spec artifacts and task statuses after orchestrator run. Auto-generated." \
-    | tail -1)
-  
-  echo "$PR_URL"
+
+  # Re-check against the latest base immediately before pushing: drain's own
+  # independent sync-pending sweep (`drain.py#_run_sync_pending`) can land the
+  # identical change on a differently-named branch (`chore/sync-$SPEC_ID` vs
+  # this step's `sync/$SPEC_ID`) at any time, so neither side's own
+  # same-branch dedup check ever sees the other's PR. A late fetch narrows —
+  # it cannot fully close — the TOCTOU window; Step 4b's immediate watch+merge
+  # is what actually keeps it narrow (confirmed live: PR #866 opened
+  # unlabeled and sat 8+ hours with nothing to merge it, so drain's #867/#868
+  # landed the same sync work first and left #866 CONFLICTING). Compare this
+  # commit's own $SYNC_PATH content against the freshly-fetched base's copy —
+  # not `HEAD`'s ancestry, which no re-fetch changes on its own.
+  git -C "$REPO" fetch origin
+  if git -C "$SYNC_WT" diff --quiet "origin/$BASE" HEAD -- "$SYNC_PATH"; then
+    echo "SYNC_ALREADY_LANDED: an equivalent change already reached $BASE (likely drain's own sweep) — skipping PR."
+    # No PR opened -> skip Step 4b entirely and tear down now, same as the
+    # "sync produces no changes" case below.
+    git -C "$REPO" worktree remove "$SYNC_WT" --force
+    git -C "$REPO" branch -D "sync/$SPEC_ID" 2>/dev/null || true
+  else
+    git -C "$SYNC_WT" push -u origin "sync/$SPEC_ID"
+    # Labels are mandatory, not optional: sync/archive PRs are always low risk,
+    # and without a go:risk-* label auto-merge never arms (policy.automerge_eligible()),
+    # so nothing merges or watches the PR for exactly the staleness/conflict risk
+    # above. Resolve via the same enforced path every other PR-producing step
+    # uses (worktrail-pre-pr-gate --labels-only), not a hardcoded literal.
+    PR_LABELS=$(worktrail-pre-pr-gate --repo "$SYNC_WT" --risk low --gates "" --target-branch "$BASE" --labels-only)
+    PR_LABEL_ARGS=()
+    for label in $PR_LABELS; do PR_LABEL_ARGS+=(--label "$label"); done
+    # gh derives owner/repo from the remote; no --repo flag needed for the consuming project
+    PR_URL=$(gh pr create --base "$BASE" --head "sync/$SPEC_ID" \
+      "${PR_LABEL_ARGS[@]}" \
+      --title "sync($SPEC_ID): post-orchestrator docs update" \
+      --body "Updates spec artifacts and task statuses after orchestrator run. Auto-generated." \
+      | tail -1)
+
+    echo "$PR_URL"
+  fi
 }
 ```
+
+On `SYNC_ALREADY_LANDED`, `$PR_URL` is never set — skip Step 4b and proceed directly to
+`#worktree-lifecycle` for the spec worktree, same as the "sync produces no changes" case below.
 
 **Step 4b — CI-wait gate (separate Bash call, only if a PR was created).** Never
 hand-roll a `sleep` poll loop — a 30-min sleep loop exceeds the Bash tool's
