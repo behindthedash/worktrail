@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import subprocess
 import sys
 import tempfile
@@ -44,12 +45,62 @@ def resolve_artifacts(
     """Resolve the wheel/sdist paths to check.
 
     If both `wheel` and `sdist` are given, they are used as-is and no build
-    runs. Otherwise a wheel and sdist are built into a fresh
+    runs. If neither is given, a wheel and sdist are built into a fresh
     `tempfile.TemporaryDirectory()`, whose handle is returned so the caller
     can keep it alive for the duration of the check and clean it up after.
+    Supplying only one of the two paths is rejected, since it would mix a
+    caller-supplied artifact with one built here.
     """
     if wheel is not None and sdist is not None:
         return wheel, sdist, None
+    if wheel is not None or sdist is not None:
+        raise ValueError(
+            "--wheel and --sdist must both be given, or neither: "
+            f"wheel={wheel!r} sdist={sdist!r}"
+        )
     tmp = tempfile.TemporaryDirectory()
     built_wheel, built_sdist = build_artifacts(repo, Path(tmp.name))
-    return (wheel or built_wheel), (sdist or built_sdist), tmp
+    return built_wheel, built_sdist, tmp
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--repo",
+        type=Path,
+        default=Path("."),
+        help="Path to the repo checkout to build (default: current directory)",
+    )
+    parser.add_argument(
+        "--wheel",
+        type=Path,
+        default=None,
+        help="Path to a pre-built wheel; must be given together with --sdist",
+    )
+    parser.add_argument(
+        "--sdist",
+        type=Path,
+        default=None,
+        help="Path to a pre-built sdist; must be given together with --wheel",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    try:
+        wheel, sdist, tmp = resolve_artifacts(args.repo, args.wheel, args.sdist)
+    except (BuildError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    try:
+        print(f"wheel: {wheel}")
+        print(f"sdist: {sdist}")
+    finally:
+        if tmp is not None:
+            tmp.cleanup()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
