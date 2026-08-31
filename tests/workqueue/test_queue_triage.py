@@ -393,6 +393,70 @@ class TestParseVerdicts(unittest.TestCase):
         self.assertEqual(v.verdict, "keep")
         self.assertEqual(v.evidence, snippet)
 
+    def test_propose_change_missing_proposed_change_name_downgrades_to_keep(self):
+        snippet = (
+            '{"brief_id": "a", "verdict": "propose-change", "duplicate_of": null, '
+            '"target_repo": "behindthedash/worktrail", '
+            '"evidence": "no existing change covers this", "confidence": "high"}'
+        )
+        verdicts = qt.parse_verdicts(snippet, ["a"])
+
+        v = verdicts[0]
+        self.assertEqual(v.verdict, "keep")
+        self.assertEqual(v.evidence, snippet)
+
+    def test_propose_change_blank_target_repo_downgrades_to_keep(self):
+        snippet = (
+            '{"brief_id": "a", "verdict": "propose-change", "duplicate_of": null, '
+            '"target_repo": "   ", '
+            '"proposed_change_name": "add-widget-export", '
+            '"evidence": "no existing change covers this", "confidence": "high"}'
+        )
+        verdicts = qt.parse_verdicts(snippet, ["a"])
+
+        v = verdicts[0]
+        self.assertEqual(v.verdict, "keep")
+        self.assertEqual(v.evidence, snippet)
+
+    def test_propose_change_trailing_newline_name_downgrades_to_keep(self):
+        snippet = (
+            '{"brief_id": "a", "verdict": "propose-change", "duplicate_of": null, '
+            '"target_repo": "behindthedash/worktrail", '
+            '"proposed_change_name": "valid-name\\n", '
+            '"evidence": "no existing change covers this", "confidence": "high"}'
+        )
+        verdicts = qt.parse_verdicts(snippet, ["a"])
+
+        v = verdicts[0]
+        self.assertEqual(v.verdict, "keep")
+        self.assertEqual(v.evidence, snippet)
+
+    def test_fold_into_change_blank_target_downgrades_to_keep(self):
+        snippet = (
+            '{"brief_id": "a", "verdict": "fold-into-change", "duplicate_of": null, '
+            '"target_change": "   ", '
+            '"evidence": "looks related", "confidence": "medium"}'
+        )
+        verdicts = qt.parse_verdicts(
+            snippet, ["a"], candidates_by_brief={"a": ["widget-export-pipeline"]}
+        )
+
+        v = verdicts[0]
+        self.assertEqual(v.verdict, "keep")
+        self.assertEqual(v.evidence, snippet)
+
+    def test_needs_decision_blank_question_downgrades_to_keep(self):
+        snippet = (
+            '{"brief_id": "a", "verdict": "needs-decision", "duplicate_of": null, '
+            '"question": "   ", '
+            '"evidence": "no clear owning repo", "confidence": "low"}'
+        )
+        verdicts = qt.parse_verdicts(snippet, ["a"])
+
+        v = verdicts[0]
+        self.assertEqual(v.verdict, "keep")
+        self.assertEqual(v.evidence, snippet)
+
     def test_well_formed_work_directly_verdict_is_parsed_as_is(self):
         raw = (
             '{"brief_id": "a", "verdict": "work-directly", "duplicate_of": null, '

@@ -476,7 +476,7 @@ def _has_valid_target(
             isinstance(target_repo, str)
             and target_repo.strip() != ""
             and isinstance(proposed_change_name, str)
-            and bool(_KEBAB_CASE_RE.match(proposed_change_name))
+            and bool(_KEBAB_CASE_RE.fullmatch(proposed_change_name))
         )
     if verdict_type == "needs-decision":
         question = obj.get("question")
