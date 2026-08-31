@@ -2205,6 +2205,19 @@ def add_stacked_worktree(
     into base with their task branch deleted. Absent (the default), the carry
     is skipped entirely -- no behavior change for the cassette/demo path or any
     caller that doesn't pass them.
+
+    A failed carry is retried once, immediately, before raising for real --
+    mirrors `_add()`'s own prune-and-retry-once pattern just above, and is
+    the definitive attempt for a dependency whose declared file already
+    existed before its own edit: the caller's follow-up
+    `_require_dependency_files_with_repair` call can only detect and repair a
+    MISSING path, so it is a silent no-op backstop for that shape (brief
+    20260831-084532 -- path existence alone can't tell a stale pre-existing
+    file from a fresh one, so `_require_dependency_files`'s own bare check
+    never raises for it in the first place, and the repair path it gates
+    never even engages). This retry still gives a genuinely transient
+    failure (a git fetch/lock hiccup, brief 20260822-115008) a real second
+    chance without depending on that unreliable downstream gate.
     """
     start, extra = dependency_start_ref(repo, spec_id, task, by_id)
     branch = f"{spec_id}/{task['id'].lower()}"
@@ -2255,7 +2268,16 @@ def add_stacked_worktree(
             )
 
     if remote and base:
-        _carry_squash_merged_dependencies(repo, spec_id, task, by_id, wt, remote, base)
+        try:
+            _carry_squash_merged_dependencies(
+                repo, spec_id, task, by_id, wt, remote, base
+            )
+        except WorktreeMissingDependencyFileError:
+            # One retry for a transient failure -- see docstring. A second
+            # failure is real: propagate it.
+            _carry_squash_merged_dependencies(
+                repo, spec_id, task, by_id, wt, remote, base
+            )
 
 
 def _add_stacked_worktree_kwargs(target, kwargs: dict) -> dict:

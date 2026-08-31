@@ -149,6 +149,14 @@ class CarrySquashMergedDependenciesConflictFailsLoud(unittest.TestCase):
         discards the dependency's original commit ancestry, so no downstream
         check can reliably tell this worktree apart from a genuinely fresh one
         once the carry has already given up).
+
+        `add_stacked_worktree`'s own embedded carry call retries once
+        (brief 20260822-115008, gap 2 -- see
+        `test_fresh_worktree_dependency_repair.py`) before raising for real:
+        it is the definitive attempt, not `_require_dependency_files_with_repair`,
+        because that repair path can only detect and retry a MISSING
+        declared path -- a no-op backstop for a dependency whose file already
+        existed before its own edit (this test's `shared.py`).
         """
         with tempfile.TemporaryDirectory() as tmp:
             bare, repo = _init_bare_and_repo(tmp)
@@ -411,7 +419,15 @@ class ConflictedCarryOnPreExistingFileRaisesInsteadOfLeavingStaleState(
         failure itself must raise -- exactly the live incident reported in
         the brief (WARN logged for a base group's squash-merge carry, run
         continued on stale state, downstream tasks cascaded into
-        merge-conflict quarantine 16 tasks later)."""
+        merge-conflict quarantine 16 tasks later).
+
+        `add_stacked_worktree` retries the carry once internally (brief
+        20260822-115008, gap 2) before raising for real -- it is the
+        definitive attempt for this shape, since the caller's follow-up
+        `_require_dependency_files_with_repair` can only detect and retry a
+        MISSING declared path, a no-op backstop for a file that already
+        existed before the dependency's own edit (see
+        `test_fresh_worktree_dependency_repair.py`)."""
         with tempfile.TemporaryDirectory() as tmp:
             bare, repo = _init_bare_and_repo(tmp)
 
