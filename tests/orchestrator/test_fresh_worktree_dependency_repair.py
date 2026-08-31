@@ -215,17 +215,19 @@ class AddStackedWorktreeRetriesFailedCarryOnce(unittest.TestCase):
             wt = Path(tmp) / "wt" / "102-x-task-002"
             wt.parent.mkdir(parents=True)
 
-            with mock.patch.object(
-                live,
-                "_carry_squash_merged_dependencies",
-                side_effect=live.WorktreeMissingDependencyFileError(
-                    "simulated persistent carry failure"
+            with (
+                mock.patch.object(
+                    live,
+                    "_carry_squash_merged_dependencies",
+                    side_effect=live.WorktreeMissingDependencyFileError(
+                        "simulated persistent carry failure"
+                    ),
                 ),
+                self.assertRaises(live.WorktreeMissingDependencyFileError),
             ):
-                with self.assertRaises(live.WorktreeMissingDependencyFileError):
-                    live.add_stacked_worktree(
-                        repo, "102-x", task, by_id, wt, remote="origin", base="main"
-                    )
+                live.add_stacked_worktree(
+                    repo, "102-x", task, by_id, wt, remote="origin", base="main"
+                )
 
 
 if __name__ == "__main__":

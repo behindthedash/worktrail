@@ -2269,11 +2269,15 @@ def add_stacked_worktree(
 
     if remote and base:
         try:
-            _carry_squash_merged_dependencies(repo, spec_id, task, by_id, wt, remote, base)
+            _carry_squash_merged_dependencies(
+                repo, spec_id, task, by_id, wt, remote, base
+            )
         except WorktreeMissingDependencyFileError:
             # One retry for a transient failure -- see docstring. A second
             # failure is real: propagate it.
-            _carry_squash_merged_dependencies(repo, spec_id, task, by_id, wt, remote, base)
+            _carry_squash_merged_dependencies(
+                repo, spec_id, task, by_id, wt, remote, base
+            )
 
 
 def _add_stacked_worktree_kwargs(target, kwargs: dict) -> dict:
