@@ -159,6 +159,22 @@ def run_sweep(repos_root: Path, queue_base: Path, lock_path: Path) -> dict[str, 
                     )
                     record["checkbox_filed"].append(repo_str)
 
+            stale_bookkeeping_result = check_repo_stale_bookkeeping(repo)
+            if stale_bookkeeping_result["error"] is not None:
+                record["stale_bookkeeping_failed"].append(repo_str)
+            elif stale_bookkeeping_result["findings"]:
+                record["stale_bookkeeping_drifted"].append(repo_str)
+                existing_stale_bookkeeping = find_unresolved_drift_brief(
+                    repo, queue_base, drift_source="stale-bookkeeping-sweep"
+                )
+                if existing_stale_bookkeeping is not None:
+                    record["stale_bookkeeping_skipped_existing"].append(repo_str)
+                else:
+                    file_stale_bookkeeping_brief(
+                        repo, stale_bookkeeping_result["findings"], queue_base
+                    )
+                    record["stale_bookkeeping_filed"].append(repo_str)
+
         return record
     finally:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
