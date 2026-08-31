@@ -93,7 +93,13 @@ def build_probe_command() -> tuple[list[str], str]:
     caller to run the command with as `cwd`: never the invoking repository's
     working tree, so the nested process has no repository state to mutate.
     """
-    cell = Cell(target="codex-probe", harness="codex", model=None, effort=None, pool="subscription")
+    cell = Cell(
+        target="codex-probe",
+        harness="codex",
+        model=None,
+        effort=None,
+        pool="subscription",
+    )
     cmd = build_cmd(PROBE_PROMPT, cell)
     scratch_dir = tempfile.mkdtemp(prefix="codex-probe-")
     return cmd, scratch_dir
