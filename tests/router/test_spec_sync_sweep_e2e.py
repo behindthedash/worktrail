@@ -227,6 +227,48 @@ def _make_neither_drift_repo(root: Path, name: str) -> Path:
     return repo
 
 
+def _git_commit_all(repo: Path, message: str) -> None:
+    subprocess.run(["git", "add", "-A"], cwd=repo, capture_output=True, text=True, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=fixture@example.com", "-c", "user.name=fixture",
+         "commit", "-q", "-m", message],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+def _make_stale_bookkeeping_repo(root: Path, name: str) -> Path:
+    """A git repo with one spec whose only pending impl task's declared
+    `files:` are on disk and git-tracked (i.e. shipped already) but the
+    task's `status:` was never flipped to completed -- `dashboard.scan()`
+    stages this as `stale-bookkeeping` (Check C)."""
+    repo = root / name
+    _git_init(repo)
+    spec_dir = repo / "docs" / "specs" / "001-fixture"
+    _make_parent_spec(spec_dir, "Draft")
+    _write(
+        spec_dir / "tasks" / "TASK-001.md",
+        """---
+id: TASK-001
+title: "Fixture task"
+spec: docs/specs/001-fixture/fixture.md
+status: pending
+dependencies: []
+files:
+  - src/thing.py
+---
+
+## Definition of Done (DoD)
+- [x] done
+""",
+    )
+    _write(repo / "src" / "thing.py", "print('hi')\n")
+    _git_commit_all(repo, "init")
+    return repo
+
+
 def _hash_tree(root: Path) -> dict[str, tuple[int, int, str]]:
     """Snapshot every file under `root` (including inside `.git/`) as
     (size, mtime_ns, sha256) keyed by relative path, for byte-identical
@@ -818,6 +860,192 @@ class SpecSyncSweepCheckboxDriftE2ETests(unittest.TestCase):
 
         self.assertIn(str(both), record["filed"])
         self.assertIn(str(both), record["checkbox_filed"])
+
+        after = {repo: _hash_tree(repo) for repo in repos}
+        for repo in repos:
+            self.assertEqual(
+                before[repo], after[repo], f"fixture repo mutated by the sweep: {repo}"
+            )
+
+
+class SpecSyncSweepStaleBookkeepingE2ETests(unittest.TestCase):
+    """End-to-end tests for the stale-bookkeeping third check: the
+    three-way independent `run_sweep()`/`main()` pipeline exercised through
+    a realistic multi-repo fixture, the same way
+    `SpecSyncSweepCheckboxDriftE2ETests` exercises the second check.
+
+    Regression coverage: `SpecSyncSweepE2ETests` and
+    `SpecSyncSweepCheckboxDriftE2ETests` above are left completely
+    unmodified and continue to run in the same pytest session against the
+    now-three-check `run_sweep()`/`main()`.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.repos_root = self.root / "repos"
+        self.queue_base = self.root / "queue-base"
+        self.lock_path = self.root / "sweep.lock"
+
+    def _run_main_json(self) -> dict:
+        buf = StringIO()
+        with redirect_stdout(buf):
+            rc = sss.main(
+                [
+                    "--repos-root",
+                    str(self.repos_root),
+                    "--queue-dir",
+                    str(self.queue_base),
+                    "--lock-file",
+                    str(self.lock_path),
+                    "--json",
+                ]
+            )
+        self.assertEqual(rc, 0, f"main() exited non-zero: {buf.getvalue()}")
+        return json.loads(buf.getvalue())
+
+    def _queue_briefs_by_drift_source(self) -> dict[str, Path]:
+        result: dict[str, Path] = {}
+        for f in (self.queue_base / "queue").glob("*.md"):
+            fm = read_frontmatter(f)
+            result[str(fm.get("drift-source"))] = f
+        return result
+
+    # -- Happy path: a repo drifted only on stale-bookkeeping gets exactly
+    #    one stale-bookkeeping brief and no spec-sync/checkbox brief -------
+
+    def test_stale_bookkeeping_only_repo_files_exactly_one_stale_bookkeeping_brief(
+        self,
+    ) -> None:
+        clean = _make_clean_repo(self.repos_root, "clean-repo")
+        stale = _make_stale_bookkeeping_repo(self.repos_root, "stale-bookkeeping-repo")
+
+        record = self._run_main_json()
+
+        self.assertNotIn(str(clean), record["stale_bookkeeping_drifted"])
+        self.assertIn(str(stale), record["stale_bookkeeping_drifted"])
+        self.assertIn(str(stale), record["stale_bookkeeping_filed"])
+        self.assertEqual(record["stale_bookkeeping_failed"], [])
+        self.assertEqual(record["stale_bookkeeping_skipped_existing"], [])
+
+        # Not classified as spec-sync-drift or checkbox-drift by the other
+        # two independent checks.
+        self.assertNotIn(str(stale), record["drifted"])
+        self.assertNotIn(str(stale), record["filed"])
+        self.assertNotIn(str(stale), record["checkbox_drifted"])
+        self.assertNotIn(str(stale), record["checkbox_filed"])
+
+        queue_files = list((self.queue_base / "queue").glob("*.md"))
+        self.assertEqual(len(queue_files), 1)
+        fm = read_frontmatter(queue_files[0])
+        self.assertEqual(fm.get("repo"), str(stale))
+        self.assertEqual(fm.get("drift-source"), "stale-bookkeeping-sweep")
+        body = queue_files[0].read_text(encoding="utf-8")
+        self.assertIn("001-fixture", body)
+        self.assertIn("TASK-001", body)
+
+    # -- Idempotency across two real runs ------------------------------------
+
+    def test_idempotency_across_two_real_runs_files_only_one_stale_bookkeeping_brief(
+        self,
+    ) -> None:
+        stale = _make_stale_bookkeeping_repo(self.repos_root, "stale-bookkeeping-repo")
+
+        first = self._run_main_json()
+        self.assertIn(str(stale), first["stale_bookkeeping_filed"])
+
+        second = self._run_main_json()
+        self.assertEqual(second["stale_bookkeeping_filed"], [])
+        self.assertIn(str(stale), second["stale_bookkeeping_skipped_existing"])
+
+        queue_files = list((self.queue_base / "queue").glob("*.md"))
+        self.assertEqual(len(queue_files), 1)
+
+    # -- Resolution re-arms filing --------------------------------------------
+
+    def test_resolving_the_filed_brief_re_arms_stale_bookkeeping_filing(self) -> None:
+        stale = _make_stale_bookkeeping_repo(self.repos_root, "stale-bookkeeping-repo")
+
+        first = self._run_main_json()
+        self.assertIn(str(stale), first["stale_bookkeeping_filed"])
+
+        by_source = self._queue_briefs_by_drift_source()
+        brief_stem = by_source["stale-bookkeeping-sweep"].stem
+
+        with _work_queue_dir(self.queue_base):
+            claim_result = work_queue.claim(brief_stem)
+            self.assertEqual(claim_result["status"], "claimed")
+            done_result = work_queue.done(brief_stem)
+            self.assertEqual(done_result["status"], "done")
+
+        self.assertEqual(
+            read_frontmatter(self.queue_base / "picked" / f"{brief_stem}.md").get(
+                "status"
+            ),
+            "done",
+        )
+
+        second = self._run_main_json()
+        self.assertIn(str(stale), second["stale_bookkeeping_filed"])
+        new_queue_files = list((self.queue_base / "queue").glob("*.md"))
+        self.assertEqual(len(new_queue_files), 1)
+        self.assertEqual(
+            read_frontmatter(new_queue_files[0]).get("status"), "queued"
+        )
+
+    # -- Per-check, per-repo failure isolation --------------------------------
+
+    def test_stale_bookkeeping_check_failure_in_one_repo_does_not_block_other_checks(
+        self,
+    ) -> None:
+        failing = _make_stale_bookkeeping_repo(
+            self.repos_root, "failing-stale-bookkeeping-repo"
+        )
+        healthy = _make_stale_bookkeeping_repo(
+            self.repos_root, "healthy-stale-bookkeeping-repo"
+        )
+
+        real_check = sss.check_repo_stale_bookkeeping
+
+        def fake_check(repo: Path) -> dict:
+            if repo == failing:
+                return {
+                    "repo": str(repo),
+                    "findings": [],
+                    "error": "simulated stale-bookkeeping failure",
+                }
+            return real_check(repo)
+
+        with mock.patch(
+            "worktrail.router.spec_sync_sweep.check_repo_stale_bookkeeping",
+            side_effect=fake_check,
+        ):
+            record = self._run_main_json()
+
+        self.assertIn(str(failing), record["stale_bookkeeping_failed"])
+        self.assertNotIn(str(failing), record["stale_bookkeeping_drifted"])
+        self.assertNotIn(str(failing), record["stale_bookkeeping_filed"])
+
+        self.assertIn(str(healthy), record["stale_bookkeeping_drifted"])
+        self.assertIn(str(healthy), record["stale_bookkeeping_filed"])
+
+        self.assertEqual(record["failed"], [])
+        self.assertEqual(record["checkbox_failed"], [])
+
+    # -- Non-mutation across the whole run ------------------------------------
+
+    def test_no_fixture_repo_file_is_mutated_by_the_stale_bookkeeping_check(
+        self,
+    ) -> None:
+        clean = _make_clean_repo(self.repos_root, "clean-repo")
+        stale = _make_stale_bookkeeping_repo(self.repos_root, "stale-bookkeeping-repo")
+
+        repos = [clean, stale]
+        before = {repo: _hash_tree(repo) for repo in repos}
+
+        record = self._run_main_json()
+        self.assertIn(str(stale), record["stale_bookkeeping_filed"])
 
         after = {repo: _hash_tree(repo) for repo in repos}
         for repo in repos:
