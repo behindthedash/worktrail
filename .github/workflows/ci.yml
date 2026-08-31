@@ -114,6 +114,12 @@ jobs:
       - name: Build
         if: needs.changes.outputs.bookkeeping == 'false'
         run: pip install build && python3 -m build
+      - name: Built artifact packaging parity
+        if: needs.changes.outputs.bookkeeping == 'false'
+        run: |
+          wheel=$(find dist -maxdepth 1 -name '*.whl' -print -quit)
+          sdist=$(find dist -maxdepth 1 -name '*.tar.gz' -print -quit)
+          python3 scripts/check_built_artifact_packaging.py --wheel "$wheel" --sdist "$sdist"
 
   classifier-coverage-ratchet:
     name: "Classifier Coverage Ratchet"
