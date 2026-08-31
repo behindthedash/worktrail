@@ -9,6 +9,7 @@ for the full contract this module implements.
 from __future__ import annotations
 
 import enum
+import subprocess
 import tempfile
 from dataclasses import dataclass
 
@@ -103,3 +104,37 @@ def build_probe_command() -> tuple[list[str], str]:
     cmd = build_cmd(PROBE_PROMPT, cell)
     scratch_dir = tempfile.mkdtemp(prefix="codex-probe-")
     return cmd, scratch_dir
+
+
+def run_probe_command(
+    cmd: list[str],
+    scratch_dir: str,
+    child_env: dict[str, str],
+    timeout: float,
+) -> subprocess.CompletedProcess[str] | ProbeReport:
+    """Run the probe's `codex` command, wall-clock bounded by `timeout`.
+
+    Mirrors `spawnlib.spawn_agent`'s own `subprocess.run` call exactly (same
+    `cwd`/`capture_output`/`text`/`timeout`/`env` arguments), so this stays
+    parity-tested against the same invocation shape the direct orchestrator
+    Codex spawn path uses. Unlike that call, `subprocess.TimeoutExpired` is
+    caught here and classified as a `timeout` stage outcome rather than
+    propagated to the caller -- the probe's whole purpose is to prove the
+    run is wall-clock bounded, not to assume its caller will.
+    """
+    try:
+        return subprocess.run(
+            cmd,
+            check=False,
+            cwd=scratch_dir,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=child_env,
+        )
+    except subprocess.TimeoutExpired:
+        return ProbeReport(
+            stage=StageOutcome.TIMEOUT,
+            success=False,
+            diagnostic=f"codex probe exceeded {timeout}s timeout",
+        )
