@@ -47,6 +47,11 @@ invocation runs all three checks; no additional crontab entry is needed):
         --repos-root ~/projects --queue-dir ~/.gitnexus/queue \\
         --lock-file /tmp/spec-sync-sweep.lock
 
+Deployment note: in environments where spec-sync-sweep is already scheduled (e.g., via
+`spec-sync-sweep.sh` in the devops repository), the stale-bookkeeping check is included
+in that same invocation — no new crontab entry is needed, and no changes to the scheduler's
+configuration are required.
+
 Usage:
   spec_sync_sweep.py --repos-root ~/projects --queue-dir ~/.gitnexus/queue [--lock-file PATH] [--json]
 """
