@@ -150,19 +150,30 @@ def run_probe_command(
     scratch_dir: str,
     child_env: dict[str, str],
     timeout: float,
-) -> subprocess.CompletedProcess[str] | ProbeReport:
-    """Run the probe's `codex` command, wall-clock bounded by `timeout`.
+    repo_dir: str,
+) -> tuple[subprocess.CompletedProcess[str] | ProbeReport, NoOpScopeSnapshot]:
+    """Snapshot the probe's no-op scope, then run its `codex` command,
+    wall-clock bounded by `timeout`.
 
-    Mirrors `spawnlib.spawn_agent`'s own `subprocess.run` call exactly (same
-    `cwd`/`capture_output`/`text`/`timeout`/`env` arguments), so this stays
-    parity-tested against the same invocation shape the direct orchestrator
-    Codex spawn path uses. Unlike that call, `subprocess.TimeoutExpired` is
-    caught here and classified as a `timeout` stage outcome rather than
-    propagated to the caller -- the probe's whole purpose is to prove the
-    run is wall-clock bounded, not to assume its caller will.
+    Calls `snapshot_no_op_scope(scratch_dir, repo_dir)` before spawning --
+    never after -- so the returned snapshot reflects the scratch directory's
+    listing and the invoking repository's `git status --porcelain` as they
+    stood immediately prior to `subprocess.run`. The caller is expected to
+    re-snapshot after the run completes and diff against this pre-spawn
+    snapshot to detect any repository mutation.
+
+    The `subprocess.run` call itself mirrors `spawnlib.spawn_agent`'s own
+    call exactly (same `cwd`/`capture_output`/`text`/`timeout`/`env`
+    arguments), so this stays parity-tested against the same invocation
+    shape the direct orchestrator Codex spawn path uses. Unlike that call,
+    `subprocess.TimeoutExpired` is caught here and classified as a `timeout`
+    stage outcome rather than propagated to the caller -- the probe's whole
+    purpose is to prove the run is wall-clock bounded, not to assume its
+    caller will.
     """
+    pre_spawn_snapshot = snapshot_no_op_scope(scratch_dir, repo_dir)
     try:
-        return subprocess.run(
+        result: subprocess.CompletedProcess[str] | ProbeReport = subprocess.run(
             cmd,
             check=False,
             cwd=scratch_dir,
@@ -172,8 +183,9 @@ def run_probe_command(
             env=child_env,
         )
     except subprocess.TimeoutExpired:
-        return ProbeReport(
+        result = ProbeReport(
             stage=StageOutcome.TIMEOUT,
             success=False,
             diagnostic=f"codex probe exceeded {timeout}s timeout",
         )
+    return result, pre_spawn_snapshot
