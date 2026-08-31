@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Unit tests for spec_sync_sweep_stale_bookkeeping_check.py.
 
 check_repo_stale_bookkeeping() is a thin translation layer over
