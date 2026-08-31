@@ -925,5 +925,97 @@ class TestReportAndVerdictFileOutput(QueueTriageTestBase):
                 self.assertIn(entry["confidence"], report_text)
 
 
+class TestRankChangeCandidates(QueueTriageTestBase):
+    """2.1's `rank_change_candidates()`: repo's active OpenSpec changes ranked
+    against a brief's focus text by the duplicate-brief-detection focus-overlap
+    coefficient, over each change's proposal summary + tasks.md task tokens.
+    """
+
+    def _make_change(
+        self,
+        repo_root: Path,
+        change_id: str,
+        *,
+        why: str,
+        tasks: list[tuple[bool, str]],
+    ) -> None:
+        change_dir = repo_root / "openspec" / "changes" / change_id
+        change_dir.mkdir(parents=True, exist_ok=True)
+        (change_dir / "proposal.md").write_text(
+            f"# {change_id}\n\n## Why\n{why}\n", encoding="utf-8"
+        )
+        lines = [
+            f"- [{'x' if checked else ' '}] {i + 1}.1 {text}"
+            for i, (checked, text) in enumerate(tasks)
+        ]
+        (change_dir / "tasks.md").write_text(
+            "## 1. Tasks\n\n" + "\n".join(lines) + "\n", encoding="utf-8"
+        )
+
+    def test_strong_overlap_ranks_first_with_open_task_count(self):
+        repo_root = self.base / "repo"
+        self._make_change(
+            repo_root,
+            "widget-export-pipeline",
+            why="Add a widget export pipeline for downstream reporting consumers.",
+            tasks=[
+                (False, "Implement widget export pipeline serializer"),
+                (True, "Write export pipeline docs"),
+            ],
+        )
+        self._make_change(
+            repo_root,
+            "unrelated-billing-cleanup",
+            why="Clean up stale billing invoice reconciliation cron jobs.",
+            tasks=[(False, "Remove stale billing invoice cron entries")],
+        )
+        brief_path = self.queue / "brief.md"
+        brief_path.write_text(
+            "---\nstatus: queued\n---\n\n"
+            "## Focus\n\nwidget export pipeline serializer downstream reporting\n",
+            encoding="utf-8",
+        )
+
+        results = qt.rank_change_candidates(brief_path, str(repo_root), top_k=5)
+
+        self.assertEqual(results[0]["id"], "widget-export-pipeline")
+        self.assertEqual(results[0]["open_task_count"], 1)
+        self.assertIn("widget export pipeline", results[0]["feature_summary"])
+        self.assertGreater(results[0]["score"], results[1]["score"])
+        self.assertEqual(results[1]["id"], "unrelated-billing-cleanup")
+
+    def test_no_active_changes_returns_empty_list(self):
+        repo_root = self.base / "repo-empty"
+        (repo_root / "openspec" / "changes").mkdir(parents=True, exist_ok=True)
+        brief_path = self.write("brief.md", body="## Focus\n\nanything at all\n")
+
+        self.assertEqual(
+            qt.rank_change_candidates(brief_path, str(repo_root), top_k=5), []
+        )
+
+    def test_null_repo_returns_empty_list(self):
+        brief_path = self.write("brief.md", body="## Focus\n\nanything at all\n")
+
+        self.assertEqual(qt.rank_change_candidates(brief_path, None, top_k=5), [])
+
+    def test_top_k_truncates_result(self):
+        repo_root = self.base / "repo-many"
+        for i in range(3):
+            self._make_change(
+                repo_root,
+                f"change-{i}",
+                why="widget export pipeline serializer downstream reporting",
+                tasks=[(False, "widget export pipeline serializer downstream reporting")],
+            )
+        brief_path = self.write(
+            "brief.md",
+            body="## Focus\n\nwidget export pipeline serializer downstream reporting\n",
+        )
+
+        results = qt.rank_change_candidates(brief_path, str(repo_root), top_k=2)
+
+        self.assertEqual(len(results), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
