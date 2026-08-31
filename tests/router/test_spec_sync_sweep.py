@@ -179,9 +179,7 @@ resolved drift
 
 
 def _git(repo: Path, *args: str) -> None:
-    subprocess.run(
-        ["git", *args], cwd=repo, capture_output=True, text=True, check=True
-    )
+    subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=True)
 
 
 def _make_stale_bookkeeping_task(
@@ -561,9 +559,7 @@ pre-existing drift
         # Each check's dedup lookup governs its own brief independently.
         self.assertNotIn(str(all_three), record["skipped_existing"])
         self.assertNotIn(str(all_three), record["checkbox_skipped_existing"])
-        self.assertNotIn(
-            str(all_three), record["stale_bookkeeping_skipped_existing"]
-        )
+        self.assertNotIn(str(all_three), record["stale_bookkeeping_skipped_existing"])
         files = list((self.queue_base / "queue").glob("*.md"))
         self.assertEqual(len(files), 3)
         sources = {
@@ -640,7 +636,9 @@ pre-existing drift
         self.assertIn(str(stale), record["stale_bookkeeping_filed"])
         self.assertNotIn(str(stale), record["stale_bookkeeping_skipped_existing"])
         files = list((self.queue_base / "queue").glob("*.md"))
-        self.assertEqual(len(files), 1)  # freshly filed, resolved brief did not block it
+        self.assertEqual(
+            len(files), 1
+        )  # freshly filed, resolved brief did not block it
 
 
 def _real_check_repo_drift(repo: Path):
