@@ -44,11 +44,3 @@ class ProbeReport:
     automatic_home: bool | None = None
     provider_identity: str | None = None
     auth_usable: bool | None = None
-
-
-# Fixed no-op probe prompt and expected sentinel reply, mirroring
-# check_agent_contract.CONTRACT_PROMPT / EXPECTED_REPLY. A fixed
-# sentinel-reply prompt keeps the contract minimal and avoids exercising
-# report-back parsing paths that belong to dispatch.py, not this probe.
-CONTRACT_PROMPT = "Reply with exactly the single word: ok"
-EXPECTED_REPLY = "ok"
