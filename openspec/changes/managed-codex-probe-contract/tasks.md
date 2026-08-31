@@ -1,13 +1,13 @@
 ## 1. Probe module skeleton
 
-- [ ] 1.1 Create the probe module under `src/worktrail/orchestrator/` (e.g.
+- [x] 1.1 Create the probe module under `src/worktrail/orchestrator/` (e.g.
       `codex_probe.py`) with a `StageOutcome` enum/literal covering exactly
       `environment_preparation`, `startup`, `provider_selection`,
       `authentication`, `timeout`, `report_back`, and a structured report
       dataclass/NamedTuple with fields for stage, success, diagnostic
       message, and the non-sensitive signals from design.md (codex_home,
       automatic_home, provider identity, auth usable).
-- [ ] 1.2 Define the fixed no-op probe prompt and expected sentinel reply as
+- [x] 1.2 Define the fixed no-op probe prompt and expected sentinel reply as
       module-level constants (mirroring `check_agent_contract.CONTRACT_PROMPT`
       / `EXPECTED_REPLY`).
 
