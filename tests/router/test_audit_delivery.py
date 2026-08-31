@@ -26,7 +26,9 @@ def _run(repo, *args):
 def _init_repo(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "init", "-q", "-b", "main", str(path)], check=True)
-    subprocess.run(["git", "-C", str(path), "config", "user.email", "t@example.com"], check=True)
+    subprocess.run(
+        ["git", "-C", str(path), "config", "user.email", "t@example.com"], check=True
+    )
     subprocess.run(["git", "-C", str(path), "config", "user.name", "Test"], check=True)
     return path
 
@@ -197,10 +199,7 @@ def test_verify_delivery_unverifiable_when_object_missing(tmp_path):
     repo = _init_repo(tmp_path / "repo")
     _commit(repo, "a.txt", "one")
 
-    assert (
-        audit.verify_delivery(repo, "main", "0" * 40)
-        == "unverifiable"
-    )
+    assert audit.verify_delivery(repo, "main", "0" * 40) == "unverifiable"
 
 
 def test_touched_files_lists_paths_from_commit(tmp_path):
@@ -255,7 +254,9 @@ def test_content_delivered_via_rewrite_true_when_blob_matches_a_base_commit(tmp_
         ["git", "-C", str(repo), "commit", "-q", "-m", "squash: base 1.1"], check=True
     )
 
-    assert audit.content_delivered_via_rewrite(repo, "main", task_sha, ["b.txt"]) is True
+    assert (
+        audit.content_delivered_via_rewrite(repo, "main", task_sha, ["b.txt"]) is True
+    )
 
 
 def test_content_delivered_via_rewrite_false_when_content_never_lands(tmp_path):
@@ -283,7 +284,9 @@ def test_content_delivered_via_rewrite_false_when_only_some_files_match(tmp_path
     subprocess.run(["git", "-C", str(repo), "checkout", "-q", "main"], check=True)
     (repo / "b.txt").write_text("delivered")
     subprocess.run(["git", "-C", str(repo), "add", "b.txt"], check=True)
-    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "squash: b only"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-q", "-m", "squash: b only"], check=True
+    )
 
     assert (
         audit.content_delivered_via_rewrite(repo, "main", task_sha, ["b.txt", "c.txt"])
@@ -313,11 +316,15 @@ def test_content_delivered_via_rewrite_true_when_file_further_edited_after_landi
     # Squash commit combines task 1's addition with a second task's edit.
     (repo / "pyproject.toml").write_text("version = 1\nfoo = task1\nbar = task2\n")
     subprocess.run(["git", "-C", str(repo), "add", "pyproject.toml"], check=True)
-    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "squash: 1, 2"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-q", "-m", "squash: 1, 2"], check=True
+    )
     # A later, unrelated version bump keeps editing the same file.
     (repo / "pyproject.toml").write_text("version = 2\nfoo = task1\nbar = task2\n")
     subprocess.run(["git", "-C", str(repo), "add", "pyproject.toml"], check=True)
-    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "bump version"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-q", "-m", "bump version"], check=True
+    )
 
     assert (
         audit.content_delivered_via_rewrite(repo, "main", task_sha, ["pyproject.toml"])
@@ -344,9 +351,13 @@ def test_content_delivered_via_rewrite_true_when_one_line_later_touched_up(tmp_p
     lines[0] = "line0-reworded"
     (repo / "b.txt").write_text("\n".join(lines) + "\n")
     subprocess.run(["git", "-C", str(repo), "add", "b.txt"], check=True)
-    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "squash + touch-up"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-q", "-m", "squash + touch-up"], check=True
+    )
 
-    assert audit.content_delivered_via_rewrite(repo, "main", task_sha, ["b.txt"]) is True
+    assert (
+        audit.content_delivered_via_rewrite(repo, "main", task_sha, ["b.txt"]) is True
+    )
 
 
 def test_content_delivered_via_rewrite_false_when_most_lines_differ(tmp_path):
@@ -365,9 +376,13 @@ def test_content_delivered_via_rewrite_false_when_most_lines_differ(tmp_path):
     other_lines = [f"other{i}" for i in range(10)]
     (repo / "b.txt").write_text("\n".join(other_lines) + "\n")
     subprocess.run(["git", "-C", str(repo), "add", "b.txt"], check=True)
-    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "different content"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-q", "-m", "different content"], check=True
+    )
 
-    assert audit.content_delivered_via_rewrite(repo, "main", task_sha, ["b.txt"]) is False
+    assert (
+        audit.content_delivered_via_rewrite(repo, "main", task_sha, ["b.txt"]) is False
+    )
 
 
 def test_content_delivered_via_rewrite_false_with_no_files():
@@ -417,7 +432,8 @@ def test_identifiers_survive_elsewhere_false_when_identifier_absent(tmp_path):
     subprocess.run(["git", "-C", str(repo), "checkout", "-q", "main"], check=True)
 
     assert (
-        audit.identifiers_survive_elsewhere(repo, "main", task_sha, ["src/x.py"]) is False
+        audit.identifiers_survive_elsewhere(repo, "main", task_sha, ["src/x.py"])
+        is False
     )
 
 
@@ -431,7 +447,8 @@ def test_identifiers_survive_elsewhere_false_with_no_extractable_identifiers(tmp
     subprocess.run(["git", "-C", str(repo), "checkout", "-q", "main"], check=True)
 
     assert (
-        audit.identifiers_survive_elsewhere(repo, "main", task_sha, ["config.yaml"]) is False
+        audit.identifiers_survive_elsewhere(repo, "main", task_sha, ["config.yaml"])
+        is False
     )
 
 
@@ -449,7 +466,8 @@ def test_identifiers_survive_elsewhere_requires_all_identifiers_present(tmp_path
     _commit(repo, "src/y.py", "def function_one(repo):\n    return True\n")
 
     assert (
-        audit.identifiers_survive_elsewhere(repo, "main", task_sha, ["src/x.py"]) is False
+        audit.identifiers_survive_elsewhere(repo, "main", task_sha, ["src/x.py"])
+        is False
     )
 
 
@@ -461,9 +479,7 @@ def test_resolve_base_ref_reads_head_branch_from_remote(tmp_path):
     upstream = _init_repo(tmp_path / "upstream")
     _commit(upstream, "a.txt", "one")
     clone = tmp_path / "clone"
-    subprocess.run(
-        ["git", "clone", "-q", str(upstream), str(clone)], check=True
-    )
+    subprocess.run(["git", "clone", "-q", str(upstream), str(clone)], check=True)
 
     assert audit.resolve_base_ref(clone) == "origin/main"
 

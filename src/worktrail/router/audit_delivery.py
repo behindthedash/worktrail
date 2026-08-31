@@ -153,9 +153,7 @@ def extract_passed_tasks(journal: dict[str, Any]) -> list[dict[str, Any]]:
 
 def resolve_canonical_repo(worktrees_dir: Path) -> Path:
     """The canonical checkout sibling of a `<repo>-worktrees` directory."""
-    name = worktrees_dir.name
-    if name.endswith("-worktrees"):
-        name = name[: -len("-worktrees")]
+    name = worktrees_dir.name.removesuffix("-worktrees")
     return worktrees_dir.parent / name
 
 
@@ -179,15 +177,15 @@ def _object_present(repo: Path, sha: str) -> bool:
 
 
 def _is_ancestor(repo: Path, sha: str, base_ref: str) -> bool:
-    return (
-        _git(repo, "merge-base", "--is-ancestor", sha, base_ref).returncode == 0
-    )
+    return _git(repo, "merge-base", "--is-ancestor", sha, base_ref).returncode == 0
 
 
 def touched_files(repo: Path, sha: str) -> list[str]:
     """Files `sha`'s own commit touched, or `[]` if the object is gone or the
     diff can't be computed — never raises."""
-    result = _git(repo, "diff-tree", "--no-commit-id", "--name-only", "-r", "--root", sha)
+    result = _git(
+        repo, "diff-tree", "--no-commit-id", "--name-only", "-r", "--root", sha
+    )
     if result.returncode != 0:
         return []
     return [line for line in result.stdout.splitlines() if line]
