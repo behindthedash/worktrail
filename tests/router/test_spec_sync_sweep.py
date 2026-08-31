@@ -25,6 +25,24 @@ def _git_init(repo: Path) -> None:
     subprocess.run(
         ["git", "init", "-q"], cwd=repo, capture_output=True, text=True, check=True
     )
+    # Stale-bookkeeping fixtures need a real `git commit` (the check diffs against git
+    # history), unlike this file's older drift fixtures, which only ever leave files
+    # uncommitted. CI runners carry no global git identity, so commit fails with exit
+    # 128 ("Please tell me who you are") without a repo-local identity set here.
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
 
 
 def _write(path: Path, content: str) -> None:
