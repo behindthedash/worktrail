@@ -137,14 +137,18 @@ class CarrySquashMergedDependenciesCleanCase(unittest.TestCase):
 
 
 class CarrySquashMergedDependenciesConflictFailsLoud(unittest.TestCase):
-    def test_conflicting_content_aborts_instead_of_silently_favoring_worktree(self):
+    def test_conflicting_content_aborts_and_raises_instead_of_leaving_stale_state(
+        self,
+    ):
         """The dependency's squash-merge lands on the live base AND the local
         checkout independently diverged on the same shared file/line -- a
         genuine content-level conflict outside the dependency's own declared
-        files. The carry must fail loud (abort the merge) rather than silently
-        keep the worktree's stale content, so the caller's dependency-file
-        validation stays the source of truth for "content genuinely isn't
-        available" instead of a favor-one-side merge masking it.
+        files. The carry must fail loud: abort the merge AND raise, instead of
+        silently keeping the worktree's stale content and letting the run
+        continue on it (brief 20260831-084532 -- a squash-merge boundary
+        discards the dependency's original commit ancestry, so no downstream
+        check can reliably tell this worktree apart from a genuinely fresh one
+        once the carry has already given up).
         """
         with tempfile.TemporaryDirectory() as tmp:
             bare, repo = _init_bare_and_repo(tmp)
@@ -163,9 +167,10 @@ class CarrySquashMergedDependenciesConflictFailsLoud(unittest.TestCase):
             wt = Path(tmp) / "wt" / "102-x-task-002"
             wt.parent.mkdir(parents=True)
 
-            live.add_stacked_worktree(
-                repo, "102-x", task, by_id, wt, remote="origin", base="main"
-            )
+            with self.assertRaises(live.WorktreeMissingDependencyFileError):
+                live.add_stacked_worktree(
+                    repo, "102-x", task, by_id, wt, remote="origin", base="main"
+                )
 
             # The merge conflicted and was aborted -- the working tree is
             # clean (no lingering conflict markers, no half-merged state) and
@@ -182,10 +187,7 @@ class CarrySquashMergedDependenciesConflictFailsLoud(unittest.TestCase):
                 "no lingering MERGE_HEAD after the abort",
             )
 
-            # The dependency's declared file genuinely did NOT get carried --
-            # this is the fail-loud signal: a caller checking for it (the
-            # `_require_dependency_files` backstop) still sees it missing and
-            # raises, instead of the conflict being silently resolved away.
+            # The dependency's declared file genuinely did NOT get carried.
             self.assertFalse(
                 (wt / "dep_file.py").exists(),
                 "dependency's declared file must still be missing after an aborted carry",
@@ -364,14 +366,11 @@ class TasksMdConflictPlusOtherFileFailsLoud(unittest.TestCase):
                 also_touch_shared="line1\nline2-from-dependency\nline3\n",
             )
 
-            event = live._carry_squash_merged_dependencies(
-                repo, "102-x", task, by_id, wt, "origin", "main"
-            )
+            with self.assertRaises(live.WorktreeMissingDependencyFileError):
+                live._carry_squash_merged_dependencies(
+                    repo, "102-x", task, by_id, wt, "origin", "main"
+                )
 
-            self.assertIsNone(
-                event,
-                "an aborted merge (conflict beyond tasks.md alone) reports no event",
-            )
             status = _git(wt, "status", "--porcelain").stdout
             self.assertEqual(status.strip(), "", "an aborted merge leaves a clean tree")
             self.assertEqual(
@@ -392,6 +391,81 @@ class TasksMdConflictPlusOtherFileFailsLoud(unittest.TestCase):
             self.assertEqual(
                 (wt / "shared.py").read_text(), "line1\nline2-STALE-LOCAL\nline3\n"
             )
+
+
+class ConflictedCarryOnPreExistingFileRaisesInsteadOfLeavingStaleState(
+    unittest.TestCase
+):
+    def test_add_stacked_worktree_raises_when_carry_conflicts_on_pre_existing_file(
+        self,
+    ):
+        """Brief 20260831-084532: when the carry's merge fails for a
+        dependency whose declared file already existed before the
+        dependency's own edit (as opposed to a newly-created file like
+        `dep_file.py` in `ConflictFailsLoud` above), the worktree is left with
+        the *pre-existing* path still present -- just holding stale content,
+        not the dependency's edit. Path existence alone can never distinguish
+        this stale-but-present file from a genuinely fresh one (the same
+        defect class already fixed for `_carry_squash_merged_dependencies`'s
+        own gate and `integrate_one`'s branch-gone fallback), so the carry
+        failure itself must raise -- exactly the live incident reported in
+        the brief (WARN logged for a base group's squash-merge carry, run
+        continued on stale state, downstream tasks cascaded into
+        merge-conflict quarantine 16 tasks later)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            bare, repo = _init_bare_and_repo(tmp)
+
+            (repo / "existing.md").write_text("original\n")
+            _git(repo, "add", "-A")
+            _git(repo, "commit", "-q", "-m", "add existing.md")
+            _git(repo, "push", "-q", "origin", "main")
+
+            upstream_edit = Path(tmp) / "upstream_edit"
+            subprocess.run(
+                ["git", "clone", "-q", str(bare), str(upstream_edit)], check=True
+            )
+            _git(upstream_edit, "config", "user.email", "t@example.com")
+            _git(upstream_edit, "config", "user.name", "Test")
+            (upstream_edit / "existing.md").write_text(
+                "original\ndependency-added-section\n"
+            )
+            _git(upstream_edit, "add", "-A")
+            _git(upstream_edit, "commit", "-q", "-m", "TASK-001 squash-merge onto main")
+            _git(upstream_edit, "push", "-q", "origin", "main")
+
+            # `repo`'s local checkout independently diverges on the SAME
+            # existing file/region -- forces the carry's merge to conflict
+            # and abort instead of cleanly landing the dependency's edit.
+            (repo / "existing.md").write_text("original\nlocal-independent-edit\n")
+            _git(repo, "add", "-A")
+            _git(repo, "commit", "-q", "-m", "local-only stale edit")
+
+            task = {"id": "TASK-002", "deps": ["TASK-001"]}
+            by_id = {
+                "TASK-001": {
+                    "id": "TASK-001",
+                    "status": "completed",
+                    "files": ["existing.md"],
+                },
+                "TASK-002": task,
+            }
+            wt = Path(tmp) / "wt" / "102-x-task-002"
+            wt.parent.mkdir(parents=True)
+
+            with self.assertRaises(live.WorktreeMissingDependencyFileError):
+                live.add_stacked_worktree(
+                    repo, "102-x", task, by_id, wt, remote="origin", base="main"
+                )
+
+            # The carry conflicted and aborted -- the worktree keeps its own
+            # (stale, pre-dependency) content at the declared path, and the
+            # merge left no lingering half-applied state.
+            self.assertEqual(
+                (wt / "existing.md").read_text(),
+                "original\nlocal-independent-edit\n",
+            )
+            status = _git(wt, "status", "--porcelain").stdout
+            self.assertEqual(status.strip(), "", "an aborted merge leaves a clean tree")
 
 
 if __name__ == "__main__":

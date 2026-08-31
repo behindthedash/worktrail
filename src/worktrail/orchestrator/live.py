@@ -2097,9 +2097,19 @@ def _carry_squash_merged_dependencies(
     also touch (`docs/specs/research/carry-squash-merged-dependencies-x-ours-risk.md`,
     the same risk class root-caused and fixed for `integrate_one`'s
     dependency-branch-gone fallback in PR #475). A merge failure -- whether from a
-    genuine conflict or any other git error -- aborts and falls through with a
-    WARN: `_require_dependency_files` stays the fail-loud backstop when the
-    content genuinely isn't available. One narrow, deterministic exception: a
+    genuine conflict or any other git error -- aborts and raises
+    `WorktreeMissingDependencyFileError` (brief 20260831-084532): a squash-merge
+    boundary discards the dependency's original commit ancestry, so
+    `_require_dependency_files`'s ancestor/path checks cannot reliably tell a
+    worktree that never carried this content apart from one that did -- for a
+    dependency whose declared file already existed before its own edit, path
+    existence alone stays true either way. This mirrors the identical hard-fail
+    precedent already established just above for a sibling-dependency stacking
+    conflict (`WorktreeStackConflictError`): continuing on a failed carry would
+    silently leave `wt` on stale pre-carry content instead of quarantining the
+    task, exactly the live incident this guard now prevents (a WARN was logged
+    and the run continued on stale state, cascading into merge-conflict
+    quarantines 16 tasks later). One narrow, deterministic exception: a
     conflict confined entirely to this change's own `openspec/changes/<id>/tasks.md`
     (each concurrently-merged group independently checks off its own tasks in that
     shared checklist, so squash-merge history loses the common ancestor and produces
@@ -2120,7 +2130,9 @@ def _carry_squash_merged_dependencies(
     the extra file-existence pre-filter only introduced false negatives.
 
     Returns a `checklist_conflict_resolved` event dict when the tasks.md
-    conflict exception engaged; `None` from every other return point.
+    conflict exception engaged; `None` when nothing needed carrying or the
+    carry was already up to date. Raises `WorktreeMissingDependencyFileError`
+    on a failed carry merge.
     """
     stale_deps = [
         dep_id
@@ -2151,10 +2163,13 @@ def _carry_squash_merged_dependencies(
                 "at": round(time.time(), 3),
             }
         _git(wt, "merge", "--abort", check=False)
-        print(
-            f"{_ts()} WARN: task {task['id']} worktree {wt} squash-merge carry from "
+        raise WorktreeMissingDependencyFileError(
+            f"task {task['id']} worktree {wt} squash-merge carry from "
             f"{ref} failed for dependenc{'y' if len(stale_deps) == 1 else 'ies'} "
-            f"{', '.join(stale_deps)}: {(m.stderr or '').strip()[:300]}"
+            f"{', '.join(stale_deps)}: {(m.stderr or '').strip()[:300]} -- "
+            f"{wt} would otherwise be left on stale pre-carry content. Resolve "
+            f"the conflict between {ref} and {wt}'s current state manually, "
+            "then resume the run."
         )
 
 
