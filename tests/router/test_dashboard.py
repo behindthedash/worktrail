@@ -3096,6 +3096,7 @@ class AutoPick(unittest.TestCase):
         not_yet_due: bool = False,
         recently_released: bool = False,
         target_spec: str | None = None,
+        kind: str = "execution",
     ) -> dict:
         """Write a queue brief file and return its work_queue-list-shaped dict."""
         repo_line = f"repo: {repo}\n" if repo else ""
@@ -3113,6 +3114,7 @@ class AutoPick(unittest.TestCase):
             "not_yet_due": not_yet_due,
             "recently_released": recently_released,
             "related": [],
+            "kind": kind,
         }
 
     def test_fifo_oldest_first(self):
@@ -3123,6 +3125,44 @@ class AutoPick(unittest.TestCase):
         result = dashboard.auto_pick_brief(briefs)
         self.assertEqual(result["pick"]["id"], "20260701-000000-older")
         self.assertEqual(result["skipped"], [])
+
+    def test_all_intake_queue_claims_nothing(self):
+        """Untriaged intake briefs (`kind: intake`) are never auto-picked --
+        they have no file scope to dispatch a headless session against and
+        must go through queue_triage.py first."""
+        briefs = [
+            self._brief(
+                "20260701-000000-handoff.md", str(self.repo), kind="intake"
+            ),
+            self._brief(
+                "20260702-000000-consolidated.md", str(self.repo), kind="intake"
+            ),
+        ]
+        result = dashboard.auto_pick_brief(briefs)
+        self.assertIsNone(result["pick"])
+        self.assertEqual(
+            result["skipped"],
+            [
+                {"id": "20260701-000000-handoff", "reason": "intake-untriaged"},
+                {"id": "20260702-000000-consolidated", "reason": "intake-untriaged"},
+            ],
+        )
+
+    def test_mixed_queue_claims_only_execution_brief(self):
+        briefs = [
+            self._brief(
+                "20260701-000000-intake.md", str(self.repo), kind="intake"
+            ),
+            self._brief(
+                "20260710-000000-execution.md", str(self.repo), kind="execution"
+            ),
+        ]
+        result = dashboard.auto_pick_brief(briefs)
+        self.assertEqual(result["pick"]["id"], "20260710-000000-execution")
+        self.assertEqual(
+            result["skipped"],
+            [{"id": "20260701-000000-intake", "reason": "intake-untriaged"}],
+        )
 
     def test_blocked_skipped_with_reason(self):
         briefs = [
