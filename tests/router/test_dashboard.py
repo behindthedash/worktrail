@@ -3131,9 +3131,7 @@ class AutoPick(unittest.TestCase):
         they have no file scope to dispatch a headless session against and
         must go through queue_triage.py first."""
         briefs = [
-            self._brief(
-                "20260701-000000-handoff.md", str(self.repo), kind="intake"
-            ),
+            self._brief("20260701-000000-handoff.md", str(self.repo), kind="intake"),
             self._brief(
                 "20260702-000000-consolidated.md", str(self.repo), kind="intake"
             ),
@@ -3150,9 +3148,7 @@ class AutoPick(unittest.TestCase):
 
     def test_mixed_queue_claims_only_execution_brief(self):
         briefs = [
-            self._brief(
-                "20260701-000000-intake.md", str(self.repo), kind="intake"
-            ),
+            self._brief("20260701-000000-intake.md", str(self.repo), kind="intake"),
             self._brief(
                 "20260710-000000-execution.md", str(self.repo), kind="execution"
             ),
