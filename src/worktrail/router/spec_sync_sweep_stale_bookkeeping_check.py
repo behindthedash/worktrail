@@ -13,6 +13,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from . import dashboard
+
 
 def check_repo_stale_bookkeeping(repo: Path) -> dict[str, Any]:
     """Run the stale-bookkeeping check against repo's docs/specs/ tree.
@@ -24,6 +26,8 @@ def check_repo_stale_bookkeeping(repo: Path) -> dict[str, Any]:
     function.
     """
     try:
+        rows = dashboard.scan(repo / "docs" / "specs")
+        stale_rows = [row for row in rows if row.get("stage") == "stale-bookkeeping"]
         findings: list[dict[str, Any]] = []
         return {"repo": str(repo), "findings": findings, "error": None}
     except Exception as exc:  # noqa: BLE001 - per-repo isolation is the point
