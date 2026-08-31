@@ -259,6 +259,10 @@ pre-existing drift
                 "checkbox_filed": [],
                 "checkbox_skipped_existing": [],
                 "checkbox_failed": [],
+                "stale_bookkeeping_drifted": [],
+                "stale_bookkeeping_filed": [],
+                "stale_bookkeeping_skipped_existing": [],
+                "stale_bookkeeping_failed": [],
             },
         )
 
@@ -277,6 +281,10 @@ pre-existing drift
                 "checkbox_filed": [],
                 "checkbox_skipped_existing": [],
                 "checkbox_failed": [],
+                "stale_bookkeeping_drifted": [],
+                "stale_bookkeeping_filed": [],
+                "stale_bookkeeping_skipped_existing": [],
+                "stale_bookkeeping_failed": [],
             },
         )
 
@@ -464,6 +472,10 @@ class MainCliTests(unittest.TestCase):
                 "checkbox_filed",
                 "checkbox_skipped_existing",
                 "checkbox_failed",
+                "stale_bookkeeping_drifted",
+                "stale_bookkeeping_filed",
+                "stale_bookkeeping_skipped_existing",
+                "stale_bookkeeping_failed",
             },
         )
 

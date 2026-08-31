@@ -438,6 +438,10 @@ class SpecSyncSweepE2ETests(unittest.TestCase):
                 "checkbox_filed": [],
                 "checkbox_skipped_existing": [],
                 "checkbox_failed": [],
+                "stale_bookkeeping_drifted": [],
+                "stale_bookkeeping_filed": [],
+                "stale_bookkeeping_skipped_existing": [],
+                "stale_bookkeeping_failed": [],
             },
         )
         # No queue write ever happened -- the directory was never even created.
@@ -572,6 +576,10 @@ class SpecSyncSweepCheckboxDriftE2ETests(unittest.TestCase):
                 "checkbox_filed",
                 "checkbox_skipped_existing",
                 "checkbox_failed",
+                "stale_bookkeeping_drifted",
+                "stale_bookkeeping_filed",
+                "stale_bookkeeping_skipped_existing",
+                "stale_bookkeeping_failed",
             },
         )
         self.assertEqual(len(record["checked"]), 4)

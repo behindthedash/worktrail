@@ -85,6 +85,10 @@ def _empty_record(skipped_overlap: bool) -> dict[str, Any]:
         "checkbox_filed": [],
         "checkbox_skipped_existing": [],
         "checkbox_failed": [],
+        "stale_bookkeeping_drifted": [],
+        "stale_bookkeeping_filed": [],
+        "stale_bookkeeping_skipped_existing": [],
+        "stale_bookkeeping_failed": [],
     }
 
 
