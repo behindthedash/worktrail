@@ -242,7 +242,10 @@ class TestParseVerdicts(unittest.TestCase):
         self.assertEqual(v.evidence, raw)
         self.assertIsNone(v.confidence)
 
-    def test_invalid_verdict_type_falls_back_to_keep_with_raw_text_retained(self):
+    def test_invalid_verdict_type_falls_back_to_keep_with_own_snippet_retained(self):
+        """The fallback evidence is this brief's own matched snippet, not the
+        surrounding prose or `raw_text` at large -- see
+        `test_multi_brief_fallback_never_bleeds_another_briefs_evidence` for why."""
         snippet = (
             '{"brief_id": "a", "verdict": "not-a-real-verdict", "duplicate_of": null, '
             '"evidence": "some evidence", "confidence": "high"}'
@@ -252,7 +255,31 @@ class TestParseVerdicts(unittest.TestCase):
 
         v = verdicts[0]
         self.assertEqual(v.verdict, "keep")
-        self.assertEqual(v.evidence, raw)
+        self.assertEqual(v.evidence, snippet)
+
+    def test_multi_brief_fallback_never_bleeds_another_briefs_evidence(self):
+        """A batched evaluator call covers many briefs in one `raw_text`; brief
+        `a`'s malformed JSON must never fall back to evidence that includes
+        brief `b`'s own (valid, unrelated) verdict and evidence."""
+        a_snippet = (
+            '{"brief_id": "a", "verdict": "not-a-real-verdict", "duplicate_of": null, '
+            '"evidence": "some evidence", "confidence": "high"}'
+        )
+        b_snippet = (
+            '{"brief_id": "b", "verdict": "stale-close", "duplicate_of": null, '
+            '"evidence": "brief b private rationale, must not leak into a", '
+            '"confidence": "high"}'
+        )
+        raw = f"{a_snippet}\n{b_snippet}"
+        verdicts = qt.parse_verdicts(raw, ["a", "b"])
+
+        a_verdict = next(v for v in verdicts if v.brief_id == "a")
+        self.assertEqual(a_verdict.verdict, "keep")
+        self.assertEqual(a_verdict.evidence, a_snippet)
+        self.assertNotIn("brief b private rationale", a_verdict.evidence)
+
+        b_verdict = next(v for v in verdicts if v.brief_id == "b")
+        self.assertEqual(b_verdict.verdict, "stale-close")
 
     def test_duplicate_of_without_target_falls_back_to_keep(self):
         snippet = (
@@ -328,7 +355,7 @@ class TestParseVerdicts(unittest.TestCase):
         v = verdicts[0]
         self.assertEqual(v.verdict, "keep")
         self.assertIsNone(v.target_change)
-        self.assertEqual(v.evidence, raw)
+        self.assertEqual(v.evidence, snippet)
 
     def test_fold_into_change_without_candidates_presented_downgrades_to_keep(self):
         snippet = (
@@ -341,7 +368,7 @@ class TestParseVerdicts(unittest.TestCase):
 
         v = verdicts[0]
         self.assertEqual(v.verdict, "keep")
-        self.assertEqual(v.evidence, raw)
+        self.assertEqual(v.evidence, snippet)
 
     def test_fold_into_change_missing_target_downgrades_to_keep(self):
         snippet = (
@@ -355,7 +382,7 @@ class TestParseVerdicts(unittest.TestCase):
 
         v = verdicts[0]
         self.assertEqual(v.verdict, "keep")
-        self.assertEqual(v.evidence, raw)
+        self.assertEqual(v.evidence, snippet)
 
     def test_well_formed_propose_change_verdict_is_parsed_as_is(self):
         raw = (
@@ -382,7 +409,7 @@ class TestParseVerdicts(unittest.TestCase):
 
         v = verdicts[0]
         self.assertEqual(v.verdict, "keep")
-        self.assertEqual(v.evidence, raw)
+        self.assertEqual(v.evidence, snippet)
 
     def test_propose_change_non_kebab_case_name_downgrades_to_keep(self):
         snippet = (
@@ -396,7 +423,7 @@ class TestParseVerdicts(unittest.TestCase):
 
         v = verdicts[0]
         self.assertEqual(v.verdict, "keep")
-        self.assertEqual(v.evidence, raw)
+        self.assertEqual(v.evidence, snippet)
 
     def test_propose_change_missing_proposed_change_name_downgrades_to_keep(self):
         snippet = (
@@ -409,7 +436,7 @@ class TestParseVerdicts(unittest.TestCase):
 
         v = verdicts[0]
         self.assertEqual(v.verdict, "keep")
-        self.assertEqual(v.evidence, raw)
+        self.assertEqual(v.evidence, snippet)
 
     def test_propose_change_blank_target_repo_downgrades_to_keep(self):
         snippet = (
@@ -423,7 +450,7 @@ class TestParseVerdicts(unittest.TestCase):
 
         v = verdicts[0]
         self.assertEqual(v.verdict, "keep")
-        self.assertEqual(v.evidence, raw)
+        self.assertEqual(v.evidence, snippet)
 
     def test_propose_change_trailing_newline_name_downgrades_to_keep(self):
         snippet = (
@@ -437,7 +464,7 @@ class TestParseVerdicts(unittest.TestCase):
 
         v = verdicts[0]
         self.assertEqual(v.verdict, "keep")
-        self.assertEqual(v.evidence, raw)
+        self.assertEqual(v.evidence, snippet)
 
     def test_fold_into_change_blank_target_downgrades_to_keep(self):
         snippet = (
@@ -452,7 +479,7 @@ class TestParseVerdicts(unittest.TestCase):
 
         v = verdicts[0]
         self.assertEqual(v.verdict, "keep")
-        self.assertEqual(v.evidence, raw)
+        self.assertEqual(v.evidence, snippet)
 
     def test_needs_decision_blank_question_downgrades_to_keep(self):
         snippet = (
@@ -465,7 +492,7 @@ class TestParseVerdicts(unittest.TestCase):
 
         v = verdicts[0]
         self.assertEqual(v.verdict, "keep")
-        self.assertEqual(v.evidence, raw)
+        self.assertEqual(v.evidence, snippet)
 
     def test_well_formed_work_directly_verdict_is_parsed_as_is(self):
         raw = (
@@ -500,7 +527,7 @@ class TestParseVerdicts(unittest.TestCase):
 
         v = verdicts[0]
         self.assertEqual(v.verdict, "keep")
-        self.assertEqual(v.evidence, raw)
+        self.assertEqual(v.evidence, snippet)
 
     def test_second_candidate_used_when_first_is_malformed(self):
         good = (

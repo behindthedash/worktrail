@@ -489,10 +489,14 @@ def parse_verdicts(
     `propose-change` needs `target_repo` and a kebab-case `proposed_change_name`,
     and `needs-decision` needs `question` -- to be accepted as-is. `work-directly`
     and `keep` have no target field. Anything missing, unparsable, or failing that
-    check falls back to `keep` with the evaluator's full `raw_text` (not just the
-    malformed JSON snippet) retained as evidence, since the surrounding prose can
-    carry context a reviewer needs -- every id in `expected_brief_ids` always
-    appears exactly once in the result, in that order, never silently dropped.
+    check falls back to `keep` with the first JSON snippet the evaluator emitted
+    under this brief_id retained as evidence -- `raw_text` itself is never used
+    here when a group call batches multiple briefs, since it would otherwise bleed
+    every other brief's own verdict/evidence into this one's fallback. Only when
+    the evaluator emitted nothing identifiable for this brief_id at all does
+    `raw_text` remain the fallback, since there is no narrower snippet to prefer --
+    every id in `expected_brief_ids` always appears exactly once in the result, in
+    that order, never silently dropped.
 
     `candidates_by_brief` defaults to no candidates presented for any brief, so a
     caller that hasn't wired 2.1's ranking through yet still gets a safe,
@@ -517,7 +521,17 @@ def parse_verdicts(
     for bid in expected_brief_ids:
         chosen: Verdict | None = None
         presented_candidates = candidates_by_brief.get(bid, [])
+        # This brief's own best-effort evidence when nothing valid is found: the
+        # first JSON snippet the evaluator emitted under this brief_id, so a
+        # downgrade never falls back past it to `raw_text` -- in a multi-brief
+        # batch call, `raw_text` covers every brief's own verdict/evidence, and
+        # using it here would bleed other briefs' content into this one's record.
+        # Only when the evaluator never emitted anything identifiable for this
+        # brief_id at all does `raw_text` remain the sole available evidence.
+        fallback_evidence: str | None = None
         for snippet, obj in candidates_by_id[bid]:
+            if fallback_evidence is None:
+                fallback_evidence = snippet
             verdict_type = obj.get("verdict")
             evidence = obj.get("evidence")
             dup_raw = obj.get("duplicate_of")
@@ -562,7 +576,9 @@ def parse_verdicts(
                     brief_id=bid,
                     verdict="keep",
                     duplicate_of=None,
-                    evidence=raw_text,
+                    evidence=fallback_evidence
+                    if fallback_evidence is not None
+                    else raw_text,
                     confidence=None,
                 )
             )
