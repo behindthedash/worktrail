@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -49,6 +50,7 @@ __all__ = [
     "content_delivered_via_rewrite",
     "discover_journals",
     "extract_passed_tasks",
+    "identifiers_survive_elsewhere",
     "load_journal",
     "main",
     "resolve_base_ref",
@@ -304,6 +306,58 @@ def content_delivered_via_rewrite(
     return all(_file_content_on_base(repo, base_ref, sha, path) for path in files)
 
 
+# Matches a def/class/function/const/interface/type declaration line across
+# Python, JS/TS, and similar C-family syntaxes. A 6+ char name floor keeps
+# this to distinctive identifiers, not generic short names (`x`, `run`) that
+# would coincidentally match unrelated code and produce false confidence.
+_DEFINITION_RE = re.compile(
+    r"^\s*(?:export\s+)?(?:async\s+)?"
+    r"(?:def|class|function|const|interface|type)\s+([A-Za-z_][A-Za-z0-9_]{5,})"
+)
+
+
+def _defined_identifiers(added_lines: list[str]) -> set[str]:
+    """Distinctive names `added_lines` newly defines (function/class/const/
+    type declarations), per `_DEFINITION_RE`."""
+    identifiers = set()
+    for line in added_lines:
+        match = _DEFINITION_RE.match(line)
+        if match:
+            identifiers.add(match.group(1))
+    return identifiers
+
+
+def identifiers_survive_elsewhere(
+    repo: Path, base_ref: str, sha: str, files: list[str]
+) -> bool:
+    """True if every distinctive identifier the task's commit newly defined
+    (across all `files`) appears **somewhere** in `base_ref`'s current tree —
+    not necessarily at the same path.
+
+    This is the fallback for `content_delivered_via_rewrite`'s remaining
+    blind spot: a task's module renamed or reorganized during later
+    implementation (e.g. `spec_sync_sweep_stale_bookkeeping_check.py` shipped
+    as `spec_sync_sweep_check.py` instead — same functions, different file).
+    Weaker evidence than `content_delivered_via_rewrite` (a name match, not a
+    content match), so callers should bucket it separately.
+
+    `False` when no identifiers could be extracted at all (a diff with no
+    def/class-shaped additions — pure config, data, or edits to existing
+    function bodies) — there is nothing distinctive to search for, so this
+    check has no opinion; it never counts silence as survival.
+    """
+    identifiers: set[str] = set()
+    for path in files:
+        identifiers |= _defined_identifiers(_added_lines(repo, sha, path))
+    if not identifiers:
+        return False
+    return all(
+        _git(repo, "grep", "-q", "-F", "-e", ident, base_ref, timeout=60).returncode
+        == 0
+        for ident in identifiers
+    )
+
+
 def audit_repo(
     repo_name: str, worktrees_dir: Path, *, base_ref: str | None = None
 ) -> dict[str, Any]:
@@ -321,6 +375,7 @@ def audit_repo(
         "tasks_checked": 0,
         "confirmed_dropped": [],
         "content_delivered_via_rewrite": [],
+        "content_delivered_via_reorg": [],
         "never_shipped_by_policy": [],
         "unverifiable": [],
     }
@@ -365,6 +420,10 @@ def audit_repo(
                     canonical, resolved_base, sha, checkable
                 ):
                     result["content_delivered_via_rewrite"].append(record)
+                elif identifiers_survive_elsewhere(
+                    canonical, resolved_base, sha, checkable
+                ):
+                    result["content_delivered_via_reorg"].append(record)
                 else:
                     result["confirmed_dropped"].append(record)
             else:
@@ -403,6 +462,7 @@ def main(argv: list[str] | None = None) -> int:
     ]
     total_dropped = sum(len(r["confirmed_dropped"]) for r in results)
     total_rewritten = sum(len(r["content_delivered_via_rewrite"]) for r in results)
+    total_reorg = sum(len(r["content_delivered_via_reorg"]) for r in results)
     total_unverifiable = sum(len(r["unverifiable"]) for r in results)
 
     if args.json:
@@ -417,6 +477,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"{r['tasks_checked']} PASSED task(s) checked, "
                 f"{len(r['confirmed_dropped'])} confirmed dropped, "
                 f"{len(r['content_delivered_via_rewrite'])} delivered via rewrite, "
+                f"{len(r['content_delivered_via_reorg'])} delivered via reorg, "
                 f"{len(r['never_shipped_by_policy'])} never-shipped-by-policy, "
                 f"{len(r['unverifiable'])} unverifiable"
             )
@@ -429,6 +490,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"audit_delivery: {total_dropped} confirmed dropped task(s), "
             f"{total_rewritten} delivered via rewrite, "
+            f"{total_reorg} delivered via reorg, "
             f"{total_unverifiable} unverifiable across {len(results)} repo(s)"
         )
     return 1 if total_dropped else 0

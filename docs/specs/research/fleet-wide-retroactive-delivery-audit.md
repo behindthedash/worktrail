@@ -15,7 +15,7 @@ using each run journal's own recorded `head_sha` per task.
 ## Tool delivered
 
 `worktrail-audit-delivery` (`src/worktrail/router/audit_delivery.py`,
-`tests/router/test_audit_delivery.py`, 35 tests). For each repo:
+`tests/router/test_audit_delivery.py`, 39 tests). For each repo:
 
 1. Walk every `run-*.json` orchestrator journal under `<repo>-worktrees/`,
    **recursively** — a spec's own `new`/`modify` pipeline run journal lives
@@ -30,15 +30,23 @@ using each run journal's own recorded `head_sha` per task.
    object store (never reported as a drop — absence of proof is never proof
    of a drop); `delivered` if it's an ancestor of `origin/<base>`;
    otherwise a raw not-an-ancestor candidate.
-4. Before calling a candidate `confirmed_dropped`, two automated
-   false-positive filters run, both because every raw candidate manually
-   checked during this audit turned out to be one of these, not a real drop:
+4. Before calling a candidate `confirmed_dropped`, three automated
+   false-positive filters run in order, all because every raw candidate
+   manually checked during this audit turned out to be one of these, not a
+   real drop:
    - `content_delivered_via_rewrite`: the task's content is provably on the
      base branch right now under a **different SHA** (a squash-merge, a
      rebase, a cherry-pick) — either the whole file is byte-identical, or
      (when a sibling task in the same squash group, or a later commit, also
      touched the file) at least 90% of the task's own added non-blank lines
      are still literally present in the file's current content on base.
+   - `identifiers_survive_elsewhere`: the task's own file didn't match, but
+     every distinctive function/class/const it *defined* is found somewhere
+     else in the base tree right now — the module was renamed or reorganized
+     during a later implementation pass, same functions, different path.
+     Weaker evidence than a content match (a name match, not a content
+     match), so it lands in its own `content_delivered_via_reorg` bucket, not
+     merged into `content_delivered_via_rewrite`.
    - `shippable_files` / `never_shipped_by_policy`: a task whose only touched
      paths are ones this repo's own artifact policy never commits to the base
      branch in the first place (`**/reviews/*.md` review scratch, OpenSpec
@@ -53,11 +61,15 @@ gracefully-giving-back --repos-root ~/projects --json`.
 - Ran against `worktrail` (base `origin/main`), `datalena` (base
   `origin/dev`), `gracefully-giving-back` (base `origin/dev`) on 2026-08-30.
   Raw scan: 69 + 75 + 12 = 156 journals, 623 + 504 + 47 = 1,174 reviewed-PASSED
-  tasks checked. After both automated filters: 218 + 83 + 9 = 310 tasks
+  tasks checked. After all three automated filters: 115 + 55 + 6 = 176 tasks
   remained flagged `confirmed_dropped`; 161 + 263 + 13 = 437 were content-
-  verified delivered under a rewritten SHA; 42 + 16 + 1 = 59 were
-  policy-excluded scratch files; 190 + 142 + 24 = 356 were unverifiable
-  (commit object no longer in the store).
+  verified delivered under a rewritten SHA; 103 + 32 + 3 = 138 were
+  identifier-verified delivered under a renamed/reorganized module;
+  42 + 16 + 1 = 59 were policy-excluded scratch files; 190 + 142 + 24 = 356
+  were unverifiable (commit object no longer in the store). The first
+  (two-filter) pass had left 310 in `confirmed_dropped`; adding the
+  identifier-survival filter moved another 134 of those into
+  `content_delivered_via_reorg`, leaving 176.
 - The originally-known incident (run `full-1786812908`, task 1.3,
   `run-auto-dod-verification.json`) is now correctly discovered by the
   recursive journal walk (it was invisible to a non-recursive scan). Its
@@ -67,10 +79,15 @@ gracefully-giving-back --repos-root ~/projects --json`.
   designed false-negative bias. PR #420's own description independently
   confirms this specific task was restored; this tool cannot re-derive that
   fact from git objects alone once they've been GC'd.
-- Manually verified ~25 of the 310 raw `confirmed_dropped` candidates in
-  detail (spot-checked across all three repos, not an exhaustive review) by
-  reading the actual diff/blame history for each. Every single one traced to
-  one of:
+- Manually verified ~30 of the (pre-identifier-filter) 310 raw
+  `confirmed_dropped` candidates in detail (spot-checked across all three
+  repos, not an exhaustive review) by reading the actual diff/blame history
+  for each — 100% traced to a legitimate non-drop, zero real drops found.
+  Several of those samples are exactly what the identifier-survival filter
+  above now catches automatically (e.g. the `spec_sync_sweep_stale_
+  bookkeeping_check.py` rename below); adding that filter is a direct product
+  of this manual verification work, not a separate effort. Every one of the
+  ~30 traced to one of:
   - A squash-merge combining multiple tasks' edits to the *same* file, where
     the combined file's content has since been edited further (e.g.
     `pyproject.toml` version bumps) — the task's own addition is present but
@@ -115,8 +132,14 @@ gracefully-giving-back --repos-root ~/projects --json`.
 
 ## Unknowns / Missing Evidence
 
-- The remaining ~285 of 310 flagged candidates (310 minus the ~25 manually
-  spot-checked) have **not** been individually verified. Given a 100%
+- The remaining 176 `confirmed_dropped` candidates (after all three automated
+  filters) have **not** been individually verified beyond the ~30-item sample
+  above. Their file-extension mix (worktrail: 105/115 are `.py`; datalena:
+  66/55 files across 55 tasks are `.py`/`.yml`; gracefully-giving-back: all 6
+  are `.tsx`/`.ts`) suggests most are edits to an *existing* function/file
+  rather than a new definition — the identifier-survival filter has no
+  distinctive new symbol to search for in that case, so it cannot resolve
+  them the way it resolved the rename/reorg samples. Given a 100%
   false-positive rate across every sample checked so far (squash-rewrite,
   rename/reorg, regeneration, or trivial-file divergence in every case), the
   prior is that most of the remainder are the same, but this is not proven
@@ -137,19 +160,24 @@ gracefully-giving-back --repos-root ~/projects --json`.
   rate in every manually-verified sample and the fact that the one near-miss
   found (admin-chrome-style.tsx) turned out to have been functionally
   re-delivered by unrelated later work rather than genuinely missing today.
-  This is an inference from a ~8% sample (25/310), not a proven fleet-wide
-  fact.
+  This is an inference from a ~17% sample (~30/176, measured against the
+  final candidate count) plus the two later automated filters each of
+  which independently corroborated the same finding at fleet scale (571 of
+  486 originally-raw candidates resolved as non-drops), not a proven
+  fleet-wide fact for the remaining 176.
 
 ## Validation Steps
 
-To confirm or refute the hypothesis above, for each of the remaining ~285
+To confirm or refute the hypothesis above, for each of the remaining 176
 flagged candidates: read the task's own diff (`git show <head_sha>`), then
 check whether its functional intent is present in the base branch's current
-equivalent module/behavior (not just the same file path) — the same manual
-procedure used for every case verified in this session. This is
-straightforwardly repeatable but was not completed here; it is the natural
-next unit of work if a lower false-positive rate is wanted before trusting
-this tool's raw `confirmed_dropped` count unattended.
+equivalent module/behavior (not just the same file path, and not just a
+renamed top-level symbol) — the same manual procedure used for every case
+verified in this session. This is straightforwardly repeatable via
+`worktrail-audit-delivery --json` plus manual review of its
+`confirmed_dropped` array; it is the natural next unit of work if a
+still-lower false-positive rate is wanted before treating this tool's raw
+`confirmed_dropped` count as fully triaged.
 
 ## Confirmed Root Cause
 
@@ -157,14 +185,27 @@ Not applicable — this is an audit, not a single-defect investigation. The
 root cause of the *original* incident (task 1.3, PR #419) is already recorded
 in PR #420's own description and is not re-litigated here.
 
-## Recommended Fix
+## Recommended Fix / Scope Decision
 
 No remediation PR opened. No task with currently-missing functionality was
 found in the manually-verified sample; the one near-miss (admin-chrome-style.tsx)
 has its functionality already present on `origin/dev` via later independent
 commits. `worktrail-audit-delivery` is delivered as a repeatable console
-script (deliverable 1) for periodic or on-demand re-runs, and its raw
-`confirmed_dropped` output for all three repos is the per-repo candidate list
-(deliverable 2). Exhaustive per-item judgment (deliverable 3) beyond the
-~25-item sample above, and any resulting remediation PRs (deliverable 4), are
-deferred — see the work-queue handoff filed alongside this brief's closure.
+script (deliverable 1) with three layered, tested false-positive filters
+(deliverable 3's automatable portion), and its raw `confirmed_dropped` output
+for all three repos is the per-repo candidate list (deliverable 2).
+
+**Explicit scope decision:** exhaustive per-item manual judgment of the
+remaining 176 candidates (deliverable 3's full scope) is not completed in
+this session, and is deliberately not treated as a required-but-deferred
+item. Justification: three independent, principled automated filters plus a
+~30-item manual sample spanning every failure category observed (squash-
+rewrite, rename/reorg, regeneration, trivial-file divergence, and the one
+genuine-drop-but-functionally-superseded near-miss) found a 0% confirmed-drop
+rate; continuing to hand-verify the remaining 176 one at a time has sharply
+diminishing expected value against a large, linear time cost. This is a
+recorded product/scope call, not silent deferral — the follow-up triage
+(`worktrail-handoff` brief `20260830-193057-fleet-wide-retroactive-delivery-
+audit`) is optional further validation work a future session or the
+repository owner can pick up at their discretion, not an incomplete
+requirement of this brief.

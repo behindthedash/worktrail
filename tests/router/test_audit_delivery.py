@@ -378,6 +378,82 @@ def test_content_delivered_via_rewrite_false_with_no_files():
 
 
 # ---------------------------------------------------------------------------
+# identifiers_survive_elsewhere
+
+
+def test_identifiers_survive_elsewhere_true_when_module_renamed(tmp_path):
+    """The task's file was renamed/reorganized during later implementation;
+    the same function definition now lives under a different path."""
+    repo = _init_repo(tmp_path / "repo")
+    _commit(repo, "a.txt", "one")
+    subprocess.run(["git", "-C", str(repo), "checkout", "-q", "-b", "side"], check=True)
+    task_sha = _commit(
+        repo,
+        "src/stale_bookkeeping_check.py",
+        "def check_stale_bookkeeping(repo):\n    return True\n",
+    )
+    subprocess.run(["git", "-C", str(repo), "checkout", "-q", "main"], check=True)
+    _commit(
+        repo,
+        "src/sweep_check.py",
+        "def check_stale_bookkeeping(repo):\n    return True\n",
+    )
+
+    assert (
+        audit.identifiers_survive_elsewhere(
+            repo, "main", task_sha, ["src/stale_bookkeeping_check.py"]
+        )
+        is True
+    )
+
+
+def test_identifiers_survive_elsewhere_false_when_identifier_absent(tmp_path):
+    repo = _init_repo(tmp_path / "repo")
+    _commit(repo, "a.txt", "one")
+    subprocess.run(["git", "-C", str(repo), "checkout", "-q", "-b", "side"], check=True)
+    task_sha = _commit(
+        repo, "src/x.py", "def truly_dropped_function(repo):\n    return True\n"
+    )
+    subprocess.run(["git", "-C", str(repo), "checkout", "-q", "main"], check=True)
+
+    assert (
+        audit.identifiers_survive_elsewhere(repo, "main", task_sha, ["src/x.py"]) is False
+    )
+
+
+def test_identifiers_survive_elsewhere_false_with_no_extractable_identifiers(tmp_path):
+    """A config/data-only diff has no def/class-shaped additions -- silence
+    is never treated as survival."""
+    repo = _init_repo(tmp_path / "repo")
+    _commit(repo, "a.txt", "one")
+    subprocess.run(["git", "-C", str(repo), "checkout", "-q", "-b", "side"], check=True)
+    task_sha = _commit(repo, "config.yaml", "key: value\n")
+    subprocess.run(["git", "-C", str(repo), "checkout", "-q", "main"], check=True)
+
+    assert (
+        audit.identifiers_survive_elsewhere(repo, "main", task_sha, ["config.yaml"]) is False
+    )
+
+
+def test_identifiers_survive_elsewhere_requires_all_identifiers_present(tmp_path):
+    repo = _init_repo(tmp_path / "repo")
+    _commit(repo, "a.txt", "one")
+    subprocess.run(["git", "-C", str(repo), "checkout", "-q", "-b", "side"], check=True)
+    task_sha = _commit(
+        repo,
+        "src/x.py",
+        "def function_one(repo):\n    return True\n\n\n"
+        "def function_two_missing(repo):\n    return False\n",
+    )
+    subprocess.run(["git", "-C", str(repo), "checkout", "-q", "main"], check=True)
+    _commit(repo, "src/y.py", "def function_one(repo):\n    return True\n")
+
+    assert (
+        audit.identifiers_survive_elsewhere(repo, "main", task_sha, ["src/x.py"]) is False
+    )
+
+
+# ---------------------------------------------------------------------------
 # resolve_base_ref -- real remote
 
 
