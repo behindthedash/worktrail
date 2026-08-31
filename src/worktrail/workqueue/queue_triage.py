@@ -55,15 +55,6 @@ VALID_VERDICT_TYPES = {
 # doubled hyphen.
 _KEBAB_CASE_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
-# The verdict types `write_report()`/`cmd_evaluate()`'s text summary zero-fill and
-# count today. Deliberately narrower than `VALID_VERDICT_TYPES`: 2.4 is the task
-# that extends the report and verdict-file counts to the four new intake-triage
-# verdict types added here in 2.2 -- until then, those verdicts still parse and
-# apply correctly, they just aren't broken out in this summary.
-REPORT_VERDICT_TYPES = frozenset(
-    {"keep", "stale-close", "needs-update", "duplicate-of"}
-)
-
 _TRIAGE_HEADING_RE = re.compile(r"^##\s+Triage\s+(\d{4}-\d{2}-\d{2})\s*$", re.MULTILINE)
 
 # Codifies the 2026-07-31 pilot's lessons (see design.md's "Evaluator prompt
@@ -822,7 +813,7 @@ def write_report(
         "## Verdict counts",
         "",
     ]
-    for verdict_type in sorted(REPORT_VERDICT_TYPES):
+    for verdict_type in sorted(VALID_VERDICT_TYPES):
         lines.append(f"- {verdict_type}: {counts.get(verdict_type, 0)}")
 
     lines += ["", "## Skipped via dedup", ""]
@@ -922,7 +913,7 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         )
     else:
         counts_str = ", ".join(
-            f"{vtype}={counts.get(vtype, 0)}" for vtype in sorted(REPORT_VERDICT_TYPES)
+            f"{vtype}={counts.get(vtype, 0)}" for vtype in sorted(VALID_VERDICT_TYPES)
         )
         print(f"report: {report_path}")
         print(

@@ -952,7 +952,16 @@ class TestReportAndVerdictFileOutput(QueueTriageTestBase):
         # that constant can't cancel out on both sides of the comparison.
         expected_counts = {
             vtype: json_counts.get(vtype, 0)
-            for vtype in ("keep", "stale-close", "needs-update", "duplicate-of")
+            for vtype in (
+                "keep",
+                "stale-close",
+                "needs-update",
+                "duplicate-of",
+                "fold-into-change",
+                "propose-change",
+                "work-directly",
+                "needs-decision",
+            )
         }
         self.assertEqual(report_counts, expected_counts)
 
@@ -1079,12 +1088,25 @@ class TestReportAndVerdictFileOutput(QueueTriageTestBase):
             "stale-close": 0,
             "needs-update": 0,
             "duplicate-of": 0,
+            "fold-into-change": 0,
+            "propose-change": 0,
+            "work-directly": 0,
+            "needs-decision": 0,
         }
         expected_counts.update(json_counts)
         self.assertEqual(report_counts, expected_counts)
         self.assertEqual(
             report_counts,
-            {"keep": 2, "stale-close": 2, "needs-update": 1, "duplicate-of": 1},
+            {
+                "keep": 2,
+                "stale-close": 2,
+                "needs-update": 1,
+                "duplicate-of": 1,
+                "fold-into-change": 0,
+                "propose-change": 0,
+                "work-directly": 0,
+                "needs-decision": 0,
+            },
         )
 
         self.assertEqual(len(json_verdicts), 6)
@@ -1102,7 +1124,7 @@ class TestReportAndVerdictFileOutput(QueueTriageTestBase):
         self.assertEqual(json_verdicts, [])
 
         report_counts = self._report_counts(report_path.read_text(encoding="utf-8"))
-        self.assertEqual(report_counts, {vtype: 0 for vtype in qt.REPORT_VERDICT_TYPES})
+        self.assertEqual(report_counts, {vtype: 0 for vtype in qt.VALID_VERDICT_TYPES})
 
     def test_json_file_preserves_every_verdict_field_the_report_summarizes(self):
         verdicts = self._verdicts()
