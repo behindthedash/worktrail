@@ -127,6 +127,7 @@ from ..router import branch_selfcheck, dashboard, quarantine_selfcheck
 from ..router.policy import (
     OperatorConfigError,
     default_routing_file,
+    default_run_record_dir,
     load_policy,
     resolve_routing,
 )
@@ -134,6 +135,7 @@ from ..router.policy_selfcheck import discover_repo_names
 from ..router.poll_run import unresolved_decision_ids as _poll_unresolved_decision_ids
 from ..router.pr_labels import ensure_pr_risk_label
 from ..router.routing_cli import _check as check_routing_liveness
+from ..router.run_record import _active_conflicts
 from ..runtime.selection import NoExecutionTarget, select_cell
 from ..shared.homedir import worktrail_home
 from ..taskformats.devkit.schema import set_status_completed
@@ -1806,6 +1808,37 @@ REMEDIATION_TABLE: list[StageRemediation] = [
 ]
 
 
+def _spec_claimed_by_active_run(finding: dict[str, Any]) -> bool:
+    """True when a live (non-terminal, non-stale) `/go` run record already
+    claims `finding`'s `spec_id` on `finding`'s `repo`.
+
+    A `/go` `implement`/`modify` pipeline claims the plain `spec_id` (no
+    prefix, `#active-conflicts-scan`) for its entire lifecycle -- orchestrator
+    launch through `#sync-before-teardown` through worktree teardown -- and
+    releases it only on `finish()`. Sweep functions here (`_run_sync_pending`,
+    `close_stale_bookkeeping`, `archive_openspec_change`) build their own
+    differently-named branch (`chore/sync-$SPEC_ID` etc. vs the pipeline's own
+    `sync/$SPEC_ID`) and previously had no visibility into that claim at all,
+    so a sweep could independently land the exact work an in-flight pipeline
+    was already about to land via its own sync step -- confirmed live 2026-08-31
+    (PR #866 opened by the pipeline sat unmerged while this sweep's PR #867/#868
+    landed the same change first, leaving #866 CONFLICTING). Checking here,
+    once, before any of the three remediation actions run, closes that gap for
+    all three without threading a claim into each action individually."""
+    repo = finding.get("repo")
+    spec_id = finding.get("spec_id")
+    if repo is None or not spec_id:
+        return False
+    policy = load_policy(repo)
+    runs_dir = (
+        Path(str(policy.get("run_record_dir") or default_run_record_dir()))
+        .expanduser()
+        / Path(repo).name
+    )
+    conflicts = _active_conflicts(runs_dir, Path(repo), spec_id, exclude=None)
+    return bool(conflicts.get("live"))
+
+
 def sweep_remediations(
     repos_root: Path,
     go_repo: str | None,
@@ -1847,6 +1880,13 @@ def sweep_remediations(
     for remediation in selected:
         applied: list[dict[str, Any]] = []
         for finding in remediation.finder(repos_root, go_repo):
+            if _spec_claimed_by_active_run(finding):
+                log(
+                    f"{remediation.label}: {finding.get('repo_name')} "
+                    f"{finding.get('spec_id')}: skipped, an active /go run "
+                    f"already claims this spec"
+                )
+                continue
             selection = select_available_agent(
                 read_capacity_cache(capacity_cache), candidates, routing=routing
             )
