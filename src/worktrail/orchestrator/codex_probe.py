@@ -9,9 +9,12 @@ for the full contract this module implements.
 from __future__ import annotations
 
 import enum
+import tempfile
 from dataclasses import dataclass
 
+from worktrail.orchestrator.spawnlib import build_cmd
 from worktrail.router.skill_dispatch import prepare_codex_child_environment
+from worktrail.runtime.selection import Cell
 
 PROBE_PROMPT = "Reply with exactly the single word: ok"
 EXPECTED_REPLY = "ok"
@@ -77,3 +80,20 @@ def prepare_environment(
             success=False,
             diagnostic=str(exc),
         )
+
+
+def build_probe_command() -> tuple[list[str], str]:
+    """Build the probe's `codex` argv and an isolated scratch directory to
+    run it from.
+
+    Calls `spawnlib.build_cmd` directly -- no probe-local reimplementation
+    -- with a `codex` `Cell`, so this stays parity-tested against the same
+    helper the direct orchestrator Codex spawn path uses. The returned
+    scratch directory is created fresh under `tempfile.mkdtemp`, for the
+    caller to run the command with as `cwd`: never the invoking repository's
+    working tree, so the nested process has no repository state to mutate.
+    """
+    cell = Cell(target="codex-probe", harness="codex", model=None, effort=None, pool="subscription")
+    cmd = build_cmd(PROBE_PROMPT, cell)
+    scratch_dir = tempfile.mkdtemp(prefix="codex-probe-")
+    return cmd, scratch_dir
