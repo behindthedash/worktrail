@@ -1,47 +1,47 @@
 #!/usr/bin/env python3
 """spec_sync_sweep.py — recurring, unattended spec-sync drift sweep (REQ-018..022),
-now also running an independent checkbox-drift sweep in the same run (REQ-CHG-001).
+now also running independent checkbox-drift and stale-bookkeeping checks in the same run
+(REQ-CHG-001).
 
-Composes the sweep's four building blocks into one unattended run:
-discover every repo under `--repos-root` that has a `docs/specs/` tree
-(`spec_sync_sweep_discovery.discover_repos_with_specs`), check each for
-spec-sync drift (`spec_sync_sweep_check.check_repo_drift`), and for a
-repo with findings, file exactly one Drift Brief into `--queue-dir`
-unless an unresolved one already exists
-(`spec_sync_sweep_dedup.find_unresolved_drift_brief`,
+Composes the sweep's building blocks into one unattended run: discover every repo under
+`--repos-root` that has a `docs/specs/` tree (`spec_sync_sweep_discovery.discover_repos_with_specs`),
+check each for spec-sync drift (`spec_sync_sweep_check.check_repo_drift`), and for a
+repo with findings, file exactly one Drift Brief into `--queue-dir` unless an unresolved one
+already exists (`spec_sync_sweep_dedup.find_unresolved_drift_brief`,
 `spec_sync_sweep_brief.file_drift_brief`).
 
-For each of the same discovered repos, this run also independently checks
-for checkbox-completion drift (`spec_sync_sweep_checkbox_check.check_repo_checkbox_drift`)
-and, for a repo with hits and no unresolved checkbox-drift brief already
-outstanding, files exactly one Checkbox Drift Brief
-(`spec_sync_sweep_dedup.find_unresolved_drift_brief(repo, queue_base,
+For each of the same discovered repos, this run also independently checks for
+checkbox-completion drift (`spec_sync_sweep_checkbox_check.check_repo_checkbox_drift`) and,
+for a repo with hits and no unresolved checkbox-drift brief already outstanding, files exactly
+one Checkbox Drift Brief (`spec_sync_sweep_dedup.find_unresolved_drift_brief(repo, queue_base,
 drift_source="checkbox-drift-sweep")`, `spec_sync_sweep_checkbox_brief.file_checkbox_drift_brief`).
-The two checks are fully independent per repo: neither check's failure or
-dedup outcome for a repo affects the other check's outcome for that same
-repo (REQ-CHG-005).
 
-Single-flight locking (REQ-021, REQ-NR005): before doing anything else,
-`run_sweep()` takes a non-blocking exclusive `fcntl.flock()` on
-`--lock-file`. If a previous run is still holding it, this run returns
-immediately with `skipped_overlap: True` and performs no discovery or
-checks — so a scheduler that fires while a run is still in flight skips
-the overlapping run instead of running concurrently.
+For each of the same discovered repos, this run also independently checks for stale-bookkeeping
+tasks (`spec_sync_sweep_stale_bookkeeping_check.check_repo_stale_bookkeeping`) and, for a repo
+with findings and no unresolved stale-bookkeeping brief already outstanding, files exactly one
+stale-bookkeeping Drift Brief (`spec_sync_sweep_dedup.find_unresolved_drift_brief(repo, queue_base,
+drift_source="stale-bookkeeping-sweep")`, `spec_sync_sweep_stale_bookkeeping_brief.file_stale_bookkeeping_brief`).
 
-Failure handling deliberately treats two failure classes differently
-(Error Scenarios table): a single repo's drift check erroring is
-captured per-repo (`check_repo_drift` never raises) and every other repo
-in the run is still processed; but the queue write path failing (e.g. an
-unwritable `--queue-dir`) is the entire point of the run, so it is
-allowed to propagate out of `run_sweep()` and `main()` reports it as a
-loud, non-zero run-level failure instead of silently continuing.
+All three checks are fully independent per repo: each check's failure or dedup outcome for a repo
+does not affect the other checks' outcomes for that same repo (REQ-CHG-005).
 
-This is a plain, directly-invocable stdlib CLI (REQ-020, REQ-NR003) — no
-hosted-runner API, no network call, nothing beyond local filesystem
-access to `--repos-root` and `--queue-dir`. Wire it into a recurring
-schedule with cron, e.g. a weekly run every Monday at 06:00 (this single
-scheduled invocation runs both the spec-sync-drift and checkbox-drift
-checks; no second crontab entry is introduced):
+Single-flight locking (REQ-021, REQ-NR005): before doing anything else, `run_sweep()` takes a
+non-blocking exclusive `fcntl.flock()` on `--lock-file`. If a previous run is still holding it,
+this run returns immediately with `skipped_overlap: True` and performs no discovery or checks —
+so a scheduler that fires while a run is still in flight skips the overlapping run instead of
+running concurrently.
+
+Failure handling deliberately treats two failure classes differently (Error Scenarios table): a
+single repo's drift check erroring is captured per-repo (`check_repo_drift` never raises) and
+every other repo in the run is still processed; but the queue write path failing (e.g. an
+unwritable `--queue-dir`) is the entire point of the run, so it is allowed to propagate out of
+`run_sweep()` and `main()` reports it as a loud, non-zero run-level failure instead of silently
+continuing.
+
+This is a plain, directly-invocable stdlib CLI (REQ-020, REQ-NR003) — no hosted-runner API, no
+network call, nothing beyond local filesystem access to `--repos-root` and `--queue-dir`. Wire it
+into a recurring schedule with cron, e.g. a weekly run every Monday at 06:00 (this single scheduled
+invocation runs all three checks; no additional crontab entry is needed):
 
     0 6 * * 1 /usr/bin/python3 /path/to/spec_sync_sweep.py \\
         --repos-root ~/projects --queue-dir ~/.gitnexus/queue \\
