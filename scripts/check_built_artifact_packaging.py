@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import argparse
 import subprocess
 import sys
 import tempfile
@@ -61,46 +60,3 @@ def resolve_artifacts(
     tmp = tempfile.TemporaryDirectory()
     built_wheel, built_sdist = build_artifacts(repo, Path(tmp.name))
     return built_wheel, built_sdist, tmp
-
-
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--repo",
-        type=Path,
-        default=Path("."),
-        help="Path to the repo checkout to build (default: current directory)",
-    )
-    parser.add_argument(
-        "--wheel",
-        type=Path,
-        default=None,
-        help="Path to a pre-built wheel; must be given together with --sdist",
-    )
-    parser.add_argument(
-        "--sdist",
-        type=Path,
-        default=None,
-        help="Path to a pre-built sdist; must be given together with --wheel",
-    )
-    return parser.parse_args(argv)
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
-    try:
-        wheel, sdist, tmp = resolve_artifacts(args.repo, args.wheel, args.sdist)
-    except (BuildError, ValueError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-    try:
-        print(f"wheel: {wheel}")
-        print(f"sdist: {sdist}")
-    finally:
-        if tmp is not None:
-            tmp.cleanup()
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
