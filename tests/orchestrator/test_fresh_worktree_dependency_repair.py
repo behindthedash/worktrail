@@ -152,5 +152,81 @@ class FreshWorktreeRepairsWhenFirstCarryAttemptFails(unittest.TestCase):
             self.assertEqual(status.strip(), "", "the repair leaves a clean tree")
 
 
+class AddStackedWorktreeRetriesFailedCarryOnce(unittest.TestCase):
+    def test_transient_first_failure_recovers_on_internal_retry(self):
+        """Follow-up to brief 20260831-084532's own fix (PR #873): making
+        `_carry_squash_merged_dependencies` raise on a failed merge (instead
+        of WARNing and continuing) regressed THIS brief's guarantee, because
+        `add_stacked_worktree`'s own embedded carry call had no retry of its
+        own. A raise there now propagated straight out of `add_stacked_worktree`
+        on the very first attempt -- and deferring to the caller's follow-up
+        `_require_dependency_files_with_repair` as "the real second attempt"
+        does not actually work in general: that repair path only detects and
+        retries a MISSING declared path, so it is a silent no-op for a
+        dependency whose declared file already existed before its own edit
+        (`_require_dependency_files`'s bare existence check never raises for
+        such a file, so the repair carry it gates never even runs). So
+        `add_stacked_worktree` must be the one giving its own carry a second,
+        internal try -- mirroring `_add()`'s prune-and-retry-once pattern
+        just above it -- before raising for real."""
+        with tempfile.TemporaryDirectory() as tmp:
+            bare, repo = _init_bare_and_repo(tmp)
+            _push_upstream_squash_merge(tmp, bare)
+
+            task, by_id = _task_and_by_id(head_sha=_stale_head_sha(repo))
+
+            wt = Path(tmp) / "wt" / "102-x-task-002"
+            wt.parent.mkdir(parents=True)
+
+            real_carry = live._carry_squash_merged_dependencies
+            calls = []
+
+            def _flaky_carry(*args, **kwargs):
+                calls.append(1)
+                if len(calls) == 1:
+                    raise live.WorktreeMissingDependencyFileError(
+                        "simulated transient carry failure"
+                    )
+                return real_carry(*args, **kwargs)
+
+            with mock.patch.object(
+                live, "_carry_squash_merged_dependencies", side_effect=_flaky_carry
+            ):
+                # Must NOT raise: the first (simulated-transient) failure gets
+                # a real second, internal attempt that succeeds for real.
+                live.add_stacked_worktree(
+                    repo, "102-x", task, by_id, wt, remote="origin", base="main"
+                )
+
+            self.assertEqual(len(calls), 2, "must retry exactly once internally")
+            self.assertEqual((wt / "dep_file.py").read_text(), "dependency content\n")
+
+    def test_two_persistent_failures_raise(self):
+        """The two-strikes rule: if BOTH the first attempt and the internal
+        retry fail, `add_stacked_worktree` must raise for real -- it is the
+        definitive backstop for this shape (see class docstring above), not
+        merely a first-of-two-callers pass-through."""
+        with tempfile.TemporaryDirectory() as tmp:
+            bare, repo = _init_bare_and_repo(tmp)
+            _push_upstream_squash_merge(tmp, bare)
+
+            task, by_id = _task_and_by_id(head_sha=_stale_head_sha(repo))
+
+            wt = Path(tmp) / "wt" / "102-x-task-002"
+            wt.parent.mkdir(parents=True)
+
+            with mock.patch.object(
+                live,
+                "_carry_squash_merged_dependencies",
+                side_effect=live.WorktreeMissingDependencyFileError(
+                    "simulated persistent carry failure"
+                ),
+            ):
+                with self.assertRaises(live.WorktreeMissingDependencyFileError):
+                    live.add_stacked_worktree(
+                        repo, "102-x", task, by_id, wt, remote="origin", base="main"
+                    )
+
+
 if __name__ == "__main__":
     unittest.main()
