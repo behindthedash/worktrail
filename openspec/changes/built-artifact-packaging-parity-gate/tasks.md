@@ -1,11 +1,11 @@
 ## 1. Metadata extraction helpers
 
-- [ ] 1.1 Add `scripts/check_built_artifact_packaging.py` with functions to
+- [x] 1.1 Add `scripts/check_built_artifact_packaging.py` with functions to
       build a wheel and sdist via a `python -m build` subprocess into a
       `tempfile.TemporaryDirectory()` when no artifact paths are supplied,
       and to accept `--wheel`/`--sdist` paths instead (skipping the build)
       for the CI invocation. (Requirement: Hermetic artifact build)
-- [ ] 1.2 Add wheel metadata extraction: read `METADATA` and
+- [x] 1.2 Add wheel metadata extraction: read `METADATA` and
       `entry_points.txt` from the built/given wheel via `zipfile`, parse
       `METADATA`'s `Version` header with `email.parser`, and parse
       `entry_points.txt`'s `[console_scripts]` section with `configparser`
