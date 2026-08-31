@@ -1,3 +1,4 @@
+import io
 import json
 import subprocess
 import tempfile
@@ -135,6 +136,62 @@ class GitNexusPreflightTests(unittest.TestCase):
                 result = gitnexus_preflight.check(root, Path(tmp) / "registry.json")
         self.assertEqual(result["status"], "unavailable")
         self.assertEqual(result["reason"], "canonical-repo-unavailable")
+
+
+class GitNexusPreflightCliTests(unittest.TestCase):
+    def test_json_output_and_advisory_exit_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            root.mkdir()
+            with (
+                mock.patch.object(
+                    gitnexus_preflight, "canonical_repo_root", return_value=None
+                ),
+                mock.patch("sys.stdout", new_callable=io.StringIO) as out,
+            ):
+                exit_code = gitnexus_preflight.main(
+                    [
+                        "--repo",
+                        str(root),
+                        "--registry",
+                        str(Path(tmp) / "missing.json"),
+                        "--json",
+                    ]
+                )
+        self.assertEqual(exit_code, 0)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["status"], "unavailable")
+        self.assertEqual(payload["reason"], "canonical-repo-unavailable")
+
+    def test_strict_exits_nonzero_on_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            root.mkdir()
+            with mock.patch.object(
+                gitnexus_preflight, "canonical_repo_root", return_value=None
+            ):
+                exit_code = gitnexus_preflight.main(
+                    [
+                        "--repo",
+                        str(root),
+                        "--registry",
+                        str(Path(tmp) / "missing.json"),
+                        "--strict",
+                    ]
+                )
+        self.assertEqual(exit_code, 1)
+
+    def test_default_no_strict_exits_zero_even_when_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            root.mkdir()
+            with mock.patch.object(
+                gitnexus_preflight, "canonical_repo_root", return_value=None
+            ):
+                exit_code = gitnexus_preflight.main(
+                    ["--repo", str(root), "--registry", str(Path(tmp) / "missing.json")]
+                )
+        self.assertEqual(exit_code, 0)
 
 
 if __name__ == "__main__":

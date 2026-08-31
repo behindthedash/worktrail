@@ -8,10 +8,12 @@ worktree and never treats an unavailable index as a task failure.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import shlex
 import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -214,3 +216,52 @@ def prompt_note(capability: dict[str, Any]) -> str:
         f"{capability.get('reason', 'unknown')}). Proceed using the actual worktree's "
         "rg/read/test evidence; do not auto-index or create a worktree-local GitNexus index."
     )
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Operator/CI-facing evidence check: is the canonical index readable right now?
+
+    Advisory only -- always exits 0 (``--strict`` opts a caller into a non-zero exit
+    on an unavailable/degraded result) so this can run in CI or by hand without
+    turning a per-machine GitNexus registration gap into a build failure. Never
+    indexes anything; ``check()`` only reads the registry and probes the MCP server.
+    """
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--repo", default=".", help="repo checkout to check (default: cwd)"
+    )
+    parser.add_argument(
+        "--registry",
+        default=None,
+        help="path to the GitNexus registry (default: $GITNEXUS_REGISTRY or "
+        "~/.gitnexus/registry.json)",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=5.0,
+        help="MCP probe timeout in seconds (default: 5.0)",
+    )
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="exit 1 when the capability is unavailable, instead of always exiting 0",
+    )
+    args = parser.parse_args(argv)
+
+    registry_path = Path(args.registry).expanduser() if args.registry else None
+    result = check(Path(args.repo), registry_path, timeout=args.timeout)
+
+    if args.json:
+        print(json.dumps(result))
+    else:
+        print(prompt_note(result))
+
+    if args.strict and result["status"] != "available":
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
