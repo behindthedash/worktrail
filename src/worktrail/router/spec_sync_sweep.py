@@ -222,7 +222,11 @@ def main(argv: list[str] | None = None) -> int:
             f"checkbox-drift: {len(record['checkbox_drifted'])} drifted, "
             f"{len(record['checkbox_filed'])} filed, "
             f"{len(record['checkbox_skipped_existing'])} already outstanding, "
-            f"{len(record['checkbox_failed'])} failed"
+            f"{len(record['checkbox_failed'])} failed; "
+            f"stale-bookkeeping: {len(record['stale_bookkeeping_drifted'])} drifted, "
+            f"{len(record['stale_bookkeeping_filed'])} filed, "
+            f"{len(record['stale_bookkeeping_skipped_existing'])} already outstanding, "
+            f"{len(record['stale_bookkeeping_failed'])} failed"
         )
 
     return 0
