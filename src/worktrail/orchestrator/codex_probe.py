@@ -9,6 +9,7 @@ for the full contract this module implements.
 from __future__ import annotations
 
 import enum
+import os
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -104,6 +105,44 @@ def build_probe_command() -> tuple[list[str], str]:
     cmd = build_cmd(PROBE_PROMPT, cell)
     scratch_dir = tempfile.mkdtemp(prefix="codex-probe-")
     return cmd, scratch_dir
+
+
+@dataclass(frozen=True)
+class NoOpScopeSnapshot:
+    """A point-in-time snapshot of everything the probe's no-op scope
+    guarantee covers: the scratch directory's contents and the invoking
+    repository's working-tree status.
+
+    Taken once before spawning and again after the run completes; a diff
+    between the two proves (or disproves) that the nested process did no
+    repository work.
+    """
+
+    scratch_listing: tuple[str, ...]
+    repo_git_status: str
+
+
+def snapshot_no_op_scope(scratch_dir: str, repo_dir: str) -> NoOpScopeSnapshot:
+    """Snapshot the probe's no-op scope before spawning.
+
+    Captures the scratch directory's file listing (the directory the probe
+    itself runs in as `cwd`) and `git status --porcelain` of `repo_dir` --
+    the maintainer's repository working tree the probe was invoked from,
+    never the scratch dir -- so a post-run re-snapshot can detect any
+    mutation to either root.
+    """
+    scratch_listing = tuple(sorted(os.listdir(scratch_dir)))
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=repo_dir,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return NoOpScopeSnapshot(
+        scratch_listing=scratch_listing,
+        repo_git_status=status.stdout,
+    )
 
 
 def run_probe_command(
