@@ -30,6 +30,7 @@ def build_artifacts(repo: Path, out_dir: Path) -> tuple[Path, Path]:
         [sys.executable, "-m", "build", "--outdir", str(out_dir), str(repo)],
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode != 0:
         raise BuildError(
