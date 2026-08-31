@@ -3390,6 +3390,41 @@ def test_sweep_remediations_skips_finding_when_spec_claimed_by_active_run(
     )
 
 
+def test_sweep_remediations_proceeds_when_active_run_check_raises(
+    monkeypatch, tmp_path
+):
+    # A policy/run-record read error in the new claim check must not abort
+    # the whole sweep -- same one-finding-must-not-block-the-rest guarantee
+    # remediation.action()'s own try/except already provides.
+    def finder(repos_root, go_repo):
+        return [{"repo": Path("/fake/repo"), "repo_name": "repo-a", "spec_id": "spec-a"}]
+
+    def action(finding, agent, timeout, spawner, log):
+        return {"repo": finding["repo_name"], "spec_id": finding["spec_id"]}
+
+    fake_table = [StageRemediation("row-a", "label-a", finder, action)]
+    monkeypatch.setattr(drain, "REMEDIATION_TABLE", fake_table)
+    monkeypatch.setattr(
+        drain,
+        "_spec_claimed_by_active_run",
+        mock.Mock(side_effect=RuntimeError("policy.yaml is malformed")),
+    )
+
+    logs = []
+    results = sweep_remediations(
+        Path("/fake/root"),
+        None,
+        ["claude"],
+        tmp_path / "capacity.json",
+        60,
+        lambda c, t: SpawnOutcome(0),
+        logs.append,
+    )
+
+    assert results["row-a"] == [{"repo": "repo-a", "spec_id": "spec-a"}]
+    assert any("active-run claim check failed" in line for line in logs)
+
+
 def test_sweep_remediations_proceeds_when_no_active_claim(monkeypatch, tmp_path):
     repo_root = tmp_path / "target-repo"
     repo_root.mkdir()

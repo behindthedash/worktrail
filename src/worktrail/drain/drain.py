@@ -1880,7 +1880,20 @@ def sweep_remediations(
     for remediation in selected:
         applied: list[dict[str, Any]] = []
         for finding in remediation.finder(repos_root, go_repo):
-            if _spec_claimed_by_active_run(finding):
+            try:
+                claimed = _spec_claimed_by_active_run(finding)
+            except Exception as exc:  # noqa: BLE001 — same one-finding-must-
+                # not-block-the-rest guarantee as the remediation.action()
+                # try/except below; fail open (proceed with the finding)
+                # rather than let a policy/run-record read error silently
+                # abort the whole sweep.
+                claimed = False
+                log(
+                    f"{remediation.label}: {finding.get('repo_name')} "
+                    f"{finding.get('spec_id')}: active-run claim check failed, "
+                    f"proceeding anyway: {exc}"
+                )
+            if claimed:
                 log(
                     f"{remediation.label}: {finding.get('repo_name')} "
                     f"{finding.get('spec_id')}: skipped, an active /go run "
