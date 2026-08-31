@@ -111,6 +111,21 @@ class TestLocation(QueueTestBase):
         self.assertEqual(q.base_dir(), Path("~/work-queue").expanduser())
 
 
+class TestBriefKind(unittest.TestCase):
+    def test_intake_when_no_seeded_from(self):
+        self.assertEqual(q.brief_kind({}), "intake")
+
+    def test_execution_when_seeded_from_present(self):
+        self.assertEqual(q.brief_kind({"seeded-from": "some-source-id"}), "execution")
+
+    def test_intake_when_seeded_from_empty(self):
+        self.assertEqual(q.brief_kind({"seeded-from": ""}), "intake")
+
+    def test_intake_for_consolidated_batch_frontmatter(self):
+        """related: alone (no seeded-from) is still intake."""
+        self.assertEqual(q.brief_kind({"related": ["a", "b"]}), "intake")
+
+
 class TestList(QueueTestBase):
     def test_empty_and_missing(self):
         self.assertEqual(q.list_queue()["briefs"], [])
@@ -172,6 +187,33 @@ class TestList(QueueTestBase):
         )
         briefs = q.list_queue()["briefs"]
         self.assertEqual(briefs[0]["related"], [])
+
+    def test_kind_intake_for_plain_handoff_brief(self):
+        """A raw handoff brief with no seeded-from carries kind: intake."""
+        self.write("20260101-000000-a.md", focus="fix the thing")
+        briefs = q.list_queue()["briefs"]
+        self.assertEqual(briefs[0]["kind"], "intake")
+
+    def test_kind_execution_for_seeded_brief(self):
+        """A brief with a non-empty seeded-from carries kind: execution."""
+        self.write(
+            "20260101-000000-a.md",
+            focus="do the task",
+            extra="seeded-from: some-source-id",
+        )
+        briefs = q.list_queue()["briefs"]
+        self.assertEqual(briefs[0]["kind"], "execution")
+
+    def test_kind_intake_for_consolidated_brief(self):
+        """A consolidated batch (## Consolidated from + related:) carries no
+        seeded-from and so classifies as intake, not execution."""
+        p = self.queue / "20260101-000000-batch.md"
+        p.write_text(
+            _consolidated_brief("batch work", ["member-a", "member-b"], status="queued"),
+            encoding="utf-8",
+        )
+        briefs = q.list_queue()["briefs"]
+        self.assertEqual(briefs[0]["kind"], "intake")
 
     def test_frontmatter_without_trailing_newline_still_parses(self):
         p = self.queue / "20260101-000000-a.md"

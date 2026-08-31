@@ -825,12 +825,27 @@ def _awaiting_decision_info(path: Path) -> dict[str, Any]:
     }
 
 
+def brief_kind(frontmatter: dict[str, Any]) -> str:
+    """`"execution"` iff `frontmatter` carries a non-empty `seeded-from:`
+    value, `"intake"` otherwise.
+
+    Consolidated batches (`related:` in frontmatter, `## Consolidated from`
+    in the body) carry no `seeded-from:` and so classify as `"intake"` --
+    they still need triage before they can be worked, same as a raw
+    handoff brief.
+    """
+    return "execution" if frontmatter.get("seeded-from") else "intake"
+
+
 def list_queue() -> dict[str, Any]:
     """Queue briefs newest-first:
 
     {"briefs": [{filename, path, focus, repo, blocked, not_yet_due,
     recently_released, recently_released_by, recently_released_at, related,
-    awaiting_decision, decision_status, unparsable}, ...]}.
+    awaiting_decision, decision_status, unparsable, kind}, ...]}.
+
+    `kind` is `"execution"` for a seeded brief, `"intake"` for everything
+    else (handoff and consolidated briefs) -- see `brief_kind()`.
 
     A brief awaiting a still-open decision reports `blocked: True` — every
     ready-count and auto-pick consumer already keys on that flag, so the brief
@@ -858,6 +873,7 @@ def list_queue() -> dict[str, Any]:
             "related": related if isinstance(related, list) else [],
             "triage": fm.get("triage") if fm.get("triage") in VALID_TRIAGE else None,
             "unparsable": _frontmatter_unparsable(f),
+            "kind": brief_kind(fm),
         }
 
     return {"briefs": [_brief_dict(f) for f in _md_files(queue_dir())]}
