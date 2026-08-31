@@ -1831,8 +1831,7 @@ def _spec_claimed_by_active_run(finding: dict[str, Any]) -> bool:
         return False
     policy = load_policy(repo)
     runs_dir = (
-        Path(str(policy.get("run_record_dir") or default_run_record_dir()))
-        .expanduser()
+        Path(str(policy.get("run_record_dir") or default_run_record_dir())).expanduser()
         / Path(repo).name
     )
     conflicts = _active_conflicts(runs_dir, Path(repo), spec_id, exclude=None)

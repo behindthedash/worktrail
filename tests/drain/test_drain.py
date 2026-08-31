@@ -12,7 +12,6 @@ from unittest import mock
 import pytest
 
 from worktrail.drain import drain
-from worktrail.router import run_record as run_record_mod
 from worktrail.drain.drain import (
     MAX_TRANSCRIPT_FILES,
     PROMPT,
@@ -65,6 +64,7 @@ from worktrail.drain.summary_contract import (
     stop_semantics,
 )
 from worktrail.orchestrator import agent_capacity
+from worktrail.router import run_record as run_record_mod
 
 # ---------------------------------------------------------------------------
 # build_command
@@ -3397,7 +3397,9 @@ def test_sweep_remediations_proceeds_when_active_run_check_raises(
     # the whole sweep -- same one-finding-must-not-block-the-rest guarantee
     # remediation.action()'s own try/except already provides.
     def finder(repos_root, go_repo):
-        return [{"repo": Path("/fake/repo"), "repo_name": "repo-a", "spec_id": "spec-a"}]
+        return [
+            {"repo": Path("/fake/repo"), "repo_name": "repo-a", "spec_id": "spec-a"}
+        ]
 
     def action(finding, agent, timeout, spawner, log):
         return {"repo": finding["repo_name"], "spec_id": finding["spec_id"]}
