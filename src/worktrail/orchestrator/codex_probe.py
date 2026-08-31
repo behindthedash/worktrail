@@ -11,6 +11,9 @@ from __future__ import annotations
 import enum
 from dataclasses import dataclass
 
+PROBE_PROMPT = "Reply with exactly the single word: ok"
+EXPECTED_REPLY = "ok"
+
 
 class StageOutcome(str, enum.Enum):
     """The fixed, ordered set of stages the probe classifies a run into.
