@@ -3,14 +3,21 @@
 
 from __future__ import annotations
 
+import configparser
+import email.parser
 import subprocess
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 
 
 class BuildError(RuntimeError):
     """Raised when the `python -m build` subprocess fails."""
+
+
+class MetadataError(RuntimeError):
+    """Raised when a built/given artifact is missing expected metadata."""
 
 
 def build_artifacts(repo: Path, out_dir: Path) -> tuple[Path, Path]:
@@ -60,3 +67,50 @@ def resolve_artifacts(
     tmp = tempfile.TemporaryDirectory()
     built_wheel, built_sdist = build_artifacts(repo, Path(tmp.name))
     return built_wheel, built_sdist, tmp
+
+
+def _find_dist_info_member(names: list[str], filename: str) -> str:
+    """Return the wheel zip member for `filename` inside its `.dist-info/` dir.
+
+    Raises `MetadataError` if the wheel has zero or more than one such
+    member, since either means the wheel's metadata cannot be trusted.
+    """
+    matches = [name for name in names if name.endswith(f".dist-info/{filename}")]
+    if not matches:
+        raise MetadataError(f"wheel is missing {filename} in its .dist-info directory")
+    if len(matches) > 1:
+        raise MetadataError(f"wheel has multiple {filename} entries: {matches}")
+    return matches[0]
+
+
+def extract_wheel_metadata(wheel: Path) -> tuple[str, frozenset[str]]:
+    """Extract the version and console-script names from `wheel`.
+
+    Reads `METADATA` and `entry_points.txt` out of the wheel's
+    `.dist-info/` directory via `zipfile`. `METADATA`'s `Version` header is
+    parsed with `email.parser`; `entry_points.txt`'s `[console_scripts]`
+    section is parsed with `configparser`, and a missing section yields an
+    empty set rather than an error. Raises `MetadataError` if `METADATA` or
+    `entry_points.txt` itself is missing from the wheel.
+    """
+    with zipfile.ZipFile(wheel) as zf:
+        names = zf.namelist()
+
+        metadata_name = _find_dist_info_member(names, "METADATA")
+        with zf.open(metadata_name) as f:
+            metadata = email.parser.BytesParser().parse(f)
+        version = metadata["Version"]
+
+        entry_points_name = _find_dist_info_member(names, "entry_points.txt")
+        with zf.open(entry_points_name) as f:
+            entry_points_text = f.read().decode("utf-8")
+
+    parser = configparser.ConfigParser()
+    parser.optionxform = str
+    parser.read_string(entry_points_text)
+    if parser.has_section("console_scripts"):
+        console_scripts = frozenset(parser.options("console_scripts"))
+    else:
+        console_scripts = frozenset()
+
+    return version, console_scripts
