@@ -5,6 +5,7 @@ import os
 import subprocess
 import tempfile
 from datetime import datetime, timedelta, timezone
+from io import StringIO
 from pathlib import Path
 from unittest import mock
 
@@ -63,6 +64,7 @@ from worktrail.drain.summary_contract import (
     stop_semantics,
 )
 from worktrail.orchestrator import agent_capacity
+from worktrail.router import run_record as run_record_mod
 
 # ---------------------------------------------------------------------------
 # build_command
@@ -3318,6 +3320,142 @@ def test_sweep_remediations_isolates_per_finding_failure(monkeypatch, tmp_path):
             "pr_url": "https://example.invalid/pr/1",
         }
     ]
+
+
+def test_sweep_remediations_skips_finding_when_spec_claimed_by_active_run(
+    monkeypatch, tmp_path
+):
+    # PR #866/#867/#868 incident: a live `/go` pipeline claims the plain
+    # spec_id for its whole lifecycle (#active-conflicts-scan); a sweep
+    # finding for that same spec_id must be skipped, not raced.
+    repo_root = tmp_path / "target-repo"
+    repo_root.mkdir()
+    subprocess.run(
+        ["git", "init", "-b", "main"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+    )
+    runs_root = tmp_path / "runs"
+    (repo_root / ".worktrail").mkdir()
+    (repo_root / ".worktrail" / "policy.yaml").write_text(
+        f"run_record_dir: {runs_root}\n"
+    )
+
+    out = StringIO()
+    with mock.patch("sys.stdout", out):
+        rc = run_record_mod.main(
+            [
+                "start",
+                "--repo",
+                str(repo_root),
+                "--request",
+                "in-flight sync",
+                "--route",
+                "D",
+                "--risk",
+                "low",
+                "--dir",
+                str(runs_root),
+            ]
+        )
+    assert rc == 0
+    started = json.loads(out.getvalue())
+    run_record_mod.main(["set", started["path"], "specification", "spec-a"])
+
+    def finder(repos_root, go_repo):
+        return [{"repo": repo_root, "repo_name": "target-repo", "spec_id": "spec-a"}]
+
+    def action(finding, agent, timeout, spawner, log):
+        raise AssertionError("action must not run when the spec is actively claimed")
+
+    fake_table = [StageRemediation("row-a", "label-a", finder, action)]
+    monkeypatch.setattr(drain, "REMEDIATION_TABLE", fake_table)
+
+    logs = []
+    results = sweep_remediations(
+        Path("/fake/root"),
+        None,
+        ["claude"],
+        tmp_path / "capacity.json",
+        60,
+        lambda c, t: SpawnOutcome(0),
+        logs.append,
+    )
+
+    assert results["row-a"] == []
+    assert any(
+        "target-repo" in line and "spec-a" in line and "active /go run" in line
+        for line in logs
+    )
+
+
+def test_sweep_remediations_proceeds_when_active_run_check_raises(
+    monkeypatch, tmp_path
+):
+    # A policy/run-record read error in the new claim check must not abort
+    # the whole sweep -- same one-finding-must-not-block-the-rest guarantee
+    # remediation.action()'s own try/except already provides.
+    def finder(repos_root, go_repo):
+        return [
+            {"repo": Path("/fake/repo"), "repo_name": "repo-a", "spec_id": "spec-a"}
+        ]
+
+    def action(finding, agent, timeout, spawner, log):
+        return {"repo": finding["repo_name"], "spec_id": finding["spec_id"]}
+
+    fake_table = [StageRemediation("row-a", "label-a", finder, action)]
+    monkeypatch.setattr(drain, "REMEDIATION_TABLE", fake_table)
+    monkeypatch.setattr(
+        drain,
+        "_spec_claimed_by_active_run",
+        mock.Mock(side_effect=RuntimeError("policy.yaml is malformed")),
+    )
+
+    logs = []
+    results = sweep_remediations(
+        Path("/fake/root"),
+        None,
+        ["claude"],
+        tmp_path / "capacity.json",
+        60,
+        lambda c, t: SpawnOutcome(0),
+        logs.append,
+    )
+
+    assert results["row-a"] == [{"repo": "repo-a", "spec_id": "spec-a"}]
+    assert any("active-run claim check failed" in line for line in logs)
+
+
+def test_sweep_remediations_proceeds_when_no_active_claim(monkeypatch, tmp_path):
+    repo_root = tmp_path / "target-repo"
+    repo_root.mkdir()
+    runs_root = tmp_path / "runs"
+    (repo_root / ".worktrail").mkdir()
+    (repo_root / ".worktrail" / "policy.yaml").write_text(
+        f"run_record_dir: {runs_root}\n"
+    )
+
+    def finder(repos_root, go_repo):
+        return [{"repo": repo_root, "repo_name": "target-repo", "spec_id": "spec-a"}]
+
+    def action(finding, agent, timeout, spawner, log):
+        return {"repo": finding["repo_name"], "spec_id": finding["spec_id"]}
+
+    fake_table = [StageRemediation("row-a", "label-a", finder, action)]
+    monkeypatch.setattr(drain, "REMEDIATION_TABLE", fake_table)
+
+    results = sweep_remediations(
+        Path("/fake/root"),
+        None,
+        ["claude"],
+        tmp_path / "capacity.json",
+        60,
+        lambda c, t: SpawnOutcome(0),
+        lambda _l: None,
+    )
+
+    assert results["row-a"] == [{"repo": "target-repo", "spec_id": "spec-a"}]
 
 
 def test_sweep_remediations_keys_filter_restricts_rows(monkeypatch, tmp_path):
