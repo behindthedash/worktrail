@@ -61,7 +61,7 @@
 
 ## 4. Tests
 
-- [ ] 4.1 Add `tests/router/test_spec_sync_sweep_stale_bookkeeping_check.py`: a repo whose
+- [x] 4.1 Add `tests/router/test_spec_sync_sweep_stale_bookkeeping_check.py`: a repo whose
       `dashboard.scan()` output includes a `stage: "stale-bookkeeping"` row yields matching
       findings; a repo with no such row yields `{"findings": [], "error": None}`; a repo whose
       scan raises is captured in `error` instead of propagating.
