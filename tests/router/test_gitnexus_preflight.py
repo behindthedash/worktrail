@@ -150,7 +150,13 @@ class GitNexusPreflightCliTests(unittest.TestCase):
                 mock.patch("sys.stdout", new_callable=io.StringIO) as out,
             ):
                 exit_code = gitnexus_preflight.main(
-                    ["--repo", str(root), "--registry", str(Path(tmp) / "missing.json"), "--json"]
+                    [
+                        "--repo",
+                        str(root),
+                        "--registry",
+                        str(Path(tmp) / "missing.json"),
+                        "--json",
+                    ]
                 )
         self.assertEqual(exit_code, 0)
         payload = json.loads(out.getvalue())
@@ -165,7 +171,13 @@ class GitNexusPreflightCliTests(unittest.TestCase):
                 gitnexus_preflight, "canonical_repo_root", return_value=None
             ):
                 exit_code = gitnexus_preflight.main(
-                    ["--repo", str(root), "--registry", str(Path(tmp) / "missing.json"), "--strict"]
+                    [
+                        "--repo",
+                        str(root),
+                        "--registry",
+                        str(Path(tmp) / "missing.json"),
+                        "--strict",
+                    ]
                 )
         self.assertEqual(exit_code, 1)
 
