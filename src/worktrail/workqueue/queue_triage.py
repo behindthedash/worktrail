@@ -60,7 +60,9 @@ _KEBAB_CASE_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 # that extends the report and verdict-file counts to the four new intake-triage
 # verdict types added here in 2.2 -- until then, those verdicts still parse and
 # apply correctly, they just aren't broken out in this summary.
-REPORT_VERDICT_TYPES = frozenset({"keep", "stale-close", "needs-update", "duplicate-of"})
+REPORT_VERDICT_TYPES = frozenset(
+    {"keep", "stale-close", "needs-update", "duplicate-of"}
+)
 
 _TRIAGE_HEADING_RE = re.compile(r"^##\s+Triage\s+(\d{4}-\d{2}-\d{2})\s*$", re.MULTILINE)
 
@@ -465,10 +467,7 @@ def _has_valid_target(
         return duplicate_of is not None
     if verdict_type == "fold-into-change":
         target_change = obj.get("target_change")
-        return (
-            isinstance(target_change, str)
-            and target_change in presented_candidates
-        )
+        return isinstance(target_change, str) and target_change in presented_candidates
     if verdict_type == "propose-change":
         target_repo = obj.get("target_repo")
         proposed_change_name = obj.get("proposed_change_name")
@@ -499,9 +498,9 @@ def parse_verdicts(
     `propose-change` needs `target_repo` and a kebab-case `proposed_change_name`,
     and `needs-decision` needs `question` -- to be accepted as-is. `work-directly`
     and `keep` have no target field. Anything missing, unparsable, or failing that
-    check falls back to `keep` with the evaluator's raw output (the specific
-    malformed JSON snippet if one was found for that brief, else the full
-    `raw_text`) retained as evidence -- every id in `expected_brief_ids` always
+    check falls back to `keep` with the evaluator's full `raw_text` (not just the
+    malformed JSON snippet) retained as evidence, since the surrounding prose can
+    carry context a reviewer needs -- every id in `expected_brief_ids` always
     appears exactly once in the result, in that order, never silently dropped.
 
     `candidates_by_brief` defaults to no candidates presented for any brief, so a
@@ -526,7 +525,6 @@ def parse_verdicts(
     verdicts: list[Verdict] = []
     for bid in expected_brief_ids:
         chosen: Verdict | None = None
-        fallback_evidence: str | None = None
         presented_candidates = candidates_by_brief.get(bid, [])
         for snippet, obj in candidates_by_id[bid]:
             verdict_type = obj.get("verdict")
@@ -564,8 +562,6 @@ def parse_verdicts(
                     question=question if isinstance(question, str) else None,
                 )
                 break
-            if fallback_evidence is None:
-                fallback_evidence = snippet
 
         if chosen is not None:
             verdicts.append(chosen)
@@ -575,9 +571,7 @@ def parse_verdicts(
                     brief_id=bid,
                     verdict="keep",
                     duplicate_of=None,
-                    evidence=fallback_evidence
-                    if fallback_evidence is not None
-                    else raw_text,
+                    evidence=raw_text,
                     confidence=None,
                 )
             )

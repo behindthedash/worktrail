@@ -242,7 +242,7 @@ class TestParseVerdicts(unittest.TestCase):
         self.assertEqual(v.evidence, raw)
         self.assertIsNone(v.confidence)
 
-    def test_invalid_verdict_type_falls_back_to_keep_with_snippet_retained(self):
+    def test_invalid_verdict_type_falls_back_to_keep_with_raw_text_retained(self):
         snippet = (
             '{"brief_id": "a", "verdict": "not-a-real-verdict", "duplicate_of": null, '
             '"evidence": "some evidence", "confidence": "high"}'
@@ -252,7 +252,7 @@ class TestParseVerdicts(unittest.TestCase):
 
         v = verdicts[0]
         self.assertEqual(v.verdict, "keep")
-        self.assertEqual(v.evidence, snippet)
+        self.assertEqual(v.evidence, raw)
 
     def test_duplicate_of_without_target_falls_back_to_keep(self):
         snippet = (
@@ -320,14 +320,15 @@ class TestParseVerdicts(unittest.TestCase):
             '"target_change": "not-a-presented-candidate", '
             '"evidence": "looks related", "confidence": "medium"}'
         )
+        raw = f"analysis before verdict\n{snippet}\nanalysis after verdict"
         verdicts = qt.parse_verdicts(
-            snippet, ["a"], candidates_by_brief={"a": ["widget-export-pipeline"]}
+            raw, ["a"], candidates_by_brief={"a": ["widget-export-pipeline"]}
         )
 
         v = verdicts[0]
         self.assertEqual(v.verdict, "keep")
         self.assertIsNone(v.target_change)
-        self.assertEqual(v.evidence, snippet)
+        self.assertEqual(v.evidence, raw)
 
     def test_fold_into_change_without_candidates_presented_downgrades_to_keep(self):
         snippet = (
@@ -335,24 +336,26 @@ class TestParseVerdicts(unittest.TestCase):
             '"target_change": "widget-export-pipeline", '
             '"evidence": "looks related", "confidence": "medium"}'
         )
-        verdicts = qt.parse_verdicts(snippet, ["a"])
+        raw = f"analysis before verdict\n{snippet}\nanalysis after verdict"
+        verdicts = qt.parse_verdicts(raw, ["a"])
 
         v = verdicts[0]
         self.assertEqual(v.verdict, "keep")
-        self.assertEqual(v.evidence, snippet)
+        self.assertEqual(v.evidence, raw)
 
     def test_fold_into_change_missing_target_downgrades_to_keep(self):
         snippet = (
             '{"brief_id": "a", "verdict": "fold-into-change", "duplicate_of": null, '
             '"evidence": "looks related", "confidence": "medium"}'
         )
+        raw = f"analysis before verdict\n{snippet}\nanalysis after verdict"
         verdicts = qt.parse_verdicts(
-            snippet, ["a"], candidates_by_brief={"a": ["widget-export-pipeline"]}
+            raw, ["a"], candidates_by_brief={"a": ["widget-export-pipeline"]}
         )
 
         v = verdicts[0]
         self.assertEqual(v.verdict, "keep")
-        self.assertEqual(v.evidence, snippet)
+        self.assertEqual(v.evidence, raw)
 
     def test_well_formed_propose_change_verdict_is_parsed_as_is(self):
         raw = (
@@ -374,11 +377,12 @@ class TestParseVerdicts(unittest.TestCase):
             '"proposed_change_name": "add-widget-export", '
             '"evidence": "no existing change covers this", "confidence": "high"}'
         )
-        verdicts = qt.parse_verdicts(snippet, ["a"])
+        raw = f"analysis before verdict\n{snippet}\nanalysis after verdict"
+        verdicts = qt.parse_verdicts(raw, ["a"])
 
         v = verdicts[0]
         self.assertEqual(v.verdict, "keep")
-        self.assertEqual(v.evidence, snippet)
+        self.assertEqual(v.evidence, raw)
 
     def test_propose_change_non_kebab_case_name_downgrades_to_keep(self):
         snippet = (
@@ -387,11 +391,12 @@ class TestParseVerdicts(unittest.TestCase):
             '"proposed_change_name": "Add_Widget Export!", '
             '"evidence": "no existing change covers this", "confidence": "high"}'
         )
-        verdicts = qt.parse_verdicts(snippet, ["a"])
+        raw = f"analysis before verdict\n{snippet}\nanalysis after verdict"
+        verdicts = qt.parse_verdicts(raw, ["a"])
 
         v = verdicts[0]
         self.assertEqual(v.verdict, "keep")
-        self.assertEqual(v.evidence, snippet)
+        self.assertEqual(v.evidence, raw)
 
     def test_propose_change_missing_proposed_change_name_downgrades_to_keep(self):
         snippet = (
@@ -399,11 +404,12 @@ class TestParseVerdicts(unittest.TestCase):
             '"target_repo": "behindthedash/worktrail", '
             '"evidence": "no existing change covers this", "confidence": "high"}'
         )
-        verdicts = qt.parse_verdicts(snippet, ["a"])
+        raw = f"analysis before verdict\n{snippet}\nanalysis after verdict"
+        verdicts = qt.parse_verdicts(raw, ["a"])
 
         v = verdicts[0]
         self.assertEqual(v.verdict, "keep")
-        self.assertEqual(v.evidence, snippet)
+        self.assertEqual(v.evidence, raw)
 
     def test_propose_change_blank_target_repo_downgrades_to_keep(self):
         snippet = (
@@ -412,11 +418,12 @@ class TestParseVerdicts(unittest.TestCase):
             '"proposed_change_name": "add-widget-export", '
             '"evidence": "no existing change covers this", "confidence": "high"}'
         )
-        verdicts = qt.parse_verdicts(snippet, ["a"])
+        raw = f"analysis before verdict\n{snippet}\nanalysis after verdict"
+        verdicts = qt.parse_verdicts(raw, ["a"])
 
         v = verdicts[0]
         self.assertEqual(v.verdict, "keep")
-        self.assertEqual(v.evidence, snippet)
+        self.assertEqual(v.evidence, raw)
 
     def test_propose_change_trailing_newline_name_downgrades_to_keep(self):
         snippet = (
@@ -425,11 +432,12 @@ class TestParseVerdicts(unittest.TestCase):
             '"proposed_change_name": "valid-name\\n", '
             '"evidence": "no existing change covers this", "confidence": "high"}'
         )
-        verdicts = qt.parse_verdicts(snippet, ["a"])
+        raw = f"analysis before verdict\n{snippet}\nanalysis after verdict"
+        verdicts = qt.parse_verdicts(raw, ["a"])
 
         v = verdicts[0]
         self.assertEqual(v.verdict, "keep")
-        self.assertEqual(v.evidence, snippet)
+        self.assertEqual(v.evidence, raw)
 
     def test_fold_into_change_blank_target_downgrades_to_keep(self):
         snippet = (
@@ -437,13 +445,14 @@ class TestParseVerdicts(unittest.TestCase):
             '"target_change": "   ", '
             '"evidence": "looks related", "confidence": "medium"}'
         )
+        raw = f"analysis before verdict\n{snippet}\nanalysis after verdict"
         verdicts = qt.parse_verdicts(
-            snippet, ["a"], candidates_by_brief={"a": ["widget-export-pipeline"]}
+            raw, ["a"], candidates_by_brief={"a": ["widget-export-pipeline"]}
         )
 
         v = verdicts[0]
         self.assertEqual(v.verdict, "keep")
-        self.assertEqual(v.evidence, snippet)
+        self.assertEqual(v.evidence, raw)
 
     def test_needs_decision_blank_question_downgrades_to_keep(self):
         snippet = (
@@ -451,11 +460,12 @@ class TestParseVerdicts(unittest.TestCase):
             '"question": "   ", '
             '"evidence": "no clear owning repo", "confidence": "low"}'
         )
-        verdicts = qt.parse_verdicts(snippet, ["a"])
+        raw = f"analysis before verdict\n{snippet}\nanalysis after verdict"
+        verdicts = qt.parse_verdicts(raw, ["a"])
 
         v = verdicts[0]
         self.assertEqual(v.verdict, "keep")
-        self.assertEqual(v.evidence, snippet)
+        self.assertEqual(v.evidence, raw)
 
     def test_well_formed_work_directly_verdict_is_parsed_as_is(self):
         raw = (
@@ -478,20 +488,19 @@ class TestParseVerdicts(unittest.TestCase):
 
         v = verdicts[0]
         self.assertEqual(v.verdict, "needs-decision")
-        self.assertEqual(
-            v.question, "should this fold into repo X or stay standalone?"
-        )
+        self.assertEqual(v.question, "should this fold into repo X or stay standalone?")
 
     def test_needs_decision_missing_question_downgrades_to_keep(self):
         snippet = (
             '{"brief_id": "a", "verdict": "needs-decision", "duplicate_of": null, '
             '"evidence": "no clear owning repo", "confidence": "low"}'
         )
-        verdicts = qt.parse_verdicts(snippet, ["a"])
+        raw = f"analysis before verdict\n{snippet}\nanalysis after verdict"
+        verdicts = qt.parse_verdicts(raw, ["a"])
 
         v = verdicts[0]
         self.assertEqual(v.verdict, "keep")
-        self.assertEqual(v.evidence, snippet)
+        self.assertEqual(v.evidence, raw)
 
     def test_second_candidate_used_when_first_is_malformed(self):
         good = (
@@ -1093,9 +1102,7 @@ class TestReportAndVerdictFileOutput(QueueTriageTestBase):
         self.assertEqual(json_verdicts, [])
 
         report_counts = self._report_counts(report_path.read_text(encoding="utf-8"))
-        self.assertEqual(
-            report_counts, {vtype: 0 for vtype in qt.REPORT_VERDICT_TYPES}
-        )
+        self.assertEqual(report_counts, {vtype: 0 for vtype in qt.REPORT_VERDICT_TYPES})
 
     def test_json_file_preserves_every_verdict_field_the_report_summarizes(self):
         verdicts = self._verdicts()
@@ -1202,7 +1209,9 @@ class TestRankChangeCandidates(QueueTriageTestBase):
                 repo_root,
                 f"change-{i}",
                 why="widget export pipeline serializer downstream reporting",
-                tasks=[(False, "widget export pipeline serializer downstream reporting")],
+                tasks=[
+                    (False, "widget export pipeline serializer downstream reporting")
+                ],
             )
         brief_path = self.write(
             "brief.md",
