@@ -106,6 +106,7 @@ def extract_wheel_metadata(wheel: Path) -> tuple[str, frozenset[str]]:
             entry_points_text = f.read().decode("utf-8")
 
     parser = configparser.ConfigParser()
+    parser.optionxform = str
     parser.read_string(entry_points_text)
     if parser.has_section("console_scripts"):
         console_scripts = frozenset(parser.options("console_scripts"))
