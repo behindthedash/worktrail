@@ -733,6 +733,44 @@ class TestApplyVerdicts(QueueTriageTestBase):
             self.assertEqual(log[0]["action"], "noop")
             self.assertTrue((self.queue / "a.md").exists())
 
+    def test_not_yet_implemented_verdicts_are_never_misapplied_as_needs_update(self):
+        """2.2 makes fold-into-change/propose-change/work-directly/needs-decision
+        parseable ahead of 3.1-3.4 implementing their own apply actions -- until
+        then `apply_verdicts()` must not fall through to `needs-update`'s
+        append-triage-note action for them, regardless of `--confirm`.
+        """
+        a_path = self.write("a.md", body="## Focus\n\nsome brief\n")
+        a_before = a_path.read_text(encoding="utf-8")
+        verdicts = [
+            qt.Verdict(
+                brief_id="a",
+                verdict=vtype,
+                duplicate_of=None,
+                evidence="not-yet-implemented apply path",
+                confidence="high",
+            )
+            for vtype in (
+                "fold-into-change",
+                "propose-change",
+                "work-directly",
+                "needs-decision",
+            )
+        ]
+
+        for confirm in (False, True):
+            log = qt.apply_verdicts(verdicts, confirm=confirm)
+            self.assertEqual(len(log), 4)
+            for entry, verdict in zip(log, verdicts):
+                self.assertEqual(entry["verdict"], verdict.verdict)
+                self.assertEqual(entry["status"], "not-yet-implemented")
+                self.assertEqual(entry["action"], "noop")
+                self.assertIsNone(entry["path"])
+                self.assertIsNone(entry["error"])
+
+        # never mutated, unlike a real needs-update apply
+        self.assertEqual(a_path.read_text(encoding="utf-8"), a_before)
+        self.assertTrue((self.queue / "a.md").exists())
+
 
 class TestResolveDuplicateTargets(unittest.TestCase):
     """6.5's dangling-`duplicate-of` resolution: a `duplicate-of` verdict whose

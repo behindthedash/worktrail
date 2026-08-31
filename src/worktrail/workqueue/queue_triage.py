@@ -701,6 +701,17 @@ def _apply_needs_update(v: Verdict, run_date: str) -> dict:
     return {**base, "status": "executed", "path": str(path), "error": None}
 
 
+# Intake-triage verdict types 2.2 makes parseable but whose own apply actions
+# ship in later tasks (3.1 fold-into-change, 3.2 propose-change, 3.3
+# work-directly, 3.4 needs-decision). Until those land, `apply_verdicts()`
+# must not silently fall through to `needs-update`'s append-triage-note
+# action for them -- that would misapply the wrong side effect to a brief
+# this evaluator run correctly classified differently.
+_APPLY_NOT_YET_IMPLEMENTED = frozenset(
+    {"fold-into-change", "propose-change", "work-directly", "needs-decision"}
+)
+
+
 def apply_verdicts(verdicts: list[Verdict], *, confirm: bool) -> list[dict]:
     """Execute (or, when `confirm` is false, only log) each non-`keep` verdict.
 
@@ -710,9 +721,14 @@ def apply_verdicts(verdicts: list[Verdict], *, confirm: bool) -> list[dict]:
     targets itself. Per spec: `stale-close` and `duplicate-of` close the
     brief via `claim()` + `done(..., note=evidence)`; `needs-update` appends
     an in-place `## Triage <run-date>` body section instead of closing it.
-    `keep` is always a no-op. When `confirm` is false, nothing is executed --
-    every non-`keep` verdict is logged as `"planned"` with no filesystem
-    mutation, so a caller can preview a run before committing to it.
+    `keep` is always a no-op. `_APPLY_NOT_YET_IMPLEMENTED` verdict types
+    (fold-into-change/propose-change/work-directly/needs-decision) have no
+    apply action yet -- they are logged `status="not-yet-implemented"` with
+    no filesystem mutation, `confirm` notwithstanding, rather than being
+    misapplied via the `needs-update` fallback. When `confirm` is false,
+    nothing is executed -- every other non-`keep` verdict is logged as
+    `"planned"` with no filesystem mutation, so a caller can preview a run
+    before committing to it.
 
     Returns one action-log dict per verdict, in the same order as `verdicts`,
     never dropping any -- `apply`'s `--json`/human output (4.3) renders this
@@ -732,6 +748,25 @@ def apply_verdicts(verdicts: list[Verdict], *, confirm: bool) -> list[dict]:
                     "status": "noop",
                     "path": None,
                     "note": None,
+                    "error": None,
+                }
+            )
+            continue
+
+        if v.verdict in _APPLY_NOT_YET_IMPLEMENTED:
+            log.append(
+                {
+                    "brief_id": v.brief_id,
+                    "verdict": v.verdict,
+                    "duplicate_of": v.duplicate_of,
+                    "action": "noop",
+                    "confirm": confirm,
+                    "status": "not-yet-implemented",
+                    "path": None,
+                    "note": (
+                        f"apply action for verdict '{v.verdict}' is not yet "
+                        "implemented; brief left untouched"
+                    ),
                     "error": None,
                 }
             )
@@ -952,8 +987,12 @@ def cmd_apply(args: argparse.Namespace) -> int:
         planned = sum(1 for e in action_log if e["status"] == "planned")
         errors = sum(1 for e in action_log if e["status"] == "error")
         noop = sum(1 for e in action_log if e["status"] == "noop")
+        not_yet_implemented = sum(
+            1 for e in action_log if e["status"] == "not-yet-implemented"
+        )
         print(
-            f"executed: {executed}, planned: {planned}, errors: {errors}, noop: {noop}"
+            f"executed: {executed}, planned: {planned}, errors: {errors}, "
+            f"noop: {noop}, not-yet-implemented: {not_yet_implemented}"
         )
     return 1 if any(e["status"] == "error" for e in action_log) else 0
 
