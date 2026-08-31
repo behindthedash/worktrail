@@ -1,17 +1,17 @@
 ## 1. Stale-bookkeeping check module
 
-- [ ] 1.1 Add `src/worktrail/router/spec_sync_sweep_stale_bookkeeping_check.py` with
+- [x] 1.1 Add `src/worktrail/router/spec_sync_sweep_stale_bookkeeping_check.py` with
       `check_repo_stale_bookkeeping(repo: Path) -> dict[str, Any]`, mirroring
       `spec_sync_sweep_checkbox_check.py`'s shape: the whole body runs inside one
       `try/except Exception`, returning `{"repo": str(repo), "findings": [...], "error": None}`
       on success or `{"repo": str(repo), "findings": [], "error": str(exc)}` on failure.
       (Requirement: Stale-bookkeeping check runs as a third independent per-repo check)
-- [ ] 1.2 Inside the try block, call `dashboard.scan(repo / "docs" / "specs")` (the same call
+- [x] 1.2 Inside the try block, call `dashboard.scan(repo / "docs" / "specs")` (the same call
       `seed_backlog.py` already makes) and filter its rows to `stage == "stale-bookkeeping"`.
       Do not call `_pending_impl_stale`/`_pending_openspec_stale` directly and do not
       re-implement any git-tracked/freshness comparison. (Requirement: Stale-bookkeeping check
       runs as a third independent per-repo check)
-- [ ] 1.3 For each matching row, emit one finding per id in `row["stale_task_ids"]`:
+- [x] 1.3 For each matching row, emit one finding per id in `row["stale_task_ids"]`:
       `{"format": "openspec" if row.get("format") == "openspec" else "devkit", "spec_id":
       row["id"], "task_id": <id>, "next_action": row.get("next_action"), "files": <files list
       for that task if the row's own loaded task data carries a non-empty "files", else []>}`.
@@ -22,13 +22,13 @@
 
 ## 2. Stale-bookkeeping brief module
 
-- [ ] 2.1 Add `src/worktrail/router/spec_sync_sweep_stale_bookkeeping_brief.py` with
+- [x] 2.1 Add `src/worktrail/router/spec_sync_sweep_stale_bookkeeping_brief.py` with
       `DRIFT_SOURCE = "stale-bookkeeping-sweep"` and
       `file_stale_bookkeeping_brief(repo: Path, findings: list[dict], queue_base: Path) ->
       Path`, mirroring `spec_sync_sweep_checkbox_brief.py`'s structure (`_slug`, `_brief_id`,
       `_render`, queue-dir write, `validate_brief(path, required=("id", "status", "focus"))`
       before returning). (Requirement: Exactly one dedup'd Drift Brief per repo)
-- [ ] 2.2 `_render()` writes YAML frontmatter with `drift-source: stale-bookkeeping-sweep` and a
+- [x] 2.2 `_render()` writes YAML frontmatter with `drift-source: stale-bookkeeping-sweep` and a
       `drift-findings` list (one entry per finding: `format`, `spec_id`, `task_id`,
       `next_action`, `files`), followed by a `## Focus` body listing every finding as one line:
       spec/change id, task id, and `next_action`. Exactly one file is written regardless of how
