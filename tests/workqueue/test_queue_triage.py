@@ -696,12 +696,21 @@ class TestFormatCandidates(unittest.TestCase):
     def test_empty_list_renders_none(self):
         self.assertEqual(qt._format_candidates([]), "(none)")
 
-    def test_candidates_render_id_score_and_open_task_count(self):
+    def test_candidates_render_id_score_open_task_count_and_feature_summary(self):
         rendered = qt._format_candidates(
-            [{"id": "widget-export-pipeline", "score": 0.625, "open_task_count": 2}]
+            [
+                {
+                    "id": "widget-export-pipeline",
+                    "score": 0.625,
+                    "open_task_count": 2,
+                    "feature_summary": "widget export pipeline serializer",
+                }
+            ]
         )
         self.assertEqual(
-            rendered, "widget-export-pipeline (score 0.62, 2 open tasks)"
+            rendered,
+            "widget-export-pipeline (score 0.62, 2 open tasks): "
+            "widget export pipeline serializer",
         )
 
 
@@ -749,6 +758,9 @@ class TestEvaluateGroupCandidateContext(QueueTriageTestBase):
         )
         prompt_sent = mock_spawn.call_args.args[0]
         self.assertIn("widget-export-pipeline", prompt_sent)
+        self.assertIn(
+            "widget export pipeline serializer downstream reporting", prompt_sent
+        )
 
     def test_no_repo_group_ranks_no_candidates_for_any_brief(self):
         from worktrail.orchestrator.spawnlib import SpawnResult

@@ -302,8 +302,9 @@ def _format_candidates(candidates: list[dict[str, Any]]) -> str:
     """
     if not candidates:
         return "(none)"
-    return ", ".join(
-        f"{c['id']} (score {c['score']:.2f}, {c['open_task_count']} open tasks)"
+    return "; ".join(
+        f"{c['id']} (score {c['score']:.2f}, {c['open_task_count']} open tasks): "
+        f"{c['feature_summary']}"
         for c in candidates
     )
 
