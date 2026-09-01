@@ -1277,6 +1277,74 @@ class TestApplyNeedsDecision(QueueTriageTestBase):
         self.assertIsNotNone(entry["error"])
         self.assertTrue((self.queue / "a.md").exists())
 
+    def test_unstampable_brief_is_an_error_not_executed(self):
+        """If the brief cannot be found under queue/ or picked/ at apply
+        time (deleted, claimed-and-closed, or unwritable between `evaluate`
+        and `apply --confirm`), `ask()` still creates the decision record
+        but reports `brief_stamped=False` -- that must surface as
+        `status="error"`, not `"executed"`, or the skip clause silently does
+        not hold for that brief while the log claims it does.
+        """
+        # note: no `self.write("ghost.md", ...)` -- the brief does not exist
+        verdicts = [
+            qt.Verdict(
+                brief_id="ghost",
+                verdict="needs-decision",
+                duplicate_of=None,
+                evidence="ambiguous which repo this belongs to",
+                confidence="medium",
+                question="Which repo should this brief target?",
+            )
+        ]
+
+        log = qt.apply_verdicts(verdicts, confirm=True)
+
+        entry = log[0]
+        self.assertEqual(entry["status"], "error")
+        self.assertIsNotNone(entry["error"])
+        self.assertIsNotNone(entry["decision_id"])
+
+        from worktrail.workqueue import decisions
+
+        found = decisions.find_decision(entry["decision_id"], self.base)
+        self.assertIsNotNone(found)
+        self.assertEqual(found["status"], "open")
+
+    def test_refile_against_already_resolved_decision_is_not_executed(self):
+        """A re-run of `evaluate` after a human already answered and the
+        decision was consumed (`resolved/`) must not report `"executed"`:
+        `ask()` creates nothing and finds the resolved record, so the log
+        must say so distinctly instead of implying a fresh decision was
+        filed.
+        """
+        self.write("a.md", body="## Focus\n\nsome brief\n")
+        verdicts = [
+            qt.Verdict(
+                brief_id="a",
+                verdict="needs-decision",
+                duplicate_of=None,
+                evidence="ambiguous which repo this belongs to",
+                confidence="medium",
+                question="Which repo should this brief target?",
+            )
+        ]
+
+        first = qt.apply_verdicts(verdicts, confirm=True)[0]
+
+        from worktrail.workqueue import decisions
+
+        decisions.answer(
+            first["decision_id"], "target behindthedash/worktrail", self.base
+        )
+        decisions.consume_answer(first["decision_id"], "test", self.base)
+
+        second = qt.apply_verdicts(verdicts, confirm=True)[0]
+
+        self.assertEqual(second["status"], "already-resolved")
+        self.assertNotEqual(second["status"], "executed")
+        self.assertIsNone(second["error"])
+        self.assertEqual(second["decision_id"], first["decision_id"])
+
 
 class TestEvaluateSkipsUnresolvedDecision(QueueTriageTestBase):
     """3.4's `inventory()` skip: a brief with an unresolved (open/answered)

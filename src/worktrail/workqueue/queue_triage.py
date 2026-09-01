@@ -1032,6 +1032,15 @@ def _apply_needs_decision(v: Verdict) -> dict:
     brief in the first place, so there is nothing to release -- it simply
     stays in `queue/`, now excluded from later `evaluate` runs by
     `has_unresolved_decision()` until a human answers.
+
+    `ask()`'s own result fields are checked, not just `error`: a failed
+    brief stamp (`brief_stamped` false) is reported as `status="error"`
+    rather than `"executed"`, matching `_apply_work_directly()`'s fail-closed
+    behaviour -- otherwise the skip clause above silently would not hold for
+    that brief while the log claims it does. A re-file against an already
+    resolved decision (`decision_record_status == "already-resolved"`)
+    creates nothing and re-stamps the brief with the resolved id, so it is
+    reported as `status="already-resolved"`, not `"executed"`.
     """
     base = {
         "brief_id": v.brief_id,
@@ -1080,6 +1089,30 @@ def _apply_needs_decision(v: Verdict) -> dict:
             "status": "error",
             "path": result.get("path"),
             "error": result["error"],
+        }
+    if not result.get("brief_stamped"):
+        return {
+            **base,
+            "status": "error",
+            "path": result.get("path"),
+            "error": (
+                f"decision record {result.get('id')!r} was created/found at "
+                f"{result.get('path')}, but the brief could not be stamped "
+                f"with awaiting-decision: (not found under queue/ or "
+                f"picked/, or unwritable) -- the skip clause in later "
+                f"evaluate runs will not hold for this brief"
+            ),
+            "decision_id": result.get("id"),
+            "decision_record_status": result.get("status"),
+        }
+    if result.get("status") == "already-resolved":
+        return {
+            **base,
+            "status": "already-resolved",
+            "path": result.get("path"),
+            "error": None,
+            "decision_id": result.get("id"),
+            "decision_record_status": result.get("status"),
         }
     return {
         **base,
