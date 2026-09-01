@@ -1324,6 +1324,7 @@ class TestEvaluateSkipsUnresolvedDecision(QueueTriageTestBase):
 
         self.assertIn("behindthedash/worktrail", groups)
         self.assertEqual([p.name for p in groups["behindthedash/worktrail"]], ["a.md"])
+        self.assertEqual(skipped, [])
 
     def test_brief_with_no_awaiting_decision_link_is_unaffected(self):
         path = self.write("a.md", repo="behindthedash/worktrail")
@@ -1332,6 +1333,7 @@ class TestEvaluateSkipsUnresolvedDecision(QueueTriageTestBase):
 
         self.assertIn("behindthedash/worktrail", groups)
         self.assertEqual(groups["behindthedash/worktrail"], [path])
+        self.assertEqual(skipped, [])
 
 
 class TestResolveDuplicateTargets(unittest.TestCase):

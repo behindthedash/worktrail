@@ -26,8 +26,8 @@ from typing import Any
 from ..router import overlap_check
 from ..shared.brief_frontmatter import read_frontmatter, split_frontmatter
 from ..shared.homedir import worktrail_home
-from .score_candidates import _overlap_coefficient, _tokenize
 from . import decisions
+from .score_candidates import _overlap_coefficient, _tokenize
 from .work_queue import (
     _awaiting_decision_info,
     _set_fm_fields,
