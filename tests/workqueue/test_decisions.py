@@ -114,6 +114,28 @@ def test_ask_release_requires_brief(qbase):
         _ask(qbase, release_brief=True)
 
 
+def test_ask_with_queued_brief_no_release_stamps_in_place(qbase):
+    """queue_triage.py's `needs-decision` apply action (3.4) never claims the
+    brief -- it is already sitting in `queue/`, not `picked/` -- so `ask()`
+    with `release_brief=False` must stamp it there directly rather than
+    requiring (or performing) a claim/release round-trip."""
+    brief_id = "20260901-000000-queued-brief"
+    path = qbase / "queue" / f"{brief_id}.md"
+    path.write_text(
+        f"---\nid: {brief_id}\nstatus: queued\nfocus: some brief\n---\n\n"
+        "## Focus\n\nsome brief\n",
+        encoding="utf-8",
+    )
+    result = _ask(qbase, brief=brief_id, release_brief=False)
+    assert result["status"] == "created"
+    assert result["brief_stamped"] is True
+    assert result["released"] is False
+    assert path.is_file()
+    fm, _ = split_frontmatter(path.read_text(encoding="utf-8"))
+    assert fm["awaiting-decision"] == result["id"]
+    assert fm["status"] == "queued"
+
+
 def test_ask_with_brief_release_stamps_and_requeues(qbase):
     brief_id = _mk_picked_brief(qbase)
     result = _ask(qbase, brief=brief_id, release_brief=True)

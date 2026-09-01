@@ -27,7 +27,9 @@ from ..router import overlap_check
 from ..shared.brief_frontmatter import read_frontmatter, split_frontmatter
 from ..shared.homedir import worktrail_home
 from .score_candidates import _overlap_coefficient, _tokenize
+from . import decisions
 from .work_queue import (
+    _awaiting_decision_info,
     _set_fm_fields,
     claim,
     done,
@@ -218,13 +220,30 @@ def is_recently_triaged(path: Path, within_days: int) -> bool:
     return age_days <= within_days
 
 
+def has_unresolved_decision(path: Path) -> bool:
+    """True if `path` carries an `awaiting-decision:` link still `open` or `answered`.
+
+    Mirrors `work_queue._awaiting_decision_info()`'s own reading (already used by
+    `claim()`'s warnings and `list_queue()`'s `blocked` flag): `resolved` (a human
+    answered and the answer was consumed) and no link at all both read as "not
+    unresolved". Per design D8 ("needs-decision ... reuses ... the existing
+    'awaiting decision' skip"), a brief still genuinely waiting on a human must not
+    be re-evaluated by a later `evaluate` run before that answer lands.
+    """
+    return _awaiting_decision_info(path)["decision_status"] in ("open", "answered")
+
+
 def inventory(within_days: int) -> tuple[dict[str, list[Path]], list[Path]]:
     """Compose `group_queue_by_repo()` + `is_recently_triaged()` into an evaluation set.
 
     Briefs whose most recent `## Triage` section falls within `within_days` fail the
     dedup check and are excluded from the returned groups (so 2.x never re-evaluates
-    them) but collected into `skipped` for report visibility. A group left empty by
-    filtering is dropped entirely rather than kept as an empty bucket.
+    them) but collected into `skipped` for report visibility. A brief with an
+    unresolved pending decision (`has_unresolved_decision()`) is likewise excluded
+    from the groups, but -- unlike a dedup skip -- is not added to `skipped`: it isn't
+    a triage outcome to report on, it's simply not ready to be re-judged yet, and will
+    resurface on its own once a human answers. A group left empty by filtering is
+    dropped entirely rather than kept as an empty bucket.
     """
     skipped: list[Path] = []
     groups: dict[str, list[Path]] = {}
@@ -233,6 +252,8 @@ def inventory(within_days: int) -> tuple[dict[str, list[Path]], list[Path]]:
         for path in paths:
             if is_recently_triaged(path, within_days):
                 skipped.append(path)
+            elif has_unresolved_decision(path):
+                continue
             else:
                 kept.append(path)
         if kept:
@@ -971,15 +992,103 @@ def _apply_work_directly(v: Verdict, run_date: str) -> dict:
 
 
 # Intake-triage verdict types 2.2 makes parseable but whose own apply actions
-# ship in later tasks (3.1 fold-into-change, 3.2 propose-change, 3.4
-# needs-decision). Until those land, `apply_verdicts()` must not silently
-# fall through to `needs-update`'s append-triage-note action for them -- that
-# would misapply the wrong side effect to a brief this evaluator run
-# correctly classified differently. `work-directly` (3.3) has its own apply
-# action (`_apply_work_directly`) and is no longer in this set.
-_APPLY_NOT_YET_IMPLEMENTED = frozenset(
-    {"fold-into-change", "propose-change", "needs-decision"}
+# ship in later tasks (3.1 fold-into-change, 3.2 propose-change). Until those
+# land, `apply_verdicts()` must not silently fall through to `needs-update`'s
+# append-triage-note action for them -- that would misapply the wrong side
+# effect to a brief this evaluator run correctly classified differently.
+# `work-directly` (3.3) and `needs-decision` (3.4) have their own apply
+# actions (`_apply_work_directly`, `_apply_needs_decision`) and are no longer
+# in this set.
+_APPLY_NOT_YET_IMPLEMENTED = frozenset({"fold-into-change", "propose-change"})
+
+
+# Per design D8: filed via `decisions.ask()`, which builds the versioned
+# envelope with `decisions.pending_decision_envelope()` under the hood --
+# `_apply_needs_decision()` supplies the mandatory `why`/`context`/`options`
+# fields `ask()` itself requires (an evaluator verdict carries a question and
+# evidence, not a full structured decision record) generically, since every
+# `needs-decision` verdict shares the same underlying situation: an automated
+# run could not resolve the brief on its own.
+_NEEDS_DECISION_WHY = (
+    "Queue-triage evaluation could not resolve this brief without a human "
+    "product decision; see the cited evidence."
 )
+_NEEDS_DECISION_OPTIONS = [
+    "Proceed with the brief as currently scoped",
+    "Revise or close the brief per the evaluator's findings",
+]
+
+
+def _apply_needs_decision(v: Verdict) -> dict:
+    """`needs-decision`: file a pending decision, leaving the brief queued.
+
+    Builds a deterministic `decisions.decision_identity()` (source
+    `"queue-triage"`, subject=`v.brief_id`, question=`v.question`) so a later
+    run re-evaluating the same still-open question converges on the existing
+    record instead of filing a duplicate, then files it via `decisions.ask()`
+    -- which builds the versioned envelope with `pending_decision_envelope()`
+    and stamps the brief `awaiting-decision: <id>` in place. `release_brief`
+    is always False: unlike `_apply_close()`, this action never claims the
+    brief in the first place, so there is nothing to release -- it simply
+    stays in `queue/`, now excluded from later `evaluate` runs by
+    `has_unresolved_decision()` until a human answers.
+    """
+    base = {
+        "brief_id": v.brief_id,
+        "verdict": v.verdict,
+        "duplicate_of": v.duplicate_of,
+        "action": "file-decision",
+        "confirm": True,
+        "note": v.evidence,
+    }
+    question = (v.question or "").strip()
+    if not question:
+        return {
+            **base,
+            "status": "error",
+            "path": None,
+            "error": "verdict has no question to file a decision for",
+        }
+
+    repo = v.repo if v.repo and v.repo != NO_REPO_KEY else None
+    decision_id = decisions.decision_identity(
+        source="queue-triage",
+        repo=repo or NO_REPO_KEY,
+        subject=v.brief_id,
+        question=question,
+    )
+    try:
+        result = decisions.ask(
+            question,
+            background=v.evidence,
+            why=_NEEDS_DECISION_WHY,
+            context=v.evidence,
+            options=list(_NEEDS_DECISION_OPTIONS),
+            repo=repo,
+            brief=v.brief_id,
+            release_brief=False,
+            decision_id=decision_id,
+            source="queue-triage",
+            subject=v.brief_id,
+        )
+    except ValueError as exc:
+        return {**base, "status": "error", "path": None, "error": str(exc)}
+
+    if result.get("error"):
+        return {
+            **base,
+            "status": "error",
+            "path": result.get("path"),
+            "error": result["error"],
+        }
+    return {
+        **base,
+        "status": "executed",
+        "path": result.get("path"),
+        "error": None,
+        "decision_id": result.get("id"),
+        "decision_record_status": result.get("status"),
+    }
 
 
 def apply_verdicts(verdicts: list[Verdict], *, confirm: bool) -> list[dict]:
@@ -993,12 +1102,14 @@ def apply_verdicts(verdicts: list[Verdict], *, confirm: bool) -> list[dict]:
     an in-place `## Triage <run-date>` body section instead of closing it;
     `work-directly` stamps `seeded-from`/`recommended-route` frontmatter in
     place, or downgrades to a no-op `keep` when the evidence lacks a
-    reproduction reference (`_apply_work_directly`). `keep` is always a
-    no-op. `_APPLY_NOT_YET_IMPLEMENTED` verdict types
-    (fold-into-change/propose-change/needs-decision) have no apply action
-    yet -- they are logged `status="not-yet-implemented"` with no filesystem
-    mutation, `confirm` notwithstanding, rather than being misapplied via
-    the `needs-update` fallback. When `confirm` is false, nothing is
+    reproduction reference (`_apply_work_directly`); `needs-decision` files a
+    pending decision via `decisions.ask()` and leaves the brief queued
+    (`_apply_needs_decision`). `keep` is always a no-op.
+    `_APPLY_NOT_YET_IMPLEMENTED` verdict types (fold-into-change/
+    propose-change) have no apply action yet -- they are logged
+    `status="not-yet-implemented"` with no filesystem mutation, `confirm`
+    notwithstanding, rather than being misapplied via the `needs-update`
+    fallback. When `confirm` is false, nothing is
     executed -- every other non-`keep` verdict is logged as `"planned"`
     with no filesystem mutation, so a caller can preview a run before
     committing to it.
@@ -1049,6 +1160,8 @@ def apply_verdicts(verdicts: list[Verdict], *, confirm: bool) -> list[dict]:
             action = "claim+done"
         elif v.verdict == "work-directly":
             action = "stamp-frontmatter"
+        elif v.verdict == "needs-decision":
+            action = "file-decision"
         else:
             action = "append-triage-note"
 
@@ -1092,6 +1205,8 @@ def apply_verdicts(verdicts: list[Verdict], *, confirm: bool) -> list[dict]:
             log.append(_apply_close(v))
         elif action == "stamp-frontmatter":
             log.append(_apply_work_directly(v, run_date))
+        elif action == "file-decision":
+            log.append(_apply_needs_decision(v))
         else:
             log.append(_apply_needs_update(v, run_date))
     return log

@@ -891,12 +891,13 @@ class TestApplyVerdicts(QueueTriageTestBase):
             self.assertTrue((self.queue / "a.md").exists())
 
     def test_not_yet_implemented_verdicts_are_never_misapplied_as_needs_update(self):
-        """2.2 makes fold-into-change/propose-change/needs-decision parseable
-        ahead of 3.1/3.2/3.4 implementing their own apply actions -- until
-        then `apply_verdicts()` must not fall through to `needs-update`'s
+        """2.2 makes fold-into-change/propose-change parseable ahead of
+        3.1/3.2 implementing their own apply actions -- until then
+        `apply_verdicts()` must not fall through to `needs-update`'s
         append-triage-note action for them, regardless of `--confirm`.
-        (`work-directly`, 3.3, has its own apply action -- see
-        `TestApplyWorkDirectly`.)
+        (`work-directly`, 3.3, and `needs-decision`, 3.4, have their own
+        apply actions -- see `TestApplyWorkDirectly` and
+        `TestApplyNeedsDecision`.)
         """
         a_path = self.write("a.md", body="## Focus\n\nsome brief\n")
         a_before = a_path.read_text(encoding="utf-8")
@@ -911,13 +912,12 @@ class TestApplyVerdicts(QueueTriageTestBase):
             for vtype in (
                 "fold-into-change",
                 "propose-change",
-                "needs-decision",
             )
         ]
 
         for confirm in (False, True):
             log = qt.apply_verdicts(verdicts, confirm=confirm)
-            self.assertEqual(len(log), 3)
+            self.assertEqual(len(log), 2)
             for entry, verdict in zip(log, verdicts):
                 self.assertEqual(entry["verdict"], verdict.verdict)
                 self.assertEqual(entry["status"], "not-yet-implemented")
@@ -1157,6 +1157,181 @@ class TestApplyWorkDirectly(QueueTriageTestBase):
         run_date = datetime.date.today().isoformat()  # noqa: DTZ011
         self.assertIn(f"seeded-from: triage:{run_date}:direct\n", after)
         self.assertIn("recommended-route: F\n", after)
+
+
+class TestApplyNeedsDecision(QueueTriageTestBase):
+    """3.4's `needs-decision` apply action: file a pending decision via
+    `decisions.ask()` (which builds the envelope with
+    `decisions.pending_decision_envelope()`), leaving the brief queued.
+    """
+
+    def test_confirm_true_files_decision_and_leaves_brief_queued(self):
+        path = self.write("a.md", body="## Focus\n\nsome brief\n")
+        verdicts = [
+            qt.Verdict(
+                brief_id="a",
+                verdict="needs-decision",
+                duplicate_of=None,
+                evidence="ambiguous which repo this belongs to",
+                confidence="medium",
+                question="Which repo should this brief target?",
+            )
+        ]
+
+        log = qt.apply_verdicts(verdicts, confirm=True)
+
+        entry = log[0]
+        self.assertEqual(entry["brief_id"], "a")
+        self.assertEqual(entry["verdict"], "needs-decision")
+        self.assertEqual(entry["action"], "file-decision")
+        self.assertEqual(entry["status"], "executed")
+        self.assertTrue(entry["confirm"])
+        self.assertIsNone(entry["error"])
+        self.assertIsNotNone(entry["path"])
+
+        # the brief is never claimed or closed -- it stays in queue/, unlike
+        # stale-close/duplicate-of
+        self.assertTrue(path.exists())
+        self.assertTrue((self.queue / "a.md").exists())
+        fm = qt.read_frontmatter(path)
+        self.assertEqual(fm["awaiting-decision"], entry["decision_id"])
+
+        from worktrail.workqueue import decisions
+
+        found = decisions.find_decision(entry["decision_id"], self.base)
+        self.assertIsNotNone(found)
+        self.assertEqual(found["status"], "open")
+        content = found["path"].read_text(encoding="utf-8")
+        self.assertIn("Which repo should this brief target?", content)
+        self.assertIn("ambiguous which repo this belongs to", content)
+
+    def test_confirm_false_is_a_pure_dry_run(self):
+        path = self.write("a.md", body="## Focus\n\nsome brief\n")
+        before = path.read_text(encoding="utf-8")
+        verdicts = [
+            qt.Verdict(
+                brief_id="a",
+                verdict="needs-decision",
+                duplicate_of=None,
+                evidence="ambiguous which repo this belongs to",
+                confidence="medium",
+                question="Which repo should this brief target?",
+            )
+        ]
+
+        log = qt.apply_verdicts(verdicts, confirm=False)
+
+        entry = log[0]
+        self.assertEqual(entry["action"], "file-decision")
+        self.assertEqual(entry["status"], "planned")
+        self.assertFalse(entry["confirm"])
+        self.assertIsNone(entry["path"])
+        self.assertIsNone(entry["error"])
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+        self.assertFalse((self.base / "decisions").exists())
+
+    def test_rerun_on_same_verdict_converges_on_existing_decision(self):
+        """A re-run of `evaluate` that re-files the same still-open question
+        for the same brief must not create a second decision record --
+        `decision_identity()` is deterministic on (source, repo, subject,
+        question), so the second `apply` converges on the first record.
+        """
+        self.write("a.md", body="## Focus\n\nsome brief\n")
+        verdicts = [
+            qt.Verdict(
+                brief_id="a",
+                verdict="needs-decision",
+                duplicate_of=None,
+                evidence="ambiguous which repo this belongs to",
+                confidence="medium",
+                question="Which repo should this brief target?",
+            )
+        ]
+
+        first = qt.apply_verdicts(verdicts, confirm=True)[0]
+        second = qt.apply_verdicts(verdicts, confirm=True)[0]
+
+        self.assertEqual(first["decision_id"], second["decision_id"])
+        from worktrail.workqueue import decisions
+
+        open_dir = decisions.decisions_dir(self.base) / "open"
+        self.assertEqual(len(list(open_dir.glob("*.md"))), 1)
+
+    def test_missing_question_is_an_error_not_a_crash(self):
+        self.write("a.md", body="## Focus\n\nsome brief\n")
+        verdicts = [
+            qt.Verdict(
+                brief_id="a",
+                verdict="needs-decision",
+                duplicate_of=None,
+                evidence="ambiguous which repo this belongs to",
+                confidence="medium",
+                question=None,
+            )
+        ]
+
+        log = qt.apply_verdicts(verdicts, confirm=True)
+
+        entry = log[0]
+        self.assertEqual(entry["status"], "error")
+        self.assertIsNotNone(entry["error"])
+        self.assertTrue((self.queue / "a.md").exists())
+
+
+class TestEvaluateSkipsUnresolvedDecision(QueueTriageTestBase):
+    """3.4's `inventory()` skip: a brief with an unresolved (open/answered)
+    pending decision must not be re-evaluated by a later `evaluate` run.
+    """
+
+    def test_open_decision_excludes_brief_from_inventory_groups(self):
+        from worktrail.workqueue import decisions
+
+        path = self.write("a.md", repo="behindthedash/worktrail")
+        result = decisions.ask(
+            "Which repo should this brief target?",
+            background="ambiguous",
+            why="cannot infer from the brief alone",
+            context="checked the repo listing, no clear match",
+            options=["Option A", "Option B"],
+            brief="a",
+            queue_base=self.base,
+        )
+        self.assertEqual(result["status"], "created")
+        self.assertTrue(result["brief_stamped"])
+
+        groups, skipped = qt.inventory(within_days=25)
+
+        self.assertEqual(groups, {})
+        self.assertNotIn(path, skipped)
+
+    def test_resolved_decision_does_not_exclude_brief(self):
+        from worktrail.workqueue import decisions
+
+        self.write("a.md", repo="behindthedash/worktrail")
+        result = decisions.ask(
+            "Which repo should this brief target?",
+            background="ambiguous",
+            why="cannot infer from the brief alone",
+            context="checked the repo listing, no clear match",
+            options=["Option A", "Option B"],
+            brief="a",
+            queue_base=self.base,
+        )
+        decisions.answer(result["id"], "Use repo A", queue_base=self.base)
+        decisions.consume_answer(result["id"], queue_base=self.base)
+
+        groups, skipped = qt.inventory(within_days=25)
+
+        self.assertIn("behindthedash/worktrail", groups)
+        self.assertEqual([p.name for p in groups["behindthedash/worktrail"]], ["a.md"])
+
+    def test_brief_with_no_awaiting_decision_link_is_unaffected(self):
+        path = self.write("a.md", repo="behindthedash/worktrail")
+
+        groups, skipped = qt.inventory(within_days=25)
+
+        self.assertIn("behindthedash/worktrail", groups)
+        self.assertEqual(groups["behindthedash/worktrail"], [path])
 
 
 class TestResolveDuplicateTargets(unittest.TestCase):
