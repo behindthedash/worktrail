@@ -39,7 +39,21 @@ NO_REPO_KEY = "__none__"
 # caller, owns the harness/model choice for a given tier.
 DEFAULT_TIER = "t2-build"
 
-VALID_VERDICT_TYPES = {"keep", "stale-close", "needs-update", "duplicate-of"}
+VALID_VERDICT_TYPES = {
+    "keep",
+    "stale-close",
+    "needs-update",
+    "duplicate-of",
+    "fold-into-change",
+    "propose-change",
+    "work-directly",
+    "needs-decision",
+}
+
+# `propose-change`'s `proposed_change_name` must be a valid OpenSpec change id:
+# lowercase alphanumerics separated by single hyphens, no leading/trailing/
+# doubled hyphen.
+_KEBAB_CASE_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 _TRIAGE_HEADING_RE = re.compile(r"^##\s+Triage\s+(\d{4}-\d{2}-\d{2})\s*$", re.MULTILINE)
 
@@ -358,13 +372,23 @@ def evaluate_group(
 
 @dataclass
 class Verdict:
-    """One brief's triage outcome, per spec's "Evidence-required verdict per brief"."""
+    """One brief's triage outcome, per spec's "Evidence-required verdict per brief".
+
+    `duplicate_of`, `target_change`, `target_repo`, `proposed_change_name`, and
+    `question` are the target fields for the verdict types that need one
+    (`duplicate-of`, `fold-into-change`, `propose-change`, `needs-decision`
+    respectively) -- each stays `None` for every other verdict type.
+    """
 
     brief_id: str
     verdict: str
     duplicate_of: str | None
     evidence: str
     confidence: str | None = None
+    target_change: str | None = None
+    target_repo: str | None = None
+    proposed_change_name: str | None = None
+    question: str | None = None
 
 
 def _extract_json_objects(text: str) -> list[str]:
@@ -414,17 +438,71 @@ def _extract_json_objects(text: str) -> list[str]:
     return objects
 
 
-def parse_verdicts(raw_text: str, expected_brief_ids: list[str]) -> list[Verdict]:
+def _has_valid_target(
+    verdict_type: str,
+    obj: dict,
+    duplicate_of: str | None,
+    presented_candidates: list[str],
+) -> bool:
+    """True if `verdict_type`'s required target field(s) are present and valid in `obj`.
+
+    Each verdict type that names a target validates that target here; every other
+    verdict type (`keep`, `stale-close`, `needs-update`, `work-directly`) has no
+    target field to check and is always valid. `presented_candidates` is the set of
+    change ids actually offered to the evaluator for this brief (per 2.1's
+    `rank_change_candidates()`) -- a `fold-into-change` naming anything else,
+    including a plausible-looking id, is invalid, since accepting it would let the
+    evaluator fold into a change it was never shown.
+    """
+    if verdict_type == "duplicate-of":
+        return duplicate_of is not None
+    if verdict_type == "fold-into-change":
+        target_change = obj.get("target_change")
+        return isinstance(target_change, str) and target_change in presented_candidates
+    if verdict_type == "propose-change":
+        target_repo = obj.get("target_repo")
+        proposed_change_name = obj.get("proposed_change_name")
+        return (
+            isinstance(target_repo, str)
+            and target_repo.strip() != ""
+            and isinstance(proposed_change_name, str)
+            and bool(_KEBAB_CASE_RE.fullmatch(proposed_change_name))
+        )
+    if verdict_type == "needs-decision":
+        question = obj.get("question")
+        return isinstance(question, str) and question.strip() != ""
+    return True
+
+
+def parse_verdicts(
+    raw_text: str,
+    expected_brief_ids: list[str],
+    candidates_by_brief: dict[str, list[str]] | None = None,
+) -> list[Verdict]:
     """Parse `evaluate_group()`'s raw evaluator text into one `Verdict` per expected brief.
 
     Implements the spec's "Evidence-required verdict per brief" requirement: a verdict
-    must have `verdict` in `VALID_VERDICT_TYPES` and non-empty `evidence` (and, for
-    `duplicate-of`, a non-empty `duplicate_of`) to be accepted as-is. Anything missing,
-    unparsable, or failing that check falls back to `keep` with the evaluator's raw
-    output (the specific malformed JSON snippet if one was found for that brief, else
-    the full `raw_text`) retained as evidence -- every id in `expected_brief_ids`
-    always appears exactly once in the result, in that order, never silently dropped.
+    must have `verdict` in `VALID_VERDICT_TYPES`, non-empty `evidence`, and (per
+    `_has_valid_target()`) a well-formed target for verdict types that require one --
+    `duplicate-of` needs `duplicate_of`, `fold-into-change` needs `target_change`
+    naming one of `candidates_by_brief[brief_id]`'s presented candidates,
+    `propose-change` needs `target_repo` and a kebab-case `proposed_change_name`,
+    and `needs-decision` needs `question` -- to be accepted as-is. `work-directly`
+    and `keep` have no target field. Anything missing, unparsable, or failing that
+    check falls back to `keep` with the first JSON snippet the evaluator emitted
+    under this brief_id retained as evidence -- `raw_text` itself is never used
+    here when a group call batches multiple briefs, since it would otherwise bleed
+    every other brief's own verdict/evidence into this one's fallback. Only when
+    the evaluator emitted nothing identifiable for this brief_id at all does
+    `raw_text` remain the fallback, since there is no narrower snippet to prefer --
+    every id in `expected_brief_ids` always appears exactly once in the result, in
+    that order, never silently dropped.
+
+    `candidates_by_brief` defaults to no candidates presented for any brief, so a
+    caller that hasn't wired 2.1's ranking through yet still gets a safe,
+    always-downgraded `fold-into-change` rather than an unchecked target.
     """
+    candidates_by_brief = candidates_by_brief or {}
     candidates_by_id: dict[str, list[tuple[str, dict]]] = {
         bid: [] for bid in expected_brief_ids
     }
@@ -442,8 +520,18 @@ def parse_verdicts(raw_text: str, expected_brief_ids: list[str]) -> list[Verdict
     verdicts: list[Verdict] = []
     for bid in expected_brief_ids:
         chosen: Verdict | None = None
+        presented_candidates = candidates_by_brief.get(bid, [])
+        # This brief's own best-effort evidence when nothing valid is found: the
+        # first JSON snippet the evaluator emitted under this brief_id, so a
+        # downgrade never falls back past it to `raw_text` -- in a multi-brief
+        # batch call, `raw_text` covers every brief's own verdict/evidence, and
+        # using it here would bleed other briefs' content into this one's record.
+        # Only when the evaluator never emitted anything identifiable for this
+        # brief_id at all does `raw_text` remain the sole available evidence.
         fallback_evidence: str | None = None
         for snippet, obj in candidates_by_id[bid]:
+            if fallback_evidence is None:
+                fallback_evidence = snippet
             verdict_type = obj.get("verdict")
             evidence = obj.get("evidence")
             dup_raw = obj.get("duplicate_of")
@@ -454,21 +542,31 @@ def parse_verdicts(raw_text: str, expected_brief_ids: list[str]) -> list[Verdict
 
             has_evidence = isinstance(evidence, str) and evidence.strip() != ""
             has_verdict = verdict_type in VALID_VERDICT_TYPES
-            has_duplicate_target = (
-                verdict_type != "duplicate-of" or duplicate_of is not None
+            has_valid_target = has_verdict and _has_valid_target(
+                verdict_type, obj, duplicate_of, presented_candidates
             )
 
-            if has_verdict and has_evidence and has_duplicate_target:
+            if has_verdict and has_evidence and has_valid_target:
+                target_change = obj.get("target_change")
+                target_repo = obj.get("target_repo")
+                proposed_change_name = obj.get("proposed_change_name")
+                question = obj.get("question")
                 chosen = Verdict(
                     brief_id=bid,
                     verdict=verdict_type,
                     duplicate_of=duplicate_of,
                     evidence=evidence,
                     confidence=confidence if isinstance(confidence, str) else None,
+                    target_change=target_change
+                    if isinstance(target_change, str)
+                    else None,
+                    target_repo=target_repo if isinstance(target_repo, str) else None,
+                    proposed_change_name=proposed_change_name
+                    if isinstance(proposed_change_name, str)
+                    else None,
+                    question=question if isinstance(question, str) else None,
                 )
                 break
-            if fallback_evidence is None:
-                fallback_evidence = snippet
 
         if chosen is not None:
             verdicts.append(chosen)
@@ -619,6 +717,17 @@ def _apply_needs_update(v: Verdict, run_date: str) -> dict:
     return {**base, "status": "executed", "path": str(path), "error": None}
 
 
+# Intake-triage verdict types 2.2 makes parseable but whose own apply actions
+# ship in later tasks (3.1 fold-into-change, 3.2 propose-change, 3.3
+# work-directly, 3.4 needs-decision). Until those land, `apply_verdicts()`
+# must not silently fall through to `needs-update`'s append-triage-note
+# action for them -- that would misapply the wrong side effect to a brief
+# this evaluator run correctly classified differently.
+_APPLY_NOT_YET_IMPLEMENTED = frozenset(
+    {"fold-into-change", "propose-change", "work-directly", "needs-decision"}
+)
+
+
 def apply_verdicts(verdicts: list[Verdict], *, confirm: bool) -> list[dict]:
     """Execute (or, when `confirm` is false, only log) each non-`keep` verdict.
 
@@ -628,9 +737,14 @@ def apply_verdicts(verdicts: list[Verdict], *, confirm: bool) -> list[dict]:
     targets itself. Per spec: `stale-close` and `duplicate-of` close the
     brief via `claim()` + `done(..., note=evidence)`; `needs-update` appends
     an in-place `## Triage <run-date>` body section instead of closing it.
-    `keep` is always a no-op. When `confirm` is false, nothing is executed --
-    every non-`keep` verdict is logged as `"planned"` with no filesystem
-    mutation, so a caller can preview a run before committing to it.
+    `keep` is always a no-op. `_APPLY_NOT_YET_IMPLEMENTED` verdict types
+    (fold-into-change/propose-change/work-directly/needs-decision) have no
+    apply action yet -- they are logged `status="not-yet-implemented"` with
+    no filesystem mutation, `confirm` notwithstanding, rather than being
+    misapplied via the `needs-update` fallback. When `confirm` is false,
+    nothing is executed -- every other non-`keep` verdict is logged as
+    `"planned"` with no filesystem mutation, so a caller can preview a run
+    before committing to it.
 
     Returns one action-log dict per verdict, in the same order as `verdicts`,
     never dropping any -- `apply`'s `--json`/human output (4.3) renders this
@@ -650,6 +764,25 @@ def apply_verdicts(verdicts: list[Verdict], *, confirm: bool) -> list[dict]:
                     "status": "noop",
                     "path": None,
                     "note": None,
+                    "error": None,
+                }
+            )
+            continue
+
+        if v.verdict in _APPLY_NOT_YET_IMPLEMENTED:
+            log.append(
+                {
+                    "brief_id": v.brief_id,
+                    "verdict": v.verdict,
+                    "duplicate_of": v.duplicate_of,
+                    "action": "noop",
+                    "confirm": confirm,
+                    "status": "not-yet-implemented",
+                    "path": None,
+                    "note": (
+                        f"apply action for verdict '{v.verdict}' is not yet "
+                        "implemented; brief left untouched"
+                    ),
                     "error": None,
                 }
             )
@@ -870,8 +1003,12 @@ def cmd_apply(args: argparse.Namespace) -> int:
         planned = sum(1 for e in action_log if e["status"] == "planned")
         errors = sum(1 for e in action_log if e["status"] == "error")
         noop = sum(1 for e in action_log if e["status"] == "noop")
+        not_yet_implemented = sum(
+            1 for e in action_log if e["status"] == "not-yet-implemented"
+        )
         print(
-            f"executed: {executed}, planned: {planned}, errors: {errors}, noop: {noop}"
+            f"executed: {executed}, planned: {planned}, errors: {errors}, "
+            f"noop: {noop}, not-yet-implemented: {not_yet_implemented}"
         )
     return 1 if any(e["status"] == "error" for e in action_log) else 0
 
