@@ -15,6 +15,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 from worktrail.workqueue import queue_triage as qt
@@ -891,15 +892,14 @@ class TestApplyVerdicts(QueueTriageTestBase):
             self.assertTrue((self.queue / "a.md").exists())
 
     def test_not_yet_implemented_verdicts_are_never_misapplied_as_needs_update(self):
-        """2.2 makes fold-into-change/propose-change parseable ahead of
-        3.1/3.2 implementing their own apply actions -- until then, with
-        `--confirm`, `apply_verdicts()` must not fall through to
-        `needs-update`'s append-triage-note action for them. Without
-        `--confirm`, 3.5 previews their planned branch/target/PR title
-        instead (see `test_confirm_false_previews_fold_propose_branch_and_pr_title`).
-        (`work-directly`, 3.3, and `needs-decision`, 3.4, have their own
-        apply actions -- see `TestApplyWorkDirectly` and
-        `TestApplyNeedsDecision`.)
+        """2.2 makes propose-change parseable ahead of 3.2 implementing its
+        own apply action -- until then, with `--confirm`, `apply_verdicts()`
+        must not fall through to `needs-update`'s append-triage-note action
+        for it. Without `--confirm`, 3.5 previews its planned branch/target/PR
+        title instead (see `test_confirm_false_previews_fold_propose_branch_and_pr_title`).
+        (`work-directly`, 3.3, `needs-decision`, 3.4, and `fold-into-change`,
+        3.1, have their own apply actions -- see `TestApplyWorkDirectly`,
+        `TestApplyNeedsDecision`, and `TestApplyFoldIntoChange`.)
         """
         a_path = self.write("a.md", body="## Focus\n\nsome brief\n")
         a_before = a_path.read_text(encoding="utf-8")
@@ -911,14 +911,11 @@ class TestApplyVerdicts(QueueTriageTestBase):
                 evidence="not-yet-implemented apply path",
                 confidence="high",
             )
-            for vtype in (
-                "fold-into-change",
-                "propose-change",
-            )
+            for vtype in ("propose-change",)
         ]
 
         log = qt.apply_verdicts(verdicts, confirm=True)
-        self.assertEqual(len(log), 2)
+        self.assertEqual(len(log), 1)
         for entry, verdict in zip(log, verdicts):
             self.assertEqual(entry["verdict"], verdict.verdict)
             self.assertEqual(entry["status"], "not-yet-implemented")
@@ -1481,6 +1478,185 @@ class TestApplyNeedsDecision(QueueTriageTestBase):
         self.assertNotEqual(second["status"], "executed")
         self.assertIsNone(second["error"])
         self.assertEqual(second["decision_id"], first["decision_id"])
+
+
+class TestApplyFoldIntoChange(QueueTriageTestBase):
+    """3.1's `fold-into-change` apply action: fresh worktree off the target
+    repo's base, `proposal.md`/`tasks.md` edits, `openspec validate`, commit,
+    push, `gh pr create`, then close the brief with `triaged-to:`. Any
+    failure before the PR exists must leave the brief completely untouched
+    and report the branch name it would have used. `git`/`gh`/`openspec` are
+    faked via a `subprocess.run` dispatcher -- never hits the network.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.repo = self.base / "repo"
+        self.repo.mkdir(parents=True, exist_ok=True)
+        self.target_change = "widget-export-pipeline"
+        self.brief_path = self.write(
+            "a.md", repo=str(self.repo), body="## Focus\n\nfold this in\n"
+        )
+        self.verdict = qt.Verdict(
+            brief_id="a",
+            verdict="fold-into-change",
+            duplicate_of=None,
+            evidence="overlaps open tasks in widget-export-pipeline",
+            confidence="high",
+            target_change=self.target_change,
+            repo=str(self.repo),
+        )
+        self.branch = qt._planned_fold_propose_branch(self.verdict)
+        self.worktree_dir = qt._fold_propose_worktree_dir(self.repo, self.branch)
+
+    def _seed_change(self) -> None:
+        change_dir = self.worktree_dir / "openspec" / "changes" / self.target_change
+        change_dir.mkdir(parents=True, exist_ok=True)
+        (change_dir / "proposal.md").write_text(
+            "# Widget export pipeline\n\n## Why\n\nExisting rationale.\n",
+            encoding="utf-8",
+        )
+        (change_dir / "tasks.md").write_text(
+            "## 1. Tasks\n\n- [ ] 1.1 Existing task\n",
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def _completed(returncode: int, stdout: str = "", stderr: str = "") -> Any:
+        return subprocess.CompletedProcess(
+            args=["fake"], returncode=returncode, stdout=stdout, stderr=stderr
+        )
+
+    def _dispatcher(
+        self, *, pr_returncode: int = 0, validate_returncode: int = 0
+    ):
+        pr_url = "https://github.com/acme/widgets/pull/42"
+
+        def _run(cmd, **kwargs):
+            if cmd[0] == "git" and "-C" in cmd:
+                if "symbolic-ref" in cmd:
+                    return self._completed(0, stdout="origin/main\n")
+                if "worktree" in cmd and "add" in cmd:
+                    self._seed_change()
+                    return self._completed(0)
+                if "worktree" in cmd and "remove" in cmd:
+                    return self._completed(0)
+            if cmd[0] == "openspec" and cmd[1] == "validate":
+                return self._completed(
+                    validate_returncode,
+                    stdout="valid\n" if validate_returncode == 0 else "",
+                    stderr="" if validate_returncode == 0 else "task 1.2 has no owner",
+                )
+            if cmd[0] == "git" and cmd[1] in ("add", "commit"):
+                return self._completed(0)
+            if cmd[0] == "git" and cmd[1] == "push":
+                return self._completed(0)
+            if cmd[0] == "gh" and cmd[1:3] == ["pr", "create"]:
+                return self._completed(
+                    pr_returncode,
+                    stdout=f"{pr_url}\n" if pr_returncode == 0 else "",
+                    stderr="" if pr_returncode == 0 else "could not create pull request",
+                )
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        return _run, pr_url
+
+    def test_success_edits_change_opens_pr_and_closes_brief(self):
+        run, pr_url = self._dispatcher()
+        with mock.patch(
+            "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+        ):
+            log = qt.apply_verdicts([self.verdict], confirm=True)
+
+        entry = log[0]
+        self.assertEqual(entry["brief_id"], "a")
+        self.assertEqual(entry["action"], "open-pull-request")
+        self.assertEqual(entry["status"], "executed")
+        self.assertIsNone(entry["error"])
+        self.assertEqual(entry["branch"], self.branch)
+        self.assertEqual(entry["pr_url"], pr_url)
+
+        # brief closed with triaged-to: the PR URL, no longer in queue/
+        self.assertFalse((self.queue / "a.md").exists())
+        picked_path = Path(entry["path"])
+        self.assertEqual(picked_path.parent, self.base / "picked")
+        fm = qt.read_frontmatter(picked_path)
+        self.assertEqual(fm["status"], "done")
+        self.assertEqual(fm["triaged-to"], pr_url)
+
+        # target change's proposal.md/tasks.md were edited in the worktree
+        change_dir = self.worktree_dir / "openspec" / "changes" / self.target_change
+        proposal_text = (change_dir / "proposal.md").read_text(encoding="utf-8")
+        self.assertIn("## Folded from a", proposal_text)
+        self.assertIn(self.verdict.evidence, proposal_text)
+        tasks_text = (change_dir / "tasks.md").read_text(encoding="utf-8")
+        self.assertIn("## 2. Folded from a", tasks_text)
+        self.assertIn("- [ ] 2.1", tasks_text)
+        self.assertIn(self.verdict.evidence, tasks_text)
+
+    def test_pr_creation_failure_leaves_brief_untouched_and_reports_branch(self):
+        run, _ = self._dispatcher(pr_returncode=1)
+        with mock.patch(
+            "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+        ):
+            log = qt.apply_verdicts([self.verdict], confirm=True)
+
+        entry = log[0]
+        self.assertEqual(entry["status"], "error")
+        self.assertIn("gh pr create failed", entry["error"])
+        self.assertEqual(entry["branch"], self.branch)
+        self.assertNotIn("pr_url", entry)
+
+        # brief is completely untouched -- still queued, no claim/close attempted
+        self.assertTrue((self.queue / "a.md").exists())
+        fm = qt.read_frontmatter(self.queue / "a.md")
+        self.assertEqual(fm["status"], "queued")
+        self.assertNotIn("triaged-to", fm)
+
+    def test_validation_failure_leaves_brief_untouched_and_reports_branch(self):
+        run, _ = self._dispatcher(validate_returncode=1)
+        with mock.patch(
+            "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+        ):
+            log = qt.apply_verdicts([self.verdict], confirm=True)
+
+        entry = log[0]
+        self.assertEqual(entry["status"], "error")
+        self.assertIn("openspec validate failed", entry["error"])
+        self.assertEqual(entry["branch"], self.branch)
+        self.assertNotIn("pr_url", entry)
+
+        self.assertTrue((self.queue / "a.md").exists())
+        fm = qt.read_frontmatter(self.queue / "a.md")
+        self.assertEqual(fm["status"], "queued")
+        self.assertNotIn("triaged-to", fm)
+
+    def test_missing_target_change_files_is_an_error_before_pr(self):
+        """No `_seed_change()` call happens before `openspec validate` here
+        since proposal.md/tasks.md never existed in the first place -- the
+        missing-files check must fire first."""
+
+        def run(cmd, **kwargs):
+            if cmd[0] == "git" and "-C" in cmd:
+                if "symbolic-ref" in cmd:
+                    return self._completed(0, stdout="origin/main\n")
+                if "worktree" in cmd and "add" in cmd:
+                    self.worktree_dir.mkdir(parents=True, exist_ok=True)
+                    return self._completed(0)
+                if "worktree" in cmd and "remove" in cmd:
+                    return self._completed(0)
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        with mock.patch(
+            "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+        ):
+            log = qt.apply_verdicts([self.verdict], confirm=True)
+
+        entry = log[0]
+        self.assertEqual(entry["status"], "error")
+        self.assertIn("has no proposal.md/tasks.md", entry["error"])
+        self.assertEqual(entry["branch"], self.branch)
+        self.assertTrue((self.queue / "a.md").exists())
 
 
 class TestEvaluateSkipsUnresolvedDecision(QueueTriageTestBase):
