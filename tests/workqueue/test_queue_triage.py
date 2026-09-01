@@ -1023,6 +1023,53 @@ class TestApplyWorkDirectly(QueueTriageTestBase):
         self.assertIsNone(entry["error"])
         self.assertEqual(path.read_text(encoding="utf-8"), before)
 
+    def test_malformed_frontmatter_block_is_not_clobbered(self):
+        # A tab-indented value inside the fence makes the block a
+        # yaml.YAMLError -- split_frontmatter degrades that leniently to {}
+        # for display, but the stamp must never re-serialize that {} back to
+        # disk, since that would silently destroy every other field. The
+        # in-place stamp edits the fenced lines surgically instead, so the
+        # unparsable line (and every other field) survives untouched.
+        path = self.queue / "a.md"
+        path.write_text(
+            "---\n"
+            "id: a\n"
+            "focus: fix thing\n"
+            "status: queued\n"
+            "\tbad: [unclosed\n"
+            "---\n"
+            "## Focus\n\nbody\n",
+            encoding="utf-8",
+        )
+        verdicts = [
+            qt.Verdict(
+                brief_id="a",
+                verdict="work-directly",
+                duplicate_of=None,
+                evidence="reproduces via pytest tests/foo.py -k bar",
+                confidence="high",
+            )
+        ]
+
+        log = qt.apply_verdicts(verdicts, confirm=True)
+
+        entry = log[0]
+        self.assertEqual(entry["action"], "stamp-frontmatter")
+        self.assertEqual(entry["status"], "executed")
+        self.assertIsNone(entry["error"])
+
+        after = path.read_text(encoding="utf-8")
+        # every pre-existing field, including the unparsable line, survives
+        self.assertIn("id: a\n", after)
+        self.assertIn("focus: fix thing\n", after)
+        self.assertIn("status: queued\n", after)
+        self.assertIn("\tbad: [unclosed\n", after)
+        self.assertIn("## Focus\n\nbody\n", after)
+        # the new fields are stamped in
+        run_date = datetime.date.today().isoformat()  # noqa: DTZ011
+        self.assertIn(f"seeded-from: triage:{run_date}:direct\n", after)
+        self.assertIn("recommended-route: F\n", after)
+
 
 class TestResolveDuplicateTargets(unittest.TestCase):
     """6.5's dangling-`duplicate-of` resolution: a `duplicate-of` verdict whose

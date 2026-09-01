@@ -24,14 +24,18 @@ from pathlib import Path
 from typing import Any
 
 from ..router import overlap_check
-from ..shared.brief_frontmatter import (
-    read_frontmatter,
-    serialize_frontmatter,
-    split_frontmatter,
-)
+from ..shared.brief_frontmatter import read_frontmatter, split_frontmatter
 from ..shared.homedir import worktrail_home
 from .score_candidates import _overlap_coefficient, _tokenize
-from .work_queue import claim, done, picked_dir, queue_dir, release, resolve
+from .work_queue import (
+    _set_fm_fields,
+    claim,
+    done,
+    picked_dir,
+    queue_dir,
+    release,
+    resolve,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -927,8 +931,7 @@ def _apply_work_directly(v: Verdict, run_date: str) -> dict:
             "path": None,
             "error": None,
             "note": (
-                "evidence does not cite a test, check, or command -- "
-                "downgraded to keep"
+                "evidence does not cite a test, check, or command -- downgraded to keep"
             ),
         }
 
@@ -942,14 +945,14 @@ def _apply_work_directly(v: Verdict, run_date: str) -> dict:
             "error": "brief not found in queue/ or picked/",
         }
     try:
-        content = path.read_text(encoding="utf-8")
-        fm, body = split_frontmatter(content)
-        fm["seeded-from"] = f"triage:{run_date}:direct"
-        fm["recommended-route"] = "F"
-        path.write_text(
-            "---\n" + serialize_frontmatter(fm) + "---\n" + body, encoding="utf-8"
+        _set_fm_fields(
+            path,
+            {
+                "seeded-from": f"triage:{run_date}:direct",
+                "recommended-route": "F",
+            },
         )
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         return {
             **base,
             "action": "stamp-frontmatter",
@@ -973,7 +976,9 @@ def _apply_work_directly(v: Verdict, run_date: str) -> dict:
 # would misapply the wrong side effect to a brief this evaluator run
 # correctly classified differently. `work-directly` (3.3) has its own apply
 # action (`_apply_work_directly`) and is no longer in this set.
-_APPLY_NOT_YET_IMPLEMENTED = frozenset({"fold-into-change", "propose-change", "needs-decision"})
+_APPLY_NOT_YET_IMPLEMENTED = frozenset(
+    {"fold-into-change", "propose-change", "needs-decision"}
+)
 
 
 def apply_verdicts(verdicts: list[Verdict], *, confirm: bool) -> list[dict]:
