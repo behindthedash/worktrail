@@ -67,11 +67,15 @@ _TRIAGE_HEADING_RE = re.compile(r"^##\s+Triage\s+(\d{4}-\d{2}-\d{2})\s*$", re.MU
 
 # `work-directly` requires evidence citing a specific test, check, or command
 # (per the evaluator prompt's step 2b) rather than evidence that only restates
-# the brief's description. Matches a backtick-quoted command/check (e.g.
+# the brief's description. Matches a backtick-quoted command (e.g.
 # `` `make lint` ``) or one of the common reproduction vocabulary words the
 # prompt's own examples use ("reproduces via pytest ...", "confirmed via
-# `make lint`") -- deliberately permissive, since apply's job is to catch
-# evidence with *no* reproduction reference at all, not to grade its quality.
+# `make lint`") -- deliberately permissive about *which* command/test/check is
+# cited, but every alternative requires an actual citation (a backtick-quoted
+# command or a named tool/verb), never the bare English words "command" or
+# "check" on their own, since prose can use those words while denying or
+# merely discussing a reproduction reference (e.g. "no command needed" or
+# "we should check whether this is still relevant").
 _REPRODUCTION_EVIDENCE_RE = re.compile(
     r"`[^`]+`"
     r"|\bpytest\b"
@@ -84,9 +88,7 @@ _REPRODUCTION_EVIDENCE_RE = re.compile(
     r"|\bunittest\b"
     r"|\b(?:lint|mypy|ruff|tsc)\b"
     r"|\breproduces?\s+via\b"
-    r"|\bconfirmed\s+via\b"
-    r"|\bcommand\b"
-    r"|\bcheck\b",
+    r"|\bconfirmed\s+via\b",
     re.IGNORECASE,
 )
 
@@ -1052,6 +1054,26 @@ def apply_verdicts(verdicts: list[Verdict], *, confirm: bool) -> list[dict]:
             action = "append-triage-note"
 
         if not confirm:
+            if action == "stamp-frontmatter" and not _REPRODUCTION_EVIDENCE_RE.search(
+                v.evidence or ""
+            ):
+                log.append(
+                    {
+                        "brief_id": v.brief_id,
+                        "verdict": v.verdict,
+                        "duplicate_of": v.duplicate_of,
+                        "action": "noop",
+                        "confirm": confirm,
+                        "status": "planned-downgrade-to-keep",
+                        "path": None,
+                        "note": (
+                            "evidence does not cite a test, check, or command -- "
+                            "will be downgraded to keep"
+                        ),
+                        "error": None,
+                    }
+                )
+                continue
             log.append(
                 {
                     "brief_id": v.brief_id,

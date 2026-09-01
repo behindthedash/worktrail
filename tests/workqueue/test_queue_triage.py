@@ -1000,7 +1000,7 @@ class TestApplyWorkDirectly(QueueTriageTestBase):
         self.assertNotIn("seeded-from", fm)
         self.assertNotIn("recommended-route", fm)
 
-    def test_confirm_false_is_a_pure_dry_run_regardless_of_evidence(self):
+    def test_confirm_false_is_a_pure_dry_run_when_evidence_has_repro_reference(self):
         path = self.write("a.md", body="## Focus\n\nsome brief\n")
         before = path.read_text(encoding="utf-8")
         verdicts = [
@@ -1021,6 +1021,63 @@ class TestApplyWorkDirectly(QueueTriageTestBase):
         self.assertFalse(entry["confirm"])
         self.assertIsNone(entry["path"])
         self.assertIsNone(entry["error"])
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+
+    def test_confirm_false_previews_downgrade_to_keep_when_evidence_lacks_repro_reference(
+        self,
+    ):
+        path = self.write("a.md", body="## Focus\n\nsome brief\n")
+        before = path.read_text(encoding="utf-8")
+        verdicts = [
+            qt.Verdict(
+                brief_id="a",
+                verdict="work-directly",
+                duplicate_of=None,
+                evidence="this brief describes a real, actionable problem",
+                confidence="high",
+            )
+        ]
+
+        log = qt.apply_verdicts(verdicts, confirm=False)
+
+        # the preview must agree with what confirm=True will actually do --
+        # it must not advertise a stamp that the real run will downgrade
+        entry = log[0]
+        self.assertEqual(entry["action"], "noop")
+        self.assertEqual(entry["status"], "planned-downgrade-to-keep")
+        self.assertFalse(entry["confirm"])
+        self.assertIsNone(entry["path"])
+        self.assertIsNone(entry["error"])
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+
+    def test_evidence_naming_check_or_command_without_citing_one_is_rejected(self):
+        path = self.write("a.md", body="## Focus\n\nsome brief\n")
+        before = path.read_text(encoding="utf-8")
+        verdicts = [
+            qt.Verdict(
+                brief_id="a",
+                verdict="work-directly",
+                duplicate_of=None,
+                evidence=(
+                    "I could not find a test or check that reproduces this, "
+                    "but the brief looks actionable"
+                ),
+                confidence="high",
+            ),
+            qt.Verdict(
+                brief_id="a",
+                verdict="work-directly",
+                duplicate_of=None,
+                evidence="no command needed, it is obvious",
+                confidence="high",
+            ),
+        ]
+
+        log = qt.apply_verdicts(verdicts, confirm=True)
+
+        for entry in log:
+            self.assertEqual(entry["action"], "noop")
+            self.assertEqual(entry["status"], "downgraded-to-keep")
         self.assertEqual(path.read_text(encoding="utf-8"), before)
 
     def test_malformed_frontmatter_block_is_not_clobbered(self):
