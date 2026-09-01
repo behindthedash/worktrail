@@ -1080,6 +1080,37 @@ class TestApplyWorkDirectly(QueueTriageTestBase):
             self.assertEqual(entry["status"], "downgraded-to-keep")
         self.assertEqual(path.read_text(encoding="utf-8"), before)
 
+    def test_evidence_with_backtick_quoted_non_command_span_is_rejected(self):
+        """A backtick-quoted file path or brief id is not, on its own,
+        evidence of a reproduction reference -- the span must actually name a
+        test/check/command tool or verb (`pytest`, `make lint`, etc.), not just
+        appear inside backticks."""
+        path = self.write("a.md", body="## Focus\n\nsome brief\n")
+        before = path.read_text(encoding="utf-8")
+        verdicts = [
+            qt.Verdict(
+                brief_id="a",
+                verdict="work-directly",
+                duplicate_of=None,
+                evidence="confirmed by reading `src/worktrail/orchestrator/live.py`",
+                confidence="high",
+            ),
+            qt.Verdict(
+                brief_id="a",
+                verdict="work-directly",
+                duplicate_of=None,
+                evidence="see brief `20260901-000000-some-other-brief` for context",
+                confidence="high",
+            ),
+        ]
+
+        log = qt.apply_verdicts(verdicts, confirm=True)
+
+        for entry in log:
+            self.assertEqual(entry["action"], "noop")
+            self.assertEqual(entry["status"], "downgraded-to-keep")
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+
     def test_malformed_frontmatter_block_is_not_clobbered(self):
         # A tab-indented value inside the fence makes the block a
         # yaml.YAMLError -- split_frontmatter degrades that leniently to {}

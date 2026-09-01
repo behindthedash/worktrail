@@ -67,18 +67,17 @@ _TRIAGE_HEADING_RE = re.compile(r"^##\s+Triage\s+(\d{4}-\d{2}-\d{2})\s*$", re.MU
 
 # `work-directly` requires evidence citing a specific test, check, or command
 # (per the evaluator prompt's step 2b) rather than evidence that only restates
-# the brief's description. Matches a backtick-quoted command (e.g.
-# `` `make lint` ``) or one of the common reproduction vocabulary words the
-# prompt's own examples use ("reproduces via pytest ...", "confirmed via
-# `make lint`") -- deliberately permissive about *which* command/test/check is
-# cited, but every alternative requires an actual citation (a backtick-quoted
-# command or a named tool/verb), never the bare English words "command" or
-# "check" on their own, since prose can use those words while denying or
-# merely discussing a reproduction reference (e.g. "no command needed" or
-# "we should check whether this is still relevant").
+# the brief's description. Matches one of the common reproduction vocabulary
+# words/tool names the prompt's own examples use ("reproduces via pytest ...",
+# "confirmed via make lint") -- deliberately permissive about *which*
+# command/test/check is cited, but every alternative requires an actual named
+# tool or verb, never a bare backtick-quoted span on its own (that would also
+# match a file path or brief id with no command content at all) and never the
+# bare English words "command" or "check", since prose can use those words
+# while denying or merely discussing a reproduction reference (e.g. "no
+# command needed" or "we should check whether this is still relevant").
 _REPRODUCTION_EVIDENCE_RE = re.compile(
-    r"`[^`]+`"
-    r"|\bpytest\b"
+    r"\bpytest\b"
     r"|\btests?/"
     r"|\bmake\s+\w+"
     r"|\bnpm\s+(?:run|test)\b"
