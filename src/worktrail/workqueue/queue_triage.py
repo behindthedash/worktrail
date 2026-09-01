@@ -173,6 +173,35 @@ test, or why inconclusive for a fail-open keep>", "confidence": \
 """
 
 
+# 3.2's `propose-change` apply action spawns a second, separate agent (after
+# `openspec new change` has scaffolded the change directory) to author the
+# actual proposal/design/specs/tasks content -- the triage evaluator prompt
+# above only ever *decides* a brief deserves its own change, it never drafts
+# one. Kept as a module-level constant for the same reason
+# `EVALUATOR_PROMPT_TEMPLATE` is: `tests/workqueue/test_queue_triage.py` can
+# assert on it directly.
+PROPOSE_CHANGE_PROMPT_TEMPLATE = """\
+You are authoring a new OpenSpec change for the repo `{repo}`, proposed as \
+`{proposed_change_name}` by queue-triage from work-queue brief `{brief_id}`.
+
+The change directory already exists at \
+`openspec/changes/{proposed_change_name}/` (scaffolded via `openspec new \
+change {proposed_change_name}`). Write its `proposal.md`, `design.md` (only \
+if the change is complex enough to warrant one), the delta spec(s) under \
+`specs/`, and `tasks.md` -- follow this repo's own OpenSpec conventions \
+(inspect a couple of existing changes under `openspec/changes/` for the \
+expected shape if unsure).
+
+Brief evidence (why this change is being proposed):
+{evidence}
+
+When you are done, the change must pass `openspec validate \
+{proposed_change_name} --strict` -- run it yourself and fix any errors \
+before finishing. Do not `git commit` or `git push`; that is handled by the \
+caller once you're done.
+"""
+
+
 def group_queue_by_repo() -> dict[str, list[Path]]:
     """Group every brief in `queue_dir()` by its frontmatter `repo:` value.
 
@@ -992,17 +1021,6 @@ def _apply_work_directly(v: Verdict, run_date: str) -> dict:
     }
 
 
-# Intake-triage verdict types 2.2 makes parseable but whose own apply actions
-# ship in later tasks (3.2 propose-change). Until it lands, `apply_verdicts()`
-# must not silently fall through to `needs-update`'s append-triage-note action
-# for it -- that would misapply the wrong side effect to a brief this
-# evaluator run correctly classified differently. `work-directly` (3.3),
-# `needs-decision` (3.4), and `fold-into-change` (3.1) have their own apply
-# actions (`_apply_work_directly`, `_apply_needs_decision`,
-# `_apply_fold_into_change`) and are no longer in this set.
-_APPLY_NOT_YET_IMPLEMENTED = frozenset({"propose-change"})
-
-
 # Per design D8: filed via `decisions.ask()`, which builds the versioned
 # envelope with `decisions.pending_decision_envelope()` under the hood --
 # `_apply_needs_decision()` supplies the mandatory `why`/`context`/`options`
@@ -1138,8 +1156,7 @@ def _planned_fold_propose_branch(v: Verdict) -> str:
 
     Deterministic from the verdict's own fields alone -- no worktree or git
     call is made to produce this, so it is safe to compute for a preview
-    even though the fold/propose apply actions themselves are not
-    implemented yet (`_APPLY_NOT_YET_IMPLEMENTED`).
+    without needing to run the fold/propose apply action itself.
     """
     if v.verdict == "fold-into-change":
         return f"queue-triage/fold-{v.brief_id}-into-{v.target_change}"
@@ -1471,6 +1488,275 @@ def _apply_fold_into_change(v: Verdict) -> dict:
     }
 
 
+def _apply_propose_change(v: Verdict, *, agent: str = "claude") -> dict:
+    """`propose-change`: worktree + `openspec new change` + agent-authored change + validate + PR + close.
+
+    Mirrors `_apply_fold_into_change()`'s shape (per the spec's "Fold and
+    propose are applied as a pull request, fail-closed" requirement, which
+    covers both verdict types), with the target-authoring step swapped: a
+    fresh worktree on `_planned_fold_propose_branch(v)` off the target repo's
+    base branch (`_repo_base_branch()`), `openspec new change
+    <proposed_change_name>` to scaffold the change directory, one
+    `spawnlib.spawn_agent()` call (per `PROPOSE_CHANGE_PROMPT_TEMPLATE`) to
+    author `proposal.md`/`design.md`/`specs/`/`tasks.md` in place, then
+    `openspec validate <proposed_change_name> --strict`, commit, push, and
+    `gh pr create` -- only once that PR exists does this claim and close the
+    brief (via `claim()`/`done(..., triaged_to=pr_url)`), matching
+    `_apply_fold_into_change()`'s rollback-on-`done()`-failure behaviour. Any
+    failure before the PR exists returns `status="error"` with the brief left
+    completely untouched and the `branch` name it would have used. The local
+    worktree (and, on failure, the local branch) are always cleaned up in a
+    `finally` -- a pushed branch survives (git has no local undo for a push),
+    but nothing local should outlive this call.
+    """
+    result = {
+        "brief_id": v.brief_id,
+        "verdict": v.verdict,
+        "duplicate_of": v.duplicate_of,
+        "action": "open-pull-request",
+        "confirm": True,
+        "note": v.evidence,
+    }
+    repo = v.repo if v.repo and v.repo != NO_REPO_KEY else None
+    if not repo or not v.proposed_change_name:
+        return {
+            **result,
+            "status": "error",
+            "path": None,
+            "error": "verdict is missing repo or proposed_change_name to propose",
+        }
+
+    repo_path = Path(repo)
+    branch = _planned_fold_propose_branch(v)
+    base_branch = _repo_base_branch(repo_path)
+    worktree_dir = _fold_propose_worktree_dir(repo_path, branch)
+
+    add = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo_path),
+            "worktree",
+            "add",
+            "-b",
+            branch,
+            str(worktree_dir),
+            base_branch,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if add.returncode != 0:
+        return {
+            **result,
+            "status": "error",
+            "path": None,
+            "error": f"git worktree add failed: {(add.stderr or add.stdout).strip()}",
+            "branch": branch,
+        }
+
+    pr_url = None
+    try:
+        new_change = subprocess.run(
+            ["openspec", "new", "change", v.proposed_change_name],
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=str(worktree_dir),
+            timeout=60,
+        )
+        if new_change.returncode != 0:
+            return {
+                **result,
+                "status": "error",
+                "path": None,
+                "error": (
+                    "openspec new change failed: "
+                    f"{(new_change.stderr or new_change.stdout).strip()}"
+                ),
+                "branch": branch,
+            }
+
+        from ..orchestrator import spawnlib
+
+        prompt = PROPOSE_CHANGE_PROMPT_TEMPLATE.format(
+            repo=repo,
+            proposed_change_name=v.proposed_change_name,
+            brief_id=v.brief_id,
+            evidence=v.evidence,
+        )
+        spawnlib.spawn_agent(prompt, worktree_dir, tier=DEFAULT_TIER, prefer=agent)
+
+        change_dir = worktree_dir / "openspec" / "changes" / v.proposed_change_name
+        proposal_path = change_dir / "proposal.md"
+        tasks_path = change_dir / "tasks.md"
+        if not proposal_path.is_file() or not tasks_path.is_file():
+            return {
+                **result,
+                "status": "error",
+                "path": None,
+                "error": (
+                    "evaluator agent did not produce proposal.md/tasks.md "
+                    f"under {change_dir}"
+                ),
+                "branch": branch,
+            }
+
+        validate = subprocess.run(
+            ["openspec", "validate", v.proposed_change_name, "--strict"],
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=str(worktree_dir),
+            timeout=120,
+        )
+        if validate.returncode != 0:
+            return {
+                **result,
+                "status": "error",
+                "path": None,
+                "error": (
+                    "openspec validate failed: "
+                    f"{(validate.stderr or validate.stdout).strip()}"
+                ),
+                "branch": branch,
+            }
+
+        commit_message = f"Propose change: {v.proposed_change_name}"
+        for git_args in (["add", "-A"], ["commit", "-m", commit_message]):
+            r = subprocess.run(
+                ["git", *git_args],
+                check=False,
+                capture_output=True,
+                text=True,
+                cwd=str(worktree_dir),
+                timeout=60,
+            )
+            if r.returncode != 0:
+                return {
+                    **result,
+                    "status": "error",
+                    "path": None,
+                    "error": (
+                        f"git {' '.join(git_args)} failed: "
+                        f"{(r.stderr or r.stdout).strip()}"
+                    ),
+                    "branch": branch,
+                }
+
+        push = subprocess.run(
+            ["git", "push", "-u", "origin", branch],
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=str(worktree_dir),
+            timeout=120,
+        )
+        if push.returncode != 0:
+            return {
+                **result,
+                "status": "error",
+                "path": None,
+                "error": f"git push failed: {(push.stderr or push.stdout).strip()}",
+                "branch": branch,
+            }
+
+        labels = _refresh_pr_labels(worktree_dir, ["go:risk-low"], base_branch) or [
+            "go:risk-low"
+        ]
+        pr_cmd = ["gh", "pr", "create", "--base", base_branch, "--head", branch]
+        for label in labels:
+            pr_cmd += ["--label", label]
+        pr_cmd += [
+            "--title",
+            _planned_fold_propose_pr_title(v),
+            "--body",
+            f"{v.evidence}\n\nProposed via queue-triage from brief `{v.brief_id}`.",
+        ]
+        pr = subprocess.run(
+            pr_cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=str(worktree_dir),
+            timeout=60,
+        )
+        pr_output = (pr.stdout or pr.stderr).strip()
+        pr_url = pr_output.splitlines()[-1] if pr_output else ""
+        if pr.returncode != 0 or not pr_url.startswith("http"):
+            pr_url = ""
+            return {
+                **result,
+                "status": "error",
+                "path": None,
+                "error": f"gh pr create failed: {pr_output or '(no output)'}",
+                "branch": branch,
+            }
+    finally:
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_path),
+                "worktree",
+                "remove",
+                "--force",
+                str(worktree_dir),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if not pr_url:
+            subprocess.run(
+                ["git", "-C", str(repo_path), "branch", "-D", branch],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+
+    # A PR now exists -- from here on, closing the brief is safe to attempt.
+    # Any failure past this point is reported against the now-real branch/PR,
+    # never against a not-yet-opened one.
+    claim_res = claim(v.brief_id, by="queue-triage")
+    if claim_res["status"] != "claimed":
+        detail = claim_res.get("error")
+        return {
+            **result,
+            "status": "error",
+            "path": claim_res.get("path"),
+            "error": f"claim: {claim_res['status']}"
+            + (f" ({detail})" if detail else ""),
+            "branch": branch,
+            "pr_url": pr_url,
+        }
+    done_res = done(v.brief_id, note=v.evidence, triaged_to=pr_url)
+    if done_res["status"] != "done":
+        detail = done_res.get("error")
+        release_res = release(v.brief_id)
+        return {
+            **result,
+            "status": "error",
+            "path": done_res.get("path"),
+            "error": f"done: {done_res['status']}" + (f" ({detail})" if detail else ""),
+            "rolled_back": release_res["status"] == "released",
+            "branch": branch,
+            "pr_url": pr_url,
+        }
+    return {
+        **result,
+        "status": "executed",
+        "path": done_res.get("path"),
+        "error": None,
+        "branch": branch,
+        "pr_url": pr_url,
+    }
+
+
 def _preview_verdict(v: Verdict, run_date: str) -> dict:
     """The no-`--confirm` preview of one non-`keep` verdict's apply action.
 
@@ -1480,9 +1766,9 @@ def _preview_verdict(v: Verdict, run_date: str) -> dict:
     a caller can preview a run's effects before committing to it, per spec's
     "Apply step never closes a brief without an approved verdict"
     requirement. `fold-into-change`/`propose-change` preview their planned
-    branch, target change, and PR title even though their apply actions
-    (`_APPLY_NOT_YET_IMPLEMENTED`) don't exist yet -- those fields are fully
-    determined by the verdict alone. `work-directly` previews its planned
+    branch, target change, and PR title -- those fields are fully determined
+    by the verdict alone, without running either apply action. `work-directly`
+    previews its planned
     frontmatter stamp (or the same downgrade-to-keep `_apply_work_directly`
     would make); `needs-decision` previews the `awaiting-decision` stamp and
     the full `pending_decision_envelope()` `decisions.ask()` would file.
@@ -1572,7 +1858,9 @@ def _preview_verdict(v: Verdict, run_date: str) -> dict:
     return {**base, "action": action, "status": "planned", "note": v.evidence}
 
 
-def apply_verdicts(verdicts: list[Verdict], *, confirm: bool) -> list[dict]:
+def apply_verdicts(
+    verdicts: list[Verdict], *, confirm: bool, agent: str = "claude"
+) -> list[dict]:
     """Execute (or, when `confirm` is false, only preview) each non-`keep` verdict.
 
     Callers are expected to have already run this batch through
@@ -1587,11 +1875,13 @@ def apply_verdicts(verdicts: list[Verdict], *, confirm: bool) -> list[dict]:
     pending decision via `decisions.ask()` and leaves the brief queued
     (`_apply_needs_decision`); `fold-into-change` creates a worktree, edits
     the target change's `proposal.md`/`tasks.md`, validates, and opens a pull
-    request before closing the brief (`_apply_fold_into_change`). `keep` is
-    always a no-op. `_APPLY_NOT_YET_IMPLEMENTED` verdict types
-    (`propose-change`) have no apply action yet -- with `confirm`, they are
-    logged `status="not-yet-implemented"` with no filesystem mutation,
-    rather than being misapplied via the `needs-update` fallback.
+    request before closing the brief (`_apply_fold_into_change`);
+    `propose-change` creates a worktree, runs `openspec new change`, spawns
+    an agent to author the new change's `proposal.md`/`design.md`/`specs/`/
+    `tasks.md`, validates, and opens a pull request before closing the brief
+    (`_apply_propose_change`, using `agent` as the evaluator harness/model
+    hint per `spawnlib.spawn_agent()`'s `prefer` parameter). `keep` is always
+    a no-op.
 
     When `confirm` is false, nothing is executed and nothing is written to
     the queue or any repo -- every other non-`keep` verdict is instead
@@ -1628,32 +1918,13 @@ def apply_verdicts(verdicts: list[Verdict], *, confirm: bool) -> list[dict]:
             log.append({**_preview_verdict(v, run_date), "confirm": confirm})
             continue
 
-        if v.verdict in _APPLY_NOT_YET_IMPLEMENTED:
-            log.append(
-                {
-                    "brief_id": v.brief_id,
-                    "verdict": v.verdict,
-                    "duplicate_of": v.duplicate_of,
-                    "action": "noop",
-                    "confirm": confirm,
-                    "status": "not-yet-implemented",
-                    "path": None,
-                    "note": (
-                        f"apply action for verdict '{v.verdict}' is not yet "
-                        "implemented; brief left untouched"
-                    ),
-                    "error": None,
-                }
-            )
-            continue
-
         if v.verdict in ("stale-close", "duplicate-of"):
             action = "claim+done"
         elif v.verdict == "work-directly":
             action = "stamp-frontmatter"
         elif v.verdict == "needs-decision":
             action = "file-decision"
-        elif v.verdict == "fold-into-change":
+        elif v.verdict in ("fold-into-change", "propose-change"):
             action = "open-pull-request"
         else:
             action = "append-triage-note"
@@ -1665,7 +1936,10 @@ def apply_verdicts(verdicts: list[Verdict], *, confirm: bool) -> list[dict]:
         elif action == "file-decision":
             log.append(_apply_needs_decision(v))
         elif action == "open-pull-request":
-            log.append(_apply_fold_into_change(v))
+            if v.verdict == "fold-into-change":
+                log.append(_apply_fold_into_change(v))
+            else:
+                log.append(_apply_propose_change(v, agent=agent))
         else:
             log.append(_apply_needs_update(v, run_date))
     return log
@@ -1902,12 +2176,14 @@ def cmd_apply(args: argparse.Namespace) -> int:
     "Apply step never closes a brief without an approved verdict" requirement. Every
     verdict is run through `resolve_duplicate_targets()` before `apply_verdicts()` so a
     dangling `duplicate-of` in the file can never be acted on, regardless of `--confirm`.
+    `--agent` is only consulted for `propose-change`, whose apply action spawns an
+    agent to author the new change (`_apply_propose_change`).
     """
     raw = Path(args.verdict_file).read_text(encoding="utf-8")
     verdicts = [Verdict(**entry) for entry in json.loads(raw)]
 
     resolved = resolve_duplicate_targets(verdicts)
-    action_log = apply_verdicts(resolved, confirm=args.confirm)
+    action_log = apply_verdicts(resolved, confirm=args.confirm, agent=args.agent)
 
     if args.as_json:
         print(json.dumps(action_log, indent=2))
@@ -2001,6 +2277,12 @@ def main(argv: list[str] | None = None) -> int:
         "--confirm",
         action="store_true",
         help="execute the actions; without this, only log what would happen",
+    )
+    apply_parser.add_argument(
+        "--agent",
+        default="claude",
+        choices=sorted(SUPPORTED_AGENTS),
+        help="agent to spawn to author a propose-change verdict's new change (default claude)",
     )
     apply_parser.add_argument(
         "--json",
