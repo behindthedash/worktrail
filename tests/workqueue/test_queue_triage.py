@@ -891,10 +891,12 @@ class TestApplyVerdicts(QueueTriageTestBase):
             self.assertTrue((self.queue / "a.md").exists())
 
     def test_not_yet_implemented_verdicts_are_never_misapplied_as_needs_update(self):
-        """2.2 makes fold-into-change/propose-change/work-directly/needs-decision
-        parseable ahead of 3.1-3.4 implementing their own apply actions -- until
+        """2.2 makes fold-into-change/propose-change/needs-decision parseable
+        ahead of 3.1/3.2/3.4 implementing their own apply actions -- until
         then `apply_verdicts()` must not fall through to `needs-update`'s
         append-triage-note action for them, regardless of `--confirm`.
+        (`work-directly`, 3.3, has its own apply action -- see
+        `TestApplyWorkDirectly`.)
         """
         a_path = self.write("a.md", body="## Focus\n\nsome brief\n")
         a_before = a_path.read_text(encoding="utf-8")
@@ -909,14 +911,13 @@ class TestApplyVerdicts(QueueTriageTestBase):
             for vtype in (
                 "fold-into-change",
                 "propose-change",
-                "work-directly",
                 "needs-decision",
             )
         ]
 
         for confirm in (False, True):
             log = qt.apply_verdicts(verdicts, confirm=confirm)
-            self.assertEqual(len(log), 4)
+            self.assertEqual(len(log), 3)
             for entry, verdict in zip(log, verdicts):
                 self.assertEqual(entry["verdict"], verdict.verdict)
                 self.assertEqual(entry["status"], "not-yet-implemented")
@@ -927,6 +928,100 @@ class TestApplyVerdicts(QueueTriageTestBase):
         # never mutated, unlike a real needs-update apply
         self.assertEqual(a_path.read_text(encoding="utf-8"), a_before)
         self.assertTrue((self.queue / "a.md").exists())
+
+
+class TestApplyWorkDirectly(QueueTriageTestBase):
+    """3.3's `work-directly` apply action: stamp `seeded-from`/`recommended-route`
+    in place when the evidence cites a reproduction reference, downgrade to a
+    no-op `keep` when it doesn't.
+    """
+
+    def test_confirm_true_stamps_frontmatter_when_evidence_has_repro_reference(self):
+        path = self.write("a.md", body="## Focus\n\nsome brief\n")
+        verdicts = [
+            qt.Verdict(
+                brief_id="a",
+                verdict="work-directly",
+                duplicate_of=None,
+                evidence="reproduces via pytest tests/foo.py -k bar",
+                confidence="high",
+            )
+        ]
+
+        log = qt.apply_verdicts(verdicts, confirm=True)
+
+        entry = log[0]
+        self.assertEqual(entry["brief_id"], "a")
+        self.assertEqual(entry["action"], "stamp-frontmatter")
+        self.assertEqual(entry["status"], "executed")
+        self.assertTrue(entry["confirm"])
+        self.assertIsNone(entry["error"])
+        self.assertEqual(entry["path"], str(path))
+
+        # brief is left in place, in queue/ -- unlike stale-close, work-directly
+        # never claims or closes it
+        self.assertTrue(path.exists())
+        self.assertTrue((self.queue / "a.md").exists())
+
+        fm = qt.read_frontmatter(path)
+        run_date = datetime.date.today().isoformat()  # noqa: DTZ011
+        self.assertEqual(fm["seeded-from"], f"triage:{run_date}:direct")
+        self.assertEqual(fm["recommended-route"], "F")
+        # focus and other original frontmatter fields survive the stamp
+        self.assertEqual(fm["focus"], "a.md")
+        self.assertEqual(fm["status"], "queued")
+
+    def test_confirm_true_downgrades_to_keep_when_evidence_lacks_repro_reference(self):
+        path = self.write("a.md", body="## Focus\n\nsome brief\n")
+        before = path.read_text(encoding="utf-8")
+        verdicts = [
+            qt.Verdict(
+                brief_id="a",
+                verdict="work-directly",
+                duplicate_of=None,
+                evidence="this brief describes a real, actionable problem",
+                confidence="high",
+            )
+        ]
+
+        log = qt.apply_verdicts(verdicts, confirm=True)
+
+        entry = log[0]
+        self.assertEqual(entry["brief_id"], "a")
+        self.assertEqual(entry["verdict"], "work-directly")
+        self.assertEqual(entry["action"], "noop")
+        self.assertEqual(entry["status"], "downgraded-to-keep")
+        self.assertIsNone(entry["path"])
+        self.assertIsNone(entry["error"])
+
+        # never mutated -- downgraded to a no-op, not stamped
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+        fm = qt.read_frontmatter(path)
+        self.assertNotIn("seeded-from", fm)
+        self.assertNotIn("recommended-route", fm)
+
+    def test_confirm_false_is_a_pure_dry_run_regardless_of_evidence(self):
+        path = self.write("a.md", body="## Focus\n\nsome brief\n")
+        before = path.read_text(encoding="utf-8")
+        verdicts = [
+            qt.Verdict(
+                brief_id="a",
+                verdict="work-directly",
+                duplicate_of=None,
+                evidence="reproduces via pytest tests/foo.py -k bar",
+                confidence="high",
+            )
+        ]
+
+        log = qt.apply_verdicts(verdicts, confirm=False)
+
+        entry = log[0]
+        self.assertEqual(entry["action"], "stamp-frontmatter")
+        self.assertEqual(entry["status"], "planned")
+        self.assertFalse(entry["confirm"])
+        self.assertIsNone(entry["path"])
+        self.assertIsNone(entry["error"])
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
 
 
 class TestResolveDuplicateTargets(unittest.TestCase):

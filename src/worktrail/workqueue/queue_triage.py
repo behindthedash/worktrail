@@ -24,7 +24,11 @@ from pathlib import Path
 from typing import Any
 
 from ..router import overlap_check
-from ..shared.brief_frontmatter import read_frontmatter, split_frontmatter
+from ..shared.brief_frontmatter import (
+    read_frontmatter,
+    serialize_frontmatter,
+    split_frontmatter,
+)
 from ..shared.homedir import worktrail_home
 from .score_candidates import _overlap_coefficient, _tokenize
 from .work_queue import claim, done, picked_dir, queue_dir, release, resolve
@@ -56,6 +60,31 @@ VALID_VERDICT_TYPES = {
 _KEBAB_CASE_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 _TRIAGE_HEADING_RE = re.compile(r"^##\s+Triage\s+(\d{4}-\d{2}-\d{2})\s*$", re.MULTILINE)
+
+# `work-directly` requires evidence citing a specific test, check, or command
+# (per the evaluator prompt's step 2b) rather than evidence that only restates
+# the brief's description. Matches a backtick-quoted command/check (e.g.
+# `` `make lint` ``) or one of the common reproduction vocabulary words the
+# prompt's own examples use ("reproduces via pytest ...", "confirmed via
+# `make lint`") -- deliberately permissive, since apply's job is to catch
+# evidence with *no* reproduction reference at all, not to grade its quality.
+_REPRODUCTION_EVIDENCE_RE = re.compile(
+    r"`[^`]+`"
+    r"|\bpytest\b"
+    r"|\btests?/"
+    r"|\bmake\s+\w+"
+    r"|\bnpm\s+(?:run|test)\b"
+    r"|\byarn\s+(?:run|test)\b"
+    r"|\bgo\s+test\b"
+    r"|\bcargo\s+test\b"
+    r"|\bunittest\b"
+    r"|\b(?:lint|mypy|ruff|tsc)\b"
+    r"|\breproduces?\s+via\b"
+    r"|\bconfirmed\s+via\b"
+    r"|\bcommand\b"
+    r"|\bcheck\b",
+    re.IGNORECASE,
+)
 
 # Codifies the 2026-07-31 pilot's lessons (see design.md's "Evaluator prompt
 # template" decision): repo-fetch-first, a bounded per-brief tool-call budget,
@@ -870,15 +899,81 @@ def _apply_needs_update(v: Verdict, run_date: str) -> dict:
     return {**base, "status": "executed", "path": str(path), "error": None}
 
 
+def _apply_work_directly(v: Verdict, run_date: str) -> dict:
+    """`work-directly`: stamp `seeded-from`/`recommended-route` in place, or downgrade to `keep`.
+
+    Requires `v.evidence` to cite a specific test, check, or command
+    (`_REPRODUCTION_EVIDENCE_RE`, per the evaluator prompt's "work-directly
+    requires reproduction evidence" rule) -- evidence that only restates the
+    brief's description without one is not proof this is directly actionable
+    right now, so this downgrades to a no-op `keep` rather than stamping it.
+    When the citation is present, the brief's frontmatter is stamped
+    `seeded-from: triage:<run_date>:direct` and `recommended-route: F` and the
+    brief is left in `queue/` -- unlike `stale-close`, `work-directly` never
+    claims or closes it.
+    """
+    base = {
+        "brief_id": v.brief_id,
+        "verdict": v.verdict,
+        "duplicate_of": v.duplicate_of,
+        "confirm": True,
+        "note": v.evidence,
+    }
+    if not _REPRODUCTION_EVIDENCE_RE.search(v.evidence or ""):
+        return {
+            **base,
+            "action": "noop",
+            "status": "downgraded-to-keep",
+            "path": None,
+            "error": None,
+            "note": (
+                "evidence does not cite a test, check, or command -- "
+                "downgraded to keep"
+            ),
+        }
+
+    path = _resolve_brief_path(v.brief_id)
+    if path is None:
+        return {
+            **base,
+            "action": "stamp-frontmatter",
+            "status": "error",
+            "path": None,
+            "error": "brief not found in queue/ or picked/",
+        }
+    try:
+        content = path.read_text(encoding="utf-8")
+        fm, body = split_frontmatter(content)
+        fm["seeded-from"] = f"triage:{run_date}:direct"
+        fm["recommended-route"] = "F"
+        path.write_text(
+            "---\n" + serialize_frontmatter(fm) + "---\n" + body, encoding="utf-8"
+        )
+    except OSError as exc:
+        return {
+            **base,
+            "action": "stamp-frontmatter",
+            "status": "error",
+            "path": str(path),
+            "error": str(exc),
+        }
+    return {
+        **base,
+        "action": "stamp-frontmatter",
+        "status": "executed",
+        "path": str(path),
+        "error": None,
+    }
+
+
 # Intake-triage verdict types 2.2 makes parseable but whose own apply actions
-# ship in later tasks (3.1 fold-into-change, 3.2 propose-change, 3.3
-# work-directly, 3.4 needs-decision). Until those land, `apply_verdicts()`
-# must not silently fall through to `needs-update`'s append-triage-note
-# action for them -- that would misapply the wrong side effect to a brief
-# this evaluator run correctly classified differently.
-_APPLY_NOT_YET_IMPLEMENTED = frozenset(
-    {"fold-into-change", "propose-change", "work-directly", "needs-decision"}
-)
+# ship in later tasks (3.1 fold-into-change, 3.2 propose-change, 3.4
+# needs-decision). Until those land, `apply_verdicts()` must not silently
+# fall through to `needs-update`'s append-triage-note action for them -- that
+# would misapply the wrong side effect to a brief this evaluator run
+# correctly classified differently. `work-directly` (3.3) has its own apply
+# action (`_apply_work_directly`) and is no longer in this set.
+_APPLY_NOT_YET_IMPLEMENTED = frozenset({"fold-into-change", "propose-change", "needs-decision"})
 
 
 def apply_verdicts(verdicts: list[Verdict], *, confirm: bool) -> list[dict]:
@@ -889,15 +984,18 @@ def apply_verdicts(verdicts: list[Verdict], *, confirm: bool) -> list[dict]:
     each `Verdict` carries, it does not re-check dangling `duplicate-of`
     targets itself. Per spec: `stale-close` and `duplicate-of` close the
     brief via `claim()` + `done(..., note=evidence)`; `needs-update` appends
-    an in-place `## Triage <run-date>` body section instead of closing it.
-    `keep` is always a no-op. `_APPLY_NOT_YET_IMPLEMENTED` verdict types
-    (fold-into-change/propose-change/work-directly/needs-decision) have no
-    apply action yet -- they are logged `status="not-yet-implemented"` with
-    no filesystem mutation, `confirm` notwithstanding, rather than being
-    misapplied via the `needs-update` fallback. When `confirm` is false,
-    nothing is executed -- every other non-`keep` verdict is logged as
-    `"planned"` with no filesystem mutation, so a caller can preview a run
-    before committing to it.
+    an in-place `## Triage <run-date>` body section instead of closing it;
+    `work-directly` stamps `seeded-from`/`recommended-route` frontmatter in
+    place, or downgrades to a no-op `keep` when the evidence lacks a
+    reproduction reference (`_apply_work_directly`). `keep` is always a
+    no-op. `_APPLY_NOT_YET_IMPLEMENTED` verdict types
+    (fold-into-change/propose-change/needs-decision) have no apply action
+    yet -- they are logged `status="not-yet-implemented"` with no filesystem
+    mutation, `confirm` notwithstanding, rather than being misapplied via
+    the `needs-update` fallback. When `confirm` is false, nothing is
+    executed -- every other non-`keep` verdict is logged as `"planned"`
+    with no filesystem mutation, so a caller can preview a run before
+    committing to it.
 
     Returns one action-log dict per verdict, in the same order as `verdicts`,
     never dropping any -- `apply`'s `--json`/human output (4.3) renders this
@@ -941,11 +1039,12 @@ def apply_verdicts(verdicts: list[Verdict], *, confirm: bool) -> list[dict]:
             )
             continue
 
-        action = (
-            "claim+done"
-            if v.verdict in ("stale-close", "duplicate-of")
-            else "append-triage-note"
-        )
+        if v.verdict in ("stale-close", "duplicate-of"):
+            action = "claim+done"
+        elif v.verdict == "work-directly":
+            action = "stamp-frontmatter"
+        else:
+            action = "append-triage-note"
 
         if not confirm:
             log.append(
@@ -965,6 +1064,8 @@ def apply_verdicts(verdicts: list[Verdict], *, confirm: bool) -> list[dict]:
 
         if action == "claim+done":
             log.append(_apply_close(v))
+        elif action == "stamp-frontmatter":
+            log.append(_apply_work_directly(v, run_date))
         else:
             log.append(_apply_needs_update(v, run_date))
     return log
