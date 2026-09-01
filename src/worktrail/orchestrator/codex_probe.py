@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 
-from worktrail.orchestrator.spawnlib import build_cmd
+from worktrail.orchestrator.spawnlib import build_cmd, is_infra_failure
 from worktrail.router.skill_dispatch import prepare_codex_child_environment
 from worktrail.runtime.selection import Cell
 
@@ -316,6 +316,22 @@ def run_probe_command(
             stage=StageOutcome.STARTUP,
             success=False,
             diagnostic=str(exc),
+        )
+    if isinstance(result, subprocess.CompletedProcess) and is_infra_failure(
+        result.returncode, result.stdout
+    ):
+        # `is_infra_failure` classifies a nested spawn that never got off the
+        # ground (non-zero exit, no usable output) as `STARTUP`, distinct from
+        # a task-level failure the nested process reported after starting.
+        # The diagnostic carries only the exit code -- never the raw
+        # stdout/stderr, which may contain nested-process output.
+        result = ProbeReport(
+            stage=StageOutcome.STARTUP,
+            success=False,
+            diagnostic=(
+                f"codex probe startup failed: exit code {result.returncode}, "
+                "no usable output"
+            ),
         )
     if pre_spawn_snapshot is not None:
         try:
