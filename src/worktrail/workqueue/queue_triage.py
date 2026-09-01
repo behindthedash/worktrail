@@ -293,6 +293,66 @@ def rank_change_candidates(
     return [entry for _, entry in scored[:top_k]]
 
 
+def _count_active_changes(repo: str) -> int:
+    """Count of `repo`'s active OpenSpec changes, per `overlap_check.scan()`.
+
+    Shares `rank_change_candidates()`'s active-change filter (`stage ==
+    "active"`) -- a nonexistent `openspec/` dir (e.g. a repo path that isn't
+    checked out locally, or a test fixture) scans to `[]`, i.e. 0, rather than
+    raising.
+    """
+    specs_root = Path(repo) / "openspec"
+    return sum(1 for c in overlap_check.scan(specs_root) if c.get("stage") == "active")
+
+
+def _repo_wip_cap(repo: str) -> int:
+    """`repo`'s `max_active_changes` policy value, 0 (disabled) if unset or non-int.
+
+    Reads via `router.policy.load_policy()` directly rather than requiring 3.6's
+    formal `max_active_changes` key/validation to have landed first: an
+    undeclared key in a repo's `.worktrail/policy.yaml` still round-trips onto
+    `load_policy()`'s returned dict (as an "unknown key", per its own
+    docstring), so a plain `.get(..., 0)` here works whether or not 3.6 has
+    shipped yet. Per design D7, 0 means the cap is off -- no repo is ever held.
+    """
+    from ..router import policy as policy_mod
+
+    value = policy_mod.load_policy(Path(repo)).get("max_active_changes", 0)
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def apply_wip_cap_preview(repo: str, verdicts: list[Verdict]) -> list[Verdict]:
+    """Stamp `repo`/`held_by_wip_cap` onto `verdicts`, a report-time preview of 3.6's cap.
+
+    Per design D7 ("WIP cap ... only throttles `propose-change`"): every verdict
+    gets `repo` set for reporting; a `propose-change` verdict additionally gets
+    `held_by_wip_cap=True` when `repo`'s active-change count is at or over its
+    (non-zero) `max_active_changes` cap. This is visibility only -- unlike 3.6's
+    actual apply-time enforcement, it never mutates `verdict` itself, so `apply`
+    run against this run's verdict file is unaffected until 3.6 lands.
+    `NO_REPO_KEY`/falsy `repo` is never held: `propose-change` is never a valid
+    verdict for a repo-less brief in the first place (per the evaluator prompt).
+    """
+    if not repo or repo == NO_REPO_KEY:
+        return [
+            Verdict(**{**asdict(v), "repo": repo, "held_by_wip_cap": False})
+            for v in verdicts
+        ]
+
+    cap = _repo_wip_cap(repo)
+    over_cap = cap > 0 and _count_active_changes(repo) >= cap
+    return [
+        Verdict(
+            **{
+                **asdict(v),
+                "repo": repo,
+                "held_by_wip_cap": over_cap and v.verdict == "propose-change",
+            }
+        )
+        for v in verdicts
+    ]
+
+
 def _format_candidates(candidates: list[dict[str, Any]]) -> str:
     """Render `rank_change_candidates()`'s output for one brief's prompt line.
 
@@ -456,6 +516,15 @@ class Verdict:
     `question` are the target fields for the verdict types that need one
     (`duplicate-of`, `fold-into-change`, `propose-change`, `needs-decision`
     respectively) -- each stays `None` for every other verdict type.
+
+    `repo` is the group's `repo:` value this verdict was evaluated under (set by
+    `cmd_evaluate()` when accumulating `parse_verdicts()`'s output across groups;
+    `None` for verdicts built directly, e.g. in tests). `held_by_wip_cap` is a
+    report-time-only preview (2.4; the real downgrade-to-`keep` enforcement is
+    3.6's job at apply time): true when this is a `propose-change` verdict whose
+    `repo` is at or over its `max_active_changes` policy cap (see
+    `apply_wip_cap_preview()`), so `write_report()` can surface "held by cap"
+    counts ahead of 3.6 landing.
     """
 
     brief_id: str
@@ -467,6 +536,8 @@ class Verdict:
     target_repo: str | None = None
     proposed_change_name: str | None = None
     question: str | None = None
+    repo: str | None = None
+    held_by_wip_cap: bool = False
 
 
 def _extract_json_objects(text: str) -> list[str]:
@@ -579,6 +650,10 @@ def parse_verdicts(
     `candidates_by_brief` defaults to no candidates presented for any brief, so a
     caller that hasn't wired 2.1's ranking through yet still gets a safe,
     always-downgraded `fold-into-change` rather than an unchecked target.
+
+    `repo`/`held_by_wip_cap` (2.4's per-repo reporting fields) are left at their
+    defaults here -- `apply_wip_cap_preview()` stamps them afterward, once per
+    group, rather than this per-brief parser threading `repo` through itself.
     """
     candidates_by_brief = candidates_by_brief or {}
     candidates_by_id: dict[str, list[tuple[str, dict]]] = {
@@ -914,6 +989,46 @@ def write_verdict_file(verdicts: list[Verdict], out_dir: str | Path) -> Path:
     return path
 
 
+def compute_run_summary(verdicts: list[Verdict]) -> dict[str, Any]:
+    """Verdict-type counts plus 2.4's two derived counts, computed once for reuse.
+
+    `write_report()` and `cmd_evaluate()`'s `--json`/human summary line both call
+    this on the same `verdicts` list, so the Markdown report and the JSON-facing
+    output can never drift apart for a given run -- matching the spec's existing
+    "report counts match the JSON file's contents exactly" scenario, extended to
+    these two new counts.
+
+    `pull_requests_opened` counts `fold-into-change`/`propose-change` verdicts --
+    the two verdict types whose apply actions (3.1, 3.2) open a pull request --
+    so it is a preview of PRs this run's verdicts *will* open once applied, not
+    a record of PRs already opened (this function only ever sees pre-apply
+    verdicts). A `propose-change` verdict `apply_wip_cap_preview()` flagged
+    `held_by_wip_cap` is excluded from this count: 3.6 downgrades it to `keep`
+    at apply time, so it will not open a PR, and counting it here would
+    contradict the `held_by_wip_cap` figure reported for the same brief.
+    `held_by_wip_cap` is `{repo: count}` of `propose-change` verdicts whose
+    `held_by_wip_cap` field `apply_wip_cap_preview()` set true, per repo --
+    repos with a zero count are omitted rather than zero-filled, since the set
+    of repos in a run is dynamic (unlike the fixed `VALID_VERDICT_TYPES` set).
+    """
+    counts: dict[str, int] = {}
+    held_by_wip_cap: dict[str, int] = {}
+    pull_requests_opened = 0
+    for v in verdicts:
+        counts[v.verdict] = counts.get(v.verdict, 0) + 1
+        if v.held_by_wip_cap and v.repo:
+            held_by_wip_cap[v.repo] = held_by_wip_cap.get(v.repo, 0) + 1
+        if v.verdict in ("fold-into-change", "propose-change") and not (
+            v.verdict == "propose-change" and v.held_by_wip_cap
+        ):
+            pull_requests_opened += 1
+    return {
+        "verdict_counts": counts,
+        "pull_requests_opened": pull_requests_opened,
+        "held_by_wip_cap": held_by_wip_cap,
+    }
+
+
 def write_report(
     verdicts: list[Verdict], skipped: list[Path], out_dir: str | Path
 ) -> Path:
@@ -921,17 +1036,18 @@ def write_report(
 
     Per spec's "Verdict file and human-readable report" requirement: briefs evaluated,
     briefs skipped via dedup, verdict counts by type, and the full per-brief verdict list
-    with evidence. Counts are computed directly from `verdicts` so they can never drift
-    from `write_verdict_file()`'s JSON contents for the same run, per the spec scenario that
-    the report's verdict counts must match the JSON file's contents exactly.
+    with evidence. Counts are computed directly from `verdicts` (via `compute_run_summary()`)
+    so they can never drift from `write_verdict_file()`'s JSON contents for the same run, per
+    the spec scenario that the report's verdict counts must match the JSON file's contents
+    exactly -- 2.4 extends this to the four new verdict types (zero-filled the same as every
+    other type) plus `pull_requests_opened` and per-repo `held_by_wip_cap` counts.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / "report.md"
 
-    counts: dict[str, int] = {}
-    for v in verdicts:
-        counts[v.verdict] = counts.get(v.verdict, 0) + 1
+    summary = compute_run_summary(verdicts)
+    counts = summary["verdict_counts"]
 
     lines: list[str] = [
         "# Queue triage report",
@@ -948,6 +1064,21 @@ def write_report(
     lines += ["", "## Skipped via dedup", ""]
     if skipped:
         lines += [f"- {Path(p).stem}" for p in skipped]
+    else:
+        lines.append("(none)")
+
+    lines += [
+        "",
+        "## Pull requests opened",
+        "",
+        f"- pull_requests_opened: {summary['pull_requests_opened']}",
+        "",
+        "## Held by WIP cap (per repo)",
+        "",
+    ]
+    if summary["held_by_wip_cap"]:
+        for repo in sorted(summary["held_by_wip_cap"]):
+            lines.append(f"- {repo}: {summary['held_by_wip_cap'][repo]}")
     else:
         lines.append("(none)")
 
@@ -1018,20 +1149,18 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
     for repo, briefs in groups.items():
         cwd = repo if repo != NO_REPO_KEY else _worktrail_repo_root()
         for result in evaluate_group(repo, briefs, agent=args.agent, cwd=cwd):
-            verdicts.extend(
-                parse_verdicts(
-                    result["raw_text"],
-                    result["brief_ids"],
-                    candidates_by_brief=result["candidates_by_brief"],
-                )
+            group_verdicts = parse_verdicts(
+                result["raw_text"],
+                result["brief_ids"],
+                candidates_by_brief=result["candidates_by_brief"],
             )
+            verdicts.extend(apply_wip_cap_preview(repo, group_verdicts))
 
     verdict_path = write_verdict_file(verdicts, out_dir)
     report_path = write_report(verdicts, skipped, out_dir)
 
-    counts: dict[str, int] = {}
-    for v in verdicts:
-        counts[v.verdict] = counts.get(v.verdict, 0) + 1
+    summary = compute_run_summary(verdicts)
+    counts = summary["verdict_counts"]
 
     if args.as_json:
         print(
@@ -1040,6 +1169,8 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
                     "groups_evaluated": len(groups),
                     "briefs_skipped": len(skipped),
                     "verdict_counts": counts,
+                    "pull_requests_opened": summary["pull_requests_opened"],
+                    "held_by_wip_cap": summary["held_by_wip_cap"],
                     "verdict_file": str(verdict_path),
                     "report_file": str(report_path),
                 },
@@ -1054,6 +1185,10 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         print(
             f"groups evaluated: {len(groups)}, briefs skipped: {len(skipped)}, "
             f"verdicts: {counts_str}"
+        )
+        print(
+            f"pull requests opened: {summary['pull_requests_opened']}, "
+            f"held by WIP cap: {summary['held_by_wip_cap']}"
         )
     return 0
 

@@ -7,11 +7,13 @@ Run: python3 -m pytest tests/workqueue/test_queue_triage.py -q
 from __future__ import annotations
 
 import datetime
+import io
 import json
 import os
 import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -1120,6 +1122,37 @@ class TestReportAndVerdictFileOutput(QueueTriageTestBase):
                 evidence="the evaluator rambled and never emitted any JSON at all",
                 confidence=None,
             ),
+            qt.Verdict(
+                brief_id="repo-a-3",
+                verdict="fold-into-change",
+                duplicate_of=None,
+                evidence="overlaps an active change",
+                confidence="high",
+                target_change="intake-to-spec-triage",
+            ),
+            qt.Verdict(
+                brief_id="repo-a-4",
+                verdict="propose-change",
+                duplicate_of=None,
+                evidence="no existing change covers this",
+                confidence="medium",
+                proposed_change_name="new-thing",
+            ),
+            qt.Verdict(
+                brief_id="repo-b-3",
+                verdict="work-directly",
+                duplicate_of=None,
+                evidence="trivial enough to just do",
+                confidence="high",
+            ),
+            qt.Verdict(
+                brief_id="repo-b-4",
+                verdict="needs-decision",
+                duplicate_of=None,
+                evidence="ambiguous ownership",
+                confidence="low",
+                question="who owns this repo?",
+            ),
         ]
 
     def test_report_verdict_counts_match_json_file_exactly(self):
@@ -1161,6 +1194,20 @@ class TestReportAndVerdictFileOutput(QueueTriageTestBase):
         # and the JSON file itself carries no verdict type absent from the report
         for vtype in json_counts:
             self.assertIn(vtype, report_counts)
+
+        # the four verdict types 2.4 added (M3): pin each to a non-zero count
+        # tied to the JSON file, not just to 0, so a mis-rendered count line
+        # for one of these types would fail this test.
+        self.assertEqual(
+            report_counts["fold-into-change"], json_counts["fold-into-change"]
+        )
+        self.assertEqual(report_counts["fold-into-change"], 1)
+        self.assertEqual(report_counts["propose-change"], json_counts["propose-change"])
+        self.assertEqual(report_counts["propose-change"], 1)
+        self.assertEqual(report_counts["work-directly"], json_counts["work-directly"])
+        self.assertEqual(report_counts["work-directly"], 1)
+        self.assertEqual(report_counts["needs-decision"], json_counts["needs-decision"])
+        self.assertEqual(report_counts["needs-decision"], 1)
 
         self.assertEqual(len(json_verdicts), len(verdicts))
         self.assertIn(f"Briefs evaluated: {len(verdicts)}", report_text)
@@ -1349,6 +1396,203 @@ class TestReportAndVerdictFileOutput(QueueTriageTestBase):
                 self.assertIn(entry["duplicate_of"], report_text)
             if entry["confidence"] is not None:
                 self.assertIn(entry["confidence"], report_text)
+
+
+class TestWipCapPreviewAndCounts(QueueTriageTestBase):
+    """2.4: `apply_wip_cap_preview()`'s `repo`/`held_by_wip_cap` stamping,
+    `compute_run_summary()`'s `pull_requests_opened`/`held_by_wip_cap` counts,
+    and their appearance (identically) in `write_report()`'s Markdown and
+    `evaluate`'s `--json` output.
+    """
+
+    def _make_active_change(self, repo_root: Path, change_id: str) -> None:
+        change_dir = repo_root / "openspec" / "changes" / change_id
+        change_dir.mkdir(parents=True, exist_ok=True)
+        (change_dir / "proposal.md").write_text(
+            f"# {change_id}\n\n## Why\nsome change.\n", encoding="utf-8"
+        )
+        (change_dir / "tasks.md").write_text(
+            "## 1. Tasks\n\n- [ ] 1.1 do the thing\n", encoding="utf-8"
+        )
+
+    def _write_policy(self, repo_root: Path, max_active_changes: int) -> None:
+        policy_dir = repo_root / ".worktrail"
+        policy_dir.mkdir(parents=True, exist_ok=True)
+        (policy_dir / "policy.yaml").write_text(
+            f"max_active_changes: {max_active_changes}\n", encoding="utf-8"
+        )
+
+    def _verdict(self, brief_id: str, verdict: str) -> qt.Verdict:
+        return qt.Verdict(
+            brief_id=brief_id,
+            verdict=verdict,
+            duplicate_of=None,
+            evidence="evidence",
+            confidence="high",
+        )
+
+    def test_no_repo_group_never_held(self):
+        verdicts = [self._verdict("a", "keep")]
+
+        stamped = qt.apply_wip_cap_preview(qt.NO_REPO_KEY, verdicts)
+
+        self.assertEqual(stamped[0].repo, qt.NO_REPO_KEY)
+        self.assertFalse(stamped[0].held_by_wip_cap)
+
+    def test_cap_unset_never_holds_propose_change(self):
+        repo_root = self.base / "repo-no-policy"
+        self._make_active_change(repo_root, "change-1")
+        self._make_active_change(repo_root, "change-2")
+        verdicts = [self._verdict("a", "propose-change")]
+
+        stamped = qt.apply_wip_cap_preview(str(repo_root), verdicts)
+
+        self.assertEqual(stamped[0].repo, str(repo_root))
+        self.assertFalse(stamped[0].held_by_wip_cap)
+
+    def test_propose_change_held_when_at_cap(self):
+        repo_root = self.base / "repo-at-cap"
+        self._make_active_change(repo_root, "change-1")
+        self._make_active_change(repo_root, "change-2")
+        self._write_policy(repo_root, max_active_changes=2)
+        verdicts = [
+            self._verdict("a", "propose-change"),
+            self._verdict("b", "keep"),
+        ]
+
+        stamped = qt.apply_wip_cap_preview(str(repo_root), verdicts)
+
+        held = {v.brief_id: v.held_by_wip_cap for v in stamped}
+        self.assertEqual(held, {"a": True, "b": False})
+
+    def test_propose_change_not_held_under_cap(self):
+        repo_root = self.base / "repo-under-cap"
+        self._make_active_change(repo_root, "change-1")
+        self._write_policy(repo_root, max_active_changes=2)
+        verdicts = [self._verdict("a", "propose-change")]
+
+        stamped = qt.apply_wip_cap_preview(str(repo_root), verdicts)
+
+        self.assertFalse(stamped[0].held_by_wip_cap)
+
+    def test_fold_into_change_never_held_even_at_cap(self):
+        repo_root = self.base / "repo-fold-at-cap"
+        self._make_active_change(repo_root, "change-1")
+        self._write_policy(repo_root, max_active_changes=1)
+        verdicts = [self._verdict("a", "fold-into-change")]
+
+        stamped = qt.apply_wip_cap_preview(str(repo_root), verdicts)
+
+        self.assertFalse(stamped[0].held_by_wip_cap)
+
+    def test_compute_run_summary_counts(self):
+        verdicts = [
+            self._verdict("a", "fold-into-change"),
+            self._verdict("b", "propose-change"),
+            self._verdict("c", "keep"),
+        ]
+        verdicts[1].repo = "behindthedash/repo-a"
+        verdicts[1].held_by_wip_cap = True
+
+        summary = qt.compute_run_summary(verdicts)
+
+        # "b" is a propose-change held by the WIP cap: 3.6 downgrades it to
+        # `keep` at apply time, so it must not be counted as a PR that will
+        # open (M1) -- only "a" (fold-into-change) counts.
+        self.assertEqual(summary["pull_requests_opened"], 1)
+        self.assertEqual(summary["held_by_wip_cap"], {"behindthedash/repo-a": 1})
+
+    def test_write_report_pull_requests_and_wip_cap_sections_match_json(self):
+        repo_root = self.base / "repo-report"
+        self._make_active_change(repo_root, "change-1")
+        self._write_policy(repo_root, max_active_changes=1)
+        verdicts = qt.apply_wip_cap_preview(
+            str(repo_root),
+            [
+                self._verdict("a", "propose-change"),
+                self._verdict("b", "fold-into-change"),
+            ],
+        )
+        out_dir = self.base / "out-wip"
+
+        verdict_path = qt.write_verdict_file(verdicts, out_dir)
+        report_path = qt.write_report(verdicts, [], out_dir)
+
+        json_verdicts = json.loads(verdict_path.read_text(encoding="utf-8"))
+        # a propose-change verdict held by the WIP cap will not open a PR (3.6
+        # downgrades it to `keep` at apply time), so it must be excluded here
+        # the same way `compute_run_summary()` excludes it (M1).
+        json_pull_requests_opened = sum(
+            1
+            for e in json_verdicts
+            if e["verdict"] in ("fold-into-change", "propose-change")
+            and not (e["verdict"] == "propose-change" and e["held_by_wip_cap"])
+        )
+        json_held_by_repo: dict = {}
+        for e in json_verdicts:
+            if e["held_by_wip_cap"] and e["repo"]:
+                json_held_by_repo[e["repo"]] = json_held_by_repo.get(e["repo"], 0) + 1
+
+        report_text = report_path.read_text(encoding="utf-8")
+        self.assertIn(
+            f"- pull_requests_opened: {json_pull_requests_opened}", report_text
+        )
+        self.assertEqual(json_pull_requests_opened, 1)
+        for repo, count in json_held_by_repo.items():
+            self.assertIn(f"- {repo}: {count}", report_text)
+        self.assertEqual(json_held_by_repo, {str(repo_root): 1})
+
+    def test_evaluate_json_output_includes_pull_requests_and_wip_cap(self):
+        repo_root = self.base / "repo-cmd-evaluate"
+        self._make_active_change(repo_root, "change-1")
+        self._write_policy(repo_root, max_active_changes=1)
+        self.write("a.md", repo=str(repo_root))
+
+        def fake_evaluate_group(repo, briefs, *, agent="claude", cwd=None):
+            ids = [p.stem for p in briefs]
+            raw = json.dumps(
+                {
+                    "brief_id": ids[0],
+                    "verdict": "propose-change",
+                    "duplicate_of": None,
+                    "target_repo": repo,
+                    "proposed_change_name": "new-thing",
+                    "evidence": "clearly belongs here",
+                    "confidence": "high",
+                }
+            )
+            return [
+                {
+                    "repo": repo,
+                    "brief_ids": ids,
+                    "raw_text": raw,
+                    "candidates_by_brief": {bid: [] for bid in ids},
+                }
+            ]
+
+        out_dir = self.base / "out-cmd-evaluate"
+        buf = io.StringIO()
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.evaluate_group",
+                side_effect=fake_evaluate_group,
+            ),
+            redirect_stdout(buf),
+        ):
+            exit_code = qt.main(["evaluate", "--out-dir", str(out_dir), "--json"])
+
+        self.assertEqual(exit_code, 0)
+        printed = json.loads(buf.getvalue())
+        # this run's one brief is a propose-change held by the WIP cap: 3.6
+        # downgrades it to `keep` at apply time, so it will not open a PR --
+        # `pull_requests_opened` and `held_by_wip_cap` must not both claim it
+        # (M1).
+        self.assertEqual(printed["pull_requests_opened"], 0)
+        self.assertEqual(printed["held_by_wip_cap"], {str(repo_root): 1})
+
+        report_text = (out_dir / "report.md").read_text(encoding="utf-8")
+        self.assertIn("- pull_requests_opened: 0", report_text)
+        self.assertIn(f"- {repo_root}: 1", report_text)
 
 
 class TestRankChangeCandidates(QueueTriageTestBase):
