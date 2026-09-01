@@ -9,6 +9,7 @@ for the full contract this module implements.
 from __future__ import annotations
 
 import enum
+import json
 import os
 import subprocess
 import tempfile
@@ -63,7 +64,18 @@ class ProbeReport:
     diagnostic: str
     codex_home: str | None = None
     automatic_home: bool | None = None
-    provider_identity: str | None = None
+    # NOT a provider/model identity value. `codex exec --json`'s documented
+    # non-interactive event stream (top-level `thread.started`, `turn.started`,
+    # `item.*`, `turn.completed`/`turn.failed`, `error` -- confirmed against
+    # live codex-cli 0.149.1 output and
+    # https://developers.openai.com/codex/noninteractive) carries no
+    # model/provider-name field at all. This holds `thread.started`'s
+    # `thread_id` instead: proof a session was stood up, nothing more. Task
+    # 4.2's literal AC ("extract the provider/model identity field") cannot be
+    # met from this documented wire format; using `thread_id` as a stand-in is
+    # a flagged, acknowledged substitution -- not a claim that this value
+    # identifies or validates a provider/model.
+    session_started_marker: str | None = None
     auth_usable: bool | None = None
 
 
@@ -116,6 +128,54 @@ def build_probe_command() -> tuple[list[str], str]:
     cmd = build_cmd(PROBE_PROMPT, cell)
     scratch_dir = tempfile.mkdtemp(prefix="codex-probe-")
     return cmd, scratch_dir
+
+
+def extract_session_started_marker(stdout: str) -> str | None:
+    """Best-effort, explicitly flagged substitute for `provider_selection`'s
+    required "provider/model identity field" -- see the FLAGGED SUBSTITUTION
+    note below and on `ProbeReport.session_started_marker`.
+
+    `build_cmd` always requests `codex exec --json`, so a started nested
+    process emits one JSON object per line using the documented public
+    non-interactive-mode event shape (top-level `thread.started`,
+    `turn.started`, `item.*`, `turn.completed`/`turn.failed`, `error` --
+    see https://developers.openai.com/codex/noninteractive, confirmed against
+    live codex-cli 0.149.1 output). That stream carries no model/provider
+    name field anywhere, so task 4.2's literal AC cannot be satisfied from
+    it. `thread.started`'s `thread_id` is the only documented marker that
+    codex actually stood up a session at all, so its presence (and
+    non-emptiness) is used here as a targeted, non-secret, but *not*
+    identity-bearing signal.
+
+    FLAGGED SUBSTITUTION (not silently accepted as a fix): a thread/session
+    id proves a thread was created, not which provider or model served it.
+    Resolving this properly needs a planner/human decision -- either an
+    upstream codex-cli change that exposes a real identity field in
+    `codex exec --json`, or an explicitly sanctioned alternate signal (e.g.
+    parsing `--model`/config resolution before spawn, which this probe does
+    not currently do). Until then this function extracts only `thread_id`
+    and nothing else -- never the full event stream -- matching design.md's
+    "targeted, already-safe signals" redaction discipline. Malformed lines
+    (partial output from a killed/timed-out process) are skipped rather than
+    raising, since a missing signal here is exactly what should be classified
+    as a `provider_selection` failure by the caller, not a crash.
+    """
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") != "thread.started":
+            continue
+        thread_id = event.get("thread_id")
+        if isinstance(thread_id, str) and thread_id:
+            return thread_id
+    return None
 
 
 class GitStatusUnavailable(RuntimeError):
@@ -333,6 +393,27 @@ def run_probe_command(
                 "no usable output"
             ),
         )
+    if isinstance(result, subprocess.CompletedProcess) and (
+        extract_session_started_marker(result.stdout) is None
+    ):
+        # Startup already passed (the branch above would have overridden a
+        # startup failure first), so a missing `thread.started` signal here
+        # means the nested process ran but never reported that it stood up a
+        # session at all -- classified distinctly from a startup failure per
+        # design.md's ordered stage classification. See
+        # `extract_session_started_marker`'s FLAGGED SUBSTITUTION note: this
+        # is not a provider/model identity check, since the documented
+        # stream carries no such field.
+        result = ProbeReport(
+            stage=StageOutcome.PROVIDER_SELECTION,
+            success=False,
+            diagnostic=(
+                "codex probe reported no session-started signal "
+                "(thread.started/thread_id) -- codex exec --json's documented "
+                "output carries no provider/model identity field to check "
+                "instead"
+            ),
+        )
     if pre_spawn_snapshot is not None:
         try:
             violation = check_no_op_scope_violation(
@@ -376,7 +457,7 @@ def run_probe_command(
                     diagnostic=f"{result.diagnostic}; {violation.diagnostic}",
                     codex_home=result.codex_home,
                     automatic_home=result.automatic_home,
-                    provider_identity=result.provider_identity,
+                    session_started_marker=result.session_started_marker,
                     auth_usable=result.auth_usable,
                 )
     return result
