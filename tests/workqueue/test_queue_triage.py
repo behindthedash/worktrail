@@ -580,6 +580,7 @@ class TestEvaluateGroupArchivedShortCircuit(QueueTriageTestBase):
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["repo"], repo)
         self.assertEqual(result[0]["brief_ids"], ["a", "b"])
+        self.assertEqual(result[0]["candidates_by_brief"], {"a": [], "b": []})
 
         verdicts = qt.parse_verdicts(result[0]["raw_text"], ["a", "b"])
         self.assertEqual([v.brief_id for v in verdicts], ["a", "b"])
@@ -643,6 +644,126 @@ class TestEvaluateGroupArchivedShortCircuit(QueueTriageTestBase):
         mock_run.assert_called_once()
         mock_spawn.assert_called_once()
         self.assertEqual(result[0]["raw_text"], evaluator_text)
+
+
+class TestEvaluatorPromptTemplate(unittest.TestCase):
+    """2.3: the evaluator prompt states the fold/propose candidate-target rule,
+    the `work-directly` reproduction-evidence rule, and the `needs-decision`
+    rule for `repo: null` groups, and its output schema covers all eight
+    verdict types plus their target fields.
+    """
+
+    def test_prompt_states_fold_target_must_be_a_presented_candidate(self):
+        self.assertIn(
+            "may only name `target_change` as one of *that brief's own* "
+            "listed candidate ids",
+            qt.EVALUATOR_PROMPT_TEMPLATE,
+        )
+
+    def test_prompt_states_work_directly_reproduction_evidence_rule(self):
+        self.assertIn(
+            "Use `work-directly` only when your evidence cites a specific "
+            "test, check, or command",
+            qt.EVALUATOR_PROMPT_TEMPLATE,
+        )
+        self.assertIn(
+            "apply will downgrade a `work-directly` verdict lacking one to "
+            "`keep`",
+            qt.EVALUATOR_PROMPT_TEMPLATE,
+        )
+
+    def test_prompt_states_needs_decision_rule_for_no_repo_groups(self):
+        self.assertIn(
+            "If `{repo}` is `{no_repo_key}` (no target repo), "
+            "`fold-into-change` and `propose-change` are never valid",
+            qt.EVALUATOR_PROMPT_TEMPLATE,
+        )
+        self.assertIn("use `needs-decision`", qt.EVALUATOR_PROMPT_TEMPLATE)
+
+    def test_prompt_output_schema_covers_all_verdict_types_and_target_fields(self):
+        for verdict_type in qt.VALID_VERDICT_TYPES:
+            self.assertIn(verdict_type, qt.EVALUATOR_PROMPT_TEMPLATE)
+        for field in (
+            "target_change",
+            "target_repo",
+            "proposed_change_name",
+            "question",
+        ):
+            self.assertIn(field, qt.EVALUATOR_PROMPT_TEMPLATE)
+
+
+class TestFormatCandidates(unittest.TestCase):
+    def test_empty_list_renders_none(self):
+        self.assertEqual(qt._format_candidates([]), "(none)")
+
+    def test_candidates_render_id_score_and_open_task_count(self):
+        rendered = qt._format_candidates(
+            [{"id": "widget-export-pipeline", "score": 0.625, "open_task_count": 2}]
+        )
+        self.assertEqual(
+            rendered, "widget-export-pipeline (score 0.62, 2 open tasks)"
+        )
+
+
+class TestEvaluateGroupCandidateContext(QueueTriageTestBase):
+    """2.3: `evaluate_group()` ranks each brief's fold candidates via 2.1's
+    `rank_change_candidates()`, embeds them in the prompt sent to the
+    evaluator, and returns them alongside the raw text for `parse_verdicts()`.
+    """
+
+    def _make_change(self, repo_root: Path, change_id: str, *, why: str) -> None:
+        change_dir = repo_root / "openspec" / "changes" / change_id
+        change_dir.mkdir(parents=True, exist_ok=True)
+        (change_dir / "proposal.md").write_text(
+            f"# {change_id}\n\n## Why\n{why}\n", encoding="utf-8"
+        )
+        (change_dir / "tasks.md").write_text(
+            f"## 1. Tasks\n\n- [ ] 1.1 {why}\n", encoding="utf-8"
+        )
+
+    def test_ranked_candidates_appear_in_prompt_and_result(self):
+        from worktrail.orchestrator.spawnlib import SpawnResult
+
+        repo_root = self.base / "repo"
+        self._make_change(
+            repo_root,
+            "widget-export-pipeline",
+            why="widget export pipeline serializer downstream reporting",
+        )
+        brief_path = self.write(
+            "a.md",
+            repo=str(repo_root),
+            body="## Focus\n\nwidget export pipeline serializer downstream reporting\n",
+        )
+
+        with mock.patch(
+            "worktrail.orchestrator.spawnlib.spawn_agent",
+            return_value=SpawnResult(text="", usage={}),
+        ) as mock_spawn:
+            result = qt.evaluate_group(
+                str(repo_root), [brief_path], cwd=repo_root
+            )
+
+        self.assertEqual(
+            result[0]["candidates_by_brief"], {"a": ["widget-export-pipeline"]}
+        )
+        prompt_sent = mock_spawn.call_args.args[0]
+        self.assertIn("widget-export-pipeline", prompt_sent)
+
+    def test_no_repo_group_ranks_no_candidates_for_any_brief(self):
+        from worktrail.orchestrator.spawnlib import SpawnResult
+
+        brief_path = self.write("a.md", body="## Focus\n\nanything at all\n")
+
+        with mock.patch(
+            "worktrail.orchestrator.spawnlib.spawn_agent",
+            return_value=SpawnResult(text="", usage={}),
+        ):
+            result = qt.evaluate_group(
+                qt.NO_REPO_KEY, [brief_path], cwd=self.base
+            )
+
+        self.assertEqual(result[0]["candidates_by_brief"], {"a": []})
 
 
 class TestApplyVerdicts(QueueTriageTestBase):
@@ -1123,7 +1244,14 @@ class TestReportAndVerdictFileOutput(QueueTriageTestBase):
                         "the evaluator rambled and never emitted valid JSON for the second brief",
                     ]
                 )
-            return [{"repo": repo, "brief_ids": ids, "raw_text": raw}]
+            return [
+                {
+                    "repo": repo,
+                    "brief_ids": ids,
+                    "raw_text": raw,
+                    "candidates_by_brief": {bid: [] for bid in ids},
+                }
+            ]
 
         out_dir = self.base / "out-run"
         with mock.patch(
