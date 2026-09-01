@@ -45,7 +45,7 @@
 
 - [x] 4.1 Derive `startup` from `spawnlib.is_infra_failure(returncode,
       stdout)` — never store raw stdout/stderr on the report object.
-- [ ] 4.2 Derive `provider_selection` from a targeted, non-secret signal
+- [x] 4.2 Derive `provider_selection` from a targeted, non-secret signal
       returned by the nested process (e.g. exit-code/known-marker check
       appropriate to `codex exec --json`'s documented output) — extract only
       the provider/model identity field, not the full JSON event stream.
