@@ -64,12 +64,18 @@ _TRIAGE_HEADING_RE = re.compile(r"^##\s+Triage\s+(\d{4}-\d{2}-\d{2})\s*$", re.MU
 # a whole group, not a single brief. Kept as a module-level constant (not a
 # file) so `tests/workqueue/test_queue_triage.py` can assert on it directly,
 # matching how `drain.py` keeps `PROMPT` as an importable constant.
+#
+# `{briefs}` (built by `evaluate_group()`) carries each brief's 2.1-ranked
+# fold/propose candidates inline, so the fold-into-change/propose-change/
+# work-directly/needs-decision rules below can be stated once per group
+# rather than duplicated per brief.
 EVALUATOR_PROMPT_TEMPLATE = """\
-You are triaging work-queue briefs for the repo group `{repo}` for staleness \
-and duplication. Evaluate ONLY the briefs listed below; do not scan the queue \
-for others.
+You are triaging work-queue briefs for the repo group `{repo}` for staleness, \
+duplication, and whether they belong folded into or proposed as an OpenSpec \
+change. Evaluate ONLY the briefs listed below; do not scan the queue for \
+others.
 
-Briefs in this group:
+Briefs in this group (each with its ranked candidate target changes, if any):
 {briefs}
 
 Step 1 — repo check (do this first, before judging any brief):
@@ -86,6 +92,27 @@ For each brief above, spend at most 3-4 tool calls (e.g. `git log`, `gh pr list 
 PR, commit, or file you found as evidence — a verdict without cited evidence is \
 invalid.
 
+Step 2a — fold vs. propose vs. decide:
+Each brief above lists its ranked candidate target changes (from the repo's \
+active OpenSpec changes), if any were found. `fold-into-change` may only name \
+`target_change` as one of *that brief's own* listed candidate ids — never a \
+change that wasn't presented to you, even a plausible-looking one. If none of \
+the listed candidates are a good fit but the brief still clearly belongs in \
+this repo, use `propose-change` with a `target_repo` and a kebab-case \
+`proposed_change_name` instead. If `{repo}` is `{no_repo_key}` (no target \
+repo), `fold-into-change` and `propose-change` are never valid for these \
+briefs — if the brief needs to land somewhere but you cannot tell where, use \
+`needs-decision` with a `question` asking which repo it belongs to, rather \
+than guessing a target.
+
+Step 2b — work-directly requires reproduction evidence:
+Use `work-directly` only when your evidence cites a specific test, check, or \
+command that reproduces or confirms the brief's premise as directly \
+actionable right now (e.g. "reproduces via pytest tests/foo -k bar", "confirmed \
+via `make lint`"). Evidence that only restates the brief's description without \
+such a citation is not sufficient — apply will downgrade a `work-directly` \
+verdict lacking one to `keep`, so prefer `keep` yourself when you don't have it.
+
 Step 3 — memory check before raising an alarm:
 Before flagging anything you observe as a live operational concern, check \
 {memory_index} for whether it already documents the same state as expected or \
@@ -96,10 +123,16 @@ Step 4 — fail open:
 If evidence is inconclusive after steps 1-3, do not guess: verdict `keep` and \
 record what you checked and why it was inconclusive as the evidence.
 
-For each brief, output one JSON object with exactly these fields:
-{{"brief_id": "...", "verdict": "keep|stale-close|needs-update|duplicate-of", \
-"duplicate_of": "<brief-id or null>", "evidence": "<cited PR/commit/file, or \
-why inconclusive for a fail-open keep>", "confidence": "high|medium|low"}}
+For each brief, output one JSON object with exactly these fields (omit fields \
+that don't apply to your chosen verdict, or set them null):
+{{"brief_id": "...", "verdict": "keep|stale-close|needs-update|duplicate-of|\
+fold-into-change|propose-change|work-directly|needs-decision", "duplicate_of": \
+"<brief-id or null>", "target_change": "<one of the brief's listed candidate \
+ids, for fold-into-change only>", "target_repo": "<repo, for propose-change \
+only>", "proposed_change_name": "<kebab-case id, for propose-change only>", \
+"question": "<for needs-decision only>", "evidence": "<cited PR/commit/file/\
+test, or why inconclusive for a fail-open keep>", "confidence": \
+"high|medium|low"}}
 """
 
 
@@ -260,6 +293,22 @@ def rank_change_candidates(
     return [entry for _, entry in scored[:top_k]]
 
 
+def _format_candidates(candidates: list[dict[str, Any]]) -> str:
+    """Render `rank_change_candidates()`'s output for one brief's prompt line.
+
+    `(none)` when the repo has no active changes, is `null`, or is the
+    `{no_repo_key}` group -- so the evaluator prompt makes the absence of a
+    fold target explicit rather than silently omitting the line.
+    """
+    if not candidates:
+        return "(none)"
+    return "; ".join(
+        f"{c['id']} (score {c['score']:.2f}, {c['open_task_count']} open tasks): "
+        f"{c['feature_summary']}"
+        for c in candidates
+    )
+
+
 def _memory_index_path(cwd: str | Path) -> Path:
     """Path to Claude Code's per-project memory index for `cwd`.
 
@@ -329,12 +378,18 @@ def evaluate_group(
     spawning an evaluator at all. A `False` or `None` (check failure or
     inconclusive) falls through to the normal spawn unchanged.
 
-    Returns a single-element list -- `[{"repo", "brief_ids", "raw_text"}]` --
-    rather than the raw string directly, so a caller fanning out across multiple
-    groups can `.extend()` every call's result into one flat list, without a
-    shape special-case for the archived short-circuit. `raw_text` is untouched
-    worker output (or, in the archived case, the synthesized equivalent);
-    parsing/validation is `parse_verdicts`'s job, not this function's.
+    Returns a single-element list -- `[{"repo", "brief_ids", "raw_text",
+    "candidates_by_brief"}]` -- rather than the raw string directly, so a
+    caller fanning out across multiple groups can `.extend()` every call's
+    result into one flat list, without a shape special-case for the archived
+    short-circuit. `raw_text` is untouched worker output (or, in the archived
+    case, the synthesized equivalent); parsing/validation is `parse_verdicts`'s
+    job, not this function's. `candidates_by_brief` maps each brief id to the
+    list of candidate change ids 2.1's `rank_change_candidates()` presented to
+    the evaluator for it (`[]` for the archived short-circuit and for
+    `{no_repo_key}` groups, which have no target repo to rank against) -- a
+    caller passes this straight through to `parse_verdicts()` so a
+    `fold-into-change` naming anything else is rejected.
     """
     brief_ids = [path.stem for path in briefs]
 
@@ -351,13 +406,26 @@ def evaluate_group(
             )
             for bid in brief_ids
         )
-        return [{"repo": repo, "brief_ids": brief_ids, "raw_text": raw_text}]
+        return [
+            {
+                "repo": repo,
+                "brief_ids": brief_ids,
+                "raw_text": raw_text,
+                "candidates_by_brief": {bid: [] for bid in brief_ids},
+            }
+        ]
 
     from ..orchestrator import spawnlib
 
+    rank_repo = repo if repo != NO_REPO_KEY else None
+    candidates_by_path = {
+        path: rank_change_candidates(path, rank_repo) for path in briefs
+    }
+
     brief_lines = "\n".join(
         f"- {path.stem}: {_brief_focus(path) or '(no focus recorded)'} "
-        f"(created {_brief_created(path)})"
+        f"(created {_brief_created(path)})\n"
+        f"  Candidate targets: {_format_candidates(candidates_by_path[path])}"
         for path in briefs
     )
     prompt = EVALUATOR_PROMPT_TEMPLATE.format(
@@ -367,7 +435,17 @@ def evaluate_group(
         memory_index=_memory_index_path(cwd),
     )
     result = spawnlib.spawn_agent(prompt, cwd, tier=DEFAULT_TIER, prefer=agent)
-    return [{"repo": repo, "brief_ids": brief_ids, "raw_text": result.text}]
+    candidates_by_brief = {
+        path.stem: [c["id"] for c in candidates_by_path[path]] for path in briefs
+    }
+    return [
+        {
+            "repo": repo,
+            "brief_ids": brief_ids,
+            "raw_text": result.text,
+            "candidates_by_brief": candidates_by_brief,
+        }
+    ]
 
 
 @dataclass
@@ -940,7 +1018,13 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
     for repo, briefs in groups.items():
         cwd = repo if repo != NO_REPO_KEY else _worktrail_repo_root()
         for result in evaluate_group(repo, briefs, agent=args.agent, cwd=cwd):
-            verdicts.extend(parse_verdicts(result["raw_text"], result["brief_ids"]))
+            verdicts.extend(
+                parse_verdicts(
+                    result["raw_text"],
+                    result["brief_ids"],
+                    candidates_by_brief=result["candidates_by_brief"],
+                )
+            )
 
     verdict_path = write_verdict_file(verdicts, out_dir)
     report_path = write_report(verdicts, skipped, out_dir)
