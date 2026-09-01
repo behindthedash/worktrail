@@ -968,8 +968,9 @@ class TestApplyVerdicts(QueueTriageTestBase):
         self.assertIsNone(fold_entry["path"])
         self.assertIsNone(fold_entry["error"])
         self.assertEqual(fold_entry["planned_target_change"], "042-example")
-        self.assertIn("042-example", fold_entry["planned_branch"])
-        self.assertIn("a", fold_entry["planned_branch"])
+        self.assertEqual(
+            fold_entry["planned_branch"], "queue-triage/fold-a-into-042-example"
+        )
         self.assertIn("042-example", fold_entry["planned_pr_title"])
 
         self.assertEqual(propose_entry["status"], "planned")
@@ -983,6 +984,65 @@ class TestApplyVerdicts(QueueTriageTestBase):
 
         # never mutated -- pure preview, no queue or repo writes
         self.assertEqual(a_path.read_text(encoding="utf-8"), a_before)
+        self.assertTrue((self.queue / "a.md").exists())
+
+
+class TestCmdApplyPreviewPrintsPlannedFields(QueueTriageTestBase):
+    """3.5: the human-readable (non-`--json`) `apply` output must print the
+    planned branch/target change/PR title (fold/propose) and planned
+    stamp/envelope (work-directly/needs-decision) for a no-`--confirm` dry
+    run, not just return them from `apply_verdicts()` for a `--json` caller.
+    """
+
+    def test_confirm_false_human_output_prints_fold_branch_and_pr_title(self):
+        self.write("a.md", body="## Focus\n\nsome brief\n")
+        verdicts = [
+            qt.Verdict(
+                brief_id="a",
+                verdict="fold-into-change",
+                duplicate_of=None,
+                evidence="overlaps with 042-example",
+                confidence="high",
+                target_change="042-example",
+            ),
+        ]
+        verdict_path = qt.write_verdict_file(verdicts, self.base / "out")
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            exit_code = qt.main(["apply", "--verdict-file", str(verdict_path)])
+
+        self.assertEqual(exit_code, 0)
+        printed = buf.getvalue()
+        self.assertIn("queue-triage/fold-a-into-042-example", printed)
+        self.assertIn("042-example", printed)
+        self.assertIn("Fold a into 042-example", printed)
+        # dry run still never touches the queue
+        self.assertTrue((self.queue / "a.md").exists())
+
+    def test_confirm_false_human_output_prints_needs_decision_stamp_and_envelope(self):
+        self.write("a.md", body="## Focus\n\nsome brief\n")
+        verdicts = [
+            qt.Verdict(
+                brief_id="a",
+                verdict="needs-decision",
+                duplicate_of=None,
+                evidence="ambiguous priority",
+                confidence="medium",
+                question="Should this be folded or is it a new change?",
+            ),
+        ]
+        verdict_path = qt.write_verdict_file(verdicts, self.base / "out")
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            exit_code = qt.main(["apply", "--verdict-file", str(verdict_path)])
+
+        self.assertEqual(exit_code, 0)
+        printed = buf.getvalue()
+        self.assertIn("awaiting-decision", printed)
+        self.assertIn("Should this be folded or is it a new change?", printed)
+        # dry run still never touches the queue
         self.assertTrue((self.queue / "a.md").exists())
 
 

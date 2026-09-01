@@ -1594,6 +1594,16 @@ def cmd_apply(args: argparse.Namespace) -> int:
                 f"{entry['brief_id']}{dup}: {entry['verdict']} [{entry['action']}] "
                 f"{entry['status']}{error}"
             )
+            if entry.get("planned_branch"):
+                print(f"    branch: {entry['planned_branch']}")
+            if entry.get("planned_target_change"):
+                print(f"    target change: {entry['planned_target_change']}")
+            if entry.get("planned_pr_title"):
+                print(f"    PR title: {entry['planned_pr_title']}")
+            if entry.get("planned_stamp"):
+                print(f"    stamp: {json.dumps(entry['planned_stamp'])}")
+            if entry.get("planned_envelope"):
+                print(f"    envelope: {json.dumps(entry['planned_envelope'])}")
         executed = sum(1 for e in action_log if e["status"] == "executed")
         planned = sum(1 for e in action_log if e["status"] == "planned")
         errors = sum(1 for e in action_log if e["status"] == "error")

@@ -1503,8 +1503,9 @@ def done(
                 "error": str(exc),
             }
     fields = {"status": "done", "completed-at": _now_iso()}
-    if triaged_to:
-        fields["triaged-to"] = triaged_to
+    triaged_to_stripped = (triaged_to or "").strip()
+    if triaged_to_stripped:
+        fields["triaged-to"] = triaged_to_stripped
     try:
         _set_fm_fields(path, fields)
     except (OSError, ValueError) as exc:
