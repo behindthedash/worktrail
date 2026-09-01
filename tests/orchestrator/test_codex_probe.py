@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Tests for codex_probe.py -- path-parity with skill_dispatch and spawnlib."""
 
 import os
