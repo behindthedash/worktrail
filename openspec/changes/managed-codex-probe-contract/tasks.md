@@ -76,15 +76,15 @@
 
 ## 6. Tests
 
-- [ ] 6.1 Test that the probe's environment-preparation and command-building
+- [x] 6.1 Test that the probe's environment-preparation and command-building
       steps call `skill_dispatch.prepare_codex_child_environment` and
       `spawnlib.build_cmd` respectively (path-parity assertion), using
       mocking/monkeypatching consistent with existing `spawnlib`/
       `skill_dispatch` test patterns in `tests/`.
-- [ ] 6.2 Test that a read-only parent `CODEX_HOME` fixture resolves to a
+- [x] 6.2 Test that a read-only parent `CODEX_HOME` fixture resolves to a
       writable, different child home, and that an unwritable-everywhere
       fixture produces an `environment_preparation` failure.
-- [ ] 6.3 Test no-op scope enforcement: assert a successful run leaves a
+- [x] 6.3 Test no-op scope enforcement: assert a successful run leaves a
       fixture repository's `git status --porcelain` unchanged, and assert
       that a simulated out-of-scope mutation is reported as a failure.
 - [ ] 6.4 Test timeout behavior: a subprocess mock that raises
