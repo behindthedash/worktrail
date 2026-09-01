@@ -892,9 +892,11 @@ class TestApplyVerdicts(QueueTriageTestBase):
 
     def test_not_yet_implemented_verdicts_are_never_misapplied_as_needs_update(self):
         """2.2 makes fold-into-change/propose-change parseable ahead of
-        3.1/3.2 implementing their own apply actions -- until then
-        `apply_verdicts()` must not fall through to `needs-update`'s
-        append-triage-note action for them, regardless of `--confirm`.
+        3.1/3.2 implementing their own apply actions -- until then, with
+        `--confirm`, `apply_verdicts()` must not fall through to
+        `needs-update`'s append-triage-note action for them. Without
+        `--confirm`, 3.5 previews their planned branch/target/PR title
+        instead (see `test_confirm_false_previews_fold_propose_branch_and_pr_title`).
         (`work-directly`, 3.3, and `needs-decision`, 3.4, have their own
         apply actions -- see `TestApplyWorkDirectly` and
         `TestApplyNeedsDecision`.)
@@ -915,17 +917,71 @@ class TestApplyVerdicts(QueueTriageTestBase):
             )
         ]
 
-        for confirm in (False, True):
-            log = qt.apply_verdicts(verdicts, confirm=confirm)
-            self.assertEqual(len(log), 2)
-            for entry, verdict in zip(log, verdicts):
-                self.assertEqual(entry["verdict"], verdict.verdict)
-                self.assertEqual(entry["status"], "not-yet-implemented")
-                self.assertEqual(entry["action"], "noop")
-                self.assertIsNone(entry["path"])
-                self.assertIsNone(entry["error"])
+        log = qt.apply_verdicts(verdicts, confirm=True)
+        self.assertEqual(len(log), 2)
+        for entry, verdict in zip(log, verdicts):
+            self.assertEqual(entry["verdict"], verdict.verdict)
+            self.assertEqual(entry["status"], "not-yet-implemented")
+            self.assertEqual(entry["action"], "noop")
+            self.assertIsNone(entry["path"])
+            self.assertIsNone(entry["error"])
 
         # never mutated, unlike a real needs-update apply
+        self.assertEqual(a_path.read_text(encoding="utf-8"), a_before)
+        self.assertTrue((self.queue / "a.md").exists())
+
+    def test_confirm_false_previews_fold_propose_branch_and_pr_title(self):
+        """3.5: without `--confirm`, fold-into-change/propose-change verdicts
+        preview their planned branch, target change, and PR title -- fully
+        derived from the verdict's own fields, since 3.1/3.2's apply actions
+        don't exist yet to actually compute them -- and never touch the
+        queue or any repo."""
+        a_path = self.write("a.md", body="## Focus\n\nsome brief\n")
+        a_before = a_path.read_text(encoding="utf-8")
+        verdicts = [
+            qt.Verdict(
+                brief_id="a",
+                verdict="fold-into-change",
+                duplicate_of=None,
+                evidence="overlaps with 042-example",
+                confidence="high",
+                target_change="042-example",
+            ),
+            qt.Verdict(
+                brief_id="a",
+                verdict="propose-change",
+                duplicate_of=None,
+                evidence="no good fold target, deserves its own change",
+                confidence="medium",
+                target_repo="behindthedash/worktrail",
+                proposed_change_name="new-feature-x",
+            ),
+        ]
+
+        log = qt.apply_verdicts(verdicts, confirm=False)
+
+        self.assertEqual(len(log), 2)
+        fold_entry, propose_entry = log
+        self.assertEqual(fold_entry["status"], "planned")
+        self.assertEqual(fold_entry["action"], "open-pull-request")
+        self.assertFalse(fold_entry["confirm"])
+        self.assertIsNone(fold_entry["path"])
+        self.assertIsNone(fold_entry["error"])
+        self.assertEqual(fold_entry["planned_target_change"], "042-example")
+        self.assertIn("042-example", fold_entry["planned_branch"])
+        self.assertIn("a", fold_entry["planned_branch"])
+        self.assertIn("042-example", fold_entry["planned_pr_title"])
+
+        self.assertEqual(propose_entry["status"], "planned")
+        self.assertEqual(propose_entry["action"], "open-pull-request")
+        self.assertFalse(propose_entry["confirm"])
+        self.assertIsNone(propose_entry["path"])
+        self.assertIsNone(propose_entry["error"])
+        self.assertEqual(propose_entry["planned_target_change"], "new-feature-x")
+        self.assertIn("new-feature-x", propose_entry["planned_branch"])
+        self.assertIn("new-feature-x", propose_entry["planned_pr_title"])
+
+        # never mutated -- pure preview, no queue or repo writes
         self.assertEqual(a_path.read_text(encoding="utf-8"), a_before)
         self.assertTrue((self.queue / "a.md").exists())
 
@@ -1022,6 +1078,13 @@ class TestApplyWorkDirectly(QueueTriageTestBase):
         self.assertIsNone(entry["path"])
         self.assertIsNone(entry["error"])
         self.assertEqual(path.read_text(encoding="utf-8"), before)
+
+        # 3.5: previews the exact frontmatter stamp _apply_work_directly would make
+        run_date = datetime.date.today().isoformat()  # noqa: DTZ011
+        self.assertEqual(
+            entry["planned_stamp"],
+            {"seeded-from": f"triage:{run_date}:direct", "recommended-route": "F"},
+        )
 
     def test_confirm_false_previews_downgrade_to_keep_when_evidence_lacks_repro_reference(
         self,
@@ -1229,6 +1292,20 @@ class TestApplyNeedsDecision(QueueTriageTestBase):
         self.assertIsNone(entry["error"])
         self.assertEqual(path.read_text(encoding="utf-8"), before)
         self.assertFalse((self.base / "decisions").exists())
+
+        # 3.5: previews the exact awaiting-decision stamp and the full pending
+        # decision envelope ask() would file, without writing either
+        self.assertIn("planned_stamp", entry)
+        self.assertIn("awaiting-decision", entry["planned_stamp"])
+        self.assertIn("planned_envelope", entry)
+        self.assertEqual(
+            entry["planned_envelope"]["question"],
+            "Which repo should this brief target?",
+        )
+        self.assertEqual(
+            entry["planned_envelope"]["decision_id"],
+            entry["planned_stamp"]["awaiting-decision"],
+        )
 
     def test_rerun_on_same_verdict_converges_on_existing_decision(self):
         """A re-run of `evaluate` that re-files the same still-open question

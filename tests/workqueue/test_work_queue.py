@@ -595,6 +595,65 @@ class TestDoneRelease(QueueTestBase):
         self.assertNotIn("next-check-after", fm)
 
 
+class TestDoneTriagedTo(QueueTestBase):
+    """`triaged_to=` (3.5): stamps `triaged-to:` frontmatter alongside `status: done`."""
+
+    def test_done_with_triaged_to_stamps_frontmatter(self):
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth")
+
+        res = q.done("20260531-141200-auth", triaged_to="042-example-change")
+
+        self.assertEqual(res["status"], "done")
+        fm = q._read_frontmatter(self.picked / "20260531-141200-auth.md")
+        self.assertEqual(fm["status"], "done")
+        self.assertEqual(fm["triaged-to"], "042-example-change")
+
+    def test_done_with_triaged_to_and_note_both_apply(self):
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth")
+
+        res = q.done(
+            "20260531-141200-auth",
+            note="Folded into 042-example",
+            triaged_to="https://github.com/behindthedash/worktrail/pull/999",
+        )
+
+        self.assertEqual(res["status"], "done")
+        path = self.picked / "20260531-141200-auth.md"
+        fm = q._read_frontmatter(path)
+        self.assertEqual(
+            fm["triaged-to"], "https://github.com/behindthedash/worktrail/pull/999"
+        )
+        body = path.read_text(encoding="utf-8")
+        self.assertIn("## Closure Note", body)
+        self.assertIn("Folded into 042-example", body)
+
+    def test_done_without_triaged_to_leaves_field_absent(self):
+        """Omitting triaged_to entirely changes nothing about existing done()
+        behavior -- no `triaged-to:` field appears."""
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth")
+
+        res = q.done("20260531-141200-auth")
+
+        self.assertEqual(res["status"], "done")
+        fm = q._read_frontmatter(self.picked / "20260531-141200-auth.md")
+        self.assertNotIn("triaged-to", fm)
+
+    def test_done_triaged_to_cli_round_trip(self):
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth")
+
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            rc = q.main(["done", "20260531-141200-auth", "--triaged-to", "042-example"])
+
+        self.assertEqual(rc, 0)
+        fm = q._read_frontmatter(self.picked / "20260531-141200-auth.md")
+        self.assertEqual(fm["triaged-to"], "042-example")
+
+
 class TestDoneReleaseOwnership(QueueTestBase):
     """`--by`/`--force` ownership enforcement on done/release (mirrors claim's
     `_same_owner`, but blocks instead of just reporting -- see `_ownership_block`)."""

@@ -1124,8 +1124,137 @@ def _apply_needs_decision(v: Verdict) -> dict:
     }
 
 
+def _planned_fold_propose_target(v: Verdict) -> str | None:
+    """The change id a fold/propose apply would target -- `target_change`
+    for `fold-into-change`, `proposed_change_name` for `propose-change`."""
+    return (
+        v.target_change if v.verdict == "fold-into-change" else v.proposed_change_name
+    )
+
+
+def _planned_fold_propose_branch(v: Verdict) -> str:
+    """The branch name a fold/propose apply (3.1/3.2) would create.
+
+    Deterministic from the verdict's own fields alone -- no worktree or git
+    call is made to produce this, so it is safe to compute for a preview
+    even though the fold/propose apply actions themselves are not
+    implemented yet (`_APPLY_NOT_YET_IMPLEMENTED`).
+    """
+    if v.verdict == "fold-into-change":
+        return f"queue-triage/fold-{v.brief_id}-into-{v.target_change}"
+    return f"queue-triage/propose-{v.proposed_change_name}"
+
+
+def _planned_fold_propose_pr_title(v: Verdict) -> str:
+    """The pull request title a fold/propose apply (3.1/3.2) would open with."""
+    if v.verdict == "fold-into-change":
+        return f"Fold {v.brief_id} into {v.target_change}"
+    return f"Propose change: {v.proposed_change_name}"
+
+
+def _preview_verdict(v: Verdict, run_date: str) -> dict:
+    """The no-`--confirm` preview of one non-`keep` verdict's apply action.
+
+    Never claims, closes, stamps, or files anything -- every field here is
+    derived purely from `v` (plus `run_date` for the two frontmatter-
+    stamping verdict types, mirroring `_apply_work_directly`'s own stamp) so
+    a caller can preview a run's effects before committing to it, per spec's
+    "Apply step never closes a brief without an approved verdict"
+    requirement. `fold-into-change`/`propose-change` preview their planned
+    branch, target change, and PR title even though their apply actions
+    (`_APPLY_NOT_YET_IMPLEMENTED`) don't exist yet -- those fields are fully
+    determined by the verdict alone. `work-directly` previews its planned
+    frontmatter stamp (or the same downgrade-to-keep `_apply_work_directly`
+    would make); `needs-decision` previews the `awaiting-decision` stamp and
+    the full `pending_decision_envelope()` `decisions.ask()` would file.
+    """
+    base = {
+        "brief_id": v.brief_id,
+        "verdict": v.verdict,
+        "duplicate_of": v.duplicate_of,
+        "confirm": False,
+        "path": None,
+        "error": None,
+    }
+
+    if v.verdict in ("fold-into-change", "propose-change"):
+        return {
+            **base,
+            "action": "open-pull-request",
+            "status": "planned",
+            "note": v.evidence,
+            "planned_branch": _planned_fold_propose_branch(v),
+            "planned_target_change": _planned_fold_propose_target(v),
+            "planned_pr_title": _planned_fold_propose_pr_title(v),
+        }
+
+    if v.verdict == "work-directly":
+        if not _REPRODUCTION_EVIDENCE_RE.search(v.evidence or ""):
+            return {
+                **base,
+                "action": "noop",
+                "status": "planned-downgrade-to-keep",
+                "note": (
+                    "evidence does not cite a test, check, or command -- "
+                    "will be downgraded to keep"
+                ),
+            }
+        return {
+            **base,
+            "action": "stamp-frontmatter",
+            "status": "planned",
+            "note": v.evidence,
+            "planned_stamp": {
+                "seeded-from": f"triage:{run_date}:direct",
+                "recommended-route": "F",
+            },
+        }
+
+    if v.verdict == "needs-decision":
+        question = (v.question or "").strip()
+        if not question:
+            return {
+                **base,
+                "action": "file-decision",
+                "status": "error",
+                "note": v.evidence,
+                "error": "verdict has no question to file a decision for",
+            }
+        repo = v.repo if v.repo and v.repo != NO_REPO_KEY else None
+        decision_id = decisions.decision_identity(
+            source="queue-triage",
+            repo=repo or NO_REPO_KEY,
+            subject=v.brief_id,
+            question=question,
+        )
+        envelope = decisions.pending_decision_envelope(
+            decision_id=decision_id,
+            question=question,
+            options=list(_NEEDS_DECISION_OPTIONS),
+            source="queue-triage",
+            repo=repo,
+            subject=v.brief_id,
+            brief=v.brief_id,
+        )
+        return {
+            **base,
+            "action": "file-decision",
+            "status": "planned",
+            "note": v.evidence,
+            "planned_stamp": {"awaiting-decision": decision_id},
+            "planned_envelope": envelope,
+        }
+
+    action = (
+        "claim+done"
+        if v.verdict in ("stale-close", "duplicate-of")
+        else "append-triage-note"
+    )
+    return {**base, "action": action, "status": "planned", "note": v.evidence}
+
+
 def apply_verdicts(verdicts: list[Verdict], *, confirm: bool) -> list[dict]:
-    """Execute (or, when `confirm` is false, only log) each non-`keep` verdict.
+    """Execute (or, when `confirm` is false, only preview) each non-`keep` verdict.
 
     Callers are expected to have already run this batch through
     `resolve_duplicate_targets()` -- this function acts on whatever `verdict`
@@ -1139,13 +1268,17 @@ def apply_verdicts(verdicts: list[Verdict], *, confirm: bool) -> list[dict]:
     pending decision via `decisions.ask()` and leaves the brief queued
     (`_apply_needs_decision`). `keep` is always a no-op.
     `_APPLY_NOT_YET_IMPLEMENTED` verdict types (fold-into-change/
-    propose-change) have no apply action yet -- they are logged
-    `status="not-yet-implemented"` with no filesystem mutation, `confirm`
-    notwithstanding, rather than being misapplied via the `needs-update`
-    fallback. When `confirm` is false, nothing is
-    executed -- every other non-`keep` verdict is logged as `"planned"`
-    with no filesystem mutation, so a caller can preview a run before
-    committing to it.
+    propose-change) have no apply action yet -- with `confirm`, they are
+    logged `status="not-yet-implemented"` with no filesystem mutation,
+    rather than being misapplied via the `needs-update` fallback.
+
+    When `confirm` is false, nothing is executed and nothing is written to
+    the queue or any repo -- every other non-`keep` verdict is instead
+    logged via `_preview_verdict()`: `fold-into-change`/`propose-change`
+    preview their planned branch, target change, and PR title;
+    `work-directly`/`needs-decision` preview their planned frontmatter
+    stamp (and, for `needs-decision`, the pending-decision envelope) --
+    so a caller can preview a run's effects before committing to it.
 
     Returns one action-log dict per verdict, in the same order as `verdicts`,
     never dropping any -- `apply`'s `--json`/human output (4.3) renders this
@@ -1168,6 +1301,10 @@ def apply_verdicts(verdicts: list[Verdict], *, confirm: bool) -> list[dict]:
                     "error": None,
                 }
             )
+            continue
+
+        if not confirm:
+            log.append({**_preview_verdict(v, run_date), "confirm": confirm})
             continue
 
         if v.verdict in _APPLY_NOT_YET_IMPLEMENTED:
@@ -1197,42 +1334,6 @@ def apply_verdicts(verdicts: list[Verdict], *, confirm: bool) -> list[dict]:
             action = "file-decision"
         else:
             action = "append-triage-note"
-
-        if not confirm:
-            if action == "stamp-frontmatter" and not _REPRODUCTION_EVIDENCE_RE.search(
-                v.evidence or ""
-            ):
-                log.append(
-                    {
-                        "brief_id": v.brief_id,
-                        "verdict": v.verdict,
-                        "duplicate_of": v.duplicate_of,
-                        "action": "noop",
-                        "confirm": confirm,
-                        "status": "planned-downgrade-to-keep",
-                        "path": None,
-                        "note": (
-                            "evidence does not cite a test, check, or command -- "
-                            "will be downgraded to keep"
-                        ),
-                        "error": None,
-                    }
-                )
-                continue
-            log.append(
-                {
-                    "brief_id": v.brief_id,
-                    "verdict": v.verdict,
-                    "duplicate_of": v.duplicate_of,
-                    "action": action,
-                    "confirm": confirm,
-                    "status": "planned",
-                    "path": None,
-                    "note": v.evidence,
-                    "error": None,
-                }
-            )
-            continue
 
         if action == "claim+done":
             log.append(_apply_close(v))
