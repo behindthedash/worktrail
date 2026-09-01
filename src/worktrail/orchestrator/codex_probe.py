@@ -118,6 +118,17 @@ def build_probe_command() -> tuple[list[str], str]:
     return cmd, scratch_dir
 
 
+class GitStatusUnavailable(RuntimeError):
+    """Raised when `git status --porcelain` exits non-zero while taking a
+    no-op scope snapshot.
+
+    A non-zero exit (not a git repo, unreadable index, `dubious ownership`
+    refusal, ...) must never be read as "clean" -- that would make the
+    repository half of the no-op scope check silently unverifiable while
+    still reporting success. Callers must classify this as a failure.
+    """
+
+
 @dataclass(frozen=True)
 class NoOpScopeSnapshot:
     """A point-in-time snapshot of everything the probe's no-op scope
@@ -141,6 +152,11 @@ def snapshot_no_op_scope(scratch_dir: str, repo_dir: str) -> NoOpScopeSnapshot:
     the maintainer's repository working tree the probe was invoked from,
     never the scratch dir -- so a post-run re-snapshot can detect any
     mutation to either root.
+
+    Raises `GitStatusUnavailable` if `git status` exits non-zero: `repo_dir`
+    not being a git repository (or any other git failure) must never be
+    read as "clean", or the mutation check downstream would silently
+    become a no-op while still reporting success.
     """
     scratch_listing = tuple(sorted(os.listdir(scratch_dir)))
     status = _REAL_SUBPROCESS_RUN(
@@ -151,6 +167,11 @@ def snapshot_no_op_scope(scratch_dir: str, repo_dir: str) -> NoOpScopeSnapshot:
         text=True,
         timeout=_SNAPSHOT_TIMEOUT_SECONDS,
     )
+    if status.returncode != 0:
+        raise GitStatusUnavailable(
+            f"git status --porcelain exited {status.returncode} in "
+            f"{repo_dir}: {status.stderr.strip()}"
+        )
     return NoOpScopeSnapshot(
         scratch_listing=scratch_listing,
         repo_git_status=status.stdout,
@@ -170,6 +191,11 @@ def check_no_op_scope_violation(
     guarantee is about repository state, not the nested process's own exit
     status. Returns a failing `ProbeReport` naming which root mutated
     (`scratch_dir` and/or `repo_dir`), or `None` if neither changed.
+
+    Raises `GitStatusUnavailable` if the post-run `git status` exits
+    non-zero -- the same fail-closed rule as `snapshot_no_op_scope`: a
+    failed git call must never be read as "unchanged", since that would
+    make the repository half of this check silently unverifiable.
     """
     scratch_listing = tuple(sorted(os.listdir(scratch_dir)))
     status = _REAL_SUBPROCESS_RUN(
@@ -180,6 +206,11 @@ def check_no_op_scope_violation(
         text=True,
         timeout=_SNAPSHOT_TIMEOUT_SECONDS,
     )
+    if status.returncode != 0:
+        raise GitStatusUnavailable(
+            f"git status --porcelain exited {status.returncode} in "
+            f"{repo_dir}: {status.stderr.strip()}"
+        )
     post_snapshot = NoOpScopeSnapshot(
         scratch_listing=scratch_listing,
         repo_git_status=status.stdout,
@@ -230,11 +261,14 @@ def run_probe_command(
     caller -- the probe's whole purpose is to prove the run is wall-clock
     bounded and spawnable, not to assume its caller will classify failures.
 
-    A `StageOutcome.TIMEOUT` result from the spawn itself takes precedence
-    over a no-op-scope violation found afterward, per this module's stage
-    ordering: only a `subprocess.CompletedProcess` result -- i.e. the nested
-    process actually ran to completion -- is eligible to be overridden by a
-    scope violation.
+    A `StageOutcome.TIMEOUT` (or other earlier-precedence) result from the
+    spawn itself keeps its stage when a no-op-scope violation is also found
+    afterward, per this module's stage ordering: only a
+    `subprocess.CompletedProcess` result -- i.e. the nested process actually
+    ran to completion -- is eligible for a full override to
+    `StageOutcome.REPORT_BACK`. Either way the violation is never silently
+    dropped: when the stage is kept, the violation's which-root-mutated
+    diagnostic is appended to the existing diagnostic instead.
     """
     try:
         pre_spawn_snapshot: NoOpScopeSnapshot | None = snapshot_no_op_scope(
@@ -250,6 +284,12 @@ def run_probe_command(
             ),
         )
     except OSError as exc:
+        return ProbeReport(
+            stage=StageOutcome.ENVIRONMENT_PREPARATION,
+            success=False,
+            diagnostic=str(exc),
+        )
+    except GitStatusUnavailable as exc:
         return ProbeReport(
             stage=StageOutcome.ENVIRONMENT_PREPARATION,
             success=False,
@@ -297,13 +337,30 @@ def run_probe_command(
                 success=False,
                 diagnostic=str(exc),
             )
-        # A violation is a REPORT_BACK-stage classification, the lowest
-        # priority in StageOutcome's order -- it must never clobber a result
-        # already classified into an earlier-precedence failing stage (e.g.
-        # TIMEOUT or a spawn OSError). Only a still-unclassified
-        # `CompletedProcess` is eligible to be overridden.
-        if violation is not None and isinstance(
-            result, subprocess.CompletedProcess
-        ):
-            result = violation
+        except GitStatusUnavailable as exc:
+            violation = ProbeReport(
+                stage=StageOutcome.REPORT_BACK,
+                success=False,
+                diagnostic=f"no-op scope unverifiable: {exc}",
+            )
+        # A violation is checked and reported regardless of the run's own
+        # outcome -- "success or failure" -- but a result already classified
+        # into an earlier-precedence failing stage (e.g. TIMEOUT or a spawn
+        # OSError) keeps that stage: only a still-unclassified
+        # `CompletedProcess` is eligible for a full override. Otherwise the
+        # violation's diagnostic is folded into the existing report so the
+        # which-root-mutated detail is never silently dropped.
+        if violation is not None:
+            if isinstance(result, subprocess.CompletedProcess):
+                result = violation
+            else:
+                result = ProbeReport(
+                    stage=result.stage,
+                    success=False,
+                    diagnostic=f"{result.diagnostic}; {violation.diagnostic}",
+                    codex_home=result.codex_home,
+                    automatic_home=result.automatic_home,
+                    provider_identity=result.provider_identity,
+                    auth_usable=result.auth_usable,
+                )
     return result
