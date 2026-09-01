@@ -206,58 +206,54 @@ def run_probe_command(
     child_env: dict[str, str],
     timeout: float,
     repo_dir: str,
-) -> tuple[subprocess.CompletedProcess[str] | ProbeReport, NoOpScopeSnapshot | None]:
-    """Snapshot the probe's no-op scope, then run its `codex` command,
-    wall-clock bounded by `timeout`.
+) -> subprocess.CompletedProcess[str] | ProbeReport:
+    """Snapshot the probe's no-op scope, run its `codex` command (wall-clock
+    bounded by `timeout`), then re-snapshot and diff -- after the run,
+    success or failure -- to detect any repository mutation.
 
-    Calls `snapshot_no_op_scope(scratch_dir, repo_dir)` before spawning --
-    never after -- so the returned snapshot reflects the scratch directory's
-    listing and the invoking repository's `git status --porcelain` as they
-    stood immediately prior to `subprocess.run`. The caller is expected to
-    re-snapshot after the run completes and diff against this pre-spawn
-    snapshot to detect any repository mutation.
-
-    The snapshot's own `git status` call is wall-clock bounded
-    (`_SNAPSHOT_TIMEOUT_SECONDS`) and never propagates a raw exception: an
-    `OSError` (e.g. `git` missing from `PATH`, `repo_dir` not found) or a
-    `subprocess.TimeoutExpired` on that call is classified into a failing
-    `ProbeReport` -- returned alongside `None` in place of a snapshot, since
-    none could be taken -- rather than escaping this function as a
-    traceback.
+    Calls `snapshot_no_op_scope(scratch_dir, repo_dir)` before spawning, and
+    `check_no_op_scope_violation` against it after -- regardless of whether
+    the spawn itself succeeded, timed out, or raised -- so a mutation left by
+    a partially started process is never missed. Both snapshot calls are
+    wall-clock bounded (`_SNAPSHOT_TIMEOUT_SECONDS`) and never propagate a
+    raw exception: an `OSError` (e.g. `git` missing from `PATH`, `repo_dir`
+    not found) or a `subprocess.TimeoutExpired` on either is classified into
+    a failing `ProbeReport` instead of escaping this function as a traceback.
 
     The `subprocess.run` call for the probe itself mirrors
     `spawnlib.spawn_agent`'s own call exactly (same
     `cwd`/`capture_output`/`text`/`timeout`/`env` arguments), so this stays
     parity-tested against the same invocation shape the direct orchestrator
-    Codex spawn path uses. Unlike that call, `subprocess.TimeoutExpired` is
-    caught here and classified as a `timeout` stage outcome rather than
-    propagated to the caller -- the probe's whole purpose is to prove the
-    run is wall-clock bounded, not to assume its caller will.
+    Codex spawn path uses. Unlike that call, `subprocess.TimeoutExpired` and
+    `OSError` (e.g. `codex` missing from `PATH`) are caught here and
+    classified into a failing `ProbeReport` rather than propagated to the
+    caller -- the probe's whole purpose is to prove the run is wall-clock
+    bounded and spawnable, not to assume its caller will classify failures.
+
+    A `StageOutcome.TIMEOUT` result from the spawn itself takes precedence
+    over a no-op-scope violation found afterward, per this module's stage
+    ordering: only a `subprocess.CompletedProcess` result -- i.e. the nested
+    process actually ran to completion -- is eligible to be overridden by a
+    scope violation.
     """
     try:
         pre_spawn_snapshot: NoOpScopeSnapshot | None = snapshot_no_op_scope(
             scratch_dir, repo_dir
         )
     except subprocess.TimeoutExpired:
-        return (
-            ProbeReport(
-                stage=StageOutcome.TIMEOUT,
-                success=False,
-                diagnostic=(
-                    "pre-spawn git status snapshot exceeded "
-                    f"{_SNAPSHOT_TIMEOUT_SECONDS}s timeout"
-                ),
+        return ProbeReport(
+            stage=StageOutcome.TIMEOUT,
+            success=False,
+            diagnostic=(
+                "pre-spawn git status snapshot exceeded "
+                f"{_SNAPSHOT_TIMEOUT_SECONDS}s timeout"
             ),
-            None,
         )
     except OSError as exc:
-        return (
-            ProbeReport(
-                stage=StageOutcome.ENVIRONMENT_PREPARATION,
-                success=False,
-                diagnostic=str(exc),
-            ),
-            None,
+        return ProbeReport(
+            stage=StageOutcome.ENVIRONMENT_PREPARATION,
+            success=False,
+            diagnostic=str(exc),
         )
     try:
         result: subprocess.CompletedProcess[str] | ProbeReport = subprocess.run(
@@ -274,6 +270,12 @@ def run_probe_command(
             stage=StageOutcome.TIMEOUT,
             success=False,
             diagnostic=f"codex probe exceeded {timeout}s timeout",
+        )
+    except OSError as exc:
+        result = ProbeReport(
+            stage=StageOutcome.STARTUP,
+            success=False,
+            diagnostic=str(exc),
         )
     if pre_spawn_snapshot is not None:
         try:
@@ -295,6 +297,13 @@ def run_probe_command(
                 success=False,
                 diagnostic=str(exc),
             )
-        if violation is not None:
+        # A violation is a REPORT_BACK-stage classification, the lowest
+        # priority in StageOutcome's order -- it must never clobber a result
+        # already classified into an earlier-precedence failing stage (e.g.
+        # TIMEOUT or a spawn OSError). Only a still-unclassified
+        # `CompletedProcess` is eligible to be overridden.
+        if violation is not None and isinstance(
+            result, subprocess.CompletedProcess
+        ):
             result = violation
-    return result, pre_spawn_snapshot
+    return result
