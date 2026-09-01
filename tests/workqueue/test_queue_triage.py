@@ -667,8 +667,7 @@ class TestEvaluatorPromptTemplate(unittest.TestCase):
             qt.EVALUATOR_PROMPT_TEMPLATE,
         )
         self.assertIn(
-            "apply will downgrade a `work-directly` verdict lacking one to "
-            "`keep`",
+            "apply will downgrade a `work-directly` verdict lacking one to `keep`",
             qt.EVALUATOR_PROMPT_TEMPLATE,
         )
 
@@ -749,9 +748,7 @@ class TestEvaluateGroupCandidateContext(QueueTriageTestBase):
             "worktrail.orchestrator.spawnlib.spawn_agent",
             return_value=SpawnResult(text="", usage={}),
         ) as mock_spawn:
-            result = qt.evaluate_group(
-                str(repo_root), [brief_path], cwd=repo_root
-            )
+            result = qt.evaluate_group(str(repo_root), [brief_path], cwd=repo_root)
 
         self.assertEqual(
             result[0]["candidates_by_brief"], {"a": ["widget-export-pipeline"]}
@@ -771,9 +768,7 @@ class TestEvaluateGroupCandidateContext(QueueTriageTestBase):
             "worktrail.orchestrator.spawnlib.spawn_agent",
             return_value=SpawnResult(text="", usage={}),
         ):
-            result = qt.evaluate_group(
-                qt.NO_REPO_KEY, [brief_path], cwd=self.base
-            )
+            result = qt.evaluate_group(qt.NO_REPO_KEY, [brief_path], cwd=self.base)
 
         self.assertEqual(result[0]["candidates_by_brief"], {"a": []})
 
