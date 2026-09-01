@@ -21,10 +21,23 @@ import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 
+from ..router import overlap_check
 from ..shared.brief_frontmatter import read_frontmatter, split_frontmatter
 from ..shared.homedir import worktrail_home
-from .work_queue import claim, done, picked_dir, queue_dir, release, resolve
+from . import decisions
+from .score_candidates import _overlap_coefficient, _tokenize
+from .work_queue import (
+    _awaiting_decision_info,
+    _set_fm_fields,
+    claim,
+    done,
+    picked_dir,
+    queue_dir,
+    release,
+    resolve,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +49,49 @@ NO_REPO_KEY = "__none__"
 # caller, owns the harness/model choice for a given tier.
 DEFAULT_TIER = "t2-build"
 
-VALID_VERDICT_TYPES = {"keep", "stale-close", "needs-update", "duplicate-of"}
+VALID_VERDICT_TYPES = {
+    "keep",
+    "stale-close",
+    "needs-update",
+    "duplicate-of",
+    "fold-into-change",
+    "propose-change",
+    "work-directly",
+    "needs-decision",
+}
+
+# `propose-change`'s `proposed_change_name` must be a valid OpenSpec change id:
+# lowercase alphanumerics separated by single hyphens, no leading/trailing/
+# doubled hyphen.
+_KEBAB_CASE_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 _TRIAGE_HEADING_RE = re.compile(r"^##\s+Triage\s+(\d{4}-\d{2}-\d{2})\s*$", re.MULTILINE)
+
+# `work-directly` requires evidence citing a specific test, check, or command
+# (per the evaluator prompt's step 2b) rather than evidence that only restates
+# the brief's description. Matches one of the common reproduction vocabulary
+# words/tool names the prompt's own examples use ("reproduces via pytest ...",
+# "confirmed via make lint") -- deliberately permissive about *which*
+# command/test/check is cited, but every alternative requires an actual named
+# tool or verb, never a bare backtick-quoted span on its own (that would also
+# match a file path or brief id with no command content at all) and never the
+# bare English words "command" or "check", since prose can use those words
+# while denying or merely discussing a reproduction reference (e.g. "no
+# command needed" or "we should check whether this is still relevant").
+_REPRODUCTION_EVIDENCE_RE = re.compile(
+    r"\bpytest\b"
+    r"|\btests?/"
+    r"|\bmake\s+\w+"
+    r"|\bnpm\s+(?:run|test)\b"
+    r"|\byarn\s+(?:run|test)\b"
+    r"|\bgo\s+test\b"
+    r"|\bcargo\s+test\b"
+    r"|\bunittest\b"
+    r"|\b(?:lint|mypy|ruff|tsc)\b"
+    r"|\breproduces?\s+via\b"
+    r"|\bconfirmed\s+via\b",
+    re.IGNORECASE,
+)
 
 # Codifies the 2026-07-31 pilot's lessons (see design.md's "Evaluator prompt
 # template" decision): repo-fetch-first, a bounded per-brief tool-call budget,
@@ -47,12 +100,18 @@ _TRIAGE_HEADING_RE = re.compile(r"^##\s+Triage\s+(\d{4}-\d{2}-\d{2})\s*$", re.MU
 # a whole group, not a single brief. Kept as a module-level constant (not a
 # file) so `tests/workqueue/test_queue_triage.py` can assert on it directly,
 # matching how `drain.py` keeps `PROMPT` as an importable constant.
+#
+# `{briefs}` (built by `evaluate_group()`) carries each brief's 2.1-ranked
+# fold/propose candidates inline, so the fold-into-change/propose-change/
+# work-directly/needs-decision rules below can be stated once per group
+# rather than duplicated per brief.
 EVALUATOR_PROMPT_TEMPLATE = """\
-You are triaging work-queue briefs for the repo group `{repo}` for staleness \
-and duplication. Evaluate ONLY the briefs listed below; do not scan the queue \
-for others.
+You are triaging work-queue briefs for the repo group `{repo}` for staleness, \
+duplication, and whether they belong folded into or proposed as an OpenSpec \
+change. Evaluate ONLY the briefs listed below; do not scan the queue for \
+others.
 
-Briefs in this group:
+Briefs in this group (each with its ranked candidate target changes, if any):
 {briefs}
 
 Step 1 — repo check (do this first, before judging any brief):
@@ -69,6 +128,27 @@ For each brief above, spend at most 3-4 tool calls (e.g. `git log`, `gh pr list 
 PR, commit, or file you found as evidence — a verdict without cited evidence is \
 invalid.
 
+Step 2a — fold vs. propose vs. decide:
+Each brief above lists its ranked candidate target changes (from the repo's \
+active OpenSpec changes), if any were found. `fold-into-change` may only name \
+`target_change` as one of *that brief's own* listed candidate ids — never a \
+change that wasn't presented to you, even a plausible-looking one. If none of \
+the listed candidates are a good fit but the brief still clearly belongs in \
+this repo, use `propose-change` with a `target_repo` and a kebab-case \
+`proposed_change_name` instead. If `{repo}` is `{no_repo_key}` (no target \
+repo), `fold-into-change` and `propose-change` are never valid for these \
+briefs — if the brief needs to land somewhere but you cannot tell where, use \
+`needs-decision` with a `question` asking which repo it belongs to, rather \
+than guessing a target.
+
+Step 2b — work-directly requires reproduction evidence:
+Use `work-directly` only when your evidence cites a specific test, check, or \
+command that reproduces or confirms the brief's premise as directly \
+actionable right now (e.g. "reproduces via pytest tests/foo -k bar", "confirmed \
+via `make lint`"). Evidence that only restates the brief's description without \
+such a citation is not sufficient — apply will downgrade a `work-directly` \
+verdict lacking one to `keep`, so prefer `keep` yourself when you don't have it.
+
 Step 3 — memory check before raising an alarm:
 Before flagging anything you observe as a live operational concern, check \
 {memory_index} for whether it already documents the same state as expected or \
@@ -79,10 +159,16 @@ Step 4 — fail open:
 If evidence is inconclusive after steps 1-3, do not guess: verdict `keep` and \
 record what you checked and why it was inconclusive as the evidence.
 
-For each brief, output one JSON object with exactly these fields:
-{{"brief_id": "...", "verdict": "keep|stale-close|needs-update|duplicate-of", \
-"duplicate_of": "<brief-id or null>", "evidence": "<cited PR/commit/file, or \
-why inconclusive for a fail-open keep>", "confidence": "high|medium|low"}}
+For each brief, output one JSON object with exactly these fields (omit fields \
+that don't apply to your chosen verdict, or set them null):
+{{"brief_id": "...", "verdict": "keep|stale-close|needs-update|duplicate-of|\
+fold-into-change|propose-change|work-directly|needs-decision", "duplicate_of": \
+"<brief-id or null>", "target_change": "<one of the brief's listed candidate \
+ids, for fold-into-change only>", "target_repo": "<repo, for propose-change \
+only>", "proposed_change_name": "<kebab-case id, for propose-change only>", \
+"question": "<for needs-decision only>", "evidence": "<cited PR/commit/file/\
+test, or why inconclusive for a fail-open keep>", "confidence": \
+"high|medium|low"}}
 """
 
 
@@ -134,13 +220,30 @@ def is_recently_triaged(path: Path, within_days: int) -> bool:
     return age_days <= within_days
 
 
+def has_unresolved_decision(path: Path) -> bool:
+    """True if `path` carries an `awaiting-decision:` link still `open` or `answered`.
+
+    Mirrors `work_queue._awaiting_decision_info()`'s own reading (already used by
+    `claim()`'s warnings and `list_queue()`'s `blocked` flag): `resolved` (a human
+    answered and the answer was consumed) and no link at all both read as "not
+    unresolved". Per design D8 ("needs-decision ... reuses ... the existing
+    'awaiting decision' skip"), a brief still genuinely waiting on a human must not
+    be re-evaluated by a later `evaluate` run before that answer lands.
+    """
+    return _awaiting_decision_info(path)["decision_status"] in ("open", "answered")
+
+
 def inventory(within_days: int) -> tuple[dict[str, list[Path]], list[Path]]:
     """Compose `group_queue_by_repo()` + `is_recently_triaged()` into an evaluation set.
 
     Briefs whose most recent `## Triage` section falls within `within_days` fail the
     dedup check and are excluded from the returned groups (so 2.x never re-evaluates
-    them) but collected into `skipped` for report visibility. A group left empty by
-    filtering is dropped entirely rather than kept as an empty bucket.
+    them) but collected into `skipped` for report visibility. A brief with an
+    unresolved pending decision (`has_unresolved_decision()`) is likewise excluded
+    from the groups, but -- unlike a dedup skip -- is not added to `skipped`: it isn't
+    a triage outcome to report on, it's simply not ready to be re-judged yet, and will
+    resurface on its own once a human answers. A group left empty by filtering is
+    dropped entirely rather than kept as an empty bucket.
     """
     skipped: list[Path] = []
     groups: dict[str, list[Path]] = {}
@@ -149,6 +252,8 @@ def inventory(within_days: int) -> tuple[dict[str, list[Path]], list[Path]]:
         for path in paths:
             if is_recently_triaged(path, within_days):
                 skipped.append(path)
+            elif has_unresolved_decision(path):
+                continue
             else:
                 kept.append(path)
         if kept:
@@ -177,6 +282,146 @@ def _brief_focus(path: Path) -> str:
 def _brief_created(path: Path) -> str:
     created = read_frontmatter(path).get("created")
     return str(created) if created else "unknown"
+
+
+def rank_change_candidates(
+    brief: Path, repo: str | None, top_k: int = 5
+) -> list[dict[str, Any]]:
+    """Rank `repo`'s active OpenSpec changes as fold/dedup targets for `brief`.
+
+    Enumerates `repo`'s active changes via `overlap_check.scan()` (filtered to
+    `stage == "active"`, i.e. `changes/*/proposal.md` entries -- `scan()` also
+    returns completed `specs/*/spec.md` entries, which are not fold targets)
+    and scores each against `brief`'s focus tokens using the
+    `duplicate-brief-detection` spec's focus-overlap coefficient
+    (`score_candidates._overlap_coefficient`, `|A ∩ B| / min(|A|, |B|)`), over
+    the union of the change's `proposal.md` feature-summary tokens and its
+    `tasks.md` task-line tokens (both checked and unchecked, via
+    `overlap_check._parse_openspec_tasks()`) -- so a change whose remaining
+    work matches the brief ranks even when its proposal summary is sparse.
+
+    Returns the top `top_k` by score descending (ties keep `scan()`'s
+    alphabetical order), each as `{"id", "feature_summary",
+    "open_task_count", "score"}`. `repo` falsy (`repo: null`) and a repo with
+    no active changes both return `[]` -- there is nothing to rank against.
+    """
+    if not repo:
+        return []
+
+    specs_root = Path(repo) / "openspec"
+    changes = [c for c in overlap_check.scan(specs_root) if c.get("stage") == "active"]
+    if not changes:
+        return []
+
+    brief_tokens = _tokenize(_brief_focus(Path(brief)))
+
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for change in changes:
+        summary = change.get("feature_summary") or ""
+        tasks_file = specs_root / "changes" / change["spec_id"] / "tasks.md"
+        open_task_count = 0
+        task_tokens: set[str] = set()
+        if tasks_file.is_file():
+            try:
+                tasks_text = tasks_file.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                tasks_text = ""
+            for entry in overlap_check._parse_openspec_tasks(tasks_text):
+                task_tokens |= _tokenize(entry["task_text"])
+                if not entry["checked"]:
+                    open_task_count += 1
+
+        score = _overlap_coefficient(brief_tokens, _tokenize(summary) | task_tokens)
+        scored.append(
+            (
+                score,
+                {
+                    "id": change["spec_id"],
+                    "feature_summary": summary,
+                    "open_task_count": open_task_count,
+                    "score": score,
+                },
+            )
+        )
+
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [entry for _, entry in scored[:top_k]]
+
+
+def _count_active_changes(repo: str) -> int:
+    """Count of `repo`'s active OpenSpec changes, per `overlap_check.scan()`.
+
+    Shares `rank_change_candidates()`'s active-change filter (`stage ==
+    "active"`) -- a nonexistent `openspec/` dir (e.g. a repo path that isn't
+    checked out locally, or a test fixture) scans to `[]`, i.e. 0, rather than
+    raising.
+    """
+    specs_root = Path(repo) / "openspec"
+    return sum(1 for c in overlap_check.scan(specs_root) if c.get("stage") == "active")
+
+
+def _repo_wip_cap(repo: str) -> int:
+    """`repo`'s `max_active_changes` policy value, 0 (disabled) if unset or non-int.
+
+    Reads via `router.policy.load_policy()` directly rather than requiring 3.6's
+    formal `max_active_changes` key/validation to have landed first: an
+    undeclared key in a repo's `.worktrail/policy.yaml` still round-trips onto
+    `load_policy()`'s returned dict (as an "unknown key", per its own
+    docstring), so a plain `.get(..., 0)` here works whether or not 3.6 has
+    shipped yet. Per design D7, 0 means the cap is off -- no repo is ever held.
+    """
+    from ..router import policy as policy_mod
+
+    value = policy_mod.load_policy(Path(repo)).get("max_active_changes", 0)
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def apply_wip_cap_preview(repo: str, verdicts: list[Verdict]) -> list[Verdict]:
+    """Stamp `repo`/`held_by_wip_cap` onto `verdicts`, a report-time preview of 3.6's cap.
+
+    Per design D7 ("WIP cap ... only throttles `propose-change`"): every verdict
+    gets `repo` set for reporting; a `propose-change` verdict additionally gets
+    `held_by_wip_cap=True` when `repo`'s active-change count is at or over its
+    (non-zero) `max_active_changes` cap. This is visibility only -- unlike 3.6's
+    actual apply-time enforcement, it never mutates `verdict` itself, so `apply`
+    run against this run's verdict file is unaffected until 3.6 lands.
+    `NO_REPO_KEY`/falsy `repo` is never held: `propose-change` is never a valid
+    verdict for a repo-less brief in the first place (per the evaluator prompt).
+    """
+    if not repo or repo == NO_REPO_KEY:
+        return [
+            Verdict(**{**asdict(v), "repo": repo, "held_by_wip_cap": False})
+            for v in verdicts
+        ]
+
+    cap = _repo_wip_cap(repo)
+    over_cap = cap > 0 and _count_active_changes(repo) >= cap
+    return [
+        Verdict(
+            **{
+                **asdict(v),
+                "repo": repo,
+                "held_by_wip_cap": over_cap and v.verdict == "propose-change",
+            }
+        )
+        for v in verdicts
+    ]
+
+
+def _format_candidates(candidates: list[dict[str, Any]]) -> str:
+    """Render `rank_change_candidates()`'s output for one brief's prompt line.
+
+    `(none)` when the repo has no active changes, is `null`, or is the
+    `{no_repo_key}` group -- so the evaluator prompt makes the absence of a
+    fold target explicit rather than silently omitting the line.
+    """
+    if not candidates:
+        return "(none)"
+    return "; ".join(
+        f"{c['id']} (score {c['score']:.2f}, {c['open_task_count']} open tasks): "
+        f"{c['feature_summary']}"
+        for c in candidates
+    )
 
 
 def _memory_index_path(cwd: str | Path) -> Path:
@@ -248,12 +493,18 @@ def evaluate_group(
     spawning an evaluator at all. A `False` or `None` (check failure or
     inconclusive) falls through to the normal spawn unchanged.
 
-    Returns a single-element list -- `[{"repo", "brief_ids", "raw_text"}]` --
-    rather than the raw string directly, so a caller fanning out across multiple
-    groups can `.extend()` every call's result into one flat list, without a
-    shape special-case for the archived short-circuit. `raw_text` is untouched
-    worker output (or, in the archived case, the synthesized equivalent);
-    parsing/validation is `parse_verdicts`'s job, not this function's.
+    Returns a single-element list -- `[{"repo", "brief_ids", "raw_text",
+    "candidates_by_brief"}]` -- rather than the raw string directly, so a
+    caller fanning out across multiple groups can `.extend()` every call's
+    result into one flat list, without a shape special-case for the archived
+    short-circuit. `raw_text` is untouched worker output (or, in the archived
+    case, the synthesized equivalent); parsing/validation is `parse_verdicts`'s
+    job, not this function's. `candidates_by_brief` maps each brief id to the
+    list of candidate change ids 2.1's `rank_change_candidates()` presented to
+    the evaluator for it (`[]` for the archived short-circuit and for
+    `{no_repo_key}` groups, which have no target repo to rank against) -- a
+    caller passes this straight through to `parse_verdicts()` so a
+    `fold-into-change` naming anything else is rejected.
     """
     brief_ids = [path.stem for path in briefs]
 
@@ -270,13 +521,26 @@ def evaluate_group(
             )
             for bid in brief_ids
         )
-        return [{"repo": repo, "brief_ids": brief_ids, "raw_text": raw_text}]
+        return [
+            {
+                "repo": repo,
+                "brief_ids": brief_ids,
+                "raw_text": raw_text,
+                "candidates_by_brief": {bid: [] for bid in brief_ids},
+            }
+        ]
 
     from ..orchestrator import spawnlib
 
+    rank_repo = repo if repo != NO_REPO_KEY else None
+    candidates_by_path = {
+        path: rank_change_candidates(path, rank_repo) for path in briefs
+    }
+
     brief_lines = "\n".join(
         f"- {path.stem}: {_brief_focus(path) or '(no focus recorded)'} "
-        f"(created {_brief_created(path)})"
+        f"(created {_brief_created(path)})\n"
+        f"  Candidate targets: {_format_candidates(candidates_by_path[path])}"
         for path in briefs
     )
     prompt = EVALUATOR_PROMPT_TEMPLATE.format(
@@ -286,18 +550,49 @@ def evaluate_group(
         memory_index=_memory_index_path(cwd),
     )
     result = spawnlib.spawn_agent(prompt, cwd, tier=DEFAULT_TIER, prefer=agent)
-    return [{"repo": repo, "brief_ids": brief_ids, "raw_text": result.text}]
+    candidates_by_brief = {
+        path.stem: [c["id"] for c in candidates_by_path[path]] for path in briefs
+    }
+    return [
+        {
+            "repo": repo,
+            "brief_ids": brief_ids,
+            "raw_text": result.text,
+            "candidates_by_brief": candidates_by_brief,
+        }
+    ]
 
 
 @dataclass
 class Verdict:
-    """One brief's triage outcome, per spec's "Evidence-required verdict per brief"."""
+    """One brief's triage outcome, per spec's "Evidence-required verdict per brief".
+
+    `duplicate_of`, `target_change`, `target_repo`, `proposed_change_name`, and
+    `question` are the target fields for the verdict types that need one
+    (`duplicate-of`, `fold-into-change`, `propose-change`, `needs-decision`
+    respectively) -- each stays `None` for every other verdict type.
+
+    `repo` is the group's `repo:` value this verdict was evaluated under (set by
+    `cmd_evaluate()` when accumulating `parse_verdicts()`'s output across groups;
+    `None` for verdicts built directly, e.g. in tests). `held_by_wip_cap` is a
+    report-time-only preview (2.4; the real downgrade-to-`keep` enforcement is
+    3.6's job at apply time): true when this is a `propose-change` verdict whose
+    `repo` is at or over its `max_active_changes` policy cap (see
+    `apply_wip_cap_preview()`), so `write_report()` can surface "held by cap"
+    counts ahead of 3.6 landing.
+    """
 
     brief_id: str
     verdict: str
     duplicate_of: str | None
     evidence: str
     confidence: str | None = None
+    target_change: str | None = None
+    target_repo: str | None = None
+    proposed_change_name: str | None = None
+    question: str | None = None
+    repo: str | None = None
+    held_by_wip_cap: bool = False
 
 
 def _extract_json_objects(text: str) -> list[str]:
@@ -347,17 +642,75 @@ def _extract_json_objects(text: str) -> list[str]:
     return objects
 
 
-def parse_verdicts(raw_text: str, expected_brief_ids: list[str]) -> list[Verdict]:
+def _has_valid_target(
+    verdict_type: str,
+    obj: dict,
+    duplicate_of: str | None,
+    presented_candidates: list[str],
+) -> bool:
+    """True if `verdict_type`'s required target field(s) are present and valid in `obj`.
+
+    Each verdict type that names a target validates that target here; every other
+    verdict type (`keep`, `stale-close`, `needs-update`, `work-directly`) has no
+    target field to check and is always valid. `presented_candidates` is the set of
+    change ids actually offered to the evaluator for this brief (per 2.1's
+    `rank_change_candidates()`) -- a `fold-into-change` naming anything else,
+    including a plausible-looking id, is invalid, since accepting it would let the
+    evaluator fold into a change it was never shown.
+    """
+    if verdict_type == "duplicate-of":
+        return duplicate_of is not None
+    if verdict_type == "fold-into-change":
+        target_change = obj.get("target_change")
+        return isinstance(target_change, str) and target_change in presented_candidates
+    if verdict_type == "propose-change":
+        target_repo = obj.get("target_repo")
+        proposed_change_name = obj.get("proposed_change_name")
+        return (
+            isinstance(target_repo, str)
+            and target_repo.strip() != ""
+            and isinstance(proposed_change_name, str)
+            and bool(_KEBAB_CASE_RE.fullmatch(proposed_change_name))
+        )
+    if verdict_type == "needs-decision":
+        question = obj.get("question")
+        return isinstance(question, str) and question.strip() != ""
+    return True
+
+
+def parse_verdicts(
+    raw_text: str,
+    expected_brief_ids: list[str],
+    candidates_by_brief: dict[str, list[str]] | None = None,
+) -> list[Verdict]:
     """Parse `evaluate_group()`'s raw evaluator text into one `Verdict` per expected brief.
 
     Implements the spec's "Evidence-required verdict per brief" requirement: a verdict
-    must have `verdict` in `VALID_VERDICT_TYPES` and non-empty `evidence` (and, for
-    `duplicate-of`, a non-empty `duplicate_of`) to be accepted as-is. Anything missing,
-    unparsable, or failing that check falls back to `keep` with the evaluator's raw
-    output (the specific malformed JSON snippet if one was found for that brief, else
-    the full `raw_text`) retained as evidence -- every id in `expected_brief_ids`
-    always appears exactly once in the result, in that order, never silently dropped.
+    must have `verdict` in `VALID_VERDICT_TYPES`, non-empty `evidence`, and (per
+    `_has_valid_target()`) a well-formed target for verdict types that require one --
+    `duplicate-of` needs `duplicate_of`, `fold-into-change` needs `target_change`
+    naming one of `candidates_by_brief[brief_id]`'s presented candidates,
+    `propose-change` needs `target_repo` and a kebab-case `proposed_change_name`,
+    and `needs-decision` needs `question` -- to be accepted as-is. `work-directly`
+    and `keep` have no target field. Anything missing, unparsable, or failing that
+    check falls back to `keep` with the first JSON snippet the evaluator emitted
+    under this brief_id retained as evidence -- `raw_text` itself is never used
+    here when a group call batches multiple briefs, since it would otherwise bleed
+    every other brief's own verdict/evidence into this one's fallback. Only when
+    the evaluator emitted nothing identifiable for this brief_id at all does
+    `raw_text` remain the fallback, since there is no narrower snippet to prefer --
+    every id in `expected_brief_ids` always appears exactly once in the result, in
+    that order, never silently dropped.
+
+    `candidates_by_brief` defaults to no candidates presented for any brief, so a
+    caller that hasn't wired 2.1's ranking through yet still gets a safe,
+    always-downgraded `fold-into-change` rather than an unchecked target.
+
+    `repo`/`held_by_wip_cap` (2.4's per-repo reporting fields) are left at their
+    defaults here -- `apply_wip_cap_preview()` stamps them afterward, once per
+    group, rather than this per-brief parser threading `repo` through itself.
     """
+    candidates_by_brief = candidates_by_brief or {}
     candidates_by_id: dict[str, list[tuple[str, dict]]] = {
         bid: [] for bid in expected_brief_ids
     }
@@ -375,8 +728,18 @@ def parse_verdicts(raw_text: str, expected_brief_ids: list[str]) -> list[Verdict
     verdicts: list[Verdict] = []
     for bid in expected_brief_ids:
         chosen: Verdict | None = None
+        presented_candidates = candidates_by_brief.get(bid, [])
+        # This brief's own best-effort evidence when nothing valid is found: the
+        # first JSON snippet the evaluator emitted under this brief_id, so a
+        # downgrade never falls back past it to `raw_text` -- in a multi-brief
+        # batch call, `raw_text` covers every brief's own verdict/evidence, and
+        # using it here would bleed other briefs' content into this one's record.
+        # Only when the evaluator never emitted anything identifiable for this
+        # brief_id at all does `raw_text` remain the sole available evidence.
         fallback_evidence: str | None = None
         for snippet, obj in candidates_by_id[bid]:
+            if fallback_evidence is None:
+                fallback_evidence = snippet
             verdict_type = obj.get("verdict")
             evidence = obj.get("evidence")
             dup_raw = obj.get("duplicate_of")
@@ -387,21 +750,31 @@ def parse_verdicts(raw_text: str, expected_brief_ids: list[str]) -> list[Verdict
 
             has_evidence = isinstance(evidence, str) and evidence.strip() != ""
             has_verdict = verdict_type in VALID_VERDICT_TYPES
-            has_duplicate_target = (
-                verdict_type != "duplicate-of" or duplicate_of is not None
+            has_valid_target = has_verdict and _has_valid_target(
+                verdict_type, obj, duplicate_of, presented_candidates
             )
 
-            if has_verdict and has_evidence and has_duplicate_target:
+            if has_verdict and has_evidence and has_valid_target:
+                target_change = obj.get("target_change")
+                target_repo = obj.get("target_repo")
+                proposed_change_name = obj.get("proposed_change_name")
+                question = obj.get("question")
                 chosen = Verdict(
                     brief_id=bid,
                     verdict=verdict_type,
                     duplicate_of=duplicate_of,
                     evidence=evidence,
                     confidence=confidence if isinstance(confidence, str) else None,
+                    target_change=target_change
+                    if isinstance(target_change, str)
+                    else None,
+                    target_repo=target_repo if isinstance(target_repo, str) else None,
+                    proposed_change_name=proposed_change_name
+                    if isinstance(proposed_change_name, str)
+                    else None,
+                    question=question if isinstance(question, str) else None,
                 )
                 break
-            if fallback_evidence is None:
-                fallback_evidence = snippet
 
         if chosen is not None:
             verdicts.append(chosen)
@@ -552,6 +925,205 @@ def _apply_needs_update(v: Verdict, run_date: str) -> dict:
     return {**base, "status": "executed", "path": str(path), "error": None}
 
 
+def _apply_work_directly(v: Verdict, run_date: str) -> dict:
+    """`work-directly`: stamp `seeded-from`/`recommended-route` in place, or downgrade to `keep`.
+
+    Requires `v.evidence` to cite a specific test, check, or command
+    (`_REPRODUCTION_EVIDENCE_RE`, per the evaluator prompt's "work-directly
+    requires reproduction evidence" rule) -- evidence that only restates the
+    brief's description without one is not proof this is directly actionable
+    right now, so this downgrades to a no-op `keep` rather than stamping it.
+    When the citation is present, the brief's frontmatter is stamped
+    `seeded-from: triage:<run_date>:direct` and `recommended-route: F` and the
+    brief is left in `queue/` -- unlike `stale-close`, `work-directly` never
+    claims or closes it.
+    """
+    base = {
+        "brief_id": v.brief_id,
+        "verdict": v.verdict,
+        "duplicate_of": v.duplicate_of,
+        "confirm": True,
+        "note": v.evidence,
+    }
+    if not _REPRODUCTION_EVIDENCE_RE.search(v.evidence or ""):
+        return {
+            **base,
+            "action": "noop",
+            "status": "downgraded-to-keep",
+            "path": None,
+            "error": None,
+            "note": (
+                "evidence does not cite a test, check, or command -- downgraded to keep"
+            ),
+        }
+
+    path = _resolve_brief_path(v.brief_id)
+    if path is None:
+        return {
+            **base,
+            "action": "stamp-frontmatter",
+            "status": "error",
+            "path": None,
+            "error": "brief not found in queue/ or picked/",
+        }
+    try:
+        _set_fm_fields(
+            path,
+            {
+                "seeded-from": f"triage:{run_date}:direct",
+                "recommended-route": "F",
+            },
+        )
+    except (OSError, ValueError) as exc:
+        return {
+            **base,
+            "action": "stamp-frontmatter",
+            "status": "error",
+            "path": str(path),
+            "error": str(exc),
+        }
+    return {
+        **base,
+        "action": "stamp-frontmatter",
+        "status": "executed",
+        "path": str(path),
+        "error": None,
+    }
+
+
+# Intake-triage verdict types 2.2 makes parseable but whose own apply actions
+# ship in later tasks (3.1 fold-into-change, 3.2 propose-change). Until those
+# land, `apply_verdicts()` must not silently fall through to `needs-update`'s
+# append-triage-note action for them -- that would misapply the wrong side
+# effect to a brief this evaluator run correctly classified differently.
+# `work-directly` (3.3) and `needs-decision` (3.4) have their own apply
+# actions (`_apply_work_directly`, `_apply_needs_decision`) and are no longer
+# in this set.
+_APPLY_NOT_YET_IMPLEMENTED = frozenset({"fold-into-change", "propose-change"})
+
+
+# Per design D8: filed via `decisions.ask()`, which builds the versioned
+# envelope with `decisions.pending_decision_envelope()` under the hood --
+# `_apply_needs_decision()` supplies the mandatory `why`/`context`/`options`
+# fields `ask()` itself requires (an evaluator verdict carries a question and
+# evidence, not a full structured decision record) generically, since every
+# `needs-decision` verdict shares the same underlying situation: an automated
+# run could not resolve the brief on its own.
+_NEEDS_DECISION_WHY = (
+    "Queue-triage evaluation could not resolve this brief without a human "
+    "product decision; see the cited evidence."
+)
+_NEEDS_DECISION_OPTIONS = [
+    "Proceed with the brief as currently scoped",
+    "Revise or close the brief per the evaluator's findings",
+]
+
+
+def _apply_needs_decision(v: Verdict) -> dict:
+    """`needs-decision`: file a pending decision, leaving the brief queued.
+
+    Builds a deterministic `decisions.decision_identity()` (source
+    `"queue-triage"`, subject=`v.brief_id`, question=`v.question`) so a later
+    run re-evaluating the same still-open question converges on the existing
+    record instead of filing a duplicate, then files it via `decisions.ask()`
+    -- which builds the versioned envelope with `pending_decision_envelope()`
+    and stamps the brief `awaiting-decision: <id>` in place. `release_brief`
+    is always False: unlike `_apply_close()`, this action never claims the
+    brief in the first place, so there is nothing to release -- it simply
+    stays in `queue/`, now excluded from later `evaluate` runs by
+    `has_unresolved_decision()` until a human answers.
+
+    `ask()`'s own result fields are checked, not just `error`: a failed
+    brief stamp (`brief_stamped` false) is reported as `status="error"`
+    rather than `"executed"`, matching `_apply_work_directly()`'s fail-closed
+    behaviour -- otherwise the skip clause above silently would not hold for
+    that brief while the log claims it does. A re-file against an already
+    resolved decision (`decision_record_status == "already-resolved"`)
+    creates nothing and re-stamps the brief with the resolved id, so it is
+    reported as `status="already-resolved"`, not `"executed"`.
+    """
+    base = {
+        "brief_id": v.brief_id,
+        "verdict": v.verdict,
+        "duplicate_of": v.duplicate_of,
+        "action": "file-decision",
+        "confirm": True,
+        "note": v.evidence,
+    }
+    question = (v.question or "").strip()
+    if not question:
+        return {
+            **base,
+            "status": "error",
+            "path": None,
+            "error": "verdict has no question to file a decision for",
+        }
+
+    repo = v.repo if v.repo and v.repo != NO_REPO_KEY else None
+    decision_id = decisions.decision_identity(
+        source="queue-triage",
+        repo=repo or NO_REPO_KEY,
+        subject=v.brief_id,
+        question=question,
+    )
+    try:
+        result = decisions.ask(
+            question,
+            background=v.evidence,
+            why=_NEEDS_DECISION_WHY,
+            context=v.evidence,
+            options=list(_NEEDS_DECISION_OPTIONS),
+            repo=repo,
+            brief=v.brief_id,
+            release_brief=False,
+            decision_id=decision_id,
+            source="queue-triage",
+            subject=v.brief_id,
+        )
+    except ValueError as exc:
+        return {**base, "status": "error", "path": None, "error": str(exc)}
+
+    if result.get("error"):
+        return {
+            **base,
+            "status": "error",
+            "path": result.get("path"),
+            "error": result["error"],
+        }
+    if not result.get("brief_stamped"):
+        return {
+            **base,
+            "status": "error",
+            "path": result.get("path"),
+            "error": (
+                f"decision record {result.get('id')!r} was created/found at "
+                f"{result.get('path')}, but the brief could not be stamped "
+                f"with awaiting-decision: (not found under queue/ or "
+                f"picked/, or unwritable) -- the skip clause in later "
+                f"evaluate runs will not hold for this brief"
+            ),
+            "decision_id": result.get("id"),
+            "decision_record_status": result.get("status"),
+        }
+    if result.get("status") == "already-resolved":
+        return {
+            **base,
+            "status": "already-resolved",
+            "path": result.get("path"),
+            "error": None,
+            "decision_id": result.get("id"),
+            "decision_record_status": result.get("status"),
+        }
+    return {
+        **base,
+        "status": "executed",
+        "path": result.get("path"),
+        "error": None,
+        "decision_id": result.get("id"),
+        "decision_record_status": result.get("status"),
+    }
+
+
 def apply_verdicts(verdicts: list[Verdict], *, confirm: bool) -> list[dict]:
     """Execute (or, when `confirm` is false, only log) each non-`keep` verdict.
 
@@ -560,10 +1132,20 @@ def apply_verdicts(verdicts: list[Verdict], *, confirm: bool) -> list[dict]:
     each `Verdict` carries, it does not re-check dangling `duplicate-of`
     targets itself. Per spec: `stale-close` and `duplicate-of` close the
     brief via `claim()` + `done(..., note=evidence)`; `needs-update` appends
-    an in-place `## Triage <run-date>` body section instead of closing it.
-    `keep` is always a no-op. When `confirm` is false, nothing is executed --
-    every non-`keep` verdict is logged as `"planned"` with no filesystem
-    mutation, so a caller can preview a run before committing to it.
+    an in-place `## Triage <run-date>` body section instead of closing it;
+    `work-directly` stamps `seeded-from`/`recommended-route` frontmatter in
+    place, or downgrades to a no-op `keep` when the evidence lacks a
+    reproduction reference (`_apply_work_directly`); `needs-decision` files a
+    pending decision via `decisions.ask()` and leaves the brief queued
+    (`_apply_needs_decision`). `keep` is always a no-op.
+    `_APPLY_NOT_YET_IMPLEMENTED` verdict types (fold-into-change/
+    propose-change) have no apply action yet -- they are logged
+    `status="not-yet-implemented"` with no filesystem mutation, `confirm`
+    notwithstanding, rather than being misapplied via the `needs-update`
+    fallback. When `confirm` is false, nothing is
+    executed -- every other non-`keep` verdict is logged as `"planned"`
+    with no filesystem mutation, so a caller can preview a run before
+    committing to it.
 
     Returns one action-log dict per verdict, in the same order as `verdicts`,
     never dropping any -- `apply`'s `--json`/human output (4.3) renders this
@@ -588,13 +1170,55 @@ def apply_verdicts(verdicts: list[Verdict], *, confirm: bool) -> list[dict]:
             )
             continue
 
-        action = (
-            "claim+done"
-            if v.verdict in ("stale-close", "duplicate-of")
-            else "append-triage-note"
-        )
+        if v.verdict in _APPLY_NOT_YET_IMPLEMENTED:
+            log.append(
+                {
+                    "brief_id": v.brief_id,
+                    "verdict": v.verdict,
+                    "duplicate_of": v.duplicate_of,
+                    "action": "noop",
+                    "confirm": confirm,
+                    "status": "not-yet-implemented",
+                    "path": None,
+                    "note": (
+                        f"apply action for verdict '{v.verdict}' is not yet "
+                        "implemented; brief left untouched"
+                    ),
+                    "error": None,
+                }
+            )
+            continue
+
+        if v.verdict in ("stale-close", "duplicate-of"):
+            action = "claim+done"
+        elif v.verdict == "work-directly":
+            action = "stamp-frontmatter"
+        elif v.verdict == "needs-decision":
+            action = "file-decision"
+        else:
+            action = "append-triage-note"
 
         if not confirm:
+            if action == "stamp-frontmatter" and not _REPRODUCTION_EVIDENCE_RE.search(
+                v.evidence or ""
+            ):
+                log.append(
+                    {
+                        "brief_id": v.brief_id,
+                        "verdict": v.verdict,
+                        "duplicate_of": v.duplicate_of,
+                        "action": "noop",
+                        "confirm": confirm,
+                        "status": "planned-downgrade-to-keep",
+                        "path": None,
+                        "note": (
+                            "evidence does not cite a test, check, or command -- "
+                            "will be downgraded to keep"
+                        ),
+                        "error": None,
+                    }
+                )
+                continue
             log.append(
                 {
                     "brief_id": v.brief_id,
@@ -612,6 +1236,10 @@ def apply_verdicts(verdicts: list[Verdict], *, confirm: bool) -> list[dict]:
 
         if action == "claim+done":
             log.append(_apply_close(v))
+        elif action == "stamp-frontmatter":
+            log.append(_apply_work_directly(v, run_date))
+        elif action == "file-decision":
+            log.append(_apply_needs_decision(v))
         else:
             log.append(_apply_needs_update(v, run_date))
     return log
@@ -636,6 +1264,46 @@ def write_verdict_file(verdicts: list[Verdict], out_dir: str | Path) -> Path:
     return path
 
 
+def compute_run_summary(verdicts: list[Verdict]) -> dict[str, Any]:
+    """Verdict-type counts plus 2.4's two derived counts, computed once for reuse.
+
+    `write_report()` and `cmd_evaluate()`'s `--json`/human summary line both call
+    this on the same `verdicts` list, so the Markdown report and the JSON-facing
+    output can never drift apart for a given run -- matching the spec's existing
+    "report counts match the JSON file's contents exactly" scenario, extended to
+    these two new counts.
+
+    `pull_requests_opened` counts `fold-into-change`/`propose-change` verdicts --
+    the two verdict types whose apply actions (3.1, 3.2) open a pull request --
+    so it is a preview of PRs this run's verdicts *will* open once applied, not
+    a record of PRs already opened (this function only ever sees pre-apply
+    verdicts). A `propose-change` verdict `apply_wip_cap_preview()` flagged
+    `held_by_wip_cap` is excluded from this count: 3.6 downgrades it to `keep`
+    at apply time, so it will not open a PR, and counting it here would
+    contradict the `held_by_wip_cap` figure reported for the same brief.
+    `held_by_wip_cap` is `{repo: count}` of `propose-change` verdicts whose
+    `held_by_wip_cap` field `apply_wip_cap_preview()` set true, per repo --
+    repos with a zero count are omitted rather than zero-filled, since the set
+    of repos in a run is dynamic (unlike the fixed `VALID_VERDICT_TYPES` set).
+    """
+    counts: dict[str, int] = {}
+    held_by_wip_cap: dict[str, int] = {}
+    pull_requests_opened = 0
+    for v in verdicts:
+        counts[v.verdict] = counts.get(v.verdict, 0) + 1
+        if v.held_by_wip_cap and v.repo:
+            held_by_wip_cap[v.repo] = held_by_wip_cap.get(v.repo, 0) + 1
+        if v.verdict in ("fold-into-change", "propose-change") and not (
+            v.verdict == "propose-change" and v.held_by_wip_cap
+        ):
+            pull_requests_opened += 1
+    return {
+        "verdict_counts": counts,
+        "pull_requests_opened": pull_requests_opened,
+        "held_by_wip_cap": held_by_wip_cap,
+    }
+
+
 def write_report(
     verdicts: list[Verdict], skipped: list[Path], out_dir: str | Path
 ) -> Path:
@@ -643,17 +1311,18 @@ def write_report(
 
     Per spec's "Verdict file and human-readable report" requirement: briefs evaluated,
     briefs skipped via dedup, verdict counts by type, and the full per-brief verdict list
-    with evidence. Counts are computed directly from `verdicts` so they can never drift
-    from `write_verdict_file()`'s JSON contents for the same run, per the spec scenario that
-    the report's verdict counts must match the JSON file's contents exactly.
+    with evidence. Counts are computed directly from `verdicts` (via `compute_run_summary()`)
+    so they can never drift from `write_verdict_file()`'s JSON contents for the same run, per
+    the spec scenario that the report's verdict counts must match the JSON file's contents
+    exactly -- 2.4 extends this to the four new verdict types (zero-filled the same as every
+    other type) plus `pull_requests_opened` and per-repo `held_by_wip_cap` counts.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / "report.md"
 
-    counts: dict[str, int] = {}
-    for v in verdicts:
-        counts[v.verdict] = counts.get(v.verdict, 0) + 1
+    summary = compute_run_summary(verdicts)
+    counts = summary["verdict_counts"]
 
     lines: list[str] = [
         "# Queue triage report",
@@ -670,6 +1339,21 @@ def write_report(
     lines += ["", "## Skipped via dedup", ""]
     if skipped:
         lines += [f"- {Path(p).stem}" for p in skipped]
+    else:
+        lines.append("(none)")
+
+    lines += [
+        "",
+        "## Pull requests opened",
+        "",
+        f"- pull_requests_opened: {summary['pull_requests_opened']}",
+        "",
+        "## Held by WIP cap (per repo)",
+        "",
+    ]
+    if summary["held_by_wip_cap"]:
+        for repo in sorted(summary["held_by_wip_cap"]):
+            lines.append(f"- {repo}: {summary['held_by_wip_cap'][repo]}")
     else:
         lines.append("(none)")
 
@@ -740,14 +1424,18 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
     for repo, briefs in groups.items():
         cwd = repo if repo != NO_REPO_KEY else _worktrail_repo_root()
         for result in evaluate_group(repo, briefs, agent=args.agent, cwd=cwd):
-            verdicts.extend(parse_verdicts(result["raw_text"], result["brief_ids"]))
+            group_verdicts = parse_verdicts(
+                result["raw_text"],
+                result["brief_ids"],
+                candidates_by_brief=result["candidates_by_brief"],
+            )
+            verdicts.extend(apply_wip_cap_preview(repo, group_verdicts))
 
     verdict_path = write_verdict_file(verdicts, out_dir)
     report_path = write_report(verdicts, skipped, out_dir)
 
-    counts: dict[str, int] = {}
-    for v in verdicts:
-        counts[v.verdict] = counts.get(v.verdict, 0) + 1
+    summary = compute_run_summary(verdicts)
+    counts = summary["verdict_counts"]
 
     if args.as_json:
         print(
@@ -756,6 +1444,8 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
                     "groups_evaluated": len(groups),
                     "briefs_skipped": len(skipped),
                     "verdict_counts": counts,
+                    "pull_requests_opened": summary["pull_requests_opened"],
+                    "held_by_wip_cap": summary["held_by_wip_cap"],
                     "verdict_file": str(verdict_path),
                     "report_file": str(report_path),
                 },
@@ -770,6 +1460,10 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         print(
             f"groups evaluated: {len(groups)}, briefs skipped: {len(skipped)}, "
             f"verdicts: {counts_str}"
+        )
+        print(
+            f"pull requests opened: {summary['pull_requests_opened']}, "
+            f"held by WIP cap: {summary['held_by_wip_cap']}"
         )
     return 0
 
@@ -803,8 +1497,12 @@ def cmd_apply(args: argparse.Namespace) -> int:
         planned = sum(1 for e in action_log if e["status"] == "planned")
         errors = sum(1 for e in action_log if e["status"] == "error")
         noop = sum(1 for e in action_log if e["status"] == "noop")
+        not_yet_implemented = sum(
+            1 for e in action_log if e["status"] == "not-yet-implemented"
+        )
         print(
-            f"executed: {executed}, planned: {planned}, errors: {errors}, noop: {noop}"
+            f"executed: {executed}, planned: {planned}, errors: {errors}, "
+            f"noop: {noop}, not-yet-implemented: {not_yet_implemented}"
         )
     return 1 if any(e["status"] == "error" for e in action_log) else 0
 

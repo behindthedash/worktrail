@@ -209,7 +209,9 @@ class TestList(QueueTestBase):
         seeded-from and so classifies as intake, not execution."""
         p = self.queue / "20260101-000000-batch.md"
         p.write_text(
-            _consolidated_brief("batch work", ["member-a", "member-b"], status="queued"),
+            _consolidated_brief(
+                "batch work", ["member-a", "member-b"], status="queued"
+            ),
             encoding="utf-8",
         )
         briefs = q.list_queue()["briefs"]

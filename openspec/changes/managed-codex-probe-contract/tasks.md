@@ -1,51 +1,51 @@
 ## 1. Probe module skeleton
 
-- [ ] 1.1 Create the probe module under `src/worktrail/orchestrator/` (e.g.
+- [x] 1.1 Create the probe module under `src/worktrail/orchestrator/` (e.g.
       `codex_probe.py`) with a `StageOutcome` enum/literal covering exactly
       `environment_preparation`, `startup`, `provider_selection`,
       `authentication`, `timeout`, `report_back`, and a structured report
       dataclass/NamedTuple with fields for stage, success, diagnostic
       message, and the non-sensitive signals from design.md (codex_home,
       automatic_home, provider identity, auth usable).
-- [ ] 1.2 Define the fixed no-op probe prompt and expected sentinel reply as
+- [x] 1.2 Define the fixed no-op probe prompt and expected sentinel reply as
       module-level constants (mirroring `check_agent_contract.CONTRACT_PROMPT`
       / `EXPECTED_REPLY`).
 
 ## 2. Environment preparation and spawn (path parity)
 
-- [ ] 2.1 Implement the launcher's environment-preparation step by calling
+- [x] 2.1 Implement the launcher's environment-preparation step by calling
       `router.skill_dispatch.prepare_codex_child_environment` directly
       (no probe-local reimplementation); on `OSError` classify as
       `environment_preparation` failure with the raised message as the
       diagnostic (already safe: `codex_home_write_remediation` never embeds
       credential content). (Requirement: Explicit read-only parent
       CODEX_HOME is honored, never silently reused)
-- [ ] 2.2 Implement command building via `orchestrator.spawnlib.build_cmd`
+- [x] 2.2 Implement command building via `orchestrator.spawnlib.build_cmd`
       with a `codex` `Cell`, using an isolated per-run scratch directory
       (create under `tempfile.mkdtemp`) as `cwd` — never the invoking
       repository's working tree. (Requirement: Probe enters the direct
       orchestrator Codex spawn path)
-- [ ] 2.3 Run the built command with `subprocess.run(..., timeout=<bound>,
+- [x] 2.3 Run the built command with `subprocess.run(..., timeout=<bound>,
       capture_output=True, text=True)`; propagate `subprocess.TimeoutExpired`
       into a `timeout` stage outcome instead of letting it raise to the
       caller. (Requirement: Probe execution is wall-clock bounded)
 
 ## 3. No-op scope enforcement
 
-- [ ] 3.1 Before spawning, snapshot the scratch directory's file listing and
+- [x] 3.1 Before spawning, snapshot the scratch directory's file listing and
       capture `git status --porcelain` output from the directory the probe
       was invoked from (the maintainer's repository working tree, not the
       scratch dir).
-- [ ] 3.2 After the run (success or failure), re-check both snapshots; if
+- [x] 3.2 After the run (success or failure), re-check both snapshots; if
       either changed, override the outcome to a failure with a diagnostic
       naming which root mutated, even if the nested process otherwise
       reported success. (Requirement: Probe performs no repository work)
 
 ## 4. Redaction and stage classification
 
-- [ ] 4.1 Derive `startup` from `spawnlib.is_infra_failure(returncode,
+- [x] 4.1 Derive `startup` from `spawnlib.is_infra_failure(returncode,
       stdout)` — never store raw stdout/stderr on the report object.
-- [ ] 4.2 Derive `provider_selection` from a targeted, non-secret signal
+- [x] 4.2 Derive `provider_selection` from a targeted, non-secret signal
       returned by the nested process (e.g. exit-code/known-marker check
       appropriate to `codex exec --json`'s documented output) — extract only
       the provider/model identity field, not the full JSON event stream.
@@ -76,15 +76,15 @@
 
 ## 6. Tests
 
-- [ ] 6.1 Test that the probe's environment-preparation and command-building
+- [x] 6.1 Test that the probe's environment-preparation and command-building
       steps call `skill_dispatch.prepare_codex_child_environment` and
       `spawnlib.build_cmd` respectively (path-parity assertion), using
       mocking/monkeypatching consistent with existing `spawnlib`/
       `skill_dispatch` test patterns in `tests/`.
-- [ ] 6.2 Test that a read-only parent `CODEX_HOME` fixture resolves to a
+- [x] 6.2 Test that a read-only parent `CODEX_HOME` fixture resolves to a
       writable, different child home, and that an unwritable-everywhere
       fixture produces an `environment_preparation` failure.
-- [ ] 6.3 Test no-op scope enforcement: assert a successful run leaves a
+- [x] 6.3 Test no-op scope enforcement: assert a successful run leaves a
       fixture repository's `git status --porcelain` unchanged, and assert
       that a simulated out-of-scope mutation is reported as a failure.
 - [ ] 6.4 Test timeout behavior: a subprocess mock that raises

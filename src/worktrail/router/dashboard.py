@@ -2111,7 +2111,11 @@ def auto_pick_brief(
     Ranking is FIFO oldest-first by the YYYYMMDD-HHMMSS filename prefix
     (lexicographic == chronological) — the feature exists to drain backlog, and
     newest-first would starve old briefs forever under steady inflow. A brief is
-    skipped (recorded with a reason) when its frontmatter doesn't parse (every
+    skipped (recorded with a reason) when it is an untriaged intake brief
+    (`kind: intake` — see work_queue.py's `brief_kind()`; reason
+    `intake-untriaged`, checked ahead of every other gate since an intake
+    brief has no file scope to dispatch against), its frontmatter doesn't
+    parse (every
     other gate reads frontmatter, so a corrupt brief would otherwise rank as
     maximally eligible — see work_queue.py's `_frontmatter_unparsable`), it is
     blocked, not yet due for recheck
@@ -2157,6 +2161,13 @@ def auto_pick_brief(
 
     for b in sorted(queue_briefs, key=_rank_key):
         stem = (b.get("filename") or "").replace(".md", "")
+        if b.get("kind") == "intake":
+            # An intake brief needs triage (queue_triage.py), not the
+            # execution claim path -- unattended auto-pick must never
+            # dispatch a headless implementation session against raw,
+            # untriaged handoff/consolidated intake.
+            skipped.append({"id": stem, "reason": "intake-untriaged"})
+            continue
         if b.get("unparsable"):
             # Every gate below reads frontmatter. When the block doesn't parse
             # they all read as absent, so an unparsable brief would rank as

@@ -19,7 +19,7 @@ jobs:
     name: Postmerge reconciliation audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
 
       - name: Setup Python
         uses: actions/setup-python@v7.0.0

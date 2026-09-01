@@ -7,11 +7,13 @@ Run: python3 -m pytest tests/workqueue/test_queue_triage.py -q
 from __future__ import annotations
 
 import datetime
+import io
 import json
 import os
 import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -242,7 +244,10 @@ class TestParseVerdicts(unittest.TestCase):
         self.assertEqual(v.evidence, raw)
         self.assertIsNone(v.confidence)
 
-    def test_invalid_verdict_type_falls_back_to_keep_with_snippet_retained(self):
+    def test_invalid_verdict_type_falls_back_to_keep_with_own_snippet_retained(self):
+        """The fallback evidence is this brief's own matched snippet, not the
+        surrounding prose or `raw_text` at large -- see
+        `test_multi_brief_fallback_never_bleeds_another_briefs_evidence` for why."""
         snippet = (
             '{"brief_id": "a", "verdict": "not-a-real-verdict", "duplicate_of": null, '
             '"evidence": "some evidence", "confidence": "high"}'
@@ -253,6 +258,30 @@ class TestParseVerdicts(unittest.TestCase):
         v = verdicts[0]
         self.assertEqual(v.verdict, "keep")
         self.assertEqual(v.evidence, snippet)
+
+    def test_multi_brief_fallback_never_bleeds_another_briefs_evidence(self):
+        """A batched evaluator call covers many briefs in one `raw_text`; brief
+        `a`'s malformed JSON must never fall back to evidence that includes
+        brief `b`'s own (valid, unrelated) verdict and evidence."""
+        a_snippet = (
+            '{"brief_id": "a", "verdict": "not-a-real-verdict", "duplicate_of": null, '
+            '"evidence": "some evidence", "confidence": "high"}'
+        )
+        b_snippet = (
+            '{"brief_id": "b", "verdict": "stale-close", "duplicate_of": null, '
+            '"evidence": "brief b private rationale, must not leak into a", '
+            '"confidence": "high"}'
+        )
+        raw = f"{a_snippet}\n{b_snippet}"
+        verdicts = qt.parse_verdicts(raw, ["a", "b"])
+
+        a_verdict = next(v for v in verdicts if v.brief_id == "a")
+        self.assertEqual(a_verdict.verdict, "keep")
+        self.assertEqual(a_verdict.evidence, a_snippet)
+        self.assertNotIn("brief b private rationale", a_verdict.evidence)
+
+        b_verdict = next(v for v in verdicts if v.brief_id == "b")
+        self.assertEqual(b_verdict.verdict, "stale-close")
 
     def test_duplicate_of_without_target_falls_back_to_keep(self):
         snippet = (
@@ -297,6 +326,210 @@ class TestParseVerdicts(unittest.TestCase):
 
     def test_no_expected_brief_ids_yields_no_verdicts(self):
         self.assertEqual(qt.parse_verdicts("{}", []), [])
+
+    def test_well_formed_fold_into_change_verdict_is_parsed_as_is(self):
+        raw = (
+            '{"brief_id": "a", "verdict": "fold-into-change", "duplicate_of": null, '
+            '"target_change": "widget-export-pipeline", '
+            '"evidence": "overlaps open tasks in widget-export-pipeline", '
+            '"confidence": "high"}'
+        )
+        verdicts = qt.parse_verdicts(
+            raw, ["a"], candidates_by_brief={"a": ["widget-export-pipeline"]}
+        )
+
+        v = verdicts[0]
+        self.assertEqual(v.verdict, "fold-into-change")
+        self.assertEqual(v.target_change, "widget-export-pipeline")
+        self.assertEqual(v.evidence, "overlaps open tasks in widget-export-pipeline")
+
+    def test_fold_into_change_target_outside_candidate_list_downgrades_to_keep(self):
+        snippet = (
+            '{"brief_id": "a", "verdict": "fold-into-change", "duplicate_of": null, '
+            '"target_change": "not-a-presented-candidate", '
+            '"evidence": "looks related", "confidence": "medium"}'
+        )
+        raw = f"analysis before verdict\n{snippet}\nanalysis after verdict"
+        verdicts = qt.parse_verdicts(
+            raw, ["a"], candidates_by_brief={"a": ["widget-export-pipeline"]}
+        )
+
+        v = verdicts[0]
+        self.assertEqual(v.verdict, "keep")
+        self.assertIsNone(v.target_change)
+        self.assertEqual(v.evidence, snippet)
+
+    def test_fold_into_change_without_candidates_presented_downgrades_to_keep(self):
+        snippet = (
+            '{"brief_id": "a", "verdict": "fold-into-change", "duplicate_of": null, '
+            '"target_change": "widget-export-pipeline", '
+            '"evidence": "looks related", "confidence": "medium"}'
+        )
+        raw = f"analysis before verdict\n{snippet}\nanalysis after verdict"
+        verdicts = qt.parse_verdicts(raw, ["a"])
+
+        v = verdicts[0]
+        self.assertEqual(v.verdict, "keep")
+        self.assertEqual(v.evidence, snippet)
+
+    def test_fold_into_change_missing_target_downgrades_to_keep(self):
+        snippet = (
+            '{"brief_id": "a", "verdict": "fold-into-change", "duplicate_of": null, '
+            '"evidence": "looks related", "confidence": "medium"}'
+        )
+        raw = f"analysis before verdict\n{snippet}\nanalysis after verdict"
+        verdicts = qt.parse_verdicts(
+            raw, ["a"], candidates_by_brief={"a": ["widget-export-pipeline"]}
+        )
+
+        v = verdicts[0]
+        self.assertEqual(v.verdict, "keep")
+        self.assertEqual(v.evidence, snippet)
+
+    def test_well_formed_propose_change_verdict_is_parsed_as_is(self):
+        raw = (
+            '{"brief_id": "a", "verdict": "propose-change", "duplicate_of": null, '
+            '"target_repo": "behindthedash/worktrail", '
+            '"proposed_change_name": "add-widget-export", '
+            '"evidence": "no existing change covers this", "confidence": "high"}'
+        )
+        verdicts = qt.parse_verdicts(raw, ["a"])
+
+        v = verdicts[0]
+        self.assertEqual(v.verdict, "propose-change")
+        self.assertEqual(v.target_repo, "behindthedash/worktrail")
+        self.assertEqual(v.proposed_change_name, "add-widget-export")
+
+    def test_propose_change_missing_target_repo_downgrades_to_keep(self):
+        snippet = (
+            '{"brief_id": "a", "verdict": "propose-change", "duplicate_of": null, '
+            '"proposed_change_name": "add-widget-export", '
+            '"evidence": "no existing change covers this", "confidence": "high"}'
+        )
+        raw = f"analysis before verdict\n{snippet}\nanalysis after verdict"
+        verdicts = qt.parse_verdicts(raw, ["a"])
+
+        v = verdicts[0]
+        self.assertEqual(v.verdict, "keep")
+        self.assertEqual(v.evidence, snippet)
+
+    def test_propose_change_non_kebab_case_name_downgrades_to_keep(self):
+        snippet = (
+            '{"brief_id": "a", "verdict": "propose-change", "duplicate_of": null, '
+            '"target_repo": "behindthedash/worktrail", '
+            '"proposed_change_name": "Add_Widget Export!", '
+            '"evidence": "no existing change covers this", "confidence": "high"}'
+        )
+        raw = f"analysis before verdict\n{snippet}\nanalysis after verdict"
+        verdicts = qt.parse_verdicts(raw, ["a"])
+
+        v = verdicts[0]
+        self.assertEqual(v.verdict, "keep")
+        self.assertEqual(v.evidence, snippet)
+
+    def test_propose_change_missing_proposed_change_name_downgrades_to_keep(self):
+        snippet = (
+            '{"brief_id": "a", "verdict": "propose-change", "duplicate_of": null, '
+            '"target_repo": "behindthedash/worktrail", '
+            '"evidence": "no existing change covers this", "confidence": "high"}'
+        )
+        raw = f"analysis before verdict\n{snippet}\nanalysis after verdict"
+        verdicts = qt.parse_verdicts(raw, ["a"])
+
+        v = verdicts[0]
+        self.assertEqual(v.verdict, "keep")
+        self.assertEqual(v.evidence, snippet)
+
+    def test_propose_change_blank_target_repo_downgrades_to_keep(self):
+        snippet = (
+            '{"brief_id": "a", "verdict": "propose-change", "duplicate_of": null, '
+            '"target_repo": "   ", '
+            '"proposed_change_name": "add-widget-export", '
+            '"evidence": "no existing change covers this", "confidence": "high"}'
+        )
+        raw = f"analysis before verdict\n{snippet}\nanalysis after verdict"
+        verdicts = qt.parse_verdicts(raw, ["a"])
+
+        v = verdicts[0]
+        self.assertEqual(v.verdict, "keep")
+        self.assertEqual(v.evidence, snippet)
+
+    def test_propose_change_trailing_newline_name_downgrades_to_keep(self):
+        snippet = (
+            '{"brief_id": "a", "verdict": "propose-change", "duplicate_of": null, '
+            '"target_repo": "behindthedash/worktrail", '
+            '"proposed_change_name": "valid-name\\n", '
+            '"evidence": "no existing change covers this", "confidence": "high"}'
+        )
+        raw = f"analysis before verdict\n{snippet}\nanalysis after verdict"
+        verdicts = qt.parse_verdicts(raw, ["a"])
+
+        v = verdicts[0]
+        self.assertEqual(v.verdict, "keep")
+        self.assertEqual(v.evidence, snippet)
+
+    def test_fold_into_change_blank_target_downgrades_to_keep(self):
+        snippet = (
+            '{"brief_id": "a", "verdict": "fold-into-change", "duplicate_of": null, '
+            '"target_change": "   ", '
+            '"evidence": "looks related", "confidence": "medium"}'
+        )
+        raw = f"analysis before verdict\n{snippet}\nanalysis after verdict"
+        verdicts = qt.parse_verdicts(
+            raw, ["a"], candidates_by_brief={"a": ["widget-export-pipeline"]}
+        )
+
+        v = verdicts[0]
+        self.assertEqual(v.verdict, "keep")
+        self.assertEqual(v.evidence, snippet)
+
+    def test_needs_decision_blank_question_downgrades_to_keep(self):
+        snippet = (
+            '{"brief_id": "a", "verdict": "needs-decision", "duplicate_of": null, '
+            '"question": "   ", '
+            '"evidence": "no clear owning repo", "confidence": "low"}'
+        )
+        raw = f"analysis before verdict\n{snippet}\nanalysis after verdict"
+        verdicts = qt.parse_verdicts(raw, ["a"])
+
+        v = verdicts[0]
+        self.assertEqual(v.verdict, "keep")
+        self.assertEqual(v.evidence, snippet)
+
+    def test_well_formed_work_directly_verdict_is_parsed_as_is(self):
+        raw = (
+            '{"brief_id": "a", "verdict": "work-directly", "duplicate_of": null, '
+            '"evidence": "reproduces via pytest tests/foo -k bar", "confidence": "high"}'
+        )
+        verdicts = qt.parse_verdicts(raw, ["a"])
+
+        v = verdicts[0]
+        self.assertEqual(v.verdict, "work-directly")
+        self.assertEqual(v.evidence, "reproduces via pytest tests/foo -k bar")
+
+    def test_well_formed_needs_decision_verdict_is_parsed_as_is(self):
+        raw = (
+            '{"brief_id": "a", "verdict": "needs-decision", "duplicate_of": null, '
+            '"question": "should this fold into repo X or stay standalone?", '
+            '"evidence": "no clear owning repo", "confidence": "low"}'
+        )
+        verdicts = qt.parse_verdicts(raw, ["a"])
+
+        v = verdicts[0]
+        self.assertEqual(v.verdict, "needs-decision")
+        self.assertEqual(v.question, "should this fold into repo X or stay standalone?")
+
+    def test_needs_decision_missing_question_downgrades_to_keep(self):
+        snippet = (
+            '{"brief_id": "a", "verdict": "needs-decision", "duplicate_of": null, '
+            '"evidence": "no clear owning repo", "confidence": "low"}'
+        )
+        raw = f"analysis before verdict\n{snippet}\nanalysis after verdict"
+        verdicts = qt.parse_verdicts(raw, ["a"])
+
+        v = verdicts[0]
+        self.assertEqual(v.verdict, "keep")
+        self.assertEqual(v.evidence, snippet)
 
     def test_second_candidate_used_when_first_is_malformed(self):
         good = (
@@ -349,6 +582,7 @@ class TestEvaluateGroupArchivedShortCircuit(QueueTriageTestBase):
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["repo"], repo)
         self.assertEqual(result[0]["brief_ids"], ["a", "b"])
+        self.assertEqual(result[0]["candidates_by_brief"], {"a": [], "b": []})
 
         verdicts = qt.parse_verdicts(result[0]["raw_text"], ["a", "b"])
         self.assertEqual([v.brief_id for v in verdicts], ["a", "b"])
@@ -412,6 +646,133 @@ class TestEvaluateGroupArchivedShortCircuit(QueueTriageTestBase):
         mock_run.assert_called_once()
         mock_spawn.assert_called_once()
         self.assertEqual(result[0]["raw_text"], evaluator_text)
+
+
+class TestEvaluatorPromptTemplate(unittest.TestCase):
+    """2.3: the evaluator prompt states the fold/propose candidate-target rule,
+    the `work-directly` reproduction-evidence rule, and the `needs-decision`
+    rule for `repo: null` groups, and its output schema covers all eight
+    verdict types plus their target fields.
+    """
+
+    def test_prompt_states_fold_target_must_be_a_presented_candidate(self):
+        self.assertIn(
+            "may only name `target_change` as one of *that brief's own* "
+            "listed candidate ids",
+            qt.EVALUATOR_PROMPT_TEMPLATE,
+        )
+
+    def test_prompt_states_work_directly_reproduction_evidence_rule(self):
+        self.assertIn(
+            "Use `work-directly` only when your evidence cites a specific "
+            "test, check, or command",
+            qt.EVALUATOR_PROMPT_TEMPLATE,
+        )
+        self.assertIn(
+            "apply will downgrade a `work-directly` verdict lacking one to `keep`",
+            qt.EVALUATOR_PROMPT_TEMPLATE,
+        )
+
+    def test_prompt_states_needs_decision_rule_for_no_repo_groups(self):
+        self.assertIn(
+            "If `{repo}` is `{no_repo_key}` (no target repo), "
+            "`fold-into-change` and `propose-change` are never valid",
+            qt.EVALUATOR_PROMPT_TEMPLATE,
+        )
+        self.assertIn("use `needs-decision`", qt.EVALUATOR_PROMPT_TEMPLATE)
+
+    def test_prompt_output_schema_covers_all_verdict_types_and_target_fields(self):
+        for verdict_type in qt.VALID_VERDICT_TYPES:
+            self.assertIn(verdict_type, qt.EVALUATOR_PROMPT_TEMPLATE)
+        for field in (
+            "target_change",
+            "target_repo",
+            "proposed_change_name",
+            "question",
+        ):
+            self.assertIn(field, qt.EVALUATOR_PROMPT_TEMPLATE)
+
+
+class TestFormatCandidates(unittest.TestCase):
+    def test_empty_list_renders_none(self):
+        self.assertEqual(qt._format_candidates([]), "(none)")
+
+    def test_candidates_render_id_score_open_task_count_and_feature_summary(self):
+        rendered = qt._format_candidates(
+            [
+                {
+                    "id": "widget-export-pipeline",
+                    "score": 0.625,
+                    "open_task_count": 2,
+                    "feature_summary": "widget export pipeline serializer",
+                }
+            ]
+        )
+        self.assertEqual(
+            rendered,
+            "widget-export-pipeline (score 0.62, 2 open tasks): "
+            "widget export pipeline serializer",
+        )
+
+
+class TestEvaluateGroupCandidateContext(QueueTriageTestBase):
+    """2.3: `evaluate_group()` ranks each brief's fold candidates via 2.1's
+    `rank_change_candidates()`, embeds them in the prompt sent to the
+    evaluator, and returns them alongside the raw text for `parse_verdicts()`.
+    """
+
+    def _make_change(self, repo_root: Path, change_id: str, *, why: str) -> None:
+        change_dir = repo_root / "openspec" / "changes" / change_id
+        change_dir.mkdir(parents=True, exist_ok=True)
+        (change_dir / "proposal.md").write_text(
+            f"# {change_id}\n\n## Why\n{why}\n", encoding="utf-8"
+        )
+        (change_dir / "tasks.md").write_text(
+            f"## 1. Tasks\n\n- [ ] 1.1 {why}\n", encoding="utf-8"
+        )
+
+    def test_ranked_candidates_appear_in_prompt_and_result(self):
+        from worktrail.orchestrator.spawnlib import SpawnResult
+
+        repo_root = self.base / "repo"
+        self._make_change(
+            repo_root,
+            "widget-export-pipeline",
+            why="widget export pipeline serializer downstream reporting",
+        )
+        brief_path = self.write(
+            "a.md",
+            repo=str(repo_root),
+            body="## Focus\n\nwidget export pipeline serializer downstream reporting\n",
+        )
+
+        with mock.patch(
+            "worktrail.orchestrator.spawnlib.spawn_agent",
+            return_value=SpawnResult(text="", usage={}),
+        ) as mock_spawn:
+            result = qt.evaluate_group(str(repo_root), [brief_path], cwd=repo_root)
+
+        self.assertEqual(
+            result[0]["candidates_by_brief"], {"a": ["widget-export-pipeline"]}
+        )
+        prompt_sent = mock_spawn.call_args.args[0]
+        self.assertIn("widget-export-pipeline", prompt_sent)
+        self.assertIn(
+            "widget export pipeline serializer downstream reporting", prompt_sent
+        )
+
+    def test_no_repo_group_ranks_no_candidates_for_any_brief(self):
+        from worktrail.orchestrator.spawnlib import SpawnResult
+
+        brief_path = self.write("a.md", body="## Focus\n\nanything at all\n")
+
+        with mock.patch(
+            "worktrail.orchestrator.spawnlib.spawn_agent",
+            return_value=SpawnResult(text="", usage={}),
+        ):
+            result = qt.evaluate_group(qt.NO_REPO_KEY, [brief_path], cwd=self.base)
+
+        self.assertEqual(result[0]["candidates_by_brief"], {"a": []})
 
 
 class TestApplyVerdicts(QueueTriageTestBase):
@@ -528,6 +889,519 @@ class TestApplyVerdicts(QueueTriageTestBase):
             self.assertEqual(log[0]["status"], "noop")
             self.assertEqual(log[0]["action"], "noop")
             self.assertTrue((self.queue / "a.md").exists())
+
+    def test_not_yet_implemented_verdicts_are_never_misapplied_as_needs_update(self):
+        """2.2 makes fold-into-change/propose-change parseable ahead of
+        3.1/3.2 implementing their own apply actions -- until then
+        `apply_verdicts()` must not fall through to `needs-update`'s
+        append-triage-note action for them, regardless of `--confirm`.
+        (`work-directly`, 3.3, and `needs-decision`, 3.4, have their own
+        apply actions -- see `TestApplyWorkDirectly` and
+        `TestApplyNeedsDecision`.)
+        """
+        a_path = self.write("a.md", body="## Focus\n\nsome brief\n")
+        a_before = a_path.read_text(encoding="utf-8")
+        verdicts = [
+            qt.Verdict(
+                brief_id="a",
+                verdict=vtype,
+                duplicate_of=None,
+                evidence="not-yet-implemented apply path",
+                confidence="high",
+            )
+            for vtype in (
+                "fold-into-change",
+                "propose-change",
+            )
+        ]
+
+        for confirm in (False, True):
+            log = qt.apply_verdicts(verdicts, confirm=confirm)
+            self.assertEqual(len(log), 2)
+            for entry, verdict in zip(log, verdicts):
+                self.assertEqual(entry["verdict"], verdict.verdict)
+                self.assertEqual(entry["status"], "not-yet-implemented")
+                self.assertEqual(entry["action"], "noop")
+                self.assertIsNone(entry["path"])
+                self.assertIsNone(entry["error"])
+
+        # never mutated, unlike a real needs-update apply
+        self.assertEqual(a_path.read_text(encoding="utf-8"), a_before)
+        self.assertTrue((self.queue / "a.md").exists())
+
+
+class TestApplyWorkDirectly(QueueTriageTestBase):
+    """3.3's `work-directly` apply action: stamp `seeded-from`/`recommended-route`
+    in place when the evidence cites a reproduction reference, downgrade to a
+    no-op `keep` when it doesn't.
+    """
+
+    def test_confirm_true_stamps_frontmatter_when_evidence_has_repro_reference(self):
+        path = self.write("a.md", body="## Focus\n\nsome brief\n")
+        verdicts = [
+            qt.Verdict(
+                brief_id="a",
+                verdict="work-directly",
+                duplicate_of=None,
+                evidence="reproduces via pytest tests/foo.py -k bar",
+                confidence="high",
+            )
+        ]
+
+        log = qt.apply_verdicts(verdicts, confirm=True)
+
+        entry = log[0]
+        self.assertEqual(entry["brief_id"], "a")
+        self.assertEqual(entry["action"], "stamp-frontmatter")
+        self.assertEqual(entry["status"], "executed")
+        self.assertTrue(entry["confirm"])
+        self.assertIsNone(entry["error"])
+        self.assertEqual(entry["path"], str(path))
+
+        # brief is left in place, in queue/ -- unlike stale-close, work-directly
+        # never claims or closes it
+        self.assertTrue(path.exists())
+        self.assertTrue((self.queue / "a.md").exists())
+
+        fm = qt.read_frontmatter(path)
+        run_date = datetime.date.today().isoformat()  # noqa: DTZ011
+        self.assertEqual(fm["seeded-from"], f"triage:{run_date}:direct")
+        self.assertEqual(fm["recommended-route"], "F")
+        # focus and other original frontmatter fields survive the stamp
+        self.assertEqual(fm["focus"], "a.md")
+        self.assertEqual(fm["status"], "queued")
+
+    def test_confirm_true_downgrades_to_keep_when_evidence_lacks_repro_reference(self):
+        path = self.write("a.md", body="## Focus\n\nsome brief\n")
+        before = path.read_text(encoding="utf-8")
+        verdicts = [
+            qt.Verdict(
+                brief_id="a",
+                verdict="work-directly",
+                duplicate_of=None,
+                evidence="this brief describes a real, actionable problem",
+                confidence="high",
+            )
+        ]
+
+        log = qt.apply_verdicts(verdicts, confirm=True)
+
+        entry = log[0]
+        self.assertEqual(entry["brief_id"], "a")
+        self.assertEqual(entry["verdict"], "work-directly")
+        self.assertEqual(entry["action"], "noop")
+        self.assertEqual(entry["status"], "downgraded-to-keep")
+        self.assertIsNone(entry["path"])
+        self.assertIsNone(entry["error"])
+
+        # never mutated -- downgraded to a no-op, not stamped
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+        fm = qt.read_frontmatter(path)
+        self.assertNotIn("seeded-from", fm)
+        self.assertNotIn("recommended-route", fm)
+
+    def test_confirm_false_is_a_pure_dry_run_when_evidence_has_repro_reference(self):
+        path = self.write("a.md", body="## Focus\n\nsome brief\n")
+        before = path.read_text(encoding="utf-8")
+        verdicts = [
+            qt.Verdict(
+                brief_id="a",
+                verdict="work-directly",
+                duplicate_of=None,
+                evidence="reproduces via pytest tests/foo.py -k bar",
+                confidence="high",
+            )
+        ]
+
+        log = qt.apply_verdicts(verdicts, confirm=False)
+
+        entry = log[0]
+        self.assertEqual(entry["action"], "stamp-frontmatter")
+        self.assertEqual(entry["status"], "planned")
+        self.assertFalse(entry["confirm"])
+        self.assertIsNone(entry["path"])
+        self.assertIsNone(entry["error"])
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+
+    def test_confirm_false_previews_downgrade_to_keep_when_evidence_lacks_repro_reference(
+        self,
+    ):
+        path = self.write("a.md", body="## Focus\n\nsome brief\n")
+        before = path.read_text(encoding="utf-8")
+        verdicts = [
+            qt.Verdict(
+                brief_id="a",
+                verdict="work-directly",
+                duplicate_of=None,
+                evidence="this brief describes a real, actionable problem",
+                confidence="high",
+            )
+        ]
+
+        log = qt.apply_verdicts(verdicts, confirm=False)
+
+        # the preview must agree with what confirm=True will actually do --
+        # it must not advertise a stamp that the real run will downgrade
+        entry = log[0]
+        self.assertEqual(entry["action"], "noop")
+        self.assertEqual(entry["status"], "planned-downgrade-to-keep")
+        self.assertFalse(entry["confirm"])
+        self.assertIsNone(entry["path"])
+        self.assertIsNone(entry["error"])
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+
+    def test_evidence_naming_check_or_command_without_citing_one_is_rejected(self):
+        path = self.write("a.md", body="## Focus\n\nsome brief\n")
+        before = path.read_text(encoding="utf-8")
+        verdicts = [
+            qt.Verdict(
+                brief_id="a",
+                verdict="work-directly",
+                duplicate_of=None,
+                evidence=(
+                    "I could not find a test or check that reproduces this, "
+                    "but the brief looks actionable"
+                ),
+                confidence="high",
+            ),
+            qt.Verdict(
+                brief_id="a",
+                verdict="work-directly",
+                duplicate_of=None,
+                evidence="no command needed, it is obvious",
+                confidence="high",
+            ),
+        ]
+
+        log = qt.apply_verdicts(verdicts, confirm=True)
+
+        for entry in log:
+            self.assertEqual(entry["action"], "noop")
+            self.assertEqual(entry["status"], "downgraded-to-keep")
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+
+    def test_evidence_with_backtick_quoted_non_command_span_is_rejected(self):
+        """A backtick-quoted file path or brief id is not, on its own,
+        evidence of a reproduction reference -- the span must actually name a
+        test/check/command tool or verb (`pytest`, `make lint`, etc.), not just
+        appear inside backticks."""
+        path = self.write("a.md", body="## Focus\n\nsome brief\n")
+        before = path.read_text(encoding="utf-8")
+        verdicts = [
+            qt.Verdict(
+                brief_id="a",
+                verdict="work-directly",
+                duplicate_of=None,
+                evidence="confirmed by reading `src/worktrail/orchestrator/live.py`",
+                confidence="high",
+            ),
+            qt.Verdict(
+                brief_id="a",
+                verdict="work-directly",
+                duplicate_of=None,
+                evidence="see brief `20260901-000000-some-other-brief` for context",
+                confidence="high",
+            ),
+        ]
+
+        log = qt.apply_verdicts(verdicts, confirm=True)
+
+        for entry in log:
+            self.assertEqual(entry["action"], "noop")
+            self.assertEqual(entry["status"], "downgraded-to-keep")
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+
+    def test_malformed_frontmatter_block_is_not_clobbered(self):
+        # A tab-indented value inside the fence makes the block a
+        # yaml.YAMLError -- split_frontmatter degrades that leniently to {}
+        # for display, but the stamp must never re-serialize that {} back to
+        # disk, since that would silently destroy every other field. The
+        # in-place stamp edits the fenced lines surgically instead, so the
+        # unparsable line (and every other field) survives untouched.
+        path = self.queue / "a.md"
+        path.write_text(
+            "---\n"
+            "id: a\n"
+            "focus: fix thing\n"
+            "status: queued\n"
+            "\tbad: [unclosed\n"
+            "---\n"
+            "## Focus\n\nbody\n",
+            encoding="utf-8",
+        )
+        verdicts = [
+            qt.Verdict(
+                brief_id="a",
+                verdict="work-directly",
+                duplicate_of=None,
+                evidence="reproduces via pytest tests/foo.py -k bar",
+                confidence="high",
+            )
+        ]
+
+        log = qt.apply_verdicts(verdicts, confirm=True)
+
+        entry = log[0]
+        self.assertEqual(entry["action"], "stamp-frontmatter")
+        self.assertEqual(entry["status"], "executed")
+        self.assertIsNone(entry["error"])
+
+        after = path.read_text(encoding="utf-8")
+        # every pre-existing field, including the unparsable line, survives
+        self.assertIn("id: a\n", after)
+        self.assertIn("focus: fix thing\n", after)
+        self.assertIn("status: queued\n", after)
+        self.assertIn("\tbad: [unclosed\n", after)
+        self.assertIn("## Focus\n\nbody\n", after)
+        # the new fields are stamped in
+        run_date = datetime.date.today().isoformat()  # noqa: DTZ011
+        self.assertIn(f"seeded-from: triage:{run_date}:direct\n", after)
+        self.assertIn("recommended-route: F\n", after)
+
+
+class TestApplyNeedsDecision(QueueTriageTestBase):
+    """3.4's `needs-decision` apply action: file a pending decision via
+    `decisions.ask()` (which builds the envelope with
+    `decisions.pending_decision_envelope()`), leaving the brief queued.
+    """
+
+    def test_confirm_true_files_decision_and_leaves_brief_queued(self):
+        path = self.write("a.md", body="## Focus\n\nsome brief\n")
+        verdicts = [
+            qt.Verdict(
+                brief_id="a",
+                verdict="needs-decision",
+                duplicate_of=None,
+                evidence="ambiguous which repo this belongs to",
+                confidence="medium",
+                question="Which repo should this brief target?",
+            )
+        ]
+
+        log = qt.apply_verdicts(verdicts, confirm=True)
+
+        entry = log[0]
+        self.assertEqual(entry["brief_id"], "a")
+        self.assertEqual(entry["verdict"], "needs-decision")
+        self.assertEqual(entry["action"], "file-decision")
+        self.assertEqual(entry["status"], "executed")
+        self.assertTrue(entry["confirm"])
+        self.assertIsNone(entry["error"])
+        self.assertIsNotNone(entry["path"])
+
+        # the brief is never claimed or closed -- it stays in queue/, unlike
+        # stale-close/duplicate-of
+        self.assertTrue(path.exists())
+        self.assertTrue((self.queue / "a.md").exists())
+        fm = qt.read_frontmatter(path)
+        self.assertEqual(fm["awaiting-decision"], entry["decision_id"])
+
+        from worktrail.workqueue import decisions
+
+        found = decisions.find_decision(entry["decision_id"], self.base)
+        self.assertIsNotNone(found)
+        self.assertEqual(found["status"], "open")
+        content = found["path"].read_text(encoding="utf-8")
+        self.assertIn("Which repo should this brief target?", content)
+        self.assertIn("ambiguous which repo this belongs to", content)
+
+    def test_confirm_false_is_a_pure_dry_run(self):
+        path = self.write("a.md", body="## Focus\n\nsome brief\n")
+        before = path.read_text(encoding="utf-8")
+        verdicts = [
+            qt.Verdict(
+                brief_id="a",
+                verdict="needs-decision",
+                duplicate_of=None,
+                evidence="ambiguous which repo this belongs to",
+                confidence="medium",
+                question="Which repo should this brief target?",
+            )
+        ]
+
+        log = qt.apply_verdicts(verdicts, confirm=False)
+
+        entry = log[0]
+        self.assertEqual(entry["action"], "file-decision")
+        self.assertEqual(entry["status"], "planned")
+        self.assertFalse(entry["confirm"])
+        self.assertIsNone(entry["path"])
+        self.assertIsNone(entry["error"])
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+        self.assertFalse((self.base / "decisions").exists())
+
+    def test_rerun_on_same_verdict_converges_on_existing_decision(self):
+        """A re-run of `evaluate` that re-files the same still-open question
+        for the same brief must not create a second decision record --
+        `decision_identity()` is deterministic on (source, repo, subject,
+        question), so the second `apply` converges on the first record.
+        """
+        self.write("a.md", body="## Focus\n\nsome brief\n")
+        verdicts = [
+            qt.Verdict(
+                brief_id="a",
+                verdict="needs-decision",
+                duplicate_of=None,
+                evidence="ambiguous which repo this belongs to",
+                confidence="medium",
+                question="Which repo should this brief target?",
+            )
+        ]
+
+        first = qt.apply_verdicts(verdicts, confirm=True)[0]
+        second = qt.apply_verdicts(verdicts, confirm=True)[0]
+
+        self.assertEqual(first["decision_id"], second["decision_id"])
+        from worktrail.workqueue import decisions
+
+        open_dir = decisions.decisions_dir(self.base) / "open"
+        self.assertEqual(len(list(open_dir.glob("*.md"))), 1)
+
+    def test_missing_question_is_an_error_not_a_crash(self):
+        self.write("a.md", body="## Focus\n\nsome brief\n")
+        verdicts = [
+            qt.Verdict(
+                brief_id="a",
+                verdict="needs-decision",
+                duplicate_of=None,
+                evidence="ambiguous which repo this belongs to",
+                confidence="medium",
+                question=None,
+            )
+        ]
+
+        log = qt.apply_verdicts(verdicts, confirm=True)
+
+        entry = log[0]
+        self.assertEqual(entry["status"], "error")
+        self.assertIsNotNone(entry["error"])
+        self.assertTrue((self.queue / "a.md").exists())
+
+    def test_unstampable_brief_is_an_error_not_executed(self):
+        """If the brief cannot be found under queue/ or picked/ at apply
+        time (deleted, claimed-and-closed, or unwritable between `evaluate`
+        and `apply --confirm`), `ask()` still creates the decision record
+        but reports `brief_stamped=False` -- that must surface as
+        `status="error"`, not `"executed"`, or the skip clause silently does
+        not hold for that brief while the log claims it does.
+        """
+        # note: no `self.write("ghost.md", ...)` -- the brief does not exist
+        verdicts = [
+            qt.Verdict(
+                brief_id="ghost",
+                verdict="needs-decision",
+                duplicate_of=None,
+                evidence="ambiguous which repo this belongs to",
+                confidence="medium",
+                question="Which repo should this brief target?",
+            )
+        ]
+
+        log = qt.apply_verdicts(verdicts, confirm=True)
+
+        entry = log[0]
+        self.assertEqual(entry["status"], "error")
+        self.assertIsNotNone(entry["error"])
+        self.assertIsNotNone(entry["decision_id"])
+
+        from worktrail.workqueue import decisions
+
+        found = decisions.find_decision(entry["decision_id"], self.base)
+        self.assertIsNotNone(found)
+        self.assertEqual(found["status"], "open")
+
+    def test_refile_against_already_resolved_decision_is_not_executed(self):
+        """A re-run of `evaluate` after a human already answered and the
+        decision was consumed (`resolved/`) must not report `"executed"`:
+        `ask()` creates nothing and finds the resolved record, so the log
+        must say so distinctly instead of implying a fresh decision was
+        filed.
+        """
+        self.write("a.md", body="## Focus\n\nsome brief\n")
+        verdicts = [
+            qt.Verdict(
+                brief_id="a",
+                verdict="needs-decision",
+                duplicate_of=None,
+                evidence="ambiguous which repo this belongs to",
+                confidence="medium",
+                question="Which repo should this brief target?",
+            )
+        ]
+
+        first = qt.apply_verdicts(verdicts, confirm=True)[0]
+
+        from worktrail.workqueue import decisions
+
+        decisions.answer(
+            first["decision_id"], "target behindthedash/worktrail", self.base
+        )
+        decisions.consume_answer(first["decision_id"], "test", self.base)
+
+        second = qt.apply_verdicts(verdicts, confirm=True)[0]
+
+        self.assertEqual(second["status"], "already-resolved")
+        self.assertNotEqual(second["status"], "executed")
+        self.assertIsNone(second["error"])
+        self.assertEqual(second["decision_id"], first["decision_id"])
+
+
+class TestEvaluateSkipsUnresolvedDecision(QueueTriageTestBase):
+    """3.4's `inventory()` skip: a brief with an unresolved (open/answered)
+    pending decision must not be re-evaluated by a later `evaluate` run.
+    """
+
+    def test_open_decision_excludes_brief_from_inventory_groups(self):
+        from worktrail.workqueue import decisions
+
+        path = self.write("a.md", repo="behindthedash/worktrail")
+        result = decisions.ask(
+            "Which repo should this brief target?",
+            background="ambiguous",
+            why="cannot infer from the brief alone",
+            context="checked the repo listing, no clear match",
+            options=["Option A", "Option B"],
+            brief="a",
+            queue_base=self.base,
+        )
+        self.assertEqual(result["status"], "created")
+        self.assertTrue(result["brief_stamped"])
+
+        groups, skipped = qt.inventory(within_days=25)
+
+        self.assertEqual(groups, {})
+        self.assertNotIn(path, skipped)
+
+    def test_resolved_decision_does_not_exclude_brief(self):
+        from worktrail.workqueue import decisions
+
+        self.write("a.md", repo="behindthedash/worktrail")
+        result = decisions.ask(
+            "Which repo should this brief target?",
+            background="ambiguous",
+            why="cannot infer from the brief alone",
+            context="checked the repo listing, no clear match",
+            options=["Option A", "Option B"],
+            brief="a",
+            queue_base=self.base,
+        )
+        decisions.answer(result["id"], "Use repo A", queue_base=self.base)
+        decisions.consume_answer(result["id"], queue_base=self.base)
+
+        groups, skipped = qt.inventory(within_days=25)
+
+        self.assertIn("behindthedash/worktrail", groups)
+        self.assertEqual([p.name for p in groups["behindthedash/worktrail"]], ["a.md"])
+        self.assertEqual(skipped, [])
+
+    def test_brief_with_no_awaiting_decision_link_is_unaffected(self):
+        path = self.write("a.md", repo="behindthedash/worktrail")
+
+        groups, skipped = qt.inventory(within_days=25)
+
+        self.assertIn("behindthedash/worktrail", groups)
+        self.assertEqual(groups["behindthedash/worktrail"], [path])
+        self.assertEqual(skipped, [])
 
 
 class TestResolveDuplicateTargets(unittest.TestCase):
@@ -723,6 +1597,37 @@ class TestReportAndVerdictFileOutput(QueueTriageTestBase):
                 evidence="the evaluator rambled and never emitted any JSON at all",
                 confidence=None,
             ),
+            qt.Verdict(
+                brief_id="repo-a-3",
+                verdict="fold-into-change",
+                duplicate_of=None,
+                evidence="overlaps an active change",
+                confidence="high",
+                target_change="intake-to-spec-triage",
+            ),
+            qt.Verdict(
+                brief_id="repo-a-4",
+                verdict="propose-change",
+                duplicate_of=None,
+                evidence="no existing change covers this",
+                confidence="medium",
+                proposed_change_name="new-thing",
+            ),
+            qt.Verdict(
+                brief_id="repo-b-3",
+                verdict="work-directly",
+                duplicate_of=None,
+                evidence="trivial enough to just do",
+                confidence="high",
+            ),
+            qt.Verdict(
+                brief_id="repo-b-4",
+                verdict="needs-decision",
+                duplicate_of=None,
+                evidence="ambiguous ownership",
+                confidence="low",
+                question="who owns this repo?",
+            ),
         ]
 
     def test_report_verdict_counts_match_json_file_exactly(self):
@@ -748,13 +1653,36 @@ class TestReportAndVerdictFileOutput(QueueTriageTestBase):
         # that constant can't cancel out on both sides of the comparison.
         expected_counts = {
             vtype: json_counts.get(vtype, 0)
-            for vtype in ("keep", "stale-close", "needs-update", "duplicate-of")
+            for vtype in (
+                "keep",
+                "stale-close",
+                "needs-update",
+                "duplicate-of",
+                "fold-into-change",
+                "propose-change",
+                "work-directly",
+                "needs-decision",
+            )
         }
         self.assertEqual(report_counts, expected_counts)
 
         # and the JSON file itself carries no verdict type absent from the report
         for vtype in json_counts:
             self.assertIn(vtype, report_counts)
+
+        # the four verdict types 2.4 added (M3): pin each to a non-zero count
+        # tied to the JSON file, not just to 0, so a mis-rendered count line
+        # for one of these types would fail this test.
+        self.assertEqual(
+            report_counts["fold-into-change"], json_counts["fold-into-change"]
+        )
+        self.assertEqual(report_counts["fold-into-change"], 1)
+        self.assertEqual(report_counts["propose-change"], json_counts["propose-change"])
+        self.assertEqual(report_counts["propose-change"], 1)
+        self.assertEqual(report_counts["work-directly"], json_counts["work-directly"])
+        self.assertEqual(report_counts["work-directly"], 1)
+        self.assertEqual(report_counts["needs-decision"], json_counts["needs-decision"])
+        self.assertEqual(report_counts["needs-decision"], 1)
 
         self.assertEqual(len(json_verdicts), len(verdicts))
         self.assertIn(f"Briefs evaluated: {len(verdicts)}", report_text)
@@ -845,7 +1773,14 @@ class TestReportAndVerdictFileOutput(QueueTriageTestBase):
                         "the evaluator rambled and never emitted valid JSON for the second brief",
                     ]
                 )
-            return [{"repo": repo, "brief_ids": ids, "raw_text": raw}]
+            return [
+                {
+                    "repo": repo,
+                    "brief_ids": ids,
+                    "raw_text": raw,
+                    "candidates_by_brief": {bid: [] for bid in ids},
+                }
+            ]
 
         out_dir = self.base / "out-run"
         with mock.patch(
@@ -875,12 +1810,25 @@ class TestReportAndVerdictFileOutput(QueueTriageTestBase):
             "stale-close": 0,
             "needs-update": 0,
             "duplicate-of": 0,
+            "fold-into-change": 0,
+            "propose-change": 0,
+            "work-directly": 0,
+            "needs-decision": 0,
         }
         expected_counts.update(json_counts)
         self.assertEqual(report_counts, expected_counts)
         self.assertEqual(
             report_counts,
-            {"keep": 2, "stale-close": 2, "needs-update": 1, "duplicate-of": 1},
+            {
+                "keep": 2,
+                "stale-close": 2,
+                "needs-update": 1,
+                "duplicate-of": 1,
+                "fold-into-change": 0,
+                "propose-change": 0,
+                "work-directly": 0,
+                "needs-decision": 0,
+            },
         )
 
         self.assertEqual(len(json_verdicts), 6)
@@ -923,6 +1871,297 @@ class TestReportAndVerdictFileOutput(QueueTriageTestBase):
                 self.assertIn(entry["duplicate_of"], report_text)
             if entry["confidence"] is not None:
                 self.assertIn(entry["confidence"], report_text)
+
+
+class TestWipCapPreviewAndCounts(QueueTriageTestBase):
+    """2.4: `apply_wip_cap_preview()`'s `repo`/`held_by_wip_cap` stamping,
+    `compute_run_summary()`'s `pull_requests_opened`/`held_by_wip_cap` counts,
+    and their appearance (identically) in `write_report()`'s Markdown and
+    `evaluate`'s `--json` output.
+    """
+
+    def _make_active_change(self, repo_root: Path, change_id: str) -> None:
+        change_dir = repo_root / "openspec" / "changes" / change_id
+        change_dir.mkdir(parents=True, exist_ok=True)
+        (change_dir / "proposal.md").write_text(
+            f"# {change_id}\n\n## Why\nsome change.\n", encoding="utf-8"
+        )
+        (change_dir / "tasks.md").write_text(
+            "## 1. Tasks\n\n- [ ] 1.1 do the thing\n", encoding="utf-8"
+        )
+
+    def _write_policy(self, repo_root: Path, max_active_changes: int) -> None:
+        policy_dir = repo_root / ".worktrail"
+        policy_dir.mkdir(parents=True, exist_ok=True)
+        (policy_dir / "policy.yaml").write_text(
+            f"max_active_changes: {max_active_changes}\n", encoding="utf-8"
+        )
+
+    def _verdict(self, brief_id: str, verdict: str) -> qt.Verdict:
+        return qt.Verdict(
+            brief_id=brief_id,
+            verdict=verdict,
+            duplicate_of=None,
+            evidence="evidence",
+            confidence="high",
+        )
+
+    def test_no_repo_group_never_held(self):
+        verdicts = [self._verdict("a", "keep")]
+
+        stamped = qt.apply_wip_cap_preview(qt.NO_REPO_KEY, verdicts)
+
+        self.assertEqual(stamped[0].repo, qt.NO_REPO_KEY)
+        self.assertFalse(stamped[0].held_by_wip_cap)
+
+    def test_cap_unset_never_holds_propose_change(self):
+        repo_root = self.base / "repo-no-policy"
+        self._make_active_change(repo_root, "change-1")
+        self._make_active_change(repo_root, "change-2")
+        verdicts = [self._verdict("a", "propose-change")]
+
+        stamped = qt.apply_wip_cap_preview(str(repo_root), verdicts)
+
+        self.assertEqual(stamped[0].repo, str(repo_root))
+        self.assertFalse(stamped[0].held_by_wip_cap)
+
+    def test_propose_change_held_when_at_cap(self):
+        repo_root = self.base / "repo-at-cap"
+        self._make_active_change(repo_root, "change-1")
+        self._make_active_change(repo_root, "change-2")
+        self._write_policy(repo_root, max_active_changes=2)
+        verdicts = [
+            self._verdict("a", "propose-change"),
+            self._verdict("b", "keep"),
+        ]
+
+        stamped = qt.apply_wip_cap_preview(str(repo_root), verdicts)
+
+        held = {v.brief_id: v.held_by_wip_cap for v in stamped}
+        self.assertEqual(held, {"a": True, "b": False})
+
+    def test_propose_change_not_held_under_cap(self):
+        repo_root = self.base / "repo-under-cap"
+        self._make_active_change(repo_root, "change-1")
+        self._write_policy(repo_root, max_active_changes=2)
+        verdicts = [self._verdict("a", "propose-change")]
+
+        stamped = qt.apply_wip_cap_preview(str(repo_root), verdicts)
+
+        self.assertFalse(stamped[0].held_by_wip_cap)
+
+    def test_fold_into_change_never_held_even_at_cap(self):
+        repo_root = self.base / "repo-fold-at-cap"
+        self._make_active_change(repo_root, "change-1")
+        self._write_policy(repo_root, max_active_changes=1)
+        verdicts = [self._verdict("a", "fold-into-change")]
+
+        stamped = qt.apply_wip_cap_preview(str(repo_root), verdicts)
+
+        self.assertFalse(stamped[0].held_by_wip_cap)
+
+    def test_compute_run_summary_counts(self):
+        verdicts = [
+            self._verdict("a", "fold-into-change"),
+            self._verdict("b", "propose-change"),
+            self._verdict("c", "keep"),
+        ]
+        verdicts[1].repo = "behindthedash/repo-a"
+        verdicts[1].held_by_wip_cap = True
+
+        summary = qt.compute_run_summary(verdicts)
+
+        # "b" is a propose-change held by the WIP cap: 3.6 downgrades it to
+        # `keep` at apply time, so it must not be counted as a PR that will
+        # open (M1) -- only "a" (fold-into-change) counts.
+        self.assertEqual(summary["pull_requests_opened"], 1)
+        self.assertEqual(summary["held_by_wip_cap"], {"behindthedash/repo-a": 1})
+
+    def test_write_report_pull_requests_and_wip_cap_sections_match_json(self):
+        repo_root = self.base / "repo-report"
+        self._make_active_change(repo_root, "change-1")
+        self._write_policy(repo_root, max_active_changes=1)
+        verdicts = qt.apply_wip_cap_preview(
+            str(repo_root),
+            [
+                self._verdict("a", "propose-change"),
+                self._verdict("b", "fold-into-change"),
+            ],
+        )
+        out_dir = self.base / "out-wip"
+
+        verdict_path = qt.write_verdict_file(verdicts, out_dir)
+        report_path = qt.write_report(verdicts, [], out_dir)
+
+        json_verdicts = json.loads(verdict_path.read_text(encoding="utf-8"))
+        # a propose-change verdict held by the WIP cap will not open a PR (3.6
+        # downgrades it to `keep` at apply time), so it must be excluded here
+        # the same way `compute_run_summary()` excludes it (M1).
+        json_pull_requests_opened = sum(
+            1
+            for e in json_verdicts
+            if e["verdict"] in ("fold-into-change", "propose-change")
+            and not (e["verdict"] == "propose-change" and e["held_by_wip_cap"])
+        )
+        json_held_by_repo: dict = {}
+        for e in json_verdicts:
+            if e["held_by_wip_cap"] and e["repo"]:
+                json_held_by_repo[e["repo"]] = json_held_by_repo.get(e["repo"], 0) + 1
+
+        report_text = report_path.read_text(encoding="utf-8")
+        self.assertIn(
+            f"- pull_requests_opened: {json_pull_requests_opened}", report_text
+        )
+        self.assertEqual(json_pull_requests_opened, 1)
+        for repo, count in json_held_by_repo.items():
+            self.assertIn(f"- {repo}: {count}", report_text)
+        self.assertEqual(json_held_by_repo, {str(repo_root): 1})
+
+    def test_evaluate_json_output_includes_pull_requests_and_wip_cap(self):
+        repo_root = self.base / "repo-cmd-evaluate"
+        self._make_active_change(repo_root, "change-1")
+        self._write_policy(repo_root, max_active_changes=1)
+        self.write("a.md", repo=str(repo_root))
+
+        def fake_evaluate_group(repo, briefs, *, agent="claude", cwd=None):
+            ids = [p.stem for p in briefs]
+            raw = json.dumps(
+                {
+                    "brief_id": ids[0],
+                    "verdict": "propose-change",
+                    "duplicate_of": None,
+                    "target_repo": repo,
+                    "proposed_change_name": "new-thing",
+                    "evidence": "clearly belongs here",
+                    "confidence": "high",
+                }
+            )
+            return [
+                {
+                    "repo": repo,
+                    "brief_ids": ids,
+                    "raw_text": raw,
+                    "candidates_by_brief": {bid: [] for bid in ids},
+                }
+            ]
+
+        out_dir = self.base / "out-cmd-evaluate"
+        buf = io.StringIO()
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.evaluate_group",
+                side_effect=fake_evaluate_group,
+            ),
+            redirect_stdout(buf),
+        ):
+            exit_code = qt.main(["evaluate", "--out-dir", str(out_dir), "--json"])
+
+        self.assertEqual(exit_code, 0)
+        printed = json.loads(buf.getvalue())
+        # this run's one brief is a propose-change held by the WIP cap: 3.6
+        # downgrades it to `keep` at apply time, so it will not open a PR --
+        # `pull_requests_opened` and `held_by_wip_cap` must not both claim it
+        # (M1).
+        self.assertEqual(printed["pull_requests_opened"], 0)
+        self.assertEqual(printed["held_by_wip_cap"], {str(repo_root): 1})
+
+        report_text = (out_dir / "report.md").read_text(encoding="utf-8")
+        self.assertIn("- pull_requests_opened: 0", report_text)
+        self.assertIn(f"- {repo_root}: 1", report_text)
+
+
+class TestRankChangeCandidates(QueueTriageTestBase):
+    """2.1's `rank_change_candidates()`: repo's active OpenSpec changes ranked
+    against a brief's focus text by the duplicate-brief-detection focus-overlap
+    coefficient, over each change's proposal summary + tasks.md task tokens.
+    """
+
+    def _make_change(
+        self,
+        repo_root: Path,
+        change_id: str,
+        *,
+        why: str,
+        tasks: list[tuple[bool, str]],
+    ) -> None:
+        change_dir = repo_root / "openspec" / "changes" / change_id
+        change_dir.mkdir(parents=True, exist_ok=True)
+        (change_dir / "proposal.md").write_text(
+            f"# {change_id}\n\n## Why\n{why}\n", encoding="utf-8"
+        )
+        lines = [
+            f"- [{'x' if checked else ' '}] {i + 1}.1 {text}"
+            for i, (checked, text) in enumerate(tasks)
+        ]
+        (change_dir / "tasks.md").write_text(
+            "## 1. Tasks\n\n" + "\n".join(lines) + "\n", encoding="utf-8"
+        )
+
+    def test_strong_overlap_ranks_first_with_open_task_count(self):
+        repo_root = self.base / "repo"
+        self._make_change(
+            repo_root,
+            "widget-export-pipeline",
+            why="Add a widget export pipeline for downstream reporting consumers.",
+            tasks=[
+                (False, "Implement widget export pipeline serializer"),
+                (True, "Write export pipeline docs"),
+            ],
+        )
+        self._make_change(
+            repo_root,
+            "unrelated-billing-cleanup",
+            why="Clean up stale billing invoice reconciliation cron jobs.",
+            tasks=[(False, "Remove stale billing invoice cron entries")],
+        )
+        brief_path = self.queue / "brief.md"
+        brief_path.write_text(
+            "---\nstatus: queued\n---\n\n"
+            "## Focus\n\nwidget export pipeline serializer downstream reporting\n",
+            encoding="utf-8",
+        )
+
+        results = qt.rank_change_candidates(brief_path, str(repo_root), top_k=5)
+
+        self.assertEqual(results[0]["id"], "widget-export-pipeline")
+        self.assertEqual(results[0]["open_task_count"], 1)
+        self.assertIn("widget export pipeline", results[0]["feature_summary"])
+        self.assertGreater(results[0]["score"], results[1]["score"])
+        self.assertEqual(results[1]["id"], "unrelated-billing-cleanup")
+
+    def test_no_active_changes_returns_empty_list(self):
+        repo_root = self.base / "repo-empty"
+        (repo_root / "openspec" / "changes").mkdir(parents=True, exist_ok=True)
+        brief_path = self.write("brief.md", body="## Focus\n\nanything at all\n")
+
+        self.assertEqual(
+            qt.rank_change_candidates(brief_path, str(repo_root), top_k=5), []
+        )
+
+    def test_null_repo_returns_empty_list(self):
+        brief_path = self.write("brief.md", body="## Focus\n\nanything at all\n")
+
+        self.assertEqual(qt.rank_change_candidates(brief_path, None, top_k=5), [])
+
+    def test_top_k_truncates_result(self):
+        repo_root = self.base / "repo-many"
+        for i in range(3):
+            self._make_change(
+                repo_root,
+                f"change-{i}",
+                why="widget export pipeline serializer downstream reporting",
+                tasks=[
+                    (False, "widget export pipeline serializer downstream reporting")
+                ],
+            )
+        brief_path = self.write(
+            "brief.md",
+            body="## Focus\n\nwidget export pipeline serializer downstream reporting\n",
+        )
+
+        results = qt.rank_change_candidates(brief_path, str(repo_root), top_k=2)
+
+        self.assertEqual(len(results), 2)
 
 
 if __name__ == "__main__":
