@@ -1527,9 +1527,7 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
             args=["fake"], returncode=returncode, stdout=stdout, stderr=stderr
         )
 
-    def _dispatcher(
-        self, *, pr_returncode: int = 0, validate_returncode: int = 0
-    ):
+    def _dispatcher(self, *, pr_returncode: int = 0, validate_returncode: int = 0):
         pr_url = "https://github.com/acme/widgets/pull/42"
 
         def _run(cmd, **kwargs):
@@ -1540,6 +1538,8 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
                     self._seed_change()
                     return self._completed(0)
                 if "worktree" in cmd and "remove" in cmd:
+                    return self._completed(0)
+                if "branch" in cmd and "-D" in cmd:
                     return self._completed(0)
             if cmd[0] == "openspec" and cmd[1] == "validate":
                 return self._completed(
@@ -1555,7 +1555,9 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
                 return self._completed(
                     pr_returncode,
                     stdout=f"{pr_url}\n" if pr_returncode == 0 else "",
-                    stderr="" if pr_returncode == 0 else "could not create pull request",
+                    stderr=""
+                    if pr_returncode == 0
+                    else "could not create pull request",
                 )
             raise AssertionError(f"unexpected command: {cmd}")
 
@@ -1563,8 +1565,14 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
 
     def test_success_edits_change_opens_pr_and_closes_brief(self):
         run, pr_url = self._dispatcher()
-        with mock.patch(
-            "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+            ),
+            mock.patch(
+                "worktrail.workqueue.queue_triage._refresh_pr_labels",
+                return_value=["go:risk-low"],
+            ),
         ):
             log = qt.apply_verdicts([self.verdict], confirm=True)
 
@@ -1596,8 +1604,14 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
 
     def test_pr_creation_failure_leaves_brief_untouched_and_reports_branch(self):
         run, _ = self._dispatcher(pr_returncode=1)
-        with mock.patch(
-            "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+            ),
+            mock.patch(
+                "worktrail.workqueue.queue_triage._refresh_pr_labels",
+                return_value=["go:risk-low"],
+            ),
         ):
             log = qt.apply_verdicts([self.verdict], confirm=True)
 
@@ -1644,6 +1658,8 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
                     self.worktree_dir.mkdir(parents=True, exist_ok=True)
                     return self._completed(0)
                 if "worktree" in cmd and "remove" in cmd:
+                    return self._completed(0)
+                if "branch" in cmd and "-D" in cmd:
                     return self._completed(0)
             raise AssertionError(f"unexpected command: {cmd}")
 

@@ -23,6 +23,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from ..orchestrator.integrate import _refresh_pr_labels
 from ..router import overlap_check
 from ..shared.brief_frontmatter import read_frontmatter, split_frontmatter
 from ..shared.homedir import worktrail_home
@@ -1176,7 +1177,14 @@ def _repo_base_branch(repo: Path) -> str:
         return configured.strip()
     try:
         result = subprocess.run(
-            ["git", "-C", str(repo), "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+            [
+                "git",
+                "-C",
+                str(repo),
+                "symbolic-ref",
+                "--short",
+                "refs/remotes/origin/HEAD",
+            ],
             check=False,
             capture_output=True,
             text=True,
@@ -1244,7 +1252,17 @@ def _apply_fold_into_change(v: Verdict) -> dict:
     worktree_dir = _fold_propose_worktree_dir(repo_path, branch)
 
     add = subprocess.run(
-        ["git", "-C", str(repo_path), "worktree", "add", "-b", branch, str(worktree_dir), base_branch],
+        [
+            "git",
+            "-C",
+            str(repo_path),
+            "worktree",
+            "add",
+            "-b",
+            branch,
+            str(worktree_dir),
+            base_branch,
+        ],
         check=False,
         capture_output=True,
         text=True,
@@ -1259,6 +1277,7 @@ def _apply_fold_into_change(v: Verdict) -> dict:
             "branch": branch,
         }
 
+    pr_url = None
     try:
         change_dir = worktree_dir / "openspec" / "changes" / v.target_change
         proposal_path = change_dir / "proposal.md"
@@ -1358,20 +1377,20 @@ def _apply_fold_into_change(v: Verdict) -> dict:
                 "branch": branch,
             }
 
+        labels = _refresh_pr_labels(worktree_dir, ["go:risk-low"], base_branch) or [
+            "go:risk-low"
+        ]
+        pr_cmd = ["gh", "pr", "create", "--base", base_branch, "--head", branch]
+        for label in labels:
+            pr_cmd += ["--label", label]
+        pr_cmd += [
+            "--title",
+            _planned_fold_propose_pr_title(v),
+            "--body",
+            f"{v.evidence}\n\nFolded via queue-triage from brief `{v.brief_id}`.",
+        ]
         pr = subprocess.run(
-            [
-                "gh",
-                "pr",
-                "create",
-                "--base",
-                base_branch,
-                "--head",
-                branch,
-                "--title",
-                _planned_fold_propose_pr_title(v),
-                "--body",
-                f"{v.evidence}\n\nFolded via queue-triage from brief `{v.brief_id}`.",
-            ],
+            pr_cmd,
             check=False,
             capture_output=True,
             text=True,
@@ -1381,6 +1400,7 @@ def _apply_fold_into_change(v: Verdict) -> dict:
         pr_output = (pr.stdout or pr.stderr).strip()
         pr_url = pr_output.splitlines()[-1] if pr_output else ""
         if pr.returncode != 0 or not pr_url.startswith("http"):
+            pr_url = ""
             return {
                 **result,
                 "status": "error",
@@ -1390,12 +1410,28 @@ def _apply_fold_into_change(v: Verdict) -> dict:
             }
     finally:
         subprocess.run(
-            ["git", "-C", str(repo_path), "worktree", "remove", "--force", str(worktree_dir)],
+            [
+                "git",
+                "-C",
+                str(repo_path),
+                "worktree",
+                "remove",
+                "--force",
+                str(worktree_dir),
+            ],
             check=False,
             capture_output=True,
             text=True,
             timeout=60,
         )
+        if not pr_url:
+            subprocess.run(
+                ["git", "-C", str(repo_path), "branch", "-D", branch],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
 
     # A PR now exists -- from here on, closing the brief is safe to attempt.
     # Any failure past this point is reported against the now-real branch/PR,
