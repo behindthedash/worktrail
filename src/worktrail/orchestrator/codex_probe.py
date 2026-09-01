@@ -157,6 +157,49 @@ def snapshot_no_op_scope(scratch_dir: str, repo_dir: str) -> NoOpScopeSnapshot:
     )
 
 
+def check_no_op_scope_violation(
+    pre_snapshot: NoOpScopeSnapshot, scratch_dir: str, repo_dir: str
+) -> ProbeReport | None:
+    """Re-snapshot the probe's no-op scope after the run and diff against
+    `pre_snapshot`.
+
+    Checked regardless of whether the nested process itself reported
+    success -- a nested process that mutates the maintainer's repository
+    working tree while still exiting 0 and replying with the expected
+    sentinel must still be classified as a no-op-scope failure, since that
+    guarantee is about repository state, not the nested process's own exit
+    status. Returns a failing `ProbeReport` naming which root mutated
+    (`scratch_dir` and/or `repo_dir`), or `None` if neither changed.
+    """
+    scratch_listing = tuple(sorted(os.listdir(scratch_dir)))
+    status = _REAL_SUBPROCESS_RUN(
+        ["git", "status", "--porcelain"],
+        cwd=repo_dir,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=_SNAPSHOT_TIMEOUT_SECONDS,
+    )
+    post_snapshot = NoOpScopeSnapshot(
+        scratch_listing=scratch_listing,
+        repo_git_status=status.stdout,
+    )
+    mutated_roots = []
+    if post_snapshot.scratch_listing != pre_snapshot.scratch_listing:
+        mutated_roots.append(f"scratch directory ({scratch_dir})")
+    if post_snapshot.repo_git_status != pre_snapshot.repo_git_status:
+        mutated_roots.append(f"repository working tree ({repo_dir})")
+    if not mutated_roots:
+        return None
+    return ProbeReport(
+        stage=StageOutcome.REPORT_BACK,
+        success=False,
+        diagnostic=(
+            "no-op scope violated: " + " and ".join(mutated_roots) + " mutated"
+        ),
+    )
+
+
 def run_probe_command(
     cmd: list[str],
     scratch_dir: str,
@@ -232,4 +275,26 @@ def run_probe_command(
             success=False,
             diagnostic=f"codex probe exceeded {timeout}s timeout",
         )
+    if pre_spawn_snapshot is not None:
+        try:
+            violation = check_no_op_scope_violation(
+                pre_spawn_snapshot, scratch_dir, repo_dir
+            )
+        except subprocess.TimeoutExpired:
+            violation = ProbeReport(
+                stage=StageOutcome.TIMEOUT,
+                success=False,
+                diagnostic=(
+                    "post-run git status snapshot exceeded "
+                    f"{_SNAPSHOT_TIMEOUT_SECONDS}s timeout"
+                ),
+            )
+        except OSError as exc:
+            violation = ProbeReport(
+                stage=StageOutcome.ENVIRONMENT_PREPARATION,
+                success=False,
+                diagnostic=str(exc),
+            )
+        if violation is not None:
+            result = violation
     return result, pre_spawn_snapshot
