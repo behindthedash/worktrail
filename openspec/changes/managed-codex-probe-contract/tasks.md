@@ -13,37 +13,37 @@
 
 ## 2. Environment preparation and spawn (path parity)
 
-- [ ] 2.1 Implement the launcher's environment-preparation step by calling
+- [x] 2.1 Implement the launcher's environment-preparation step by calling
       `router.skill_dispatch.prepare_codex_child_environment` directly
       (no probe-local reimplementation); on `OSError` classify as
       `environment_preparation` failure with the raised message as the
       diagnostic (already safe: `codex_home_write_remediation` never embeds
       credential content). (Requirement: Explicit read-only parent
       CODEX_HOME is honored, never silently reused)
-- [ ] 2.2 Implement command building via `orchestrator.spawnlib.build_cmd`
+- [x] 2.2 Implement command building via `orchestrator.spawnlib.build_cmd`
       with a `codex` `Cell`, using an isolated per-run scratch directory
       (create under `tempfile.mkdtemp`) as `cwd` — never the invoking
       repository's working tree. (Requirement: Probe enters the direct
       orchestrator Codex spawn path)
-- [ ] 2.3 Run the built command with `subprocess.run(..., timeout=<bound>,
+- [x] 2.3 Run the built command with `subprocess.run(..., timeout=<bound>,
       capture_output=True, text=True)`; propagate `subprocess.TimeoutExpired`
       into a `timeout` stage outcome instead of letting it raise to the
       caller. (Requirement: Probe execution is wall-clock bounded)
 
 ## 3. No-op scope enforcement
 
-- [ ] 3.1 Before spawning, snapshot the scratch directory's file listing and
+- [x] 3.1 Before spawning, snapshot the scratch directory's file listing and
       capture `git status --porcelain` output from the directory the probe
       was invoked from (the maintainer's repository working tree, not the
       scratch dir).
-- [ ] 3.2 After the run (success or failure), re-check both snapshots; if
+- [x] 3.2 After the run (success or failure), re-check both snapshots; if
       either changed, override the outcome to a failure with a diagnostic
       naming which root mutated, even if the nested process otherwise
       reported success. (Requirement: Probe performs no repository work)
 
 ## 4. Redaction and stage classification
 
-- [ ] 4.1 Derive `startup` from `spawnlib.is_infra_failure(returncode,
+- [x] 4.1 Derive `startup` from `spawnlib.is_infra_failure(returncode,
       stdout)` — never store raw stdout/stderr on the report object.
 - [ ] 4.2 Derive `provider_selection` from a targeted, non-secret signal
       returned by the nested process (e.g. exit-code/known-marker check
