@@ -19,6 +19,45 @@
         "intentPatterns": []
       }
     },
+    "detach": {
+      "type": "domain",
+      "enforcement": "suggest",
+      "priority": "high",
+      "scope": "all",
+      "alwaysActivate": false,
+      "filePatterns": [
+        "src/worktrail/runtime/detach.py",
+        "tests/runtime/test_detach.py",
+        "skills/worktrail-go/references/subagent-prompts.md"
+      ],
+      "promptTriggers": {
+        "keywords": [
+          "worktrail-detach",
+          "detach",
+          "run_in_background",
+          "supervise",
+          "exit sentinel",
+          "full-real",
+          "Monitor",
+          "supervised",
+          "out-of-harness",
+          "launch",
+          "log/pid/exit",
+          "worktrail",
+          "runtime",
+          "tests",
+          "test_detach",
+          "skills",
+          "worktrail-go",
+          "references",
+          "subagent-prompts"
+        ],
+        "intentPatterns": [
+          "(create|update|fix|add|modify|change|debug|refactor|implement|build).*exit sentinel",
+          "exit sentinel.*(create|update|fix|add|modify|change|debug|refactor|implement|build)"
+        ]
+      }
+    },
     "drain": {
       "type": "domain",
       "enforcement": "suggest",
