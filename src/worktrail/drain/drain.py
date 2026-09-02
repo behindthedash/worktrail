@@ -2266,10 +2266,15 @@ def _intake_triage_out_dir(now: datetime | None = None) -> Path:
 def run_intake_triage_prepass(
     queue_dir: Path | None,
     log: Callable[[str], None],
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     """`--intake-triage`'s pre-loop pass: run `queue_triage`'s `evaluate` over
     every queued intake brief, then `apply --confirm` the resulting verdicts,
     closing the intake loop before drain's own claim loop ever runs.
+
+    Under `dry_run`, `apply` is invoked without `--confirm` -- its documented
+    preview path (task 3.5) -- so the pass still populates the summary block
+    without mutating the queue.
 
     Raises on any evaluate/apply failure -- the caller (`drain()`) is
     responsible for catching it, logging it, and continuing, exactly like the
@@ -2277,6 +2282,7 @@ def run_intake_triage_prepass(
     otherwise-healthy drain run.
     """
     out_dir = _intake_triage_out_dir()
+    log(f"intake-triage: evaluating queued briefs (out-dir={out_dir})")
     evaluate_argv = ["evaluate", "--out-dir", str(out_dir)]
     if queue_dir is not None:
         evaluate_argv += ["--queue-dir", str(queue_dir)]
@@ -2284,11 +2290,16 @@ def run_intake_triage_prepass(
     if exit_code != 0:
         raise RuntimeError(f"queue_triage evaluate exited {exit_code}")
     verdict_file = out_dir / "verdict.json"
-    apply_argv = ["apply", "--verdict-file", str(verdict_file), "--confirm"]
+    apply_argv = ["apply", "--verdict-file", str(verdict_file)]
+    if not dry_run:
+        apply_argv.append("--confirm")
     exit_code = queue_triage_mod.main(apply_argv)
     if exit_code != 0:
         raise RuntimeError(f"queue_triage apply exited {exit_code}")
-    return {"out_dir": str(out_dir)}
+    log(
+        f"intake-triage: {'previewed' if dry_run else 'applied'} verdicts from {verdict_file}"
+    )
+    return {"out_dir": str(out_dir), "dry_run": dry_run}
 
 
 def drain(
@@ -2337,14 +2348,20 @@ def drain(
     seed_backlog_pass_result: dict[str, Any] = {}
     routing = machine_wide_routing()
     try:
-        if slot == 0 and not config.dry_run and config.intake_triage:
+        if slot == 0 and config.intake_triage:
             # Close the intake loop BEFORE the leader's own sweeps/seeding and
             # BEFORE the claim loop's first ready-count check, so a brief
             # triage turns into an execution brief (work-directly) or a fold/
             # propose PR can drain in this same pass. Best-effort, same
-            # never-abort discipline as the seed-backlog pass below.
+            # never-abort discipline as the seed-backlog pass below. Runs
+            # under --dry-run too (as a preview, apply without --confirm) so
+            # `--intake-triage --seed-backlog --dry-run --json` still
+            # populates this summary block without mutating anything (task
+            # intake-to-spec-triage 5.2).
             try:
-                intake_triage_result = run_intake_triage_prepass(config.queue_dir, log)
+                intake_triage_result = run_intake_triage_prepass(
+                    config.queue_dir, log, dry_run=config.dry_run
+                )
             except Exception as exc:  # noqa: BLE001
                 log(f"intake-triage error: {exc}")
                 intake_triage_result = {"error": str(exc)}
@@ -2359,14 +2376,23 @@ def drain(
                 log,
                 routing=routing,
             )
-            if config.seed_backlog:
+            if config.seed_backlog or config.seed_backlog_pass:
                 # Top the queue up from backlog invisible to auto mode
                 # (needs-tasks specs, under-specced epics) BEFORE the loop's
                 # first ready-count check, so freshly seeded briefs drain in
                 # this same pass. Best-effort like the sweep: a seeding
-                # failure never aborts the drain.
+                # failure never aborts the drain. `--seed-backlog`
+                # (`config.seed_backlog_pass`) is an explicit, default-off
+                # pre-pass request for the same seeder (task
+                # intake-to-spec-triage 4.1); when the always-on
+                # `seed_backlog`/`--no-seed-backlog` default above is also on,
+                # it shares this single call and its result rather than
+                # issuing a second independent `seed_backlog()` call, which
+                # would filter out everything the first call already seeded
+                # (`existing_seed_keys`) and report a spuriously empty
+                # `seed_backlog_pass` summary block.
                 try:
-                    seeded_backlog = seed_backlog_mod.seed_backlog(
+                    result = seed_backlog_mod.seed_backlog(
                         config.repos_root,
                         config.go_repo,
                         queue_base=config.queue_dir,
@@ -2374,23 +2400,35 @@ def drain(
                     )
                 except Exception as exc:  # noqa: BLE001
                     log(f"seed-backlog error: {exc}")
-            if config.seed_backlog_pass:
-                # `--seed-backlog`: an explicit, default-off pre-pass request
-                # for the same seeder, independent of the always-on
-                # `seed_backlog`/`--no-seed-backlog` default above (task
-                # intake-to-spec-triage 4.1) -- the seeder itself is
-                # idempotent (existing_seed_keys), so requesting it twice in
-                # one pass is harmless. Best-effort: never aborts the drain.
-                try:
-                    seed_backlog_pass_result = seed_backlog_mod.seed_backlog(
-                        config.repos_root,
-                        config.go_repo,
-                        queue_base=config.queue_dir,
-                        log=log,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    log(f"seed-backlog error: {exc}")
-                    seed_backlog_pass_result = {"error": str(exc)}
+                    result = {"error": str(exc)}
+                if config.seed_backlog:
+                    seeded_backlog = result
+                if config.seed_backlog_pass:
+                    seed_backlog_pass_result = result
+        elif (
+            slot == 0
+            and config.repos_root is not None
+            and config.dry_run
+            and config.seed_backlog_pass
+        ):
+            # `--seed-backlog --dry-run`: sweep_remediations and the always-on
+            # seed step are both mutating and stay gated on `not
+            # config.dry_run` above, but the explicit `--seed-backlog`
+            # pre-pass must still populate its summary block under
+            # `--dry-run` (task intake-to-spec-triage 5.2) -- `seed_backlog`'s
+            # own `dry_run=True` preview mode logs "would seed ..." without
+            # writing anything.
+            try:
+                seed_backlog_pass_result = seed_backlog_mod.seed_backlog(
+                    config.repos_root,
+                    config.go_repo,
+                    queue_base=config.queue_dir,
+                    log=log,
+                    dry_run=True,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log(f"seed-backlog error: {exc}")
+                seed_backlog_pass_result = {"error": str(exc)}
         if uses_builtin_spawner:
             # Gate retired-model cells (task 6.1/6.2's `--check`) BEFORE the
             # first spawn, not after a wasted iteration discovers the gate the

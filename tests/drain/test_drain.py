@@ -4045,6 +4045,43 @@ def test_run_intake_triage_prepass_raises_on_evaluate_failure(tmp_path):
         run_intake_triage_prepass(tmp_path / "wq", log=lambda _l: None)
 
 
+def test_run_intake_triage_prepass_raises_on_apply_failure(tmp_path):
+    def fake_main(argv):
+        if argv[0] == "evaluate":
+            out_dir = Path(argv[argv.index("--out-dir") + 1])
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "verdict.json").write_text("[]", encoding="utf-8")
+            return 0
+        return 1
+
+    with (
+        mock.patch.object(drain.queue_triage_mod, "main", fake_main),
+        pytest.raises(RuntimeError, match="apply exited"),
+    ):
+        run_intake_triage_prepass(tmp_path / "wq", log=lambda _l: None)
+
+
+def test_run_intake_triage_prepass_dry_run_previews_without_confirm(tmp_path):
+    calls = []
+
+    def fake_main(argv):
+        calls.append(argv)
+        if argv[0] == "evaluate":
+            out_dir = Path(argv[argv.index("--out-dir") + 1])
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "verdict.json").write_text("[]", encoding="utf-8")
+        return 0
+
+    with mock.patch.object(drain.queue_triage_mod, "main", fake_main):
+        result = run_intake_triage_prepass(
+            tmp_path / "wq", log=lambda _l: None, dry_run=True
+        )
+
+    assert calls[1][0] == "apply"
+    assert "--confirm" not in calls[1]
+    assert result["dry_run"] is True
+
+
 def test_drain_intake_triage_flag_off_never_runs(tmp_path, monkeypatch):
     fake = FakeQueue([0])
     install_fake_queue(monkeypatch, fake)
@@ -4071,7 +4108,7 @@ def test_drain_intake_triage_flag_on_runs_prepass(tmp_path, monkeypatch):
     monkeypatch.setattr(
         drain,
         "run_intake_triage_prepass",
-        lambda queue_dir, log: {"out_dir": "fake-out-dir"},
+        lambda queue_dir, log, dry_run=False: {"out_dir": "fake-out-dir"},
     )
 
     summary = drain.drain(
@@ -4159,6 +4196,88 @@ def test_drain_seed_backlog_pass_failure_never_aborts(tmp_path, monkeypatch):
     assert summary["stopped"].startswith("queue_empty")
     assert summary["seed_backlog_pass"] == {"error": "queue dir unwritable"}
     assert any("seed-backlog error" in line for line in logs)
+
+
+def test_drain_seed_backlog_pass_flag_on_with_default_seed_backlog_shares_one_call(
+    tmp_path, monkeypatch
+):
+    """`--seed-backlog` paired with the always-on default (no `--no-seed-backlog`)
+    must populate `seed_backlog_pass` from the same seeder call as
+    `seeded_backlog`, not a wasted second scan that seeds nothing because the
+    first call already claimed every seed key (task 4.1 review, major #1)."""
+    repos_root = tmp_path / "projects"
+    _make_needs_tasks_repo(repos_root, "repo-a", "010-alpha")
+    queue_base = tmp_path / "wq"
+    monkeypatch.setenv("WORK_QUEUE_DIR", str(queue_base))
+    fake = FakeQueue([0])
+    install_fake_queue(monkeypatch, fake)
+    config = make_config(tmp_path, repos_root=repos_root, seed_backlog_pass=True)
+
+    seed_calls = []
+    real_seed_backlog = drain.seed_backlog_mod.seed_backlog
+
+    def counting_seed_backlog(*a, **k):
+        seed_calls.append((a, k))
+        return real_seed_backlog(*a, **k)
+
+    monkeypatch.setattr(drain.seed_backlog_mod, "seed_backlog", counting_seed_backlog)
+
+    summary = drain.drain(
+        config, spawner=lambda c, t: SpawnOutcome(0), log=lambda _l: None
+    )
+
+    assert len(seed_calls) == 1
+    seeded = summary["seed_backlog_pass"]["seeded"]
+    assert [s["seed_key"] for s in seeded] == ["repo-a:spec:010-alpha"]
+    assert summary["seeded_backlog"] == summary["seed_backlog_pass"]
+
+
+def test_drain_intake_triage_dry_run_previews_and_populates_summary(
+    tmp_path, monkeypatch
+):
+    fake = FakeQueue([0])
+    install_fake_queue(monkeypatch, fake)
+    config = make_config(tmp_path, intake_triage=True, dry_run=True)
+
+    seen_dry_run = []
+    monkeypatch.setattr(
+        drain,
+        "run_intake_triage_prepass",
+        lambda queue_dir, log, dry_run=False: (
+            seen_dry_run.append(dry_run)
+            or {"out_dir": "fake-out-dir", "dry_run": dry_run}
+        ),
+    )
+
+    summary = drain.drain(
+        config, spawner=lambda c, t: SpawnOutcome(0), log=lambda _l: None
+    )
+
+    assert seen_dry_run == [True]
+    assert summary["intake_triage"] == {"out_dir": "fake-out-dir", "dry_run": True}
+
+
+def test_drain_seed_backlog_pass_dry_run_previews_and_populates_summary(
+    tmp_path, monkeypatch
+):
+    repos_root = tmp_path / "projects"
+    _make_needs_tasks_repo(repos_root, "repo-a", "010-alpha")
+    queue_base = tmp_path / "wq"
+    monkeypatch.setenv("WORK_QUEUE_DIR", str(queue_base))
+    fake = FakeQueue([1])
+    install_fake_queue(monkeypatch, fake)
+    config = make_config(
+        tmp_path, repos_root=repos_root, dry_run=True, seed_backlog_pass=True
+    )
+
+    summary = drain.drain(
+        config, spawner=lambda c, t: SpawnOutcome(0), log=lambda _l: None
+    )
+
+    seeded = summary["seed_backlog_pass"]["seeded"]
+    assert [s["seed_key"] for s in seeded] == ["repo-a:spec:010-alpha"]
+    assert seeded[0]["brief_id"] is None
+    assert not (queue_base / "queue").is_dir()
 
 
 def test_drain_dry_run_never_seeds(tmp_path, monkeypatch):
