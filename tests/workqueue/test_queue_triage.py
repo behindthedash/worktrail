@@ -1819,9 +1819,7 @@ class TestApplyProposeChange(QueueTriageTestBase):
             mock.patch(
                 "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
             ),
-            mock.patch(
-                "worktrail.orchestrator.spawnlib.spawn_agent"
-            ) as mock_spawn,
+            mock.patch("worktrail.orchestrator.spawnlib.spawn_agent") as mock_spawn,
         ):
             log = qt.apply_verdicts([self.verdict], confirm=True)
 

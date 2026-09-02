@@ -19,6 +19,7 @@ import re
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -1225,26 +1226,243 @@ def _next_task_group_number(tasks_text: str) -> int:
     return max(numbers) + 1 if numbers else 1
 
 
+def _worktree_pr_close(
+    v: Verdict,
+    *,
+    repo_path: Path,
+    branch: str,
+    base_branch: str,
+    worktree_dir: Path,
+    prepare: Callable[[Path], str | None],
+    validate_target: str,
+    commit_message: str,
+    pr_body: str,
+) -> dict:
+    """Shared worktree + validate + commit/push/PR + claim/close sequence.
+
+    Per the spec's "Fold and propose are applied as a pull request,
+    fail-closed" requirement: creates a fresh worktree on `branch` off
+    `base_branch`, calls `prepare(worktree_dir)` to let the caller author the
+    change in place (returning an error string on failure, `None` on
+    success), runs `openspec validate <validate_target> --strict`, commits,
+    pushes, and opens the pull request via `gh pr create`. Only once
+    `gh pr create` reports a URL does this claim and close the brief (via
+    `claim()`/`done(..., triaged_to=pr_url)`, with rollback on `done()`
+    failure) -- any failure before that point returns `status="error"` with
+    the brief left completely untouched and the `branch` name it would have
+    used, so a caller can diagnose or retry without the queue and the target
+    repo disagreeing about what happened. The local worktree (and, on
+    failure, the local branch) are always cleaned up in a `finally`,
+    regardless of outcome -- a pushed branch survives (git has no local undo
+    for a push), but nothing local should outlive this call.
+    """
+    result = {
+        "brief_id": v.brief_id,
+        "verdict": v.verdict,
+        "duplicate_of": v.duplicate_of,
+        "action": "open-pull-request",
+        "confirm": True,
+        "note": v.evidence,
+    }
+
+    add = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo_path),
+            "worktree",
+            "add",
+            "-b",
+            branch,
+            str(worktree_dir),
+            base_branch,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if add.returncode != 0:
+        return {
+            **result,
+            "status": "error",
+            "path": None,
+            "error": f"git worktree add failed: {(add.stderr or add.stdout).strip()}",
+            "branch": branch,
+        }
+
+    pr_url = None
+    try:
+        prepare_error = prepare(worktree_dir)
+        if prepare_error:
+            return {
+                **result,
+                "status": "error",
+                "path": None,
+                "error": prepare_error,
+                "branch": branch,
+            }
+
+        validate = subprocess.run(
+            ["openspec", "validate", validate_target, "--strict"],
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=str(worktree_dir),
+            timeout=120,
+        )
+        if validate.returncode != 0:
+            return {
+                **result,
+                "status": "error",
+                "path": None,
+                "error": (
+                    "openspec validate failed: "
+                    f"{(validate.stderr or validate.stdout).strip()}"
+                ),
+                "branch": branch,
+            }
+
+        for git_args in (["add", "-A"], ["commit", "-m", commit_message]):
+            r = subprocess.run(
+                ["git", *git_args],
+                check=False,
+                capture_output=True,
+                text=True,
+                cwd=str(worktree_dir),
+                timeout=60,
+            )
+            if r.returncode != 0:
+                return {
+                    **result,
+                    "status": "error",
+                    "path": None,
+                    "error": (
+                        f"git {' '.join(git_args)} failed: "
+                        f"{(r.stderr or r.stdout).strip()}"
+                    ),
+                    "branch": branch,
+                }
+
+        push = subprocess.run(
+            ["git", "push", "-u", "origin", branch],
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=str(worktree_dir),
+            timeout=120,
+        )
+        if push.returncode != 0:
+            return {
+                **result,
+                "status": "error",
+                "path": None,
+                "error": f"git push failed: {(push.stderr or push.stdout).strip()}",
+                "branch": branch,
+            }
+
+        labels = _refresh_pr_labels(worktree_dir, ["go:risk-low"], base_branch) or [
+            "go:risk-low"
+        ]
+        pr_cmd = ["gh", "pr", "create", "--base", base_branch, "--head", branch]
+        for label in labels:
+            pr_cmd += ["--label", label]
+        pr_cmd += [
+            "--title",
+            _planned_fold_propose_pr_title(v),
+            "--body",
+            pr_body,
+        ]
+        pr = subprocess.run(
+            pr_cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=str(worktree_dir),
+            timeout=60,
+        )
+        pr_output = (pr.stdout or pr.stderr).strip()
+        pr_url = pr_output.splitlines()[-1] if pr_output else ""
+        if pr.returncode != 0 or not pr_url.startswith("http"):
+            pr_url = ""
+            return {
+                **result,
+                "status": "error",
+                "path": None,
+                "error": f"gh pr create failed: {pr_output or '(no output)'}",
+                "branch": branch,
+            }
+    finally:
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_path),
+                "worktree",
+                "remove",
+                "--force",
+                str(worktree_dir),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if not pr_url:
+            subprocess.run(
+                ["git", "-C", str(repo_path), "branch", "-D", branch],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+
+    # A PR now exists -- from here on, closing the brief is safe to attempt.
+    # Any failure past this point is reported against the now-real branch/PR,
+    # never against a not-yet-opened one.
+    claim_res = claim(v.brief_id, by="queue-triage")
+    if claim_res["status"] != "claimed":
+        detail = claim_res.get("error")
+        return {
+            **result,
+            "status": "error",
+            "path": claim_res.get("path"),
+            "error": f"claim: {claim_res['status']}"
+            + (f" ({detail})" if detail else ""),
+            "branch": branch,
+            "pr_url": pr_url,
+        }
+    done_res = done(v.brief_id, note=v.evidence, triaged_to=pr_url)
+    if done_res["status"] != "done":
+        detail = done_res.get("error")
+        release_res = release(v.brief_id)
+        return {
+            **result,
+            "status": "error",
+            "path": done_res.get("path"),
+            "error": f"done: {done_res['status']}" + (f" ({detail})" if detail else ""),
+            "rolled_back": release_res["status"] == "released",
+            "branch": branch,
+            "pr_url": pr_url,
+        }
+    return {
+        **result,
+        "status": "executed",
+        "path": done_res.get("path"),
+        "error": None,
+        "branch": branch,
+        "pr_url": pr_url,
+    }
+
+
 def _apply_fold_into_change(v: Verdict) -> dict:
     """`fold-into-change`: worktree + proposal/tasks edit + validate + PR + close.
 
-    Per the spec's "Fold and propose are applied as a pull request, fail-closed"
-    requirement: creates a fresh worktree on `_planned_fold_propose_branch(v)`
-    off the target repo's base branch (`_repo_base_branch()`), appends a
-    `## Folded from <brief-id>` section to the target change's `proposal.md`
-    and a new unchecked `## N. Folded from <brief-id>` task group to its
-    `tasks.md` (`_next_task_group_number()`), runs `openspec validate
-    <target_change> --strict`, commits, pushes, and opens the pull request via
-    `gh pr create`. Only once `gh pr create` reports a URL does this claim and
-    close the brief (via `claim()`/`done(..., triaged_to=pr_url)`, mirroring
-    `_apply_close()`'s rollback-on-`done()`-failure behaviour) -- any failure
-    before that point returns `status="error"` with the brief left completely
-    untouched and the `branch` name it would have used, so a caller can
-    diagnose or retry without the queue and the target repo disagreeing about
-    what happened. The local worktree (and, on failure, the local branch) are
-    always cleaned up in a `finally`, regardless of outcome -- a pushed branch
-    survives (git has no local undo for a push), but nothing local should
-    outlive this call.
+    Appends a `## Folded from <brief-id>` section to the target change's
+    `proposal.md` and a new unchecked `## N. Folded from <brief-id>` task
+    group to its `tasks.md` (`_next_task_group_number()`), then hands off to
+    `_worktree_pr_close()` for the shared validate/commit/push/PR/close
+    sequence.
     """
     result = {
         "brief_id": v.brief_id,
@@ -1268,48 +1486,15 @@ def _apply_fold_into_change(v: Verdict) -> dict:
     base_branch = _repo_base_branch(repo_path)
     worktree_dir = _fold_propose_worktree_dir(repo_path, branch)
 
-    add = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(repo_path),
-            "worktree",
-            "add",
-            "-b",
-            branch,
-            str(worktree_dir),
-            base_branch,
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    if add.returncode != 0:
-        return {
-            **result,
-            "status": "error",
-            "path": None,
-            "error": f"git worktree add failed: {(add.stderr or add.stdout).strip()}",
-            "branch": branch,
-        }
-
-    pr_url = None
-    try:
+    def prepare(worktree_dir: Path) -> str | None:
         change_dir = worktree_dir / "openspec" / "changes" / v.target_change
         proposal_path = change_dir / "proposal.md"
         tasks_path = change_dir / "tasks.md"
         if not proposal_path.is_file() or not tasks_path.is_file():
-            return {
-                **result,
-                "status": "error",
-                "path": None,
-                "error": (
-                    f"target change '{v.target_change}' has no proposal.md/"
-                    f"tasks.md under {change_dir}"
-                ),
-                "branch": branch,
-            }
+            return (
+                f"target change '{v.target_change}' has no proposal.md/"
+                f"tasks.md under {change_dir}"
+            )
 
         try:
             proposal_text = proposal_path.read_text(encoding="utf-8")
@@ -1327,187 +1512,33 @@ def _apply_fold_into_change(v: Verdict) -> dict:
                 encoding="utf-8",
             )
         except OSError as exc:
-            return {
-                **result,
-                "status": "error",
-                "path": None,
-                "error": f"failed to edit proposal.md/tasks.md: {exc}",
-                "branch": branch,
-            }
+            return f"failed to edit proposal.md/tasks.md: {exc}"
+        return None
 
-        validate = subprocess.run(
-            ["openspec", "validate", v.target_change, "--strict"],
-            check=False,
-            capture_output=True,
-            text=True,
-            cwd=str(worktree_dir),
-            timeout=120,
-        )
-        if validate.returncode != 0:
-            return {
-                **result,
-                "status": "error",
-                "path": None,
-                "error": (
-                    "openspec validate failed: "
-                    f"{(validate.stderr or validate.stdout).strip()}"
-                ),
-                "branch": branch,
-            }
-
-        commit_message = f"Fold {v.brief_id} into {v.target_change}"
-        for git_args in (["add", "-A"], ["commit", "-m", commit_message]):
-            r = subprocess.run(
-                ["git", *git_args],
-                check=False,
-                capture_output=True,
-                text=True,
-                cwd=str(worktree_dir),
-                timeout=60,
-            )
-            if r.returncode != 0:
-                return {
-                    **result,
-                    "status": "error",
-                    "path": None,
-                    "error": (
-                        f"git {' '.join(git_args)} failed: "
-                        f"{(r.stderr or r.stdout).strip()}"
-                    ),
-                    "branch": branch,
-                }
-
-        push = subprocess.run(
-            ["git", "push", "-u", "origin", branch],
-            check=False,
-            capture_output=True,
-            text=True,
-            cwd=str(worktree_dir),
-            timeout=120,
-        )
-        if push.returncode != 0:
-            return {
-                **result,
-                "status": "error",
-                "path": None,
-                "error": f"git push failed: {(push.stderr or push.stdout).strip()}",
-                "branch": branch,
-            }
-
-        labels = _refresh_pr_labels(worktree_dir, ["go:risk-low"], base_branch) or [
-            "go:risk-low"
-        ]
-        pr_cmd = ["gh", "pr", "create", "--base", base_branch, "--head", branch]
-        for label in labels:
-            pr_cmd += ["--label", label]
-        pr_cmd += [
-            "--title",
-            _planned_fold_propose_pr_title(v),
-            "--body",
-            f"{v.evidence}\n\nFolded via queue-triage from brief `{v.brief_id}`.",
-        ]
-        pr = subprocess.run(
-            pr_cmd,
-            check=False,
-            capture_output=True,
-            text=True,
-            cwd=str(worktree_dir),
-            timeout=60,
-        )
-        pr_output = (pr.stdout or pr.stderr).strip()
-        pr_url = pr_output.splitlines()[-1] if pr_output else ""
-        if pr.returncode != 0 or not pr_url.startswith("http"):
-            pr_url = ""
-            return {
-                **result,
-                "status": "error",
-                "path": None,
-                "error": f"gh pr create failed: {pr_output or '(no output)'}",
-                "branch": branch,
-            }
-    finally:
-        subprocess.run(
-            [
-                "git",
-                "-C",
-                str(repo_path),
-                "worktree",
-                "remove",
-                "--force",
-                str(worktree_dir),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        if not pr_url:
-            subprocess.run(
-                ["git", "-C", str(repo_path), "branch", "-D", branch],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-
-    # A PR now exists -- from here on, closing the brief is safe to attempt.
-    # Any failure past this point is reported against the now-real branch/PR,
-    # never against a not-yet-opened one.
-    claim_res = claim(v.brief_id, by="queue-triage")
-    if claim_res["status"] != "claimed":
-        detail = claim_res.get("error")
-        return {
-            **result,
-            "status": "error",
-            "path": claim_res.get("path"),
-            "error": f"claim: {claim_res['status']}"
-            + (f" ({detail})" if detail else ""),
-            "branch": branch,
-            "pr_url": pr_url,
-        }
-    done_res = done(v.brief_id, note=v.evidence, triaged_to=pr_url)
-    if done_res["status"] != "done":
-        detail = done_res.get("error")
-        release_res = release(v.brief_id)
-        return {
-            **result,
-            "status": "error",
-            "path": done_res.get("path"),
-            "error": f"done: {done_res['status']}" + (f" ({detail})" if detail else ""),
-            "rolled_back": release_res["status"] == "released",
-            "branch": branch,
-            "pr_url": pr_url,
-        }
-    return {
-        **result,
-        "status": "executed",
-        "path": done_res.get("path"),
-        "error": None,
-        "branch": branch,
-        "pr_url": pr_url,
-    }
+    return _worktree_pr_close(
+        v,
+        repo_path=repo_path,
+        branch=branch,
+        base_branch=base_branch,
+        worktree_dir=worktree_dir,
+        prepare=prepare,
+        validate_target=v.target_change,
+        commit_message=f"Fold {v.brief_id} into {v.target_change}",
+        pr_body=f"{v.evidence}\n\nFolded via queue-triage from brief `{v.brief_id}`.",
+    )
 
 
 def _apply_propose_change(v: Verdict, *, agent: str = "claude") -> dict:
     """`propose-change`: worktree + `openspec new change` + agent-authored change + validate + PR + close.
 
-    Mirrors `_apply_fold_into_change()`'s shape (per the spec's "Fold and
-    propose are applied as a pull request, fail-closed" requirement, which
-    covers both verdict types), with the target-authoring step swapped: a
-    fresh worktree on `_planned_fold_propose_branch(v)` off the target repo's
-    base branch (`_repo_base_branch()`), `openspec new change
-    <proposed_change_name>` to scaffold the change directory, one
-    `spawnlib.spawn_agent()` call (per `PROPOSE_CHANGE_PROMPT_TEMPLATE`) to
-    author `proposal.md`/`design.md`/`specs/`/`tasks.md` in place, then
-    `openspec validate <proposed_change_name> --strict`, commit, push, and
-    `gh pr create` -- only once that PR exists does this claim and close the
-    brief (via `claim()`/`done(..., triaged_to=pr_url)`), matching
-    `_apply_fold_into_change()`'s rollback-on-`done()`-failure behaviour. Any
-    failure before the PR exists returns `status="error"` with the brief left
-    completely untouched and the `branch` name it would have used. The local
-    worktree (and, on failure, the local branch) are always cleaned up in a
-    `finally` -- a pushed branch survives (git has no local undo for a push),
-    but nothing local should outlive this call.
+    Runs `openspec new change <proposed_change_name>` to scaffold the change
+    directory, then one `spawnlib.spawn_agent()` call (per
+    `PROPOSE_CHANGE_PROMPT_TEMPLATE`) to author `proposal.md`/`design.md`/
+    `specs/`/`tasks.md` in place, before handing off to
+    `_worktree_pr_close()` for the shared validate/commit/push/PR/close
+    sequence (mirroring `_apply_fold_into_change()`, per the spec's "Fold
+    and propose are applied as a pull request, fail-closed" requirement,
+    which covers both verdict types).
     """
     result = {
         "brief_id": v.brief_id,
@@ -1531,34 +1562,7 @@ def _apply_propose_change(v: Verdict, *, agent: str = "claude") -> dict:
     base_branch = _repo_base_branch(repo_path)
     worktree_dir = _fold_propose_worktree_dir(repo_path, branch)
 
-    add = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(repo_path),
-            "worktree",
-            "add",
-            "-b",
-            branch,
-            str(worktree_dir),
-            base_branch,
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    if add.returncode != 0:
-        return {
-            **result,
-            "status": "error",
-            "path": None,
-            "error": f"git worktree add failed: {(add.stderr or add.stdout).strip()}",
-            "branch": branch,
-        }
-
-    pr_url = None
-    try:
+    def prepare(worktree_dir: Path) -> str | None:
         new_change = subprocess.run(
             ["openspec", "new", "change", v.proposed_change_name],
             check=False,
@@ -1568,16 +1572,10 @@ def _apply_propose_change(v: Verdict, *, agent: str = "claude") -> dict:
             timeout=60,
         )
         if new_change.returncode != 0:
-            return {
-                **result,
-                "status": "error",
-                "path": None,
-                "error": (
-                    "openspec new change failed: "
-                    f"{(new_change.stderr or new_change.stdout).strip()}"
-                ),
-                "branch": branch,
-            }
+            return (
+                "openspec new change failed: "
+                f"{(new_change.stderr or new_change.stdout).strip()}"
+            )
 
         from ..orchestrator import spawnlib
 
@@ -1593,168 +1591,23 @@ def _apply_propose_change(v: Verdict, *, agent: str = "claude") -> dict:
         proposal_path = change_dir / "proposal.md"
         tasks_path = change_dir / "tasks.md"
         if not proposal_path.is_file() or not tasks_path.is_file():
-            return {
-                **result,
-                "status": "error",
-                "path": None,
-                "error": (
-                    "evaluator agent did not produce proposal.md/tasks.md "
-                    f"under {change_dir}"
-                ),
-                "branch": branch,
-            }
-
-        validate = subprocess.run(
-            ["openspec", "validate", v.proposed_change_name, "--strict"],
-            check=False,
-            capture_output=True,
-            text=True,
-            cwd=str(worktree_dir),
-            timeout=120,
-        )
-        if validate.returncode != 0:
-            return {
-                **result,
-                "status": "error",
-                "path": None,
-                "error": (
-                    "openspec validate failed: "
-                    f"{(validate.stderr or validate.stdout).strip()}"
-                ),
-                "branch": branch,
-            }
-
-        commit_message = f"Propose change: {v.proposed_change_name}"
-        for git_args in (["add", "-A"], ["commit", "-m", commit_message]):
-            r = subprocess.run(
-                ["git", *git_args],
-                check=False,
-                capture_output=True,
-                text=True,
-                cwd=str(worktree_dir),
-                timeout=60,
+            return (
+                "evaluator agent did not produce proposal.md/tasks.md "
+                f"under {change_dir}"
             )
-            if r.returncode != 0:
-                return {
-                    **result,
-                    "status": "error",
-                    "path": None,
-                    "error": (
-                        f"git {' '.join(git_args)} failed: "
-                        f"{(r.stderr or r.stdout).strip()}"
-                    ),
-                    "branch": branch,
-                }
+        return None
 
-        push = subprocess.run(
-            ["git", "push", "-u", "origin", branch],
-            check=False,
-            capture_output=True,
-            text=True,
-            cwd=str(worktree_dir),
-            timeout=120,
-        )
-        if push.returncode != 0:
-            return {
-                **result,
-                "status": "error",
-                "path": None,
-                "error": f"git push failed: {(push.stderr or push.stdout).strip()}",
-                "branch": branch,
-            }
-
-        labels = _refresh_pr_labels(worktree_dir, ["go:risk-low"], base_branch) or [
-            "go:risk-low"
-        ]
-        pr_cmd = ["gh", "pr", "create", "--base", base_branch, "--head", branch]
-        for label in labels:
-            pr_cmd += ["--label", label]
-        pr_cmd += [
-            "--title",
-            _planned_fold_propose_pr_title(v),
-            "--body",
-            f"{v.evidence}\n\nProposed via queue-triage from brief `{v.brief_id}`.",
-        ]
-        pr = subprocess.run(
-            pr_cmd,
-            check=False,
-            capture_output=True,
-            text=True,
-            cwd=str(worktree_dir),
-            timeout=60,
-        )
-        pr_output = (pr.stdout or pr.stderr).strip()
-        pr_url = pr_output.splitlines()[-1] if pr_output else ""
-        if pr.returncode != 0 or not pr_url.startswith("http"):
-            pr_url = ""
-            return {
-                **result,
-                "status": "error",
-                "path": None,
-                "error": f"gh pr create failed: {pr_output or '(no output)'}",
-                "branch": branch,
-            }
-    finally:
-        subprocess.run(
-            [
-                "git",
-                "-C",
-                str(repo_path),
-                "worktree",
-                "remove",
-                "--force",
-                str(worktree_dir),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        if not pr_url:
-            subprocess.run(
-                ["git", "-C", str(repo_path), "branch", "-D", branch],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-
-    # A PR now exists -- from here on, closing the brief is safe to attempt.
-    # Any failure past this point is reported against the now-real branch/PR,
-    # never against a not-yet-opened one.
-    claim_res = claim(v.brief_id, by="queue-triage")
-    if claim_res["status"] != "claimed":
-        detail = claim_res.get("error")
-        return {
-            **result,
-            "status": "error",
-            "path": claim_res.get("path"),
-            "error": f"claim: {claim_res['status']}"
-            + (f" ({detail})" if detail else ""),
-            "branch": branch,
-            "pr_url": pr_url,
-        }
-    done_res = done(v.brief_id, note=v.evidence, triaged_to=pr_url)
-    if done_res["status"] != "done":
-        detail = done_res.get("error")
-        release_res = release(v.brief_id)
-        return {
-            **result,
-            "status": "error",
-            "path": done_res.get("path"),
-            "error": f"done: {done_res['status']}" + (f" ({detail})" if detail else ""),
-            "rolled_back": release_res["status"] == "released",
-            "branch": branch,
-            "pr_url": pr_url,
-        }
-    return {
-        **result,
-        "status": "executed",
-        "path": done_res.get("path"),
-        "error": None,
-        "branch": branch,
-        "pr_url": pr_url,
-    }
+    return _worktree_pr_close(
+        v,
+        repo_path=repo_path,
+        branch=branch,
+        base_branch=base_branch,
+        worktree_dir=worktree_dir,
+        prepare=prepare,
+        validate_target=v.proposed_change_name,
+        commit_message=f"Propose change: {v.proposed_change_name}",
+        pr_body=f"{v.evidence}\n\nProposed via queue-triage from brief `{v.brief_id}`.",
+    )
 
 
 def _preview_verdict(v: Verdict, run_date: str) -> dict:
