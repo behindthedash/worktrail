@@ -49,6 +49,8 @@ door actually accepts. Regenerate it rather than editing it by hand.
 <front-door> spec explore <idea>                 idea discovery (Route A)
 <front-door> spec route <A-J> [<id>]             force a route
 <front-door> pr fix                              PR / CI repair
+<front-door> decision list                       list open product decisions awaiting an answer
+<front-door> decision answer <decision-id>       answer a filed decision interactively
 <front-door> <brief-id>                          claim or resume a queued handoff (same as handoff start)
 <front-door> <free text>                       * classify and route any other request
 
@@ -69,10 +71,10 @@ Compatibility spellings, still accepted and read as the form shown:
 <front-door> pr                        = <front-door> pr fix
 ```
 
-The grammar is `<front-door> [<repo>] <noun> <verb> [args]` with three nouns:
-`handoff` (the work queue), `spec` (spec-driven work), and `pr` (an open pull
-request). Forms are listed in the order the parser checks them, so an earlier
-line wins over a later one. A noun typed without a recognised verb shows this
+The grammar is `<front-door> [<repo>] <noun> <verb> [args]` with four nouns:
+`handoff` (the work queue), `spec` (spec-driven work), `pr` (an open pull
+request), and `decision` (the human-decision queue). Forms are listed in the
+order the parser checks them, so an earlier line wins over a later one. A noun typed without a recognised verb shows this
 reference for that noun instead of being routed as free text.
 
 Two bare shortcuts sit outside the noun-verb shape on purpose: `<brief-id>`
@@ -93,14 +95,15 @@ front-door spelling is `handoff start <id>` or the bare `<brief-id>`.
 ## Answering a filed decision
 
 An unattended run that hits a genuine product decision files a record instead
-of guessing, then blocks the brief until you answer. The bare `<front-door>`
-dashboard now surfaces every open decision directly as a picker category —
-selecting one walks you through its Question/Background/Options interactively
-and records your answer, no manual CLI call needed. Full interactive
-procedure: `../worktrail-go/references/answer-decision.md`.
+of guessing, then blocks the brief until you answer. `<front-door> decision
+list` shows what is open, and `<front-door> decision answer <decision-id>`
+walks you through that record's Question/Background/Options interactively and
+records your answer. The bare `<front-door>` dashboard surfaces the same open
+decisions as a picker category. Full interactive procedure:
+`../worktrail-go/references/answer-decision.md`.
 
 For non-interactive use (e.g. scripting an answer), the underlying CLI is
-still available directly, not as a `<front-door>` form:
+still available directly:
 
 ```text
 worktrail-decision list                         everything open/answered/resolved

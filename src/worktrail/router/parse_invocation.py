@@ -9,12 +9,14 @@ was advertised and matched by no bullet, and `/handoff consume` outlived the
 skill rename that made it unresolvable. Prose cannot be unit-tested, so nothing
 caught either one. This module is what the skill calls instead.
 
-The grammar is `<front-door> [<repo>] <noun> <verb> [args]`, with three nouns:
+The grammar is `<front-door> [<repo>] <noun> <verb> [args]`, with four nouns:
 
     handoff   the work queue        new | list | start <id> | auto | drain [n] [repo]
     spec      spec-driven work      new | implement <id> | continue [<id>] | fix
                                     | explore | route <A-J> [<id>]
     pr        an open pull request  fix
+    decision  the human-decision    list | answer <id>
+              queue
 
 Two bare shortcuts stay outside that shape on purpose, because they are the
 two most-typed invocations and carry real muscle memory: a bare `<brief-id>`
@@ -86,7 +88,7 @@ from typing import Any, NamedTuple
 # These are the executor's vocabulary; the front door translates into them.
 V1_INTENTS: tuple[str, ...] = ("new", "implement", "continue", "pr", "brainstorm")
 
-NOUNS: tuple[str, ...] = ("handoff", "spec", "pr")
+NOUNS: tuple[str, ...] = ("handoff", "spec", "pr", "decision")
 
 _ROUTE_LETTER_RE = re.compile(r"^[A-J]$", re.IGNORECASE)
 _ROUTE_RE = re.compile(r"^route:([A-J])$", re.IGNORECASE)
@@ -105,6 +107,8 @@ MODES: tuple[str, ...] = (
     "route",
     "intent",
     "brief",
+    "decision_list",
+    "decision_answer",
     "picker_index",
     "free_text",
 )
@@ -170,6 +174,18 @@ FORMS: tuple[Form, ...] = (
     ),
     Form("<front-door> spec route <A-J> [<id>]", "force a route", "route", True),
     Form("<front-door> pr fix", "PR / CI repair", "intent", True),
+    Form(
+        "<front-door> decision list",
+        "list open product decisions awaiting an answer",
+        "decision_list",
+        True,
+    ),
+    Form(
+        "<front-door> decision answer <decision-id>",
+        "answer a filed decision interactively",
+        "decision_answer",
+        True,
+    ),
     Form(
         "<front-door> <brief-id>",
         "claim or resume a queued handoff (same as handoff start)",
@@ -260,6 +276,7 @@ def _result(raw: str, mode: str, reason: str, **fields: Any) -> dict[str, Any]:
         "brief_path": None,
         "brief_status": None,
         "brief_candidates": [],
+        "decision_id": None,
         "picker_index": None,
         "free_text": None,
         "reason": reason,
@@ -522,6 +539,19 @@ def _parse_noun_verb(
                 "explicit route override",
                 route=args[0].upper(),
                 spec=args[1] if len(args) > 1 else None,
+                **common,
+            )
+        return unknown()
+
+    if noun == "decision":
+        if verb == "list":
+            return _result(raw, "decision_list", "list open decisions", **common)
+        if verb == "answer" and args:
+            return _result(
+                raw,
+                "decision_answer",
+                "answer a filed decision",
+                decision_id=args[0],
                 **common,
             )
         return unknown()
