@@ -28,6 +28,6 @@
 
 ## 5. Verification and handoffs
 
-- [ ] 5.1 [e2e] Run `PYTHONPATH=src pytest -q`, `ruff check .`, and `ruff format --check .` and confirm all three pass; depends on 4.3.
-- [ ] 5.2 [e2e] Run `worktrail-drain --intake-triage --seed-backlog --dry-run --json` against the live `$WORK_QUEUE_DIR` and confirm the `intake_triage` and `seed_backlog` summary blocks populate while `git status` in every repo under `~/projects` and the queue directory show no modifications; depends on 5.1.
-- [ ] 5.3 [cleanup] Capture the operator follow-ups as `worktrail-handoff` briefs (not GitHub issues): adding `--intake-triage --seed-backlog` to the `devops` nightly drain script; choosing `max_active_changes` and `allow_seeded_implementation` for datalena; and an optional `triaged-to` dangling-PR check in stale-bookkeeping detection; depends on 5.2.
+- [x] 5.1 [e2e] Run `PYTHONPATH=src pytest -q`, `ruff check .`, and `ruff format --check .` and confirm all three pass; depends on 4.3.
+- [x] 5.2 [e2e] Run `worktrail-drain --intake-triage --seed-backlog --dry-run --json` against the live `$WORK_QUEUE_DIR` and confirm the `intake_triage` and `seed_backlog` summary blocks populate while `git status` in every repo under `~/projects` and the queue directory show no modifications; depends on 5.1.
+- [x] 5.3 [cleanup] Capture the operator follow-ups as `worktrail-handoff` briefs (not GitHub issues): adding `--intake-triage --seed-backlog` to the `devops` nightly drain script; choosing `max_active_changes` and `allow_seeded_implementation` for datalena; and an optional `triaged-to` dangling-PR check in stale-bookkeeping detection; depends on 5.2.
