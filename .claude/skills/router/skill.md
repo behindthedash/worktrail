@@ -16,6 +16,8 @@ triggers:
     - scope_review
     - parse_invocation
     - noun-verb grammar
+    - triage_keep_limit
+    - triage_max_queue_age_days
 ---
 
 You are working on **worktrail's GO v2 front door**: loading repo policy, classifying free-text
@@ -60,6 +62,14 @@ agents or writes task files — that is `orchestrator/`'s job.
   to the safe default (`{}` / `None` / disabled) with a warning appended to `meta["warnings"]`,
   never widens autonomy. `automerge.max_risk`, `agent_cli`, `fallback_agent_cli`, `agent_model`,
   `max_workers`, and `pr_pacing_wait_s` are all validated/clamped the same way in `load_policy`.
+- **Integer policy keys follow the `triage_keep_limit` validation pattern.** `triage_keep_limit`
+  (default 2) and `triage_max_queue_age_days` (default 14) are the intake-triage escalation
+  bounds: a value that is not an `int`, is a `bool`, or is below 1 is forced back to `DEFAULTS[key]`
+  with a `meta["warnings"]` entry naming the key. Their consumer is `workqueue/queue_triage.py`'s
+  escalation, which reads them with `.get(key, default)` so the policy side and the consumer side
+  can land in either order — as of 2026-09-02 the keys are in `DEFAULTS` but no consumer reads
+  them yet in this checkout. Copy this loop when adding another bounded-int key rather than
+  inventing a new validation shape.
 - **`automerge.enabled: false` does not, by itself, block orchestrator-driven merges.** Only
   `automerge_eligible()` reads that key, and only when an agent follows sdd-workflow's Phase 8
   merge-gate instructions — `orchestrator`'s own `auto_merge()` is a separate code path that
