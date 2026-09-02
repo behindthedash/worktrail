@@ -19,6 +19,8 @@ triggers:
     - spec_ref
     - merge_method_by_base
     - auto_merge
+    - _pipeline_scheduler
+    - FIRST_COMPLETED
 ---
 
 You are working on **worktrail's task-orchestration core**: compiling specs/changes into a
@@ -40,6 +42,21 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
 - **`TAIL_KINDS = {"e2e", "cleanup"}`** are always held out of the parallel fan-out and run
   serialized last — a RunPlan can add fields but can never "un-hold-out" a tail task (`kind` is
   sticky in the safe direction).
+- **The pipeline fan-out refills a freed slot immediately, never per tick**
+  (`live._pipeline_scheduler`): tasks run in one long-lived `ThreadPoolExecutor(max_workers)`
+  and the loop `wait(..., return_when=FIRST_COMPLETED)`s, re-running `runnable_frontier` after
+  every completion. The old loop blocked on the whole tick's futures, so a fast task's slot
+  idled behind the slowest task's review/fix strikes (2 of 3 slots idle 35+ min with 4 ready
+  tasks, run orchestrator-throughput, 2026-09-02). Re-running the frontier while tasks are in
+  flight is only safe because a dispatched task is flipped `pending -> "claimed"` under
+  `state_lock` *before* the next frontier pass — `coordinator.IN_FLIGHT` includes `claimed`, so
+  the frontier neither re-dispatches it nor hands out its files. Never submit a task to the
+  pool without that transition, and never compute the frontier outside the lock.
+- **A run-budget break does not abandon mid-flight tasks**: the fan-out pool is shut down with
+  `wait=True` in a `finally`, so running tasks reach a terminal state (journaled as they go)
+  before `_dispatch_terminal_groups()` runs a final time and integrate/verify proceeds.
+  `tests/orchestrator/test_slot_refill_scheduler.py` pins both the refill and the
+  `max_workers` cap / dependency ordering.
 - **AddOns run after a task's own work, before commit** (`addons/runner.run_addons`,
   called from `orchestrator/integrate.py` and `router/preflight.py`). `install`/`configure`
   failures are swallowed (best-effort priming); `run()` failures propagate. An add-on config'd
@@ -79,12 +96,15 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
 
 ## Critical files
 - `conductor/runplan.py` — RunPlan safety rule and `unordered_file_collisions()` assertion
-- `orchestrator/coordinator.py` — `runnable_frontier`/`plan_groups`, pure/side-effect-free
+- `orchestrator/coordinator.py` — `runnable_frontier`/`plan_groups`, pure/side-effect-free;
+  `IN_FLIGHT` is the status set the slot-refilling scheduler relies on
 - `taskformats/base.py` — `TaskSource` protocol; `orchestrator/` must never construct a
   format-specific task path itself, always go through the active `TaskSource`
 - `addons/runner.py` — the only caller of `AddOn.install`/`configure`/`run`
 - `orchestrator/live.py` — `_default_merge_method`/`_default_post_merge_smoke_cmd`: the
-  code-level policy defaults `main()` applies to `full-real` when a flag is omitted
+  code-level policy defaults `main()` applies to `full-real` when a flag is omitted;
+  `_pipeline_scheduler`: the slot-refilling fan-out loop and its `_dispatch_terminal_groups`
+  hand-off to the integrate+verify pool
 - `orchestrator/verify.py` — `auto_merge()` and `_retry_auto_merge_methods`; the only place a
   merge-method rejection is turned into a method retry
 
