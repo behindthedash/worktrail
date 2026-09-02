@@ -1418,6 +1418,38 @@ class SingleBriefTriageTests(unittest.TestCase):
             )
         self.assertIsNone(verdict)
 
+    def test_evaluate_single_brief_repo_less_cwd_fallback_matches_cmd_evaluate(self):
+        """No `cwd` and no `repo` must fall back to `_worktrail_repo_root()`,
+        matching `cmd_evaluate()`'s own per-group `cwd` choice -- not the
+        process's current directory, which would diverge from a scheduled
+        `evaluate` run when `/go` is invoked from outside the checkout."""
+        captured = {}
+
+        def fake_evaluate_group(group_repo, briefs, *, agent, cwd):
+            captured["cwd"] = cwd
+            return [
+                {
+                    "repo": group_repo,
+                    "brief_ids": [],
+                    "raw_text": "",
+                    "candidates_by_brief": {},
+                }
+            ]
+
+        with (
+            patch(
+                "worktrail.workqueue.queue_triage.evaluate_group",
+                side_effect=fake_evaluate_group,
+            ),
+            patch(
+                "worktrail.workqueue.queue_triage._worktrail_repo_root",
+                return_value=Path("/fake/repo/root"),
+            ),
+        ):
+            skill_dispatch.evaluate_single_brief(self.brief, repo=None)
+
+        self.assertEqual(captured["cwd"], "/fake/repo/root")
+
     def test_apply_single_brief_verdict_keep_is_a_noop_even_without_confirm(self):
         from worktrail.workqueue.queue_triage import Verdict
 

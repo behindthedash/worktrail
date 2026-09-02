@@ -231,14 +231,15 @@ def evaluate_single_brief(
     ranked-candidates prompt, archived-repo short-circuit, and WIP-cap preview
     apply to an interactive single-brief triage as to a full `evaluate` run --
     the only difference is the group has one member. `cwd` defaults to `repo`
-    (or the current directory for a repo-less brief), matching `cmd_evaluate()`'s
-    own per-group `cwd` choice. Returns the parsed `Verdict` for `brief_path`, or
-    `None` on the (should-not-happen) case that the evaluator produced no
-    verdict at all for this brief's id -- callers must treat that as "nothing to
-    present or apply", never guess a verdict.
+    (or `_worktrail_repo_root()` for a repo-less brief), matching
+    `cmd_evaluate()`'s own per-group `cwd` choice exactly. Returns the parsed
+    `Verdict` for `brief_path`, or `None` on the (should-not-happen) case that
+    the evaluator produced no verdict at all for this brief's id -- callers
+    must treat that as "nothing to present or apply", never guess a verdict.
     """
     from ..workqueue.queue_triage import (
         NO_REPO_KEY,
+        _worktrail_repo_root,
         apply_wip_cap_preview,
         evaluate_group,
         parse_verdicts,
@@ -246,7 +247,7 @@ def evaluate_single_brief(
 
     path = Path(brief_path)
     group_repo = repo if repo else NO_REPO_KEY
-    group_cwd = cwd or (repo if repo else os.getcwd())
+    group_cwd = cwd or (repo if repo else str(_worktrail_repo_root()))
     [result] = evaluate_group(group_repo, [path], agent=agent, cwd=group_cwd)
     verdicts = parse_verdicts(
         result["raw_text"],

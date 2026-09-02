@@ -231,9 +231,11 @@ If the user selects **"Other"** at either level, treat the typed input as a free
 
 **Intake-brief triage gate (direct `worktrail-go BRIEF-ID` dispatch only, spec `intake-to-spec-triage`).**
 When `$BRIEF_ID` was held from Phase 1's `brief` mode (the user named a specific brief id
-directly, not a Level-2 picker selection), look up that brief's `kind` in
-`$QUEUE_JSON_FILE`'s `briefs[]` (match on `filename`, 1.1's `work_queue.brief_kind()`)
-before doing anything else:
+directly, not a Level-2 picker selection), look up that brief's `kind` and `repo` in
+`$QUEUE_JSON_FILE`'s `briefs[]` (match on `filename`, 1.1's `work_queue.brief_kind()`;
+the same entry's `repo` field is the brief's own `repo:` frontmatter, hold it as
+`$BRIEF_REPO` — this is **not** `$ARG_REPO`, which is only set when the user typed a
+repo token in the invocation itself) before doing anything else:
 
 - **`kind: execution`** (a `seeded-from:` brief) — unaffected; continue to the `claim`
   action below exactly as before.
@@ -247,11 +249,11 @@ before doing anything else:
      ```bash
      VERDICT_JSON=$(worktrail-skill-dispatch \
        --evaluate-brief-triage "$BRIEF_PATH" \
-       ${ARG_REPO:+--triage-repo "$ARG_REPO"} \
+       ${BRIEF_REPO:+--triage-repo "$BRIEF_REPO"} \
        --triage-agent "$INVOCATION_CONTEXT_AGENT")
      ```
-     A brief with no `repo:` frontmatter omits `--triage-repo` (evaluated in the
-     `NO_REPO_KEY` group, same as a full `evaluate` run). Exit 1 with `VERDICT_JSON`
+     A brief with no `repo:` frontmatter (`$BRIEF_REPO` empty) omits `--triage-repo`
+     (evaluated in the `NO_REPO_KEY` group, same as a full `evaluate` run). Exit 1 with `VERDICT_JSON`
      printing `null` means the evaluator produced no identifiable verdict for this
      brief id at all — report that and stop rather than guessing one.
   2. Present the verdict (`verdict`, `evidence`, `confidence`, and any target field —
