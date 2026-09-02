@@ -105,6 +105,8 @@
           "risk label",
           "classify",
           "scope_review",
+          "parse_invocation",
+          "noun-verb grammar",
           "router",
           "front",
           "door",
@@ -115,7 +117,9 @@
         ],
         "intentPatterns": [
           "(create|update|fix|add|modify|change|debug|refactor|implement|build).*risk label",
-          "risk label.*(create|update|fix|add|modify|change|debug|refactor|implement|build)"
+          "risk label.*(create|update|fix|add|modify|change|debug|refactor|implement|build)",
+          "(create|update|fix|add|modify|change|debug|refactor|implement|build).*noun-verb grammar",
+          "noun-verb grammar.*(create|update|fix|add|modify|change|debug|refactor|implement|build)"
         ]
       }
     },

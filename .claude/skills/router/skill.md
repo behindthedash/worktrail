@@ -14,6 +14,8 @@ triggers:
     - risk label
     - classify
     - scope_review
+    - parse_invocation
+    - noun-verb grammar
 ---
 
 You are working on **worktrail's GO v2 front door**: loading repo policy, classifying free-text
@@ -26,6 +28,29 @@ spawned agent's own `gh pr create` came out correctly labeled (pr_labels). Nothi
 agents or writes task files — that is `orchestrator/`'s job.
 
 ## Business rules / invariants
+- **The front-door grammar is code, not prose: `parse_invocation.py` owns it.** The shape is
+  `<front-door> [<repo>] <noun> <verb> [args]` with exactly three nouns (`NOUNS`: `handoff`,
+  `spec`, `pr`), plus two deliberate bare shortcuts (`<brief-id>` = `handoff start <id>`, and
+  `<repo>` = that repo's dashboard) and the read-only `help`/empty invocations. Every
+  pre-noun-verb spelling (`auto`, `drain`, `new`, `implement spec <id>`, `continue`, `pr`,
+  `brainstorm`, `fix`, `route:<A-J>`, `handoff:<id>`) is **permanent, not deprecated** — `ALIASES`
+  lists them and `_canonicalize` rewrites only a bare leading token, so a spelled-out noun-verb form
+  is never rewritten twice. Add a new form to `FORMS`/`ALIASES` and the parser together, never one
+  without the other.
+- **A noun with no recognised verb returns `mode: help`, never free text.** Free text containing
+  the word `handoff` classifies to Route E at high confidence in `classify.py` (joint-highest-weight
+  signal plus a state boost whenever the queue is non-empty), so anything that escapes the parser
+  lands on the wrong route silently. `handoff new` must also never reach the intent branch as
+  `repo=handoff, intent=new` — the noun-verb match runs above the bare intent words on purpose.
+  `pr` is the one exception: bare `pr` (and `pr <text>`) still means the old `pr` intent.
+- **The parser translates into the executor's vocabulary, not the user's.** `worktrail-sdd-workflow`
+  still speaks `handoff:<id>`, `route:<X>`, and the v1 intent words (`V1_INTENTS`); so `spec
+  explore` yields `intent: brainstorm`, and `spec fix` yields `route: F` (the executor has no `fix`
+  intent). The result's `canonical` field carries the noun-verb spelling so the skill can print
+  `(reads as: worktrail-go <canonical>)` when it differs from `raw`; it is `None` for free text.
+- **`worktrail-help`'s reference block is generated from `FORMS` + `ALIASES` via `render_forms()`**
+  and pinned by `tests/router/test_parse_invocation.py::test_help_forms_block_matches_the_parser_registry`
+  — regenerate it, never hand-edit it. Only `<free text>` may carry `parsed=False`.
 - **`policy.py` uses two YAML parsers on purpose.** Most keys go through `parse_policy_yaml`, a
   flat, stdlib-only, one-nesting-level subset. `routing:` and `add_ons:` are re-parsed with real
   `yaml.safe_load` (`_resolve_routing`, `_resolve_add_ons`) because both need arbitrary nesting
@@ -69,6 +94,10 @@ agents or writes task files — that is `orchestrator/`'s job.
   `[NEEDS CLARIFICATION: ...]` markers in the spec body instead.
 
 ## Critical files
+- `router/parse_invocation.py` — the `worktrail-go` Phase 1 grammar (`parse`, `FORMS`, `ALIASES`,
+  `NOUNS`, `MODES`, `render_forms`); never shells out or writes, reads `queue/` only when a folder
+  is supplied, and delegates repo names to the caller (`--repos`) and brief-id resolution to
+  `work_queue.resolve()` so nothing here becomes a second implementation
 - `router/policy.py` — `load_policy()`; the single source of truth for a repo's resolved GO policy
 - `router/run_record.py` — `finish()`'s ten-state enforcement and its two code-enforced gates;
   `cmd_scope_review` write-time reason validation and `OUT_OF_SCOPE_REASON_PREFIXES`
