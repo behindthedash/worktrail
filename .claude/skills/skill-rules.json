@@ -105,6 +105,10 @@
           "risk label",
           "classify",
           "scope_review",
+          "parse_invocation",
+          "noun-verb grammar",
+          "triage_keep_limit",
+          "triage_max_queue_age_days",
           "router",
           "front",
           "door",
@@ -115,7 +119,9 @@
         ],
         "intentPatterns": [
           "(create|update|fix|add|modify|change|debug|refactor|implement|build).*risk label",
-          "risk label.*(create|update|fix|add|modify|change|debug|refactor|implement|build)"
+          "risk label.*(create|update|fix|add|modify|change|debug|refactor|implement|build)",
+          "(create|update|fix|add|modify|change|debug|refactor|implement|build).*noun-verb grammar",
+          "noun-verb grammar.*(create|update|fix|add|modify|change|debug|refactor|implement|build)"
         ]
       }
     },
@@ -170,6 +176,8 @@
           "queue/",
           "queue_triage",
           "duplicate-of",
+          "repo_inference",
+          "infer_repo",
           "workqueue",
           "handoff-brief",
           "queue",
@@ -209,6 +217,8 @@
           "spec_ref",
           "merge_method_by_base",
           "auto_merge",
+          "_pipeline_scheduler",
+          "FIRST_COMPLETED",
           "worktrail",
           "task",
           "orchestration",
