@@ -3034,6 +3034,87 @@ class StaleBookkeeping(unittest.TestCase):
         self.assertIn("TASK-068-90", r["next_action"])
         self.assertEqual(r["stale_task_ids"], ["TASK-068-90"])
 
+    def _reconciled_task(
+        self,
+        spec_dir: Path,
+        tid: str,
+        files,
+        *,
+        status="implemented",
+        marker=True,
+        frontmatter_extra: str = "",
+    ) -> None:
+        td = spec_dir / "tasks"
+        td.mkdir(exist_ok=True)
+        files_str = "[" + ", ".join(files) + "]"
+        body = (
+            "\n> **UI REMOVED (2026-07-18)**: shipped, then removed by PR #576.\n"
+            if marker
+            else ""
+        )
+        (td / f"{tid}.md").write_text(
+            f"---\nid: {tid}\nstatus: {status}\nkind: impl\n{frontmatter_extra}"
+            f"files: {files_str}\ndependencies: []\n---\n{body}# {tid}\n"
+        )
+
+    def test_implemented_with_supersession_marker_is_not_stale(self):
+        # Regression for brief 20260901-181244 (GGB TASK-CHG-003): a task parked
+        # at status: implemented with an explicit "UI REMOVED" reconciliation note
+        # is settled bookkeeping -- the sweep must not re-flag it "confirm & close".
+        spec = self._spec_dir()
+        files = ["app/src/inbox.tsx"]
+        self._reconciled_task(spec, "TASK-CHG-003", files)
+        self._commit(files)
+        r = dashboard.detect_stage(spec)
+        self.assertNotEqual(r["stage"], "stale-bookkeeping")
+        self.assertNotEqual(r["next_action"], "orchestrator")
+        self.assertNotIn("TASK-CHG-003", r["next_action"])
+        self.assertEqual(r["tasks"]["pending"], 0)
+
+    def test_frontmatter_opt_out_is_not_stale(self):
+        spec = self._spec_dir()
+        files = ["app/src/inbox.tsx"]
+        self._reconciled_task(
+            spec,
+            "TASK-CHG-003",
+            files,
+            marker=False,
+            frontmatter_extra="stale-sweep: exempt\n",
+        )
+        self._commit(files)
+        r = dashboard.detect_stage(spec)
+        self.assertNotEqual(r["stage"], "stale-bookkeeping")
+        self.assertEqual(r["tasks"]["pending"], 0)
+
+    def test_marker_without_implemented_status_still_stale(self):
+        # The body marker only reconciles a status: implemented task; a pending
+        # task carrying the same note but shipped files is still stale bookkeeping.
+        spec = self._spec_dir()
+        files = ["app/src/inbox.tsx"]
+        self._reconciled_task(spec, "TASK-CHG-003", files, status="pending")
+        self._commit(files)
+        r = dashboard.detect_stage(spec)
+        self.assertEqual(r["stage"], "stale-bookkeeping")
+        self.assertEqual(r["stale_task_ids"], ["TASK-CHG-003"])
+
+    def test_implemented_without_marker_still_stale(self):
+        spec = self._spec_dir()
+        files = ["app/src/inbox.tsx"]
+        self._reconciled_task(spec, "TASK-CHG-003", files, marker=False)
+        self._commit(files)
+        r = dashboard.detect_stage(spec)
+        self.assertEqual(r["stage"], "stale-bookkeeping")
+        self.assertEqual(r["stale_task_ids"], ["TASK-CHG-003"])
+
+    def test_reconciled_alongside_stale_sibling_flags_only_sibling(self):
+        spec = self._spec_dir()
+        self._reconciled_task(spec, "TASK-CHG-003", ["app/src/inbox.tsx"])
+        self._task(spec, "TASK-CHG-005", "pending", ["app/src/other.tsx"])
+        self._commit(["app/src/inbox.tsx", "app/src/other.tsx"])
+        r = dashboard.detect_stage(spec)
+        self.assertEqual(r["stage"], "stale-bookkeeping")
+        self.assertEqual(r["stale_task_ids"], ["TASK-CHG-005"])
+
     def test_mixed_real_and_stale_tail_keeps_tail_pending(self):
         # One tail task already merged (stale) + one tail task genuinely still
         # pending -> real tail work remains, so the spec stays tail-pending and
