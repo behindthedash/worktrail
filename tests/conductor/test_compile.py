@@ -1759,3 +1759,73 @@ def test_cli_compiling_from_a_worktree_caches_under_the_canonical_repo(
     expected_cache_dir = conductor_compile.default_cache_dir(repo)
     assert str(expected_cache_dir) in cache_line
     assert str(worktree) not in cache_line
+
+
+def test_the_cli_warns_when_the_repaired_dag_collapses_to_a_serial_chain(
+    tmp_path, capsys
+):
+    """The 2026-09-01 incident shape: every task declares the same file, so the
+    same-file repair serialises all of them. The compile is *correct* (exit 0,
+    marker written) but must now say so out loud instead of only printing the
+    dep table."""
+    import subprocess
+    from unittest.mock import patch
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    d = repo / "openspec" / "changes" / "add-thing"
+    d.mkdir(parents=True)
+    (d / "proposal.md").write_text("## Why\nBecause.\n")
+    n = 7
+    (d / "tasks.md").write_text(
+        "## 1. Core\n\n" + "".join(f"- [ ] 1.{i} Step {i}\n" for i in range(1, n + 1))
+    )
+    reply = _reply(
+        **{f"1.{i}": {"files": ["src/triage.py"], "deps": []} for i in range(1, n + 1)}
+    )
+    with patch("worktrail.conductor.compile._default_spawn", return_value=reply):
+        rc = conductor_compile.main([str(d)])
+    out, err = capsys.readouterr()
+    assert rc == 0
+    assert "auto-repaired" in out
+    assert f"parallelism: {n} task(s), critical path {n}, width 1" in out
+    assert "WARN: task DAG is effectively serial" in err
+    assert "src/triage.py" in err
+
+    with patch("worktrail.conductor.compile._default_spawn", return_value=reply):
+        rc = conductor_compile.main([str(d), "--json"])
+    out, err = capsys.readouterr()
+    assert rc == 0
+    payload = json.loads(out)
+    assert payload["parallelism"]["serialized"] is True
+    assert payload["parallelism"]["critical_path"] == n
+    assert payload["parallelism"]["estimated_minutes"] > 0
+    assert "WARN: task DAG is effectively serial" in err
+
+
+def test_the_cli_prints_the_parallelism_summary_without_a_warning_for_a_fan_out(
+    tmp_path, capsys
+):
+    import subprocess
+    from unittest.mock import patch
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    d = repo / "openspec" / "changes" / "add-thing"
+    d.mkdir(parents=True)
+    (d / "proposal.md").write_text("## Why\nBecause.\n")
+    (d / "tasks.md").write_text("## 1. Core\n\n- [ ] 1.1 A\n- [ ] 1.2 B\n")
+    reply = _reply(
+        **{
+            "1.1": {"files": ["src/a.py"], "deps": []},
+            "1.2": {"files": ["src/b.py"], "deps": []},
+        }
+    )
+    with patch("worktrail.conductor.compile._default_spawn", return_value=reply):
+        rc = conductor_compile.main([str(d)])
+    out, err = capsys.readouterr()
+    assert rc == 0
+    assert "parallelism: 2 task(s), critical path 1, width 2" in out
+    assert "WARN" not in err

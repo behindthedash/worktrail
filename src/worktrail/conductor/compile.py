@@ -38,7 +38,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from worktrail.conductor import req_coverage, runplan
+from worktrail.conductor import parallelism, req_coverage, runplan
 from worktrail.conductor.runplan import (
     COMPILE_MARKER_NAME,
     SOURCE_BASELINE,
@@ -702,8 +702,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not (gaps or collisions or uncovered):
         write_marker(spec_dir, plan.fingerprint)
 
+    # Advisory shape/wall-clock signal (parallelism.py): a plan can be correct
+    # and still fully serialised, which no gap check above can see.
+    prof = parallelism.profile(merged)
+    est_min, est_basis = parallelism.estimate_minutes(
+        prof, parallelism.journals_beside(repo)
+    )
+    serial_warning = parallelism.format_warning(prof, est_min, est_basis)
+
     if a.json:
-        print(json.dumps(plan.to_dict(), indent=2, sort_keys=True))
+        payload = plan.to_dict()
+        payload["parallelism"] = {
+            **prof.to_dict(),
+            "estimated_minutes": round(est_min, 1),
+            "estimate_basis": est_basis,
+        }
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        if serial_warning:
+            print(serial_warning, file=sys.stderr)
         if gaps:
             _print_scope_gap_error(gaps)
         if collisions:
@@ -722,6 +738,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(
             f"  {t['id']:<10} deps={','.join(t.get('deps') or []) or '-':<24} files={len(t.get('files') or [])}"
         )
+    print(f"  {parallelism.summary_line(prof)}")
+    if serial_warning:
+        print(serial_warning, file=sys.stderr)
 
     if gaps:
         _print_scope_gap_error(gaps)

@@ -50,7 +50,16 @@ Route C (feature-planning), and Route D when no spec exists.
    ```
 
    Fix `tasks.md` in place inside `$WT` and re-run until it passes — never push
-   the docs-only PR on a failing compile. Devkit-format changes already declare
+   the docs-only PR on a failing compile. A passing compile can still print
+   `WARN: task DAG is effectively serial (N tasks, critical path L, width W) ... projected wall-clock ~H h`
+   on stderr (the `parallelism:` summary line shows critical path and width for
+   every plan): the plan is correct but tasks will run (almost) one at a time
+   regardless of `max-workers`, typically because the same-file repair chained
+   tasks that all touch one file. Treat that as a re-scope prompt — consolidate
+   the chained steps into fewer, coarser tasks in `tasks.md` before the spec PR
+   (brief 20260901-175140: 19 same-file tasks, ~50 min each, ~16 h discovered
+   four hours in). `worktrail-live precheck` repeats the same WARN before
+   `full-real`, so it also reaches the `#precheck-gate` ask. Devkit-format changes already declare
    file scope in task frontmatter and take compile's free seed path (no model
    call), so this is effectively a no-op there.
 
