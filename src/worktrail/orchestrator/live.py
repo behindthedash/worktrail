@@ -423,8 +423,27 @@ def apply_run_plan(
     merged, notes = _runplan.apply_to_tasks(tasks, plan)
     for n in notes:
         print(f"{_ts()} {n}")
+    for line in _parallelism_lines(repo, merged):
+        print(f"{_ts()} {line}")
     _record_plan_fingerprint(repo, spec_rel, plan)
     return merged
+
+
+def _parallelism_lines(repo: Path, merged: list[dict]) -> list[str]:
+    """Advisory DAG-shape lines for a merged task list: the parallelism
+    summary always, plus `parallelism.format_warning`'s serialised-chain
+    warning when it applies (see that module's docstring for the incident)."""
+    from ..conductor import parallelism
+
+    prof = parallelism.profile(merged)
+    minutes, basis = parallelism.estimate_minutes(
+        prof, parallelism.journals_beside(repo)
+    )
+    lines = [parallelism.summary_line(prof)]
+    warning = parallelism.format_warning(prof, minutes, basis)
+    if warning:
+        lines.append(warning)
+    return lines
 
 
 def _pinned_plan_fingerprint(repo: Path, spec_rel: str) -> str | None:
@@ -1158,6 +1177,17 @@ def precheck(repo: Path, spec_rel: str) -> int:
     spec_id, tasks = taskformats.load_spec(str(repo / spec_rel))
     warn_count = 0
 
+    # DAG-shape check against the plan `full-real` would actually schedule
+    # (cached/seeded only -- precheck never spends a model call). A fully
+    # serialised chain is a WARN so the operator can re-scope tasks.md before
+    # launch instead of discovering the projected wall-clock hours in.
+    for line in _parallelism_lines(
+        repo, _planned_tasks_without_llm(repo, spec_rel, spec_id, tasks)
+    ):
+        if line.startswith("WARN:"):
+            print(line)
+            warn_count += 1
+
     validate_dependencies = getattr(
         taskformats.task_source_for(repo / spec_rel), "validate_dependencies", None
     )
@@ -1265,6 +1295,25 @@ def precheck(repo: Path, spec_rel: str) -> int:
             )
 
     return 1 if warn_count > 0 else 0
+
+
+def _planned_tasks_without_llm(
+    repo: Path, spec_rel: str, spec_id: str, tasks: list[dict]
+) -> list[dict]:
+    """Tasks merged with the cached or seeded RunPlan, never a fresh compile.
+    Falls back to the raw tasks when no plan can be read, so precheck stays a
+    read-only, no-spawn step."""
+    from ..conductor import compile as conductor_compile
+    from ..conductor import runplan as _runplan
+
+    try:
+        plan = conductor_compile.compile_run_plan(
+            repo / spec_rel, tasks, spec_id=spec_id, repo=repo, allow_llm=False
+        )
+    except OSError:
+        return tasks
+    merged, _notes = _runplan.apply_to_tasks(tasks, plan)
+    return merged
 
 
 def _journal_failure_entry(

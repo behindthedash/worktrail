@@ -1086,5 +1086,44 @@ class TestPrecheckDependencyValidation(unittest.TestCase):
             self.assertEqual(captured.getvalue().strip(), "")
 
 
+class TestPrecheckSerialisedDag(unittest.TestCase):
+    """A pending task DAG that collapses to one serial chain WARNs before launch
+    (brief 20260901-175140: 19 same-file tasks ran one at a time for hours)."""
+
+    def _chain(self, n):
+        tasks = []
+        for i in range(1, n + 1):
+            extra = {"dependencies": f"[TASK-{i - 1:03d}]"} if i > 1 else None
+            tasks.append(
+                _make_task(f"TASK-{i:03d}", files=[f"src/new_{i}.py"], extra_fm=extra)
+            )
+        return tasks
+
+    def test_a_long_serial_chain_warns_with_a_wall_clock_projection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_root = Path(tmp)
+            _make_spec_dir(tmp_root, self._chain(6))
+            captured = io.StringIO()
+            with mock.patch("sys.stdout", captured):
+                result = live.precheck(tmp_root, "specs/001-test")
+            output = captured.getvalue()
+            self.assertEqual(result, 1)
+            self.assertIn(
+                "WARN: task DAG is effectively serial (6 tasks, critical path 6, width 1)",
+                output,
+            )
+            self.assertIn("projected wall-clock", output)
+
+    def test_a_short_chain_stays_silent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_root = Path(tmp)
+            _make_spec_dir(tmp_root, self._chain(3))
+            captured = io.StringIO()
+            with mock.patch("sys.stdout", captured):
+                result = live.precheck(tmp_root, "specs/001-test")
+            self.assertEqual(result, 0)
+            self.assertEqual(captured.getvalue().strip(), "")
+
+
 if __name__ == "__main__":
     unittest.main()
