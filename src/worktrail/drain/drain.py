@@ -141,6 +141,7 @@ from ..shared.homedir import worktrail_home
 from ..taskformats.devkit.schema import set_status_completed
 from ..taskformats.openspec.schema import STATUS_COMPLETED, parse_tasks_md
 from ..workqueue import decisions as decisions_mod
+from ..workqueue import queue_triage as queue_triage_mod
 from ..workqueue import seed_backlog as seed_backlog_mod
 from ..workqueue.invocation import WORK_QUEUE_PY, build_work_queue_argv
 from . import stuck_remediation
@@ -2191,6 +2192,8 @@ class DrainConfig:
     dry_run: bool = False
     repos_root: Path | None = None
     seed_backlog: bool = True
+    intake_triage: bool = False
+    seed_backlog_pass: bool = False
     max_workers: int = 1
     stuck_threshold: int = 3
     stuck_history_path: Path | None = None
@@ -2251,6 +2254,43 @@ def run_one_shot(
         return SpawnOutcome(124, stdout or "", stderr or "")
 
 
+def _intake_triage_out_dir(now: datetime | None = None) -> Path:
+    """Timestamped `worktrail_home()/triage/drain-<stamp>/` for a drain-driven
+    triage run, mirroring `queue_triage._default_out_dir()`'s own layout
+    (`worktrail_home()/triage/<run-id>/`) without depending on that private
+    helper directly."""
+    now = now or datetime.now(timezone.utc)
+    return worktrail_home() / "triage" / f"drain-{now.strftime('%Y%m%dT%H%M%SZ')}"
+
+
+def run_intake_triage_prepass(
+    queue_dir: Path | None,
+    log: Callable[[str], None],
+) -> dict[str, Any]:
+    """`--intake-triage`'s pre-loop pass: run `queue_triage`'s `evaluate` over
+    every queued intake brief, then `apply --confirm` the resulting verdicts,
+    closing the intake loop before drain's own claim loop ever runs.
+
+    Raises on any evaluate/apply failure -- the caller (`drain()`) is
+    responsible for catching it, logging it, and continuing, exactly like the
+    seed-backlog pre-pass below: an intake-triage failure must never abort an
+    otherwise-healthy drain run.
+    """
+    out_dir = _intake_triage_out_dir()
+    evaluate_argv = ["evaluate", "--out-dir", str(out_dir)]
+    if queue_dir is not None:
+        evaluate_argv += ["--queue-dir", str(queue_dir)]
+    exit_code = queue_triage_mod.main(evaluate_argv)
+    if exit_code != 0:
+        raise RuntimeError(f"queue_triage evaluate exited {exit_code}")
+    verdict_file = out_dir / "verdict.json"
+    apply_argv = ["apply", "--verdict-file", str(verdict_file), "--confirm"]
+    exit_code = queue_triage_mod.main(apply_argv)
+    if exit_code != 0:
+        raise RuntimeError(f"queue_triage apply exited {exit_code}")
+    return {"out_dir": str(out_dir)}
+
+
 def drain(
     config: DrainConfig,
     spawner: Callable[[list[str], int], SpawnOutcome] | None = None,
@@ -2293,8 +2333,21 @@ def drain(
     active_model: str | None = None
     active_effort: str | None = None
     seeded_backlog: dict[str, Any] = {}
+    intake_triage_result: dict[str, Any] = {}
+    seed_backlog_pass_result: dict[str, Any] = {}
     routing = machine_wide_routing()
     try:
+        if slot == 0 and not config.dry_run and config.intake_triage:
+            # Close the intake loop BEFORE the leader's own sweeps/seeding and
+            # BEFORE the claim loop's first ready-count check, so a brief
+            # triage turns into an execution brief (work-directly) or a fold/
+            # propose PR can drain in this same pass. Best-effort, same
+            # never-abort discipline as the seed-backlog pass below.
+            try:
+                intake_triage_result = run_intake_triage_prepass(config.queue_dir, log)
+            except Exception as exc:  # noqa: BLE001
+                log(f"intake-triage error: {exc}")
+                intake_triage_result = {"error": str(exc)}
         if slot == 0 and config.repos_root is not None and not config.dry_run:
             resumed = sweep_remediations(
                 config.repos_root,
@@ -2321,6 +2374,23 @@ def drain(
                     )
                 except Exception as exc:  # noqa: BLE001
                     log(f"seed-backlog error: {exc}")
+            if config.seed_backlog_pass:
+                # `--seed-backlog`: an explicit, default-off pre-pass request
+                # for the same seeder, independent of the always-on
+                # `seed_backlog`/`--no-seed-backlog` default above (task
+                # intake-to-spec-triage 4.1) -- the seeder itself is
+                # idempotent (existing_seed_keys), so requesting it twice in
+                # one pass is harmless. Best-effort: never aborts the drain.
+                try:
+                    seed_backlog_pass_result = seed_backlog_mod.seed_backlog(
+                        config.repos_root,
+                        config.go_repo,
+                        queue_base=config.queue_dir,
+                        log=log,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log(f"seed-backlog error: {exc}")
+                    seed_backlog_pass_result = {"error": str(exc)}
         if uses_builtin_spawner:
             # Gate retired-model cells (task 6.1/6.2's `--check`) BEFORE the
             # first spawn, not after a wasted iteration discovers the gate the
@@ -2623,6 +2693,8 @@ def drain(
         "resumed_openspec_archive": resumed.get("openspec_archive", []),
         "stuck_remediations": stuck_remediations,
         "seeded_backlog": seeded_backlog,
+        "intake_triage": intake_triage_result,
+        "seed_backlog_pass": seed_backlog_pass_result,
         "decisions_open": len(decisions_mod.open_decision_ids(config.queue_dir)),
         "elapsed_s": int(clock() - started),
     }
@@ -2767,6 +2839,20 @@ def main(argv: list[str] | None = None) -> int:
         "into queue briefs this pass)",
     )
     parser.add_argument(
+        "--intake-triage",
+        action="store_true",
+        help="before the first iteration, run intake-triage's evaluate + "
+        "apply --confirm over the queue (default off)",
+    )
+    parser.add_argument(
+        "--seed-backlog",
+        action="store_true",
+        dest="seed_backlog_pass",
+        help="before the first iteration, run the backlog seeder "
+        "(needs-tasks specs and under-specced epics) as an explicit "
+        "pre-pass, independent of --no-seed-backlog above (default off)",
+    )
+    parser.add_argument(
         "--stuck-threshold",
         type=int,
         default=3,
@@ -2879,6 +2965,8 @@ def main(argv: list[str] | None = None) -> int:
         dry_run=args.dry_run,
         repos_root=args.repos_root,
         seed_backlog=not args.no_seed_backlog,
+        intake_triage=args.intake_triage,
+        seed_backlog_pass=args.seed_backlog_pass,
         max_workers=max_workers,
         stuck_threshold=args.stuck_threshold,
         stuck_history_path=stuck_remediation.history_path(),
