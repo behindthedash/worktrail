@@ -490,8 +490,8 @@ ticks this system wrote.
 
 ### Authoring a change {#openspec-propose}
 
-**Resumability pre-check (mandatory, before every dispatch below).** `run_in_background`
-(next paragraph) only removes the foreground-timeout trigger — an OOM kill, a host
+**Resumability pre-check (mandatory, before every dispatch below).** An extended timeout
+or detached launch (below) only removes the timeout/reaper triggers — an OOM kill, a host
 disconnect, or a spawn that legitimately outlives even a generous background execution
 still kills the child mid-generation. The child's `Write`/`Edit` calls flush to disk
 immediately, so `openspec/changes/<change-id>/` on `$WT` retains whatever it finished
@@ -531,7 +531,10 @@ covers Claude Code, Codex, and OpenCode rather than branching per host.
 
 **Expect several minutes, not seconds.** This spawn routinely takes multiple
 minutes to author the full proposal/delta-specs/design/tasks set — invoke it
-via `run_in_background` (or an explicitly extended timeout), never a
+with an explicitly extended foreground timeout, or through `worktrail-detach
+launch … -- worktrail-skill-dispatch …` plus a `Monitor` on `worktrail-detach
+wait` (never the Bash tool's `run_in_background`, which the harness reaps on
+this fleet — see the `full-real` launch note in `#orchestrator`), never a
 default-timeout (2min) foreground `Bash` call. A foreground call with the
 default timeout killed a child mid-generation on 2026-08-15, discarding
 partial work; the resumability pre-check above is what now lets a later
@@ -750,7 +753,11 @@ if [ -d "$SPEC_ROOT/openspec/changes/$SPEC_ID" ]; then
 else
   SPEC_REF="docs/specs/$SPEC_ID"
 fi
-worktrail-live full-real --repo "$SPEC_ROOT" --spec "$SPEC_REF" --base "$BASE" --agent "$AGENT_CLI" "${AGENT_MODEL_ARGS[@]}" "${FALLBACK_AGENT_ARGS[@]}" "${ROLE_AGENT_MAP_ARGS[@]}" "${PR_LABEL_ARGS[@]}" --route "$ROUTE" --gates "$GATES"
+DETACH_NAME="orch-$(basename "$SPEC_ROOT")-$SPEC_ID"
+# Foreground call; returns at once with a JSON handle. See the long-running note below
+# for why this is never a run_in_background call.
+DETACH_JSON=$(worktrail-detach launch --name "$DETACH_NAME" --cwd "$SPEC_ROOT" -- \
+  worktrail-live full-real --repo "$SPEC_ROOT" --spec "$SPEC_REF" --base "$BASE" --agent "$AGENT_CLI" "${AGENT_MODEL_ARGS[@]}" "${FALLBACK_AGENT_ARGS[@]}" "${ROLE_AGENT_MAP_ARGS[@]}" "${PR_LABEL_ARGS[@]}" --route "$ROUTE" --gates "$GATES")
 ```
 
 `AGENT_CLI` precedence is explicit invocation > repo policy `agent_cli` > machine-wide
@@ -789,11 +796,20 @@ a role pinned to a different agent falls back to that agent's own default model.
   fails loud with the exact task ids, while the inline auto-compile silently
   degrades to the baseline plan on a bad compile and only surfaces the problem
   later, once `validate_task_metadata()` refuses to fan those tasks out.
-- The orchestrator's `full-real` mode is **long-running and CI-blocking** — always run it
-  in the background (never on the foreground 10-minute Bash timeout). Use the Bash tool's
-  `run_in_background` option **only** — never also `nohup … &` / `setsid` / a trailing `&`.
-  Double-detaching makes the Bash call return `exit 0` instantly (reported "completed")
-  while the real run is orphaned and still going.
+- The orchestrator's `full-real` mode is **long-running and CI-blocking** — never run it
+  on a foreground Bash call, and **never via the Bash tool's `run_in_background` option**.
+  Launch it through `worktrail-detach launch` (the code block above) from a plain
+  foreground Bash call: it spawns the run in its own session with a log, pid file, and
+  exit-code sentinel under `~/.worktrail/detached/`, prints a JSON handle, and returns
+  immediately. Reason (live-verified, `~/.devops/background-kill-hypotheses.md` H9,
+  2026-08-29, plus 27 logged incidents through 2026-09-01): Claude Code periodically
+  reaps *its own* harness-tracked background tasks on a loaded host — bare `[killed]`,
+  no exit code, no traceback, session survives — and every `full-real` launched with
+  `run_in_background` died mid-run, several within 25 s, while the identical command
+  launched detached ran to a clean exit every time. Wrapping `nohup … &` *inside* a
+  `run_in_background` call does not help (the harness still holds the handle); the
+  launch must be a foreground call that returns at once. No cgroup or kernel OOM is
+  involved and no Claude Code setting disables the reap, so this is the fix.
 - It is **resumable**: a killed run is recovered by re-issuing the same command; the
   orchestrator reads its run journal and continues from where it left off.
 - **Integrated smoke test (opt-in, from policy):** when `integrate_smoke_cmd` is set in
@@ -864,15 +880,16 @@ a role pinned to a different agent falls back to that agent's own default model.
   surfaces a `tail-pending` stage. On a `tail-pending` spec, run those tasks (or mark them
   `completed`/backfill if not applicable) rather than re-launching the orchestrator — a
   re-launch would just skip them again.
-- **After backgrounding — confirm health without `sleep`:** once the Bash tool reports the
-  `run_in_background` task started, confirm the process is alive by `Read`-ing the task output
-  file (the path shown in the Bash tool's background-task response). A few lines of log output
-  confirm health. Do **not** reach for `sleep` — the harness blocks it as disguised polling
-  (`Blocked: sleep …`). If you need to wait for a specific condition, use the `Monitor` tool
-  with an `until`-loop instead.
-- **Do not redirect the output stream** (`> "$OUT" 2>&1`). Let `run_in_background` own the
-  capture so `Read <task-output>` is the single source of truth. A redirect splits the stream
-  into two files and makes the task-output look empty/confusing.
+- **After launching — confirm health, then watch with `Monitor`, never `sleep`:** run
+  `worktrail-detach status --name "$DETACH_NAME"` right after launch; `state: running` plus a
+  few lines in `log_tail` confirm health (`gone` means the process died before writing its
+  sentinel — read the log). Then arm one `Monitor` whose command is the handle's `wait_cmd`
+  with a `--match` filter covering both progress and every failure signature you would act
+  on, e.g. `worktrail-detach wait --name "$DETACH_NAME" --match 'pull/[0-9]+|MERGED|quarantin|escalat|FAILED|Traceback|circuit|blocked'`.
+  `wait` prints only matching log lines, then `[worktrail-detach] exited rc=N` and exits
+  with the run's own exit code, so the Monitor ends exactly when the run does. Do **not**
+  reach for `sleep` — the harness blocks it as disguised polling (`Blocked: sleep …`) — and
+  do not `tail -f` the log yourself; `wait` is the single source of truth for completion.
 
 ---
 
