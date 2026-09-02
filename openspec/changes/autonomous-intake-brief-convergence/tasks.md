@@ -62,7 +62,7 @@
 
 ## 3. Policy keys for escalation limits (independent lane)
 
-- [ ] 3.1 In `src/worktrail/router/policy.py` add `triage_keep_limit: 2` and
+- [x] 3.1 In `src/worktrail/router/policy.py` add `triage_keep_limit: 2` and
       `triage_max_queue_age_days: 14` to `DEFAULTS` with a comment block mirroring
       `max_active_changes` (consumed by `workqueue/queue_triage.py`'s escalation, which
       reads them with `.get(key, default)` so either side can land first), and extend the
@@ -70,7 +70,7 @@
       default with a warning when it is not a non-bool integer ≥ 1. (Requirement: Keep
       verdicts are bounded and escalate deterministically)
       files: src/worktrail/router/policy.py
-- [ ] 3.2 In `tests/router/test_policy.py` add validation tests for both keys: non-int, bool,
+- [x] 3.2 In `tests/router/test_policy.py` add validation tests for both keys: non-int, bool,
       and 0 each fall back to the default with a warning; a valid integer is kept; a policy
       file omitting both keys loads the defaults 2 and 14. (Requirement: Keep verdicts are
       bounded and escalate deterministically)
