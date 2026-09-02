@@ -31,14 +31,20 @@ agents or writes task files — that is `orchestrator/`'s job.
 
 ## Business rules / invariants
 - **The front-door grammar is code, not prose: `parse_invocation.py` owns it.** The shape is
-  `<front-door> [<repo>] <noun> <verb> [args]` with exactly three nouns (`NOUNS`: `handoff`,
-  `spec`, `pr`), plus two deliberate bare shortcuts (`<brief-id>` = `handoff start <id>`, and
+  `<front-door> [<repo>] <noun> <verb> [args]` with exactly four nouns (`NOUNS`: `handoff`,
+  `spec`, `pr`, `decision`), plus two deliberate bare shortcuts (`<brief-id>` = `handoff start <id>`, and
   `<repo>` = that repo's dashboard) and the read-only `help`/empty invocations. Every
   pre-noun-verb spelling (`auto`, `drain`, `new`, `implement spec <id>`, `continue`, `pr`,
   `brainstorm`, `fix`, `route:<A-J>`, `handoff:<id>`) is **permanent, not deprecated** — `ALIASES`
   lists them and `_canonicalize` rewrites only a bare leading token, so a spelled-out noun-verb form
   is never rewritten twice. Add a new form to `FORMS`/`ALIASES` and the parser together, never one
   without the other.
+- **`decision list` / `decision answer <decision-id>` are their own modes (`decision_list`,
+  `decision_answer`), not intents or brief lookups.** The parser carries the id in the result's
+  `decision_id` field and never tries to resolve it against `queue/` (`brief_status` stays `None`);
+  `decision answer` with no id is `mode: help` with `help_topic: decision`. The `worktrail-go`
+  skill skips the dashboard entirely for both and runs `worktrail-decision` / the
+  `answer-decision.md` procedure directly.
 - **A noun with no recognised verb returns `mode: help`, never free text.** Free text containing
   the word `handoff` classifies to Route E at high confidence in `classify.py` (joint-highest-weight
   signal plus a state boost whenever the queue is non-empty), so anything that escapes the parser
