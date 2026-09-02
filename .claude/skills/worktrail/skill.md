@@ -52,6 +52,11 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
   (`add_ons: {aspens: {enabled, target, required}}`), and the one-level parser flattens those
   keys up as siblings of the add-on name instead of nesting them. A malformed top-level shape
   falls back to `{}`, never widening the zero-add-ons default.
+- **`AspensAddOn.install` never overwrites an `aspens` CLI already on PATH** (`addons/aspens.py`):
+  it only runs `npm install -g aspens` when `shutil.which("aspens")` is empty, and still refreshes
+  the machine-local freshness marker when the CLI is present. An unconditional install replaced an
+  operator's `npm link`ed fork with the registry build (2026-09-01) and reintroduced a destructive
+  doc-sync rewrite — keep the PATH check.
 - **Adding a new add-on**: implement `AddOn` (`addons/base.py`), register it in
   `addons/resolve.addon_for` — an unresolved name must raise `ValueError`, never silently no-op.
 
@@ -63,4 +68,4 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
 - `addons/runner.py` — the only caller of `AddOn.install`/`configure`/`run`
 
 ---
-**Last Updated:** 2026-08-16
+**Last Updated:** 2026-09-02
