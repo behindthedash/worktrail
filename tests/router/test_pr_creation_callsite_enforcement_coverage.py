@@ -228,6 +228,8 @@ def _proves_queue_triage_py_uses_enforced_labels():
                 return subprocess.CompletedProcess(
                     cmd, 0, stdout="origin/main\n", stderr=""
                 )
+            if "config" in cmd and "remote.pushDefault" in cmd:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
             if "worktree" in cmd and "add" in cmd:
                 change_dir.mkdir(parents=True, exist_ok=True)
                 (change_dir / "proposal.md").write_text("# Widget\n\n## Why\n\nx.\n")
@@ -239,6 +241,9 @@ def _proves_queue_triage_py_uses_enforced_labels():
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[0] == "openspec" and cmd[1] == "validate":
             return subprocess.CompletedProcess(cmd, 0, stdout="valid\n", stderr="")
+        if cmd[0] == "worktrail-compile":
+            (change_dir / ".compile-ok").write_text("fp\n")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[0] == "git" and cmd[1] in ("add", "commit", "push"):
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[0] == "gh" and cmd[1:3] == ["pr", "create"]:
