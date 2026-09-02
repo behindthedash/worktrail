@@ -21,6 +21,7 @@ Python 3.10+ | one runtime dependency: `pyyaml` | pytest for tests (`dev` extra)
 - **~70 console scripts, one per `[project.scripts]` entry in `pyproject.toml`.** A skill, doc, or code path that names a `worktrail-*` command must match a real entry point exactly — `tests/test_plugin_surface.py` enforces this in CI.
 - **Version bumps are batched, standalone commits, not per-PR** (real semver, unlike sibling plugin repos' version-less/SHA-tracked model). Ordinary feature/fix PRs need no label or bump. `CI: Release Metadata Check` validates only PRs that actually change `pyproject.toml`'s version: valid semver, increased over base, and `.codex-plugin/plugin.json` in sync.
 - **Never commit or develop directly on `main`.** Branch off `main` into a sibling worktree (`git worktree add ../worktrail-worktrees/<branch> -b <branch> main`); merge only after CI is green; delete the branch once its PR lands.
+- **Long-running launches (`worktrail-live full-real`, headless `worktrail-skill-dispatch`) go through `worktrail-detach launch`, never the Bash tool's `run_in_background`** — the harness reaps its own tracked background tasks on this host (see the `detach` skill).
 
 ## Structure
 - `src/worktrail/conductor/` — compiles a spec/change into a schedulable RunPlan (see the `worktrail` skill)
@@ -30,9 +31,10 @@ Python 3.10+ | one runtime dependency: `pyyaml` | pytest for tests (`dev` extra)
 - `src/worktrail/workqueue/` — the `$WORK_QUEUE_DIR` handoff-brief claim/done/release lifecycle (see the `workqueue` skill)
 - `src/worktrail/router/` — the deterministic route classifier, resume dashboard, policy loader, and run records (see the `router` skill)
 - `src/worktrail/drain/` — unattended queue-draining loop (see the `drain` skill)
+- `src/worktrail/runtime/` — provider-neutral runtime primitives: routing-catalog/target selection (`routing_source.py`, `selection.py`) and the `worktrail-detach` supervised-launch primitive (`detach.py`, see the `detach` skill)
 - `src/worktrail/shared/` — cross-cutting helpers (`homedir.py`, `brief_frontmatter.py`)
 - `tests/` — mirrors the `src/worktrail/` layout (see the `tests` skill)
 - `skills/`, `commands/` — this repo's own Claude Code plugin marketplace surface (see AGENTS.md "Claude Code plugin surface")
 
 ---
-**Last Updated:** 2026-08-16
+**Last Updated:** 2026-09-02
