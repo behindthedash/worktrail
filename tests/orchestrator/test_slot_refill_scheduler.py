@@ -153,3 +153,131 @@ class SlotRefillingFanout(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(head.returncode, 0)
+
+
+class _FakeDrive:
+    """Stand-in for `_safe_drive`: sleeps per task, records start/end, marks done."""
+
+    def __init__(self, delays: dict):
+        self.delays = delays
+        self.started_at: dict = {}
+        self.ended_at: dict = {}
+        self._lock = threading.Lock()
+
+    def __call__(self, task: dict) -> None:
+        with self._lock:
+            self.started_at[task["id"]] = time.monotonic()
+        time.sleep(self.delays.get(task["id"], 0.0))
+        with self._lock:
+            task["status"] = "done"
+            self.ended_at[task["id"]] = time.monotonic()
+
+
+class ResumeInFlightConcurrently(unittest.TestCase):
+    def test_in_flight_tasks_resume_in_parallel_with_fanout(self):
+        # Two journal-replayed in-flight tasks and one pending task, two slots.
+        # Before: in-flight tasks were driven one at a time, and fan-out only
+        # began after both finished. After: both resume concurrently and the
+        # pending task starts as soon as a slot frees.
+        tasks = [
+            {"id": "T1", "status": "reviewing", "files": ["a.py"], "deps": []},
+            {"id": "T2", "status": "fixing", "files": ["b.py"], "deps": []},
+            {"id": "T3", "status": "pending", "files": ["c.py"], "deps": []},
+        ]
+        by_id = {t["id"]: t for t in tasks}
+        drive = _FakeDrive({"T1": 1.5, "T2": 0.1, "T3": 0.1})
+        in_flight = [t for t in tasks if t["status"] in ("reviewing", "fixing")]
+        live._slot_refilling_fanout(
+            tasks,
+            by_id,
+            2,
+            drive,
+            threading.Lock(),
+            lambda: None,
+            lambda tick: False,
+            initial_in_flight=in_flight,
+        )
+        self.assertEqual(set(drive.started_at), {"T1", "T2", "T3"})
+        # In-flight tasks started together (not T2 after T1 ended).
+        self.assertLess(drive.started_at["T2"], drive.ended_at["T1"])
+        # Pending fan-out began while the slow in-flight task was still running.
+        self.assertLess(drive.started_at["T3"], drive.ended_at["T1"])
+        self.assertTrue(all(t["status"] == "done" for t in tasks))
+
+    def test_should_stop_halts_dispatch_but_lets_in_flight_finish(self):
+        tasks = [
+            {"id": "T1", "status": "pending", "files": ["a.py"], "deps": []},
+            {"id": "T2", "status": "pending", "files": ["b.py"], "deps": []},
+        ]
+        by_id = {t["id"]: t for t in tasks}
+        drive = _FakeDrive({"T1": 0.3, "T2": 0.3})
+        calls = []
+
+        def should_stop(tick):
+            calls.append(tick)
+            return tick >= 1  # allow exactly one dispatch round
+
+        ticks = live._slot_refilling_fanout(
+            tasks, by_id, 1, drive, threading.Lock(), lambda: None, should_stop
+        )
+        self.assertEqual(ticks, 1)
+        self.assertEqual(set(drive.started_at), {"T1"})
+        self.assertEqual(tasks[0]["status"], "done")  # ran to a terminal state
+        self.assertEqual(tasks[1]["status"], "pending")  # never dispatched
+
+
+class LegacyEngineRefillsSlots(unittest.TestCase):
+    def test_live_run_real_refills_freed_slot(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            repo = _init_repo(
+                Path(tmp),
+                {
+                    "TASK-001": _fm("TASK-001", "src/task-001.txt"),
+                    "TASK-002": _fm("TASK-002", "src/task-002.txt"),
+                    "TASK-003": _fm("TASK-003", "src/task-003.txt"),
+                },
+            )
+            fake = _TimedSpawn({"TASK-001": 4.0, "TASK-002": 0.05, "TASK-003": 0.05})
+            live.live_run_real(
+                repo,
+                "docs/specs/001-x",
+                max_workers=2,
+                out_cassette=str(Path(tmp) / "run-001-x.json"),
+                run_id="legacy-refill",
+                spawn=fake,
+            )
+            self.assertEqual(set(fake.started_at), {"TASK-001", "TASK-002", "TASK-003"})
+            self.assertLess(fake.started_at["TASK-003"], fake.ended_at["TASK-001"])
+
+
+class ResolveMaxWorkers(unittest.TestCase):
+    def _tasks(self, n):
+        return [
+            {"id": f"T{i}", "status": "pending", "files": [f"f{i}.py"], "deps": []}
+            for i in range(n)
+        ]
+
+    def test_explicit_value_wins(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            repo = _init_repo(Path(tmp), {"TASK-001": _fm("TASK-001", "a.txt")})
+            self.assertEqual(live._resolve_max_workers(repo, self._tasks(7), 2), 2)
+
+    def test_default_is_plan_width_capped_by_policy(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            repo = _init_repo(Path(tmp), {"TASK-001": _fm("TASK-001", "a.txt")})
+            # No policy file: width 7 capped at the default 6.
+            self.assertEqual(live._resolve_max_workers(repo, self._tasks(7), None), 6)
+            # Narrow plan: width wins.
+            self.assertEqual(live._resolve_max_workers(repo, self._tasks(2), None), 2)
+            (repo / ".worktrail").mkdir()
+            (repo / ".worktrail" / "policy.yaml").write_text(
+                "max_parallel_workers: 3\n"
+            )
+            self.assertEqual(live._resolve_max_workers(repo, self._tasks(7), None), 3)
+
+    def test_policy_max_workers_beats_width(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            repo = _init_repo(Path(tmp), {"TASK-001": _fm("TASK-001", "a.txt")})
+            (repo / ".worktrail").mkdir()
+            (repo / ".worktrail" / "policy.yaml").write_text("max_workers: 4\n")
+            self.assertEqual(live._resolve_max_workers(repo, self._tasks(7), None), 4)

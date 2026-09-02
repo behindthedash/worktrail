@@ -18,6 +18,7 @@ triggers:
     - noun-verb grammar
     - triage_keep_limit
     - triage_max_queue_age_days
+    - max_parallel_workers
 ---
 
 You are working on **worktrail's GO v2 front door**: loading repo policy, classifying free-text
@@ -67,7 +68,14 @@ agents or writes task files — that is `orchestrator/`'s job.
 - **Policy resolution fails closed.** A malformed `add_ons`/`routing`/`automerge` shape falls back
   to the safe default (`{}` / `None` / disabled) with a warning appended to `meta["warnings"]`,
   never widens autonomy. `automerge.max_risk`, `agent_cli`, `fallback_agent_cli`, `agent_model`,
-  `max_workers`, and `pr_pacing_wait_s` are all validated/clamped the same way in `load_policy`.
+  `max_workers`, `pr_pacing_wait_s`, and `max_parallel_workers` are all validated/clamped the same
+  way in `load_policy`.
+- **`max_parallel_workers` (default 6, minimum 1) is a ceiling, not a width.** It only applies when
+  neither `--max-workers` nor policy `max_workers` is set: `live._resolve_max_workers` then runs
+  `min(plan width, max_parallel_workers)` workers instead of a fixed 3 (a width-7 plan ran as three
+  serial ticks on 2026-09-02). A set `max_workers` still wins outright. Invalid values
+  (non-int, bool, `< 1`) drop to the default with a `meta["warnings"]` entry, same as the other
+  integer keys.
 - **Integer policy keys follow the `triage_keep_limit` validation pattern.** `triage_keep_limit`
   (default 2) and `triage_max_queue_age_days` (default 14) are the intake-triage escalation
   bounds: a value that is not an `int`, is a `bool`, or is below 1 is forced back to `DEFAULTS[key]`

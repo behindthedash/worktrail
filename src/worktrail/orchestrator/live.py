@@ -1306,10 +1306,24 @@ def precheck(repo: Path, spec_rel: str) -> int:
             continue
 
         if existing_count == total_count:
-            print(
-                f"WARN: {task_id} — all listed files already exist; possible: already implemented. Consider marking completed or verifying."
-            )
-            warn_count += 1
+            # An OpenSpec task's `files:` is a shared-checklist scope line with no
+            # per-task create/modify split (`path` is the change's tasks.md, not a
+            # per-task file), so "every listed file exists" is the normal state of
+            # a task that edits existing modules -- not evidence it already
+            # shipped. Every such task false-WARNed (exit 1) on 2026-09-02, which
+            # in unattended mode is a hard block on any change touching existing
+            # files. Devkit `TASK-NNN.md` tasks keep the WARN: their body declares
+            # what they create, so the heuristic has something to stand on.
+            if str(task_path or "").endswith("tasks.md"):
+                print(
+                    f"INFO: {task_id} — all listed files already exist (OpenSpec scope "
+                    "declares no create/modify split; not treated as already implemented)."
+                )
+            else:
+                print(
+                    f"WARN: {task_id} — all listed files already exist; possible: already implemented. Consider marking completed or verifying."
+                )
+                warn_count += 1
         elif existing_count > 0:
             print(
                 f"INFO: {task_id} — {existing_count} of {total_count} listed files already exist (partial)."
@@ -3653,6 +3667,103 @@ def _apply_step_commit(
     return old, new
 
 
+def _resolve_max_workers(repo: Path, tasks: list, requested: int | None) -> int:
+    """Effective fan-out width. An explicit invocation value wins; else the repo
+    policy's `max_workers`; else the plan's own width capped by the policy's
+    `max_parallel_workers` (default 6). A fixed default of 3 silently ran a
+    width-7 plan as three serial ticks (run orchestrator-throughput, 2026-09-02);
+    the effective value is printed next to the plan so the cap is visible."""
+    if requested is not None:
+        return max(1, int(requested))
+    from ..conductor import parallelism
+    from ..router.policy import load_policy
+
+    policy = load_policy(repo)
+    configured = policy.get("max_workers")
+    if configured:
+        n = max(1, int(configured))
+        print(f"{_ts()} fan-out workers: {n} (policy max_workers)")
+        return n
+    width = parallelism.profile(tasks).width
+    cap = max(1, int(policy.get("max_parallel_workers") or 6))
+    n = max(1, min(width, cap))
+    print(
+        f"{_ts()} fan-out workers: {n} (plan width {width}, max_parallel_workers {cap})"
+    )
+    return n
+
+
+def _slot_refilling_fanout(
+    tasks: list,
+    by_id: dict,
+    max_workers: int,
+    safe_drive,
+    state_lock,
+    annotate,
+    should_stop,
+    *,
+    label_prefix: str = "",
+    initial_in_flight: list | None = None,
+    on_completion=None,
+) -> int:
+    """Fan `tasks` out through one persistent pool of `max_workers`, refilling a
+    freed slot as soon as `runnable_frontier` yields a newly-runnable task instead
+    of waiting for every task in a tick to finish. The tick-synchronous loop this
+    replaces left 2 of 3 slots idle for 35+ minutes behind one task's review/fix
+    strikes while four ready tasks waited (run orchestrator-throughput, 2026-09-02).
+
+    `runnable_frontier` already excludes in-flight tasks, locks their files, and
+    counts them against `max_workers`; a dispatched task is marked `claimed` under
+    `state_lock` before the next frontier pass so it is never re-dispatched.
+    `initial_in_flight` (journal-replayed mid-flight tasks) are submitted first and
+    concurrently, instead of being driven one at a time before fan-out begins.
+    `should_stop(tick)` runs before each dispatch round; True stops new dispatch
+    (run budget) while mid-flight tasks run to a terminal state. `on_completion()`
+    runs after every finished task. Returns the number of dispatch rounds."""
+    tick = 0
+    pool = ThreadPoolExecutor(max_workers=max(1, max_workers))
+    in_flight: dict = {}
+    try:
+        for t in initial_in_flight or []:
+            print(
+                f"{_ts()} {label_prefix}RESUME: continuing {t['id']} from '{t['status']}'"
+            )
+            in_flight[pool.submit(safe_drive, t)] = t["id"]
+        while True:
+            if should_stop(tick):
+                break
+            annotate()
+            with state_lock:
+                frontier = coordinator.runnable_frontier(tasks, max_workers)
+                for ft in frontier:
+                    if ft["status"] == "pending":
+                        ft["status"] = "claimed"
+            if frontier:
+                tick += 1
+                ids = ", ".join(t["id"] for t in frontier)
+                if len(frontier) == 1:
+                    print(f"{_ts()} {label_prefix}TICK {tick}: {ids}")
+                else:
+                    print(
+                        f"{_ts()} {label_prefix}TICK {tick} [parallel x{len(frontier)}]: {ids}"
+                    )
+                for ft in frontier:
+                    in_flight[pool.submit(safe_drive, by_id[ft["id"]])] = ft["id"]
+            if not in_flight:
+                break  # nothing running and nothing runnable: fan-out complete
+            done, _ = wait(list(in_flight), return_when=FIRST_COMPLETED)
+            for fut in done:
+                in_flight.pop(fut, None)
+                fut.result()
+            if on_completion is not None:
+                on_completion()
+    finally:
+        # A budget stop leaves mid-flight tasks running; let them reach a
+        # terminal state (they are journaled as they go) before moving on.
+        pool.shutdown(wait=True)
+    return tick
+
+
 def live_run_real(
     repo: Path,
     spec_rel: str,
@@ -4207,7 +4318,6 @@ def live_run_real(
                 for fut in futures:
                     fut.result()
 
-    tick = 0
     run_start = time.time()
 
     _stop_emitter = threading.Event()
@@ -4238,44 +4348,39 @@ def live_run_real(
         )
         _emitter.start()
 
-    while True:
-        if run_budget:
-            now = time.time()
-            with state_lock:
-                total_pauses = sum(_budget_pauses)
-            effective = (now - run_start) - total_pauses
-            if effective > run_budget:
-                # Budget exhausted: record the stop for audit, but DO NOT journal
-                # pending (or mid-flight) tasks as failed. They stay in their
-                # current state so the next resume continues the fan-out from
-                # where it stopped, instead of treating fan-out as complete and
-                # SPLIT-quarantining everything.
-                _budget_stopped_at[0] = now
-                with state_lock:
-                    record()
-                print(
-                    f"{_ts()} RUN BUDGET {run_budget}s exceeded after {tick} tick(s) "
-                    f"(effective {effective:.0f}s; {total_pauses:.0f}s session-limit "
-                    f"sleeps excluded) -- pending tasks left for resume"
-                )
-                break
-        _annotate_external_deps(repo, tasks, spec_rel)
-        frontier = coordinator.runnable_frontier(tasks, max_workers)
-        if not frontier:
-            break
-        tick += 1
-        ids = ", ".join(t["id"] for t in frontier)
-        if len(frontier) == 1:
-            print(f"{_ts()} TICK {tick}: {ids}")
-            _safe_drive(by_id[frontier[0]["id"]])
-        else:
-            # Run the batch CONCURRENTLY -- file-disjoint by construction, each in
-            # its own worktree. This is the parallelism the orchestrator promised.
-            print(f"{_ts()} TICK {tick} [parallel x{len(frontier)}]: {ids}")
-            with ThreadPoolExecutor(max_workers=len(frontier)) as ex:
-                futures = [ex.submit(_safe_drive, by_id[ft["id"]]) for ft in frontier]
-                for fut in futures:
-                    fut.result()
+    def _budget_stop(tick: int) -> bool:
+        if not run_budget:
+            return False
+        now = time.time()
+        with state_lock:
+            total_pauses = sum(_budget_pauses)
+        effective = (now - run_start) - total_pauses
+        if effective <= run_budget:
+            return False
+        # Budget exhausted: record the stop for audit, but DO NOT journal
+        # pending (or mid-flight) tasks as failed. They stay in their
+        # current state so the next resume continues the fan-out from
+        # where it stopped, instead of treating fan-out as complete and
+        # SPLIT-quarantining everything.
+        _budget_stopped_at[0] = now
+        with state_lock:
+            record()
+        print(
+            f"{_ts()} RUN BUDGET {run_budget}s exceeded after {tick} tick(s) "
+            f"(effective {effective:.0f}s; {total_pauses:.0f}s session-limit "
+            f"sleeps excluded) -- pending tasks left for resume"
+        )
+        return True
+
+    _slot_refilling_fanout(
+        tasks,
+        by_id,
+        max_workers,
+        _safe_drive,
+        state_lock,
+        lambda: _annotate_external_deps(repo, tasks, spec_rel),
+        _budget_stop,
+    )
     _stop_emitter.set()
     if with_tail and _budget_stopped_at[0] is None:
         # Tail tasks are serialized, but still form a dependency DAG. Never
@@ -4381,7 +4486,7 @@ def full_real(
     base: str = "dev",
     agent: str = DEFAULT_AGENT,
     model: str | None = None,
-    max_workers: int = 3,
+    max_workers: int | None = None,
     timeout: int = WORKER_TIMEOUT_DEFAULT,
     resume: bool = True,
     from_verify: bool = False,
@@ -4553,7 +4658,7 @@ def _pipeline_scheduler(
     remote: str,
     base: str,
     model: str | None,
-    max_workers: int,
+    max_workers: int | None,
     timeout: int,
     resume: bool,
     only: list | None,
@@ -4620,6 +4725,7 @@ def _pipeline_scheduler(
     role_models = _effective_role_models(agent, role_models)
     spec_id, tasks = taskformats.load_spec(str(repo / spec_rel))
     tasks = apply_run_plan(repo, spec_rel, spec_id, tasks)
+    max_workers = _resolve_max_workers(repo, tasks, max_workers)
     pre_only_done = {t["id"] for t in tasks if t.get("status") in coordinator.DONE}
     if only and resume and Path(journal_path).exists():
         # A task can be genuinely already-done purely via a PRIOR run's journal
@@ -5142,6 +5248,15 @@ def _pipeline_scheduler(
                 record["quarantine_detail"] = quarantine_detail
             groups_journal[name] = record
             _record()
+        if state == "QUARANTINED":
+            # Say so the moment it happens. Three groups sat QUARANTINED in the
+            # journal for over an hour on 2026-09-02 while the log showed only
+            # ticks and CI polls; the operator learned of it from the journal.
+            detail = f" -- {quarantine_detail}" if quarantine_detail else ""
+            print(
+                f"{_ts()} !! QUARANTINED [{name}] {quarantine_reason or 'unspecified'}"
+                f"{detail}"
+            )
 
     def _ensure_wt(task: dict) -> Path:
         wt = wt_base / f"{spec_id}-{task['id'].lower()}"
@@ -5382,11 +5497,10 @@ def _pipeline_scheduler(
                 _record()
                 actives.pop(task["id"], None)
 
-    # Resume any in-flight tasks (replayed mid-flight status from journal)
-    for t in tasks:
-        if t.get("status") in coordinator.IN_FLIGHT:
-            print(f"{_ts()} PIPELINE RESUME: continuing {t['id']} from '{t['status']}'")
-            _safe_drive(t)
+    # Journal-replayed mid-flight tasks resume inside the fan-out pool below,
+    # concurrently with each other and with newly-runnable pending tasks --
+    # not one at a time before fan-out begins.
+    resume_in_flight = [t for t in tasks if t.get("status") in coordinator.IN_FLIGHT]
 
     # Background pool for integrate+verify: one thread per group prevents deadlock
     # when dependent groups block waiting on their base group's done event.
@@ -5394,7 +5508,6 @@ def _pipeline_scheduler(
 
     run_budget_eff = RUN_BUDGET_DEFAULT if run_budget is None else run_budget
     run_start = time.time()
-    tick = 0
     budget_exceeded = False
     progress.set_phase(journal_path, "fanout")
     _emit_group_phases()
@@ -5412,69 +5525,42 @@ def _pipeline_scheduler(
                 _emit_group_phases()
                 iv_pool.submit(_integrate_verify_group, g)
 
-    # Slot-refilling fan-out: a worker slot freed by a fast task is refilled as
-    # soon as a newly-runnable task exists, instead of idling until the slowest
-    # task of the same tick (and its review/fix strikes) finishes. Observed on
-    # run orchestrator-throughput (2026-09-02): 2 of 3 slots sat idle for 35+
-    # minutes with 4 ready tasks waiting behind one task's review loop.
-    # `runnable_frontier` already excludes in-flight tasks, locks their files,
-    # and counts them against `max_workers`, so re-running it while tasks are
-    # in flight is safe -- provided a dispatched task is marked in-flight
-    # *before* the next frontier computation (see the `claimed` transition).
-    fanout_pool = ThreadPoolExecutor(max_workers=max(1, max_workers))
-    in_flight_futs: dict = {}
-    try:
-        while True:
-            if run_budget_eff:
-                now = time.time()
-                with state_lock:
-                    total_pauses = sum(_budget_pauses)
-                effective = (now - run_start) - total_pauses
-                if effective > run_budget_eff:
-                    # Budget exceeded: stop dispatching new tasks but leave pending
-                    # (and mid-flight) tasks in their current state so the next
-                    # resume continues the fan-out. Do NOT journal them as failed.
-                    budget_exceeded = True
-                    _budget_stopped_at[0] = now
-                    with state_lock:
-                        _record()
-                    print(
-                        f"{_ts()} PIPELINE RUN BUDGET {run_budget_eff}s exceeded after {tick} tick(s) "
-                        f"(effective {effective:.0f}s; {total_pauses:.0f}s session-limit "
-                        f"sleeps excluded) -- pending tasks left for resume"
-                    )
-                    break
-            _annotate_external_deps(repo, tasks, spec_rel)
-            with state_lock:
-                frontier = coordinator.runnable_frontier(tasks, max_workers)
-                for ft in frontier:
-                    # Mark in-flight now so the next frontier pass neither
-                    # re-dispatches this task nor hands out its files.
-                    if ft["status"] == "pending":
-                        ft["status"] = "claimed"
-            if frontier:
-                tick += 1
-                ids_str = ", ".join(t["id"] for t in frontier)
-                if len(frontier) == 1:
-                    print(f"{_ts()} PIPELINE TICK {tick}: {ids_str}")
-                else:
-                    print(
-                        f"{_ts()} PIPELINE TICK {tick} [parallel x{len(frontier)}]: {ids_str}"
-                    )
-                for ft in frontier:
-                    fut = fanout_pool.submit(_safe_drive, by_id[ft["id"]])
-                    in_flight_futs[fut] = ft["id"]
-            if not in_flight_futs:
-                break  # nothing running and nothing runnable: fan-out complete
-            done_futs, _ = wait(list(in_flight_futs), return_when=FIRST_COMPLETED)
-            for fut in done_futs:
-                in_flight_futs.pop(fut, None)
-                fut.result()
-            _dispatch_terminal_groups()
-    finally:
-        # A budget break leaves mid-flight tasks running; let them reach a
-        # terminal state (they are journaled as they go) before moving on.
-        fanout_pool.shutdown(wait=True)
+    def _budget_stop(tick_now: int) -> bool:
+        nonlocal budget_exceeded
+        if not run_budget_eff:
+            return False
+        now = time.time()
+        with state_lock:
+            total_pauses = sum(_budget_pauses)
+        effective = (now - run_start) - total_pauses
+        if effective <= run_budget_eff:
+            return False
+        # Budget exceeded: stop dispatching new tasks but leave pending
+        # (and mid-flight) tasks in their current state so the next
+        # resume continues the fan-out. Do NOT journal them as failed.
+        budget_exceeded = True
+        _budget_stopped_at[0] = now
+        with state_lock:
+            _record()
+        print(
+            f"{_ts()} PIPELINE RUN BUDGET {run_budget_eff}s exceeded after {tick_now} tick(s) "
+            f"(effective {effective:.0f}s; {total_pauses:.0f}s session-limit "
+            f"sleeps excluded) -- pending tasks left for resume"
+        )
+        return True
+
+    _slot_refilling_fanout(
+        tasks,
+        by_id,
+        max_workers,
+        _safe_drive,
+        state_lock,
+        lambda: _annotate_external_deps(repo, tasks, spec_rel),
+        _budget_stop,
+        label_prefix="PIPELINE ",
+        initial_in_flight=resume_in_flight,
+        on_completion=_dispatch_terminal_groups,
+    )
     _dispatch_terminal_groups()
 
     # Post-fanout: dispatch any groups that became terminal after the last tick
@@ -5690,7 +5776,7 @@ def _full_real_inner(
     base: str = "dev",
     agent: str = DEFAULT_AGENT,
     model: str | None = None,
-    max_workers: int = 3,
+    max_workers: int | None = None,
     timeout: int = WORKER_TIMEOUT_DEFAULT,
     resume: bool = True,
     from_verify: bool = False,
@@ -6277,10 +6363,11 @@ def main(argv=None) -> int:
     fr.add_argument(
         "--max-workers",
         type=int,
-        default=3,
+        default=None,
         help="Fan-out width: concurrent task worktrees with live agent workers. "
-        "Sourced from worktrail-go-policy.yaml's max_workers by the sdd-workflow conductor "
-        "when that key is set; an explicit invocation value wins.",
+        "Default: the repo policy's max_workers when set, else the compiled plan's "
+        "own width capped by policy max_parallel_workers (default 6); an explicit "
+        "invocation value wins.",
     )
     fr.add_argument(
         "--timeout",

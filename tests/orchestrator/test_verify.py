@@ -10,6 +10,7 @@ through a fake `spawn`. No subprocess, no network, no real worktrees. Run:
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -2879,3 +2880,65 @@ class TestPreflightRunner(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class _DirtyRun(FakeRun):
+    """FakeRun whose worktree `git status --porcelain` reports a tracked change."""
+
+    def __call__(self, cmd):
+        if cmd[0] == "git" and "status" in cmd and "--porcelain" in cmd:
+            self.calls.append(cmd)
+            return Proc(0, " M tests/router/test_policy.py\n", "")
+        return super().__call__(cmd)
+
+
+class _TimeoutOnceSpawn(FakeSpawn):
+    def __init__(self):
+        super().__init__()
+        self.raised = False
+
+    def __call__(self, prompt, wt):
+        if not self.raised:
+            self.raised = True
+            self.prompts.append(prompt)
+            raise subprocess.TimeoutExpired("claude", 1)
+        return super().__call__(prompt, wt)
+
+
+class CiFixTimeoutSalvageAndRetry(unittest.TestCase):
+    """2026-09-02, group feature-3: the ci-fix worker had already formatted the
+    file when its timeout hit; the fix sat uncommitted and the loop returned
+    after one attempt with two strikes unused. Now the partial work is committed
+    and pushed, and the loop re-checks CI before spending the next strike."""
+
+    def test_salvage_commits_and_pushes_tracked_changes(self):
+        run = _DirtyRun({"run/feature-1": [view(rollup=RED)]})
+        v = mk(run, FakeSpawn(), "/tmp/x")
+        v._salvage_uncommitted("ci-fix", Path("/tmp/x/wt"), "run/feature-1")
+        self.assertTrue(run.find("git", "-C", "/tmp/x/wt", "add", "-u"))
+        commits = run.find("git", "-C", "/tmp/x/wt", "commit")
+        self.assertTrue(commits and "salvage" in " ".join(commits[0]))
+        self.assertTrue(
+            run.find("git", "-C", "/tmp/x/wt", "push", "origin", "HEAD:run/feature-1")
+        )
+
+    def test_salvage_is_noop_on_clean_worktree(self):
+        run = FakeRun({"run/feature-1": [view(rollup=RED)]})
+        v = mk(run, FakeSpawn(), "/tmp/x")
+        v._salvage_uncommitted("ci-fix", Path("/tmp/x/wt"), "run/feature-1")
+        self.assertFalse(run.find("git", "-C", "/tmp/x/wt", "add"))
+        self.assertFalse(run.find("git", "-C", "/tmp/x/wt", "commit"))
+
+    def test_timed_out_ci_fix_counts_one_strike_and_recheck_passes(self):
+        run = _DirtyRun(
+            {"run/feature-1": [view(rollup=RED), view(rollup=GREEN)]},
+            runs=json.dumps(
+                [{"databaseId": 9, "conclusion": "FAILURE", "headSha": "abc"}]
+            ),
+        )
+        spawn = _TimeoutOnceSpawn()
+        v = mk(run, spawn, "/tmp/x")
+        ok, reason = v.wait_and_fix_ci(FEATURE, "run/feature-1")
+        self.assertTrue(ok, reason)
+        self.assertEqual(len(spawn.prompts), 1)  # one ci-fix attempt, then green
+        self.assertTrue(any("add" in c and "-u" in c for c in run.calls))

@@ -2461,3 +2461,28 @@ class LegacyRoutingKeys(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class MaxParallelWorkersKeyTests(unittest.TestCase):
+    def test_default_is_six(self):
+        pol = load_policy(_repo_with(""))
+        self.assertEqual(pol["max_parallel_workers"], 6)
+
+    def test_loaded(self):
+        pol = load_policy(_repo_with("max_parallel_workers: 8\n"))
+        self.assertEqual(pol["max_parallel_workers"], 8)
+        self.assertFalse(
+            any("max_parallel_workers" in w for w in pol["_meta"]["warnings"])
+        )
+
+    def test_invalid_values_dropped_to_default(self):
+        for bad in (
+            "max_parallel_workers: lots\n",
+            "max_parallel_workers: 0\n",
+            "max_parallel_workers: true\n",
+        ):
+            pol = load_policy(_repo_with(bad))
+            self.assertEqual(pol["max_parallel_workers"], 6, bad)
+            self.assertTrue(
+                any("max_parallel_workers" in w for w in pol["_meta"]["warnings"]), bad
+            )

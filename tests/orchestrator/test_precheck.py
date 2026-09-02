@@ -1127,3 +1127,40 @@ class TestPrecheckSerialisedDag(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPrecheckOpenSpecScope(unittest.TestCase):
+    """An OpenSpec task's `files:` is a checklist scope line with no create/modify
+    split (`path` is the change's shared tasks.md), so every file existing is the
+    normal state of a task that edits existing modules. It must be INFO (exit 0),
+    not the devkit "possibly already implemented" WARN that blocked every
+    unattended launch of a change touching existing files on 2026-09-02."""
+
+    def test_openspec_task_all_files_exist_is_info_not_warn(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_root = Path(tmp)
+            (tmp_root / "src").mkdir()
+            (tmp_root / "src" / "lib.py").write_text("x\n")
+            task = {
+                "id": "4.1",
+                "status": "pending",
+                "kind": "impl",
+                "files": ["src/lib.py"],
+                "path": "openspec/changes/my-change/tasks.md",
+            }
+            captured = io.StringIO()
+            with (
+                mock.patch.object(
+                    live.taskformats, "load_spec", return_value=("my-change", [task])
+                ),
+                mock.patch.object(
+                    live, "_planned_tasks_without_llm", side_effect=lambda *a: a[-1]
+                ),
+                mock.patch("sys.stdout", captured),
+            ):
+                result = live.precheck(tmp_root, "openspec/changes/my-change")
+            output = captured.getvalue()
+            self.assertEqual(result, 0, output)
+            self.assertIn("INFO: 4.1", output)
+            self.assertNotIn("WARN: 4.1", output)
+            self.assertNotIn("possible: already implemented", output)
