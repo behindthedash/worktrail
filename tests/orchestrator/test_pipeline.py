@@ -1521,3 +1521,23 @@ class AssemblyResolveRoleAgentMapTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class QuarantineIsLoggedLive(unittest.TestCase):
+    """A group entering QUARANTINED must say so in the log at that moment. On
+    2026-09-02 three groups sat quarantined for over an hour while the log showed
+    only ticks and CI polls; the operator learned of it from the journal file."""
+
+    def test_quarantine_prints_a_marker_line(self):
+        import contextlib
+        import io
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            repo = _init_repo(Path(tmp))
+            integrate_one, _ = _make_integrate_one()
+            verifier = FakeVerifier(fail_for={"feature-1"})
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                result = _run(repo, tmp, FakeSpawn(), integrate_one, verifier)
+            self.assertIn("feature-1", result["quarantined"])
+            self.assertIn("!! QUARANTINED [feature-1]", buf.getvalue())
