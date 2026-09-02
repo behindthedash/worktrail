@@ -26,7 +26,8 @@ Universal engineering front door for a Worktrail workspace. Work invocations sta
 - `worktrail-go fix X` — classify and dispatch a free-text request
 - `worktrail-go implement spec 003` — dispatch to spec execution
 - `worktrail-go route:F` or `worktrail-go REPO route:D spec-folder` — explicit route, no classification
-- `worktrail-go BRIEF-ID` — claim or resume a specific queued brief
+- `worktrail-go BRIEF-ID` — claim or resume a specific queued brief; an untriaged intake
+  brief (no `seeded-from:`) is triaged interactively instead (spec `intake-to-spec-triage`)
 - `worktrail-go auto` or `worktrail-go REPO auto` — auto-pick the next ranked queue brief and start it, no selection prompt (spec 017)
 - `worktrail-go REPO` — check what's active in a specific repo
 
@@ -230,6 +231,54 @@ use the verbatim-options rule as normal.
 If the user selects **"Other"** at either level, treat the typed input as a free-text request and proceed to Phase 5.
 
 ### Phase 2 — Intake
+
+**Intake-brief triage gate (direct `worktrail-go BRIEF-ID` dispatch only, spec `intake-to-spec-triage`).**
+When `$BRIEF_ID` was held from Phase 1's `brief` mode (the user named a specific brief id
+directly, not a Level-2 picker selection), look up that brief's `kind` and `repo` in
+`$QUEUE_JSON_FILE`'s `briefs[]` (match on `filename`, 1.1's `work_queue.brief_kind()`;
+the same entry's `repo` field is the brief's own `repo:` frontmatter, hold it as
+`$BRIEF_REPO` — this is **not** `$ARG_REPO`, which is only set when the user typed a
+repo token in the invocation itself) before doing anything else:
+
+- **`kind: execution`** (a `seeded-from:` brief) — unaffected; continue to the `claim`
+  action below exactly as before.
+- **`kind: intake`** (a raw handoff or consolidated brief with no `seeded-from:`) — there
+  is nothing to implement yet, only a triage decision. Do **not** claim or dispatch it.
+  Instead:
+
+  1. Evaluate it in place — a single-brief scope over `queue_triage`'s own per-repo
+     evaluator, so the same evidence-required verdict rule (2.x) governs an interactive
+     pickup as a scheduled `evaluate` run:
+     ```bash
+     VERDICT_JSON=$(worktrail-skill-dispatch \
+       --evaluate-brief-triage "$BRIEF_PATH" \
+       ${BRIEF_REPO:+--triage-repo "$BRIEF_REPO"} \
+       --triage-agent "$INVOCATION_CONTEXT_AGENT")
+     ```
+     A brief with no `repo:` frontmatter (`$BRIEF_REPO` empty) omits `--triage-repo`
+     (evaluated in the `NO_REPO_KEY` group, same as a full `evaluate` run). Exit 1 with `VERDICT_JSON`
+     printing `null` means the evaluator produced no identifiable verdict for this
+     brief id at all — report that and stop rather than guessing one.
+  2. Present the verdict (`verdict`, `evidence`, `confidence`, and any target field —
+     `target_change`/`target_repo`/`proposed_change_name`/`question`) to the user and ask
+     for confirmation via `AskUserQuestion` before acting on it — never auto-apply a
+     triage verdict from an interactive pickup, even a high-confidence one. `auto`/drain
+     dispatches never reach this gate (1.2's `intake-untriaged` skip already keeps an
+     intake brief out of `auto_pick`), so there is no unattended branch to cover here.
+  3. Apply on confirmation via the same `queue_triage` apply path 3.x's scheduled runs
+     use (`resolve_duplicate_targets()` + `apply_verdicts()`), scoped to this one verdict:
+     ```bash
+     ACTION_LOG_JSON=$(worktrail-skill-dispatch \
+       --apply-brief-triage "$VERDICT_JSON" \
+       --triage-agent "$INVOCATION_CONTEXT_AGENT" \
+       --confirm)
+     ```
+     A decline leaves the brief queued untouched — do not call `--apply-brief-triage`
+     at all. Report the resulting action-log entry (`action`, `status`, `path`/`error`)
+     to the user and STOP; a triaged intake brief is never carried forward into Phase
+     3's claim+dispatch flow in the same invocation, regardless of what the verdict was
+     (including `work-directly`, which converts it into a future execution brief for a
+     *later* `worktrail-go` pickup, not this one).
 
 Resolve the user's choice and dispatch by its `action`:
 
@@ -906,11 +955,18 @@ When a brief is claimed, surface any related briefs from its `related` frontmatt
 ```
 → route:D detected, Phase 5 skipped → `Skill("worktrail-sdd-workflow", args="<ggb-path> route:D 003-payments")`
 
-**Queue claim by ID**
+**Queue claim by ID (execution brief)**
 ```
 /go 20260613-001000-feature-x
 ```
 → One-line dashboard summary → claim → dispatch to sdd-workflow
+
+**Queue pickup by ID (untriaged intake brief)**
+```
+/go 20260613-001000-raw-handoff
+```
+→ One-line dashboard summary → `kind: intake` → single-brief triage gate → evaluate,
+present the verdict, apply on confirmation → STOP (no claim, no sdd-workflow dispatch)
 
 **Auto mode (spec 017)**
 ```

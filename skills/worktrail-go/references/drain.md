@@ -10,6 +10,9 @@ worktrail-go drain
 worktrail-go drain <max-items>
 worktrail-go drain <max-items> <repo>
 worktrail-go drain dry-run
+worktrail-go drain --intake-triage
+worktrail-go drain --seed-backlog
+worktrail-go drain --intake-triage --seed-backlog
 ```
 
 Resolve the agent CLI once using the same invocation-context precedence as the
@@ -42,8 +45,33 @@ worktrail-drain \
   --agent "$INVOCATION_CONTEXT_AGENT" \
   "${DRAIN_FALLBACK_ARGS[@]}" \
   ${MAX_ITEMS:+--max-items "$MAX_ITEMS"} \
-  ${ARG_REPO:+--go-repo "$ARG_REPO"}
+  ${ARG_REPO:+--go-repo "$ARG_REPO"} \
+  ${INTAKE_TRIAGE:+--intake-triage} \
+  ${SEED_BACKLOG:+--seed-backlog}
 ```
+
+## Pre-pass flags
+
+**`--intake-triage`** (default off) — Before the main drain loop, evaluate and triage every
+intake brief in the queue: rank candidates against active changes in each brief's repo, score
+the brief, propose a verdict (fold-into-change, propose-change, work-directly, needs-decision,
+or keep), and apply approved verdicts without interactive confirmation. Folds and proposes open
+PRs, work-directly converts an intake brief into a seeded execution brief, and needs-decision
+files a decision record and releases the brief. Results are captured into the drain summary
+(`briefs_evaluated`, `verdict_counts`, `pull_requests_opened`, `briefs_held_by_cap`). An
+intake-triage failure is logged but does not stop the drain; the main loop runs afterward
+regardless.
+
+**`--seed-backlog`** (default on) — Before the main drain loop, mechanically convert planning
+backlog into queue briefs: every spec in the `needs-tasks` stage becomes a planning brief to
+generate its task DAG, and every epic under `docs/specs/epics/` with more unused feature
+headings than citing specs becomes a brief to spec the next feature. Seeding is deterministic,
+capped per sweep, and deduplicated via `seeded-from:` frontmatter — a fruitless completed
+brief never loops. Results are captured into the drain summary (`seeds_captured`). A
+seed-backlog failure is logged but does not stop the drain; the main loop runs afterward
+regardless.
+
+## Loop operation
 
 A drain iteration that exhausts every configured agent's capacity stops
 cleanly (`capacity_gated`) rather than misclassifying the exhaustion as a
@@ -60,3 +88,13 @@ or fails remains in `picked/`; do not release another session's claim.
 The console script launches one fresh-context `worktrail-go auto` process per
 item. Do not implement draining by looping `worktrail-go auto` in the current
 conversation.
+
+## WIP cap (max_active_changes)
+
+Per-repo policy can declare `max_active_changes: N` to cap the number of simultaneously active
+OpenSpec changes. When a `propose-change` verdict applies and the target repo already has N or
+more active changes, the verdict is downgraded to `keep` with a `## Triage <date>` note naming
+the cap, the current count, and the top fold-candidate recommendations. The cap does not affect
+`fold-into-change`, `work-directly`, or `needs-decision` verdicts. Set `max_active_changes: 0`
+(or omit it) to disable the cap entirely; every repo without an explicit cap defaults to 0 (no
+throttling).

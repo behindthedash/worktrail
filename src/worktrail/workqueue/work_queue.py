@@ -1325,6 +1325,7 @@ def done(
     run: str | None = None,
     by: str | None = None,
     force: bool = False,
+    triaged_to: str | None = None,
 ) -> dict[str, Any]:
     """Stamp a picked brief as completed.
 
@@ -1375,6 +1376,12 @@ def done(
     `picked/` or `queue/` with a non-`done` status (see
     `_related_still_open`) -- so the closer can check/close them too. Purely
     advisory: never blocks or alters closure.
+
+    ``triaged_to``, when given, is stamped as `triaged-to:` frontmatter
+    alongside `status: done` -- e.g. a fold/propose apply action's target
+    change id or landed PR URL, so a closed brief still records where its
+    work actually went. Omitted (every existing caller before 3.5) leaves the
+    field absent, unaffected.
     """
     if planning_only and implementation_complete:
         return {
@@ -1495,8 +1502,12 @@ def done(
                 "candidates": [],
                 "error": str(exc),
             }
+    fields = {"status": "done", "completed-at": _now_iso()}
+    triaged_to_stripped = (triaged_to or "").strip()
+    if triaged_to_stripped:
+        fields["triaged-to"] = triaged_to_stripped
     try:
-        _set_fm_fields(path, {"status": "done", "completed-at": _now_iso()})
+        _set_fm_fields(path, fields)
     except (OSError, ValueError) as exc:
         try:
             path.write_text(original, encoding="utf-8")
@@ -1866,6 +1877,12 @@ def main(argv=None) -> int:
         action="store_true",
         help="override an ownership mismatch and close the brief anyway",
     )
+    dp.add_argument(
+        "--triaged-to",
+        default=None,
+        dest="triaged_to",
+        help="stamp triaged-to: frontmatter (e.g. a target change id or landed PR URL)",
+    )
     sp = subs.add_parser(
         "release", parents=[common], help="return a picked brief to the queue"
     )
@@ -1919,6 +1936,7 @@ def main(argv=None) -> int:
             run=args.run,
             by=args.by,
             force=args.force,
+            triaged_to=args.triaged_to,
         )
     elif args.cmd == "link":
         result = link(args.id_a, args.id_b)

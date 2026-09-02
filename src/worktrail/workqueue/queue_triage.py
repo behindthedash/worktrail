@@ -19,15 +19,27 @@ import re
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from ..orchestrator.integrate import _refresh_pr_labels
 from ..router import overlap_check
 from ..shared.brief_frontmatter import read_frontmatter, split_frontmatter
 from ..shared.homedir import worktrail_home
+from . import decisions
 from .score_candidates import _overlap_coefficient, _tokenize
-from .work_queue import claim, done, picked_dir, queue_dir, release, resolve
+from .work_queue import (
+    _awaiting_decision_info,
+    _set_fm_fields,
+    claim,
+    done,
+    picked_dir,
+    queue_dir,
+    release,
+    resolve,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +68,32 @@ VALID_VERDICT_TYPES = {
 _KEBAB_CASE_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 _TRIAGE_HEADING_RE = re.compile(r"^##\s+Triage\s+(\d{4}-\d{2}-\d{2})\s*$", re.MULTILINE)
+
+# `work-directly` requires evidence citing a specific test, check, or command
+# (per the evaluator prompt's step 2b) rather than evidence that only restates
+# the brief's description. Matches one of the common reproduction vocabulary
+# words/tool names the prompt's own examples use ("reproduces via pytest ...",
+# "confirmed via make lint") -- deliberately permissive about *which*
+# command/test/check is cited, but every alternative requires an actual named
+# tool or verb, never a bare backtick-quoted span on its own (that would also
+# match a file path or brief id with no command content at all) and never the
+# bare English words "command" or "check", since prose can use those words
+# while denying or merely discussing a reproduction reference (e.g. "no
+# command needed" or "we should check whether this is still relevant").
+_REPRODUCTION_EVIDENCE_RE = re.compile(
+    r"\bpytest\b"
+    r"|\btests?/"
+    r"|\bmake\s+\w+"
+    r"|\bnpm\s+(?:run|test)\b"
+    r"|\byarn\s+(?:run|test)\b"
+    r"|\bgo\s+test\b"
+    r"|\bcargo\s+test\b"
+    r"|\bunittest\b"
+    r"|\b(?:lint|mypy|ruff|tsc)\b"
+    r"|\breproduces?\s+via\b"
+    r"|\bconfirmed\s+via\b",
+    re.IGNORECASE,
+)
 
 # Codifies the 2026-07-31 pilot's lessons (see design.md's "Evaluator prompt
 # template" decision): repo-fetch-first, a bounded per-brief tool-call budget,
@@ -136,6 +174,35 @@ test, or why inconclusive for a fail-open keep>", "confidence": \
 """
 
 
+# 3.2's `propose-change` apply action spawns a second, separate agent (after
+# `openspec new change` has scaffolded the change directory) to author the
+# actual proposal/design/specs/tasks content -- the triage evaluator prompt
+# above only ever *decides* a brief deserves its own change, it never drafts
+# one. Kept as a module-level constant for the same reason
+# `EVALUATOR_PROMPT_TEMPLATE` is: `tests/workqueue/test_queue_triage.py` can
+# assert on it directly.
+PROPOSE_CHANGE_PROMPT_TEMPLATE = """\
+You are authoring a new OpenSpec change for the repo `{repo}`, proposed as \
+`{proposed_change_name}` by queue-triage from work-queue brief `{brief_id}`.
+
+The change directory already exists at \
+`openspec/changes/{proposed_change_name}/` (scaffolded via `openspec new \
+change {proposed_change_name}`). Write its `proposal.md`, `design.md` (only \
+if the change is complex enough to warrant one), the delta spec(s) under \
+`specs/`, and `tasks.md` -- follow this repo's own OpenSpec conventions \
+(inspect a couple of existing changes under `openspec/changes/` for the \
+expected shape if unsure).
+
+Brief evidence (why this change is being proposed):
+{evidence}
+
+When you are done, the change must pass `openspec validate \
+{proposed_change_name} --strict` -- run it yourself and fix any errors \
+before finishing. Do not `git commit` or `git push`; that is handled by the \
+caller once you're done.
+"""
+
+
 def group_queue_by_repo() -> dict[str, list[Path]]:
     """Group every brief in `queue_dir()` by its frontmatter `repo:` value.
 
@@ -184,13 +251,30 @@ def is_recently_triaged(path: Path, within_days: int) -> bool:
     return age_days <= within_days
 
 
+def has_unresolved_decision(path: Path) -> bool:
+    """True if `path` carries an `awaiting-decision:` link still `open` or `answered`.
+
+    Mirrors `work_queue._awaiting_decision_info()`'s own reading (already used by
+    `claim()`'s warnings and `list_queue()`'s `blocked` flag): `resolved` (a human
+    answered and the answer was consumed) and no link at all both read as "not
+    unresolved". Per design D8 ("needs-decision ... reuses ... the existing
+    'awaiting decision' skip"), a brief still genuinely waiting on a human must not
+    be re-evaluated by a later `evaluate` run before that answer lands.
+    """
+    return _awaiting_decision_info(path)["decision_status"] in ("open", "answered")
+
+
 def inventory(within_days: int) -> tuple[dict[str, list[Path]], list[Path]]:
     """Compose `group_queue_by_repo()` + `is_recently_triaged()` into an evaluation set.
 
     Briefs whose most recent `## Triage` section falls within `within_days` fail the
     dedup check and are excluded from the returned groups (so 2.x never re-evaluates
-    them) but collected into `skipped` for report visibility. A group left empty by
-    filtering is dropped entirely rather than kept as an empty bucket.
+    them) but collected into `skipped` for report visibility. A brief with an
+    unresolved pending decision (`has_unresolved_decision()`) is likewise excluded
+    from the groups, but -- unlike a dedup skip -- is not added to `skipped`: it isn't
+    a triage outcome to report on, it's simply not ready to be re-judged yet, and will
+    resurface on its own once a human answers. A group left empty by filtering is
+    dropped entirely rather than kept as an empty bucket.
     """
     skipped: list[Path] = []
     groups: dict[str, list[Path]] = {}
@@ -199,6 +283,8 @@ def inventory(within_days: int) -> tuple[dict[str, list[Path]], list[Path]]:
         for path in paths:
             if is_recently_triaged(path, within_days):
                 skipped.append(path)
+            elif has_unresolved_decision(path):
+                continue
             else:
                 kept.append(path)
         if kept:
@@ -351,6 +437,93 @@ def apply_wip_cap_preview(repo: str, verdicts: list[Verdict]) -> list[Verdict]:
         )
         for v in verdicts
     ]
+
+
+def _propose_change_wip_cap_status(v: Verdict) -> tuple[str | None, int, int]:
+    """`(repo, cap, count)` for `v`, a fresh apply-time re-check of the WIP cap.
+
+    Recomputed here rather than trusting `v.held_by_wip_cap` (2.4's evaluate-time
+    preview): `evaluate` and `apply` can run far enough apart that the repo's
+    active-change count or its `max_active_changes` policy value has since
+    changed, and 3.6's enforcement point is apply time, not evaluate time.
+    `repo` is `None` for a repo-less verdict (`NO_REPO_KEY`/falsy `v.repo`), in
+    which case `cap`/`count` are both `0` and the caller never treats it as
+    over cap.
+    """
+    repo = v.repo if v.repo and v.repo != NO_REPO_KEY else None
+    if not repo:
+        return None, 0, 0
+    return repo, _repo_wip_cap(repo), _count_active_changes(repo)
+
+
+def _propose_change_over_cap(v: Verdict) -> bool:
+    """True if `v` is a `propose-change` verdict whose repo is at or over a
+    non-zero `max_active_changes` cap, re-checked fresh (see
+    `_propose_change_wip_cap_status()`). A cap of `0` (unset/disabled) never
+    holds anything."""
+    if v.verdict != "propose-change":
+        return False
+    _repo, cap, count = _propose_change_wip_cap_status(v)
+    return cap > 0 and count >= cap
+
+
+def _propose_change_wip_cap_note(v: Verdict) -> str:
+    """The `## Triage <date>` note body for a `propose-change` downgraded by
+    the WIP cap: names the cap, the current active-change count, and the
+    repo's top fold candidates (2.1's `rank_change_candidates()`, re-ranked
+    against this brief) as an alternative for the operator to consider instead
+    of a new change."""
+    repo, cap, count = _propose_change_wip_cap_status(v)
+    path = _resolve_brief_path(v.brief_id)
+    candidates = rank_change_candidates(path, repo) if path and repo else []
+    return (
+        f"propose-change held by the WIP cap: repo '{repo}' has {count} active "
+        f"change(s), at or over its max_active_changes cap of {cap}. Consider "
+        f"folding into one of the repo's active changes instead: "
+        f"{_format_candidates(candidates)}"
+    )
+
+
+def _apply_propose_change_wip_cap_downgrade(v: Verdict, run_date: str) -> dict:
+    """Downgrade an over-cap `propose-change` verdict to a no-op `keep`.
+
+    Mirrors `_apply_needs_update()`'s in-place `## Triage <run_date>` note
+    append -- the brief is left exactly where it already sits (`queue/` or
+    `picked/`), never claimed or closed, so a held `propose-change` behaves
+    like any other `keep`: it simply remains available for a later triage run
+    once the repo's active-change count drops back under the cap.
+    """
+    note = _propose_change_wip_cap_note(v)
+    base = {
+        "brief_id": v.brief_id,
+        "verdict": v.verdict,
+        "duplicate_of": v.duplicate_of,
+        "action": "append-triage-note",
+        "confirm": True,
+        "note": note,
+    }
+    path = _resolve_brief_path(v.brief_id)
+    if path is None:
+        return {
+            **base,
+            "status": "error",
+            "path": None,
+            "error": "brief not found in queue/ or picked/",
+        }
+    try:
+        content = path.read_text(encoding="utf-8")
+        path.write_text(
+            content.rstrip("\n") + f"\n\n## Triage {run_date}\n\n{note}\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        return {**base, "status": "error", "path": str(path), "error": str(exc)}
+    return {
+        **base,
+        "status": "downgraded-to-keep",
+        "path": str(path),
+        "error": None,
+    }
 
 
 def _format_candidates(candidates: list[dict[str, Any]]) -> str:
@@ -870,34 +1043,800 @@ def _apply_needs_update(v: Verdict, run_date: str) -> dict:
     return {**base, "status": "executed", "path": str(path), "error": None}
 
 
-# Intake-triage verdict types 2.2 makes parseable but whose own apply actions
-# ship in later tasks (3.1 fold-into-change, 3.2 propose-change, 3.3
-# work-directly, 3.4 needs-decision). Until those land, `apply_verdicts()`
-# must not silently fall through to `needs-update`'s append-triage-note
-# action for them -- that would misapply the wrong side effect to a brief
-# this evaluator run correctly classified differently.
-_APPLY_NOT_YET_IMPLEMENTED = frozenset(
-    {"fold-into-change", "propose-change", "work-directly", "needs-decision"}
+def _apply_work_directly(v: Verdict, run_date: str) -> dict:
+    """`work-directly`: stamp `seeded-from`/`recommended-route` in place, or downgrade to `keep`.
+
+    Requires `v.evidence` to cite a specific test, check, or command
+    (`_REPRODUCTION_EVIDENCE_RE`, per the evaluator prompt's "work-directly
+    requires reproduction evidence" rule) -- evidence that only restates the
+    brief's description without one is not proof this is directly actionable
+    right now, so this downgrades to a no-op `keep` rather than stamping it.
+    When the citation is present, the brief's frontmatter is stamped
+    `seeded-from: triage:<run_date>:direct` and `recommended-route: F` and the
+    brief is left in `queue/` -- unlike `stale-close`, `work-directly` never
+    claims or closes it.
+    """
+    base = {
+        "brief_id": v.brief_id,
+        "verdict": v.verdict,
+        "duplicate_of": v.duplicate_of,
+        "confirm": True,
+        "note": v.evidence,
+    }
+    if not _REPRODUCTION_EVIDENCE_RE.search(v.evidence or ""):
+        return {
+            **base,
+            "action": "noop",
+            "status": "downgraded-to-keep",
+            "path": None,
+            "error": None,
+            "note": (
+                "evidence does not cite a test, check, or command -- downgraded to keep"
+            ),
+        }
+
+    path = _resolve_brief_path(v.brief_id)
+    if path is None:
+        return {
+            **base,
+            "action": "stamp-frontmatter",
+            "status": "error",
+            "path": None,
+            "error": "brief not found in queue/ or picked/",
+        }
+    try:
+        _set_fm_fields(
+            path,
+            {
+                "seeded-from": f"triage:{run_date}:direct",
+                "recommended-route": "F",
+            },
+        )
+    except (OSError, ValueError) as exc:
+        return {
+            **base,
+            "action": "stamp-frontmatter",
+            "status": "error",
+            "path": str(path),
+            "error": str(exc),
+        }
+    return {
+        **base,
+        "action": "stamp-frontmatter",
+        "status": "executed",
+        "path": str(path),
+        "error": None,
+    }
+
+
+# Per design D8: filed via `decisions.ask()`, which builds the versioned
+# envelope with `decisions.pending_decision_envelope()` under the hood --
+# `_apply_needs_decision()` supplies the mandatory `why`/`context`/`options`
+# fields `ask()` itself requires (an evaluator verdict carries a question and
+# evidence, not a full structured decision record) generically, since every
+# `needs-decision` verdict shares the same underlying situation: an automated
+# run could not resolve the brief on its own.
+_NEEDS_DECISION_WHY = (
+    "Queue-triage evaluation could not resolve this brief without a human "
+    "product decision; see the cited evidence."
 )
+_NEEDS_DECISION_OPTIONS = [
+    "Proceed with the brief as currently scoped",
+    "Revise or close the brief per the evaluator's findings",
+]
 
 
-def apply_verdicts(verdicts: list[Verdict], *, confirm: bool) -> list[dict]:
-    """Execute (or, when `confirm` is false, only log) each non-`keep` verdict.
+def _apply_needs_decision(v: Verdict) -> dict:
+    """`needs-decision`: file a pending decision, leaving the brief queued.
+
+    Builds a deterministic `decisions.decision_identity()` (source
+    `"queue-triage"`, subject=`v.brief_id`, question=`v.question`) so a later
+    run re-evaluating the same still-open question converges on the existing
+    record instead of filing a duplicate, then files it via `decisions.ask()`
+    -- which builds the versioned envelope with `pending_decision_envelope()`
+    and stamps the brief `awaiting-decision: <id>` in place. `release_brief`
+    is always False: unlike `_apply_close()`, this action never claims the
+    brief in the first place, so there is nothing to release -- it simply
+    stays in `queue/`, now excluded from later `evaluate` runs by
+    `has_unresolved_decision()` until a human answers.
+
+    `ask()`'s own result fields are checked, not just `error`: a failed
+    brief stamp (`brief_stamped` false) is reported as `status="error"`
+    rather than `"executed"`, matching `_apply_work_directly()`'s fail-closed
+    behaviour -- otherwise the skip clause above silently would not hold for
+    that brief while the log claims it does. A re-file against an already
+    resolved decision (`decision_record_status == "already-resolved"`)
+    creates nothing and re-stamps the brief with the resolved id, so it is
+    reported as `status="already-resolved"`, not `"executed"`.
+    """
+    base = {
+        "brief_id": v.brief_id,
+        "verdict": v.verdict,
+        "duplicate_of": v.duplicate_of,
+        "action": "file-decision",
+        "confirm": True,
+        "note": v.evidence,
+    }
+    question = (v.question or "").strip()
+    if not question:
+        return {
+            **base,
+            "status": "error",
+            "path": None,
+            "error": "verdict has no question to file a decision for",
+        }
+
+    repo = v.repo if v.repo and v.repo != NO_REPO_KEY else None
+    decision_id = decisions.decision_identity(
+        source="queue-triage",
+        repo=repo or NO_REPO_KEY,
+        subject=v.brief_id,
+        question=question,
+    )
+    try:
+        result = decisions.ask(
+            question,
+            background=v.evidence,
+            why=_NEEDS_DECISION_WHY,
+            context=v.evidence,
+            options=list(_NEEDS_DECISION_OPTIONS),
+            repo=repo,
+            brief=v.brief_id,
+            release_brief=False,
+            decision_id=decision_id,
+            source="queue-triage",
+            subject=v.brief_id,
+        )
+    except ValueError as exc:
+        return {**base, "status": "error", "path": None, "error": str(exc)}
+
+    if result.get("error"):
+        return {
+            **base,
+            "status": "error",
+            "path": result.get("path"),
+            "error": result["error"],
+        }
+    if not result.get("brief_stamped"):
+        return {
+            **base,
+            "status": "error",
+            "path": result.get("path"),
+            "error": (
+                f"decision record {result.get('id')!r} was created/found at "
+                f"{result.get('path')}, but the brief could not be stamped "
+                f"with awaiting-decision: (not found under queue/ or "
+                f"picked/, or unwritable) -- the skip clause in later "
+                f"evaluate runs will not hold for this brief"
+            ),
+            "decision_id": result.get("id"),
+            "decision_record_status": result.get("status"),
+        }
+    if result.get("status") == "already-resolved":
+        return {
+            **base,
+            "status": "already-resolved",
+            "path": result.get("path"),
+            "error": None,
+            "decision_id": result.get("id"),
+            "decision_record_status": result.get("status"),
+        }
+    return {
+        **base,
+        "status": "executed",
+        "path": result.get("path"),
+        "error": None,
+        "decision_id": result.get("id"),
+        "decision_record_status": result.get("status"),
+    }
+
+
+def _planned_fold_propose_target(v: Verdict) -> str | None:
+    """The change id a fold/propose apply would target -- `target_change`
+    for `fold-into-change`, `proposed_change_name` for `propose-change`."""
+    return (
+        v.target_change if v.verdict == "fold-into-change" else v.proposed_change_name
+    )
+
+
+def _planned_fold_propose_branch(v: Verdict) -> str:
+    """The branch name a fold/propose apply (3.1/3.2) would create.
+
+    Deterministic from the verdict's own fields alone -- no worktree or git
+    call is made to produce this, so it is safe to compute for a preview
+    without needing to run the fold/propose apply action itself.
+    """
+    if v.verdict == "fold-into-change":
+        return f"queue-triage/fold-{v.brief_id}-into-{v.target_change}"
+    return f"queue-triage/propose-{v.proposed_change_name}"
+
+
+def _planned_fold_propose_pr_title(v: Verdict) -> str:
+    """The pull request title a fold/propose apply (3.1/3.2) would open with."""
+    if v.verdict == "fold-into-change":
+        return f"Fold {v.brief_id} into {v.target_change}"
+    return f"Propose change: {v.proposed_change_name}"
+
+
+def _fold_propose_worktree_dir(repo: Path, branch: str) -> Path:
+    """Sibling-directory worktree path for `branch`, mirroring
+    `orchestrator.worktree.default_worktree_base()`'s `<repo>-worktrees/`
+    convention -- kept as a plain slug-of-branch subdirectory here since a
+    fold/propose apply has no per-task/spec naming to reuse.
+    """
+    return repo.parent / f"{repo.name}-worktrees" / branch.replace("/", "-")
+
+
+def _repo_base_branch(repo: Path) -> str:
+    """`repo`'s base branch: policy's `base_branch` first, else `origin/HEAD`'s
+    target, else `main`. Mirrors `router.sweep_stale_worktrees.default_base_branch()`
+    (not imported: this module already reads policy directly for
+    `_repo_wip_cap()`, and a fold/propose apply's branch point should honor
+    an explicit `base_branch` override the same way other repo-scoped git
+    operations in this codebase do).
+    """
+    from ..router import policy as policy_mod
+
+    configured = policy_mod.load_policy(repo).get("base_branch")
+    if isinstance(configured, str) and configured.strip():
+        return configured.strip()
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo),
+                "symbolic-ref",
+                "--short",
+                "refs/remotes/origin/HEAD",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "main"
+    if result.returncode == 0:
+        branch = result.stdout.strip()
+        if branch.startswith("origin/"):
+            return branch[len("origin/") :]
+    return "main"
+
+
+_TASK_GROUP_HEADING_RE = re.compile(r"^##\s+(\d+)\.", re.MULTILINE)
+
+
+def _next_task_group_number(tasks_text: str) -> int:
+    """One past the highest `## N.` group heading in `tasks_text`, or `1` if none."""
+    numbers = [int(n) for n in _TASK_GROUP_HEADING_RE.findall(tasks_text)]
+    return max(numbers) + 1 if numbers else 1
+
+
+def _worktree_pr_close(
+    v: Verdict,
+    *,
+    repo_path: Path,
+    branch: str,
+    base_branch: str,
+    worktree_dir: Path,
+    prepare: Callable[[Path], str | None],
+    validate_target: str,
+    commit_message: str,
+    pr_body: str,
+) -> dict:
+    """Shared worktree + validate + commit/push/PR + claim/close sequence.
+
+    Per the spec's "Fold and propose are applied as a pull request,
+    fail-closed" requirement: creates a fresh worktree on `branch` off
+    `base_branch`, calls `prepare(worktree_dir)` to let the caller author the
+    change in place (returning an error string on failure, `None` on
+    success), runs `openspec validate <validate_target> --strict`, commits,
+    pushes, and opens the pull request via `gh pr create`. Only once
+    `gh pr create` reports a URL does this claim and close the brief (via
+    `claim()`/`done(..., triaged_to=pr_url)`, with rollback on `done()`
+    failure) -- any failure before that point returns `status="error"` with
+    the brief left completely untouched and the `branch` name it would have
+    used, so a caller can diagnose or retry without the queue and the target
+    repo disagreeing about what happened. The local worktree (and, on
+    failure, the local branch) are always cleaned up in a `finally`,
+    regardless of outcome -- a pushed branch survives (git has no local undo
+    for a push), but nothing local should outlive this call.
+    """
+    result = {
+        "brief_id": v.brief_id,
+        "verdict": v.verdict,
+        "duplicate_of": v.duplicate_of,
+        "action": "open-pull-request",
+        "confirm": True,
+        "note": v.evidence,
+    }
+
+    add = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo_path),
+            "worktree",
+            "add",
+            "-b",
+            branch,
+            str(worktree_dir),
+            base_branch,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if add.returncode != 0:
+        return {
+            **result,
+            "status": "error",
+            "path": None,
+            "error": f"git worktree add failed: {(add.stderr or add.stdout).strip()}",
+            "branch": branch,
+        }
+
+    pr_url = None
+    try:
+        prepare_error = prepare(worktree_dir)
+        if prepare_error:
+            return {
+                **result,
+                "status": "error",
+                "path": None,
+                "error": prepare_error,
+                "branch": branch,
+            }
+
+        validate = subprocess.run(
+            ["openspec", "validate", validate_target, "--strict"],
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=str(worktree_dir),
+            timeout=120,
+        )
+        if validate.returncode != 0:
+            return {
+                **result,
+                "status": "error",
+                "path": None,
+                "error": (
+                    "openspec validate failed: "
+                    f"{(validate.stderr or validate.stdout).strip()}"
+                ),
+                "branch": branch,
+            }
+
+        for git_args in (["add", "-A"], ["commit", "-m", commit_message]):
+            r = subprocess.run(
+                ["git", *git_args],
+                check=False,
+                capture_output=True,
+                text=True,
+                cwd=str(worktree_dir),
+                timeout=60,
+            )
+            if r.returncode != 0:
+                return {
+                    **result,
+                    "status": "error",
+                    "path": None,
+                    "error": (
+                        f"git {' '.join(git_args)} failed: "
+                        f"{(r.stderr or r.stdout).strip()}"
+                    ),
+                    "branch": branch,
+                }
+
+        push = subprocess.run(
+            ["git", "push", "-u", "origin", branch],
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=str(worktree_dir),
+            timeout=120,
+        )
+        if push.returncode != 0:
+            return {
+                **result,
+                "status": "error",
+                "path": None,
+                "error": f"git push failed: {(push.stderr or push.stdout).strip()}",
+                "branch": branch,
+            }
+
+        labels = _refresh_pr_labels(worktree_dir, ["go:risk-low"], base_branch) or [
+            "go:risk-low"
+        ]
+        pr_cmd = ["gh", "pr", "create", "--base", base_branch, "--head", branch]
+        for label in labels:
+            pr_cmd += ["--label", label]
+        pr_cmd += [
+            "--title",
+            _planned_fold_propose_pr_title(v),
+            "--body",
+            pr_body,
+        ]
+        pr = subprocess.run(
+            pr_cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=str(worktree_dir),
+            timeout=60,
+        )
+        pr_output = (pr.stdout or pr.stderr).strip()
+        pr_url = pr_output.splitlines()[-1] if pr_output else ""
+        if pr.returncode != 0 or not pr_url.startswith("http"):
+            pr_url = ""
+            return {
+                **result,
+                "status": "error",
+                "path": None,
+                "error": f"gh pr create failed: {pr_output or '(no output)'}",
+                "branch": branch,
+            }
+    finally:
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_path),
+                "worktree",
+                "remove",
+                "--force",
+                str(worktree_dir),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if not pr_url:
+            subprocess.run(
+                ["git", "-C", str(repo_path), "branch", "-D", branch],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+
+    # A PR now exists -- from here on, closing the brief is safe to attempt.
+    # Any failure past this point is reported against the now-real branch/PR,
+    # never against a not-yet-opened one.
+    claim_res = claim(v.brief_id, by="queue-triage")
+    if claim_res["status"] != "claimed":
+        detail = claim_res.get("error")
+        return {
+            **result,
+            "status": "error",
+            "path": claim_res.get("path"),
+            "error": f"claim: {claim_res['status']}"
+            + (f" ({detail})" if detail else ""),
+            "branch": branch,
+            "pr_url": pr_url,
+        }
+    done_res = done(v.brief_id, note=v.evidence, triaged_to=pr_url)
+    if done_res["status"] != "done":
+        detail = done_res.get("error")
+        release_res = release(v.brief_id)
+        return {
+            **result,
+            "status": "error",
+            "path": done_res.get("path"),
+            "error": f"done: {done_res['status']}" + (f" ({detail})" if detail else ""),
+            "rolled_back": release_res["status"] == "released",
+            "branch": branch,
+            "pr_url": pr_url,
+        }
+    return {
+        **result,
+        "status": "executed",
+        "path": done_res.get("path"),
+        "error": None,
+        "branch": branch,
+        "pr_url": pr_url,
+    }
+
+
+def _apply_fold_into_change(v: Verdict) -> dict:
+    """`fold-into-change`: worktree + proposal/tasks edit + validate + PR + close.
+
+    Appends a `## Folded from <brief-id>` section to the target change's
+    `proposal.md` and a new unchecked `## N. Folded from <brief-id>` task
+    group to its `tasks.md` (`_next_task_group_number()`), then hands off to
+    `_worktree_pr_close()` for the shared validate/commit/push/PR/close
+    sequence.
+    """
+    result = {
+        "brief_id": v.brief_id,
+        "verdict": v.verdict,
+        "duplicate_of": v.duplicate_of,
+        "action": "open-pull-request",
+        "confirm": True,
+        "note": v.evidence,
+    }
+    repo = v.repo if v.repo and v.repo != NO_REPO_KEY else None
+    if not repo or not v.target_change:
+        return {
+            **result,
+            "status": "error",
+            "path": None,
+            "error": "verdict is missing repo or target_change to fold into",
+        }
+
+    repo_path = Path(repo)
+    branch = _planned_fold_propose_branch(v)
+    base_branch = _repo_base_branch(repo_path)
+    worktree_dir = _fold_propose_worktree_dir(repo_path, branch)
+
+    def prepare(worktree_dir: Path) -> str | None:
+        change_dir = worktree_dir / "openspec" / "changes" / v.target_change
+        proposal_path = change_dir / "proposal.md"
+        tasks_path = change_dir / "tasks.md"
+        if not proposal_path.is_file() or not tasks_path.is_file():
+            return (
+                f"target change '{v.target_change}' has no proposal.md/"
+                f"tasks.md under {change_dir}"
+            )
+
+        try:
+            proposal_text = proposal_path.read_text(encoding="utf-8")
+            proposal_path.write_text(
+                proposal_text.rstrip("\n")
+                + f"\n\n## Folded from {v.brief_id}\n\n{v.evidence}\n",
+                encoding="utf-8",
+            )
+            tasks_text = tasks_path.read_text(encoding="utf-8")
+            group_number = _next_task_group_number(tasks_text)
+            tasks_path.write_text(
+                tasks_text.rstrip("\n")
+                + f"\n\n## {group_number}. Folded from {v.brief_id}\n\n"
+                + f"- [ ] {group_number}.1 {v.evidence}\n",
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            return f"failed to edit proposal.md/tasks.md: {exc}"
+        return None
+
+    return _worktree_pr_close(
+        v,
+        repo_path=repo_path,
+        branch=branch,
+        base_branch=base_branch,
+        worktree_dir=worktree_dir,
+        prepare=prepare,
+        validate_target=v.target_change,
+        commit_message=f"Fold {v.brief_id} into {v.target_change}",
+        pr_body=f"{v.evidence}\n\nFolded via queue-triage from brief `{v.brief_id}`.",
+    )
+
+
+def _apply_propose_change(v: Verdict, *, agent: str = "claude") -> dict:
+    """`propose-change`: worktree + `openspec new change` + agent-authored change + validate + PR + close.
+
+    Runs `openspec new change <proposed_change_name>` to scaffold the change
+    directory, then one `spawnlib.spawn_agent()` call (per
+    `PROPOSE_CHANGE_PROMPT_TEMPLATE`) to author `proposal.md`/`design.md`/
+    `specs/`/`tasks.md` in place, before handing off to
+    `_worktree_pr_close()` for the shared validate/commit/push/PR/close
+    sequence (mirroring `_apply_fold_into_change()`, per the spec's "Fold
+    and propose are applied as a pull request, fail-closed" requirement,
+    which covers both verdict types).
+    """
+    result = {
+        "brief_id": v.brief_id,
+        "verdict": v.verdict,
+        "duplicate_of": v.duplicate_of,
+        "action": "open-pull-request",
+        "confirm": True,
+        "note": v.evidence,
+    }
+    repo = v.repo if v.repo and v.repo != NO_REPO_KEY else None
+    if not repo or not v.proposed_change_name:
+        return {
+            **result,
+            "status": "error",
+            "path": None,
+            "error": "verdict is missing repo or proposed_change_name to propose",
+        }
+
+    repo_path = Path(repo)
+    branch = _planned_fold_propose_branch(v)
+    base_branch = _repo_base_branch(repo_path)
+    worktree_dir = _fold_propose_worktree_dir(repo_path, branch)
+
+    def prepare(worktree_dir: Path) -> str | None:
+        new_change = subprocess.run(
+            ["openspec", "new", "change", v.proposed_change_name],
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=str(worktree_dir),
+            timeout=60,
+        )
+        if new_change.returncode != 0:
+            return (
+                "openspec new change failed: "
+                f"{(new_change.stderr or new_change.stdout).strip()}"
+            )
+
+        from ..orchestrator import spawnlib
+
+        prompt = PROPOSE_CHANGE_PROMPT_TEMPLATE.format(
+            repo=repo,
+            proposed_change_name=v.proposed_change_name,
+            brief_id=v.brief_id,
+            evidence=v.evidence,
+        )
+        spawnlib.spawn_agent(prompt, worktree_dir, tier=DEFAULT_TIER, prefer=agent)
+
+        change_dir = worktree_dir / "openspec" / "changes" / v.proposed_change_name
+        proposal_path = change_dir / "proposal.md"
+        tasks_path = change_dir / "tasks.md"
+        if not proposal_path.is_file() or not tasks_path.is_file():
+            return (
+                "evaluator agent did not produce proposal.md/tasks.md "
+                f"under {change_dir}"
+            )
+        return None
+
+    return _worktree_pr_close(
+        v,
+        repo_path=repo_path,
+        branch=branch,
+        base_branch=base_branch,
+        worktree_dir=worktree_dir,
+        prepare=prepare,
+        validate_target=v.proposed_change_name,
+        commit_message=f"Propose change: {v.proposed_change_name}",
+        pr_body=f"{v.evidence}\n\nProposed via queue-triage from brief `{v.brief_id}`.",
+    )
+
+
+def _preview_verdict(v: Verdict, run_date: str) -> dict:
+    """The no-`--confirm` preview of one non-`keep` verdict's apply action.
+
+    Never claims, closes, stamps, or files anything -- every field here is
+    derived purely from `v` (plus `run_date` for the two frontmatter-
+    stamping verdict types, mirroring `_apply_work_directly`'s own stamp) so
+    a caller can preview a run's effects before committing to it, per spec's
+    "Apply step never closes a brief without an approved verdict"
+    requirement. `fold-into-change`/`propose-change` preview their planned
+    branch, target change, and PR title -- those fields are fully determined
+    by the verdict alone, without running either apply action. `work-directly`
+    previews its planned
+    frontmatter stamp (or the same downgrade-to-keep `_apply_work_directly`
+    would make); `needs-decision` previews the `awaiting-decision` stamp and
+    the full `pending_decision_envelope()` `decisions.ask()` would file.
+    """
+    base = {
+        "brief_id": v.brief_id,
+        "verdict": v.verdict,
+        "duplicate_of": v.duplicate_of,
+        "confirm": False,
+        "path": None,
+        "error": None,
+    }
+
+    if v.verdict in ("fold-into-change", "propose-change"):
+        if v.verdict == "propose-change" and _propose_change_over_cap(v):
+            return {
+                **base,
+                "action": "append-triage-note",
+                "status": "planned-downgrade-to-keep",
+                "note": _propose_change_wip_cap_note(v),
+            }
+        return {
+            **base,
+            "action": "open-pull-request",
+            "status": "planned",
+            "note": v.evidence,
+            "planned_branch": _planned_fold_propose_branch(v),
+            "planned_target_change": _planned_fold_propose_target(v),
+            "planned_pr_title": _planned_fold_propose_pr_title(v),
+        }
+
+    if v.verdict == "work-directly":
+        if not _REPRODUCTION_EVIDENCE_RE.search(v.evidence or ""):
+            return {
+                **base,
+                "action": "noop",
+                "status": "planned-downgrade-to-keep",
+                "note": (
+                    "evidence does not cite a test, check, or command -- "
+                    "will be downgraded to keep"
+                ),
+            }
+        return {
+            **base,
+            "action": "stamp-frontmatter",
+            "status": "planned",
+            "note": v.evidence,
+            "planned_stamp": {
+                "seeded-from": f"triage:{run_date}:direct",
+                "recommended-route": "F",
+            },
+        }
+
+    if v.verdict == "needs-decision":
+        question = (v.question or "").strip()
+        if not question:
+            return {
+                **base,
+                "action": "file-decision",
+                "status": "error",
+                "note": v.evidence,
+                "error": "verdict has no question to file a decision for",
+            }
+        repo = v.repo if v.repo and v.repo != NO_REPO_KEY else None
+        decision_id = decisions.decision_identity(
+            source="queue-triage",
+            repo=repo or NO_REPO_KEY,
+            subject=v.brief_id,
+            question=question,
+        )
+        envelope = decisions.pending_decision_envelope(
+            decision_id=decision_id,
+            question=question,
+            options=list(_NEEDS_DECISION_OPTIONS),
+            source="queue-triage",
+            repo=repo,
+            subject=v.brief_id,
+            brief=v.brief_id,
+        )
+        return {
+            **base,
+            "action": "file-decision",
+            "status": "planned",
+            "note": v.evidence,
+            "planned_stamp": {"awaiting-decision": decision_id},
+            "planned_envelope": envelope,
+        }
+
+    action = (
+        "claim+done"
+        if v.verdict in ("stale-close", "duplicate-of")
+        else "append-triage-note"
+    )
+    return {**base, "action": action, "status": "planned", "note": v.evidence}
+
+
+def apply_verdicts(
+    verdicts: list[Verdict], *, confirm: bool, agent: str = "claude"
+) -> list[dict]:
+    """Execute (or, when `confirm` is false, only preview) each non-`keep` verdict.
 
     Callers are expected to have already run this batch through
     `resolve_duplicate_targets()` -- this function acts on whatever `verdict`
     each `Verdict` carries, it does not re-check dangling `duplicate-of`
     targets itself. Per spec: `stale-close` and `duplicate-of` close the
     brief via `claim()` + `done(..., note=evidence)`; `needs-update` appends
-    an in-place `## Triage <run-date>` body section instead of closing it.
-    `keep` is always a no-op. `_APPLY_NOT_YET_IMPLEMENTED` verdict types
-    (fold-into-change/propose-change/work-directly/needs-decision) have no
-    apply action yet -- they are logged `status="not-yet-implemented"` with
-    no filesystem mutation, `confirm` notwithstanding, rather than being
-    misapplied via the `needs-update` fallback. When `confirm` is false,
-    nothing is executed -- every other non-`keep` verdict is logged as
-    `"planned"` with no filesystem mutation, so a caller can preview a run
-    before committing to it.
+    an in-place `## Triage <run-date>` body section instead of closing it;
+    `work-directly` stamps `seeded-from`/`recommended-route` frontmatter in
+    place, or downgrades to a no-op `keep` when the evidence lacks a
+    reproduction reference (`_apply_work_directly`); `needs-decision` files a
+    pending decision via `decisions.ask()` and leaves the brief queued
+    (`_apply_needs_decision`); `fold-into-change` creates a worktree, edits
+    the target change's `proposal.md`/`tasks.md`, validates, and opens a pull
+    request before closing the brief (`_apply_fold_into_change`);
+    `propose-change` creates a worktree, runs `openspec new change`, spawns
+    an agent to author the new change's `proposal.md`/`design.md`/`specs/`/
+    `tasks.md`, validates, and opens a pull request before closing the brief
+    (`_apply_propose_change`, using `agent` as the evaluator harness/model
+    hint per `spawnlib.spawn_agent()`'s `prefer` parameter). `keep` is always
+    a no-op.
+
+    When `confirm` is false, nothing is executed and nothing is written to
+    the queue or any repo -- every other non-`keep` verdict is instead
+    logged via `_preview_verdict()`: `fold-into-change`/`propose-change`
+    preview their planned branch, target change, and PR title;
+    `work-directly`/`needs-decision` preview their planned frontmatter
+    stamp (and, for `needs-decision`, the pending-decision envelope) --
+    so a caller can preview a run's effects before committing to it.
 
     Returns one action-log dict per verdict, in the same order as `verdicts`,
     never dropping any -- `apply`'s `--json`/human output (4.3) renders this
@@ -922,49 +1861,34 @@ def apply_verdicts(verdicts: list[Verdict], *, confirm: bool) -> list[dict]:
             )
             continue
 
-        if v.verdict in _APPLY_NOT_YET_IMPLEMENTED:
-            log.append(
-                {
-                    "brief_id": v.brief_id,
-                    "verdict": v.verdict,
-                    "duplicate_of": v.duplicate_of,
-                    "action": "noop",
-                    "confirm": confirm,
-                    "status": "not-yet-implemented",
-                    "path": None,
-                    "note": (
-                        f"apply action for verdict '{v.verdict}' is not yet "
-                        "implemented; brief left untouched"
-                    ),
-                    "error": None,
-                }
-            )
-            continue
-
-        action = (
-            "claim+done"
-            if v.verdict in ("stale-close", "duplicate-of")
-            else "append-triage-note"
-        )
-
         if not confirm:
-            log.append(
-                {
-                    "brief_id": v.brief_id,
-                    "verdict": v.verdict,
-                    "duplicate_of": v.duplicate_of,
-                    "action": action,
-                    "confirm": confirm,
-                    "status": "planned",
-                    "path": None,
-                    "note": v.evidence,
-                    "error": None,
-                }
-            )
+            log.append({**_preview_verdict(v, run_date), "confirm": confirm})
             continue
+
+        if v.verdict in ("stale-close", "duplicate-of"):
+            action = "claim+done"
+        elif v.verdict == "work-directly":
+            action = "stamp-frontmatter"
+        elif v.verdict == "needs-decision":
+            action = "file-decision"
+        elif v.verdict in ("fold-into-change", "propose-change"):
+            action = "open-pull-request"
+        else:
+            action = "append-triage-note"
 
         if action == "claim+done":
             log.append(_apply_close(v))
+        elif action == "stamp-frontmatter":
+            log.append(_apply_work_directly(v, run_date))
+        elif action == "file-decision":
+            log.append(_apply_needs_decision(v))
+        elif action == "open-pull-request":
+            if v.verdict == "fold-into-change":
+                log.append(_apply_fold_into_change(v))
+            elif _propose_change_over_cap(v):
+                log.append(_apply_propose_change_wip_cap_downgrade(v, run_date))
+            else:
+                log.append(_apply_propose_change(v, agent=agent))
         else:
             log.append(_apply_needs_update(v, run_date))
     return log
@@ -1201,12 +2125,14 @@ def cmd_apply(args: argparse.Namespace) -> int:
     "Apply step never closes a brief without an approved verdict" requirement. Every
     verdict is run through `resolve_duplicate_targets()` before `apply_verdicts()` so a
     dangling `duplicate-of` in the file can never be acted on, regardless of `--confirm`.
+    `--agent` is only consulted for `propose-change`, whose apply action spawns an
+    agent to author the new change (`_apply_propose_change`).
     """
     raw = Path(args.verdict_file).read_text(encoding="utf-8")
     verdicts = [Verdict(**entry) for entry in json.loads(raw)]
 
     resolved = resolve_duplicate_targets(verdicts)
-    action_log = apply_verdicts(resolved, confirm=args.confirm)
+    action_log = apply_verdicts(resolved, confirm=args.confirm, agent=args.agent)
 
     if args.as_json:
         print(json.dumps(action_log, indent=2))
@@ -1218,6 +2144,16 @@ def cmd_apply(args: argparse.Namespace) -> int:
                 f"{entry['brief_id']}{dup}: {entry['verdict']} [{entry['action']}] "
                 f"{entry['status']}{error}"
             )
+            if entry.get("planned_branch"):
+                print(f"    branch: {entry['planned_branch']}")
+            if entry.get("planned_target_change"):
+                print(f"    target change: {entry['planned_target_change']}")
+            if entry.get("planned_pr_title"):
+                print(f"    PR title: {entry['planned_pr_title']}")
+            if entry.get("planned_stamp"):
+                print(f"    stamp: {json.dumps(entry['planned_stamp'])}")
+            if entry.get("planned_envelope"):
+                print(f"    envelope: {json.dumps(entry['planned_envelope'])}")
         executed = sum(1 for e in action_log if e["status"] == "executed")
         planned = sum(1 for e in action_log if e["status"] == "planned")
         errors = sum(1 for e in action_log if e["status"] == "error")
@@ -1290,6 +2226,12 @@ def main(argv: list[str] | None = None) -> int:
         "--confirm",
         action="store_true",
         help="execute the actions; without this, only log what would happen",
+    )
+    apply_parser.add_argument(
+        "--agent",
+        default="claude",
+        choices=sorted(SUPPORTED_AGENTS),
+        help="agent to spawn to author a propose-change verdict's new change (default claude)",
     )
     apply_parser.add_argument(
         "--json",
