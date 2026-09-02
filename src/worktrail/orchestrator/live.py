@@ -143,6 +143,27 @@ def _default_post_merge_smoke_cmd(repo: Path) -> str | None:
     return resolve_post_merge_smoke_cmd(load_policy(repo))
 
 
+def _default_merge_method(repo: Path, base: str) -> str | None:
+    """Auto-resolve verify.py's merge method for `base` from policy's
+    `merge_method_by_base` when `--merge-method` was not passed explicitly.
+
+    Same gap class as `_default_smoke_cmd` above: the flag was sourced from
+    policy by the *calling agent* (subagent-prompts.md prose), not the code,
+    so a launch that forgot it fell back to `_detect_merge_method()`'s
+    repo-wide GitHub-settings query -- which returns "merge" on a repo that
+    allows merge commits for stg/prd promotions even when the target branch's
+    ruleset is squash-only. That is exactly how datalena group PRs
+    #2688/#2693/#2694 (2026-09-01) were quarantined on a green tree with
+    "Merge commits are not allowed on this repository", despite the repo's
+    policy already saying `merge_method_by_base: {dev: squash}`. A branch
+    with no override resolves to None (repo-wide detection, unchanged), and
+    an explicit `--merge-method` always wins over this.
+    """
+    from ..router.policy import load_policy, merge_method_for_branch
+
+    return merge_method_for_branch(load_policy(repo), base)
+
+
 # DEFAULT_AGENT is resolved from the launching host via _detect_default_agent()
 # so that Claude Code, Codex, and OpenCode each use their own headless CLI
 # without an invocation-wide env var or a per-call --agent flag. Explicit
@@ -6415,9 +6436,10 @@ def main(argv=None) -> int:
         dest="merge_method",
         choices=("merge", "squash", "rebase"),
         help="Merge method for auto_merge() to use for THIS base branch, overriding "
-        "verify.py's repo-wide GitHub-settings detection. Sourced from worktrail-go-policy.yaml's "
-        "merge_method_by_base by the sdd-workflow conductor (policy.py "
-        "--merge-method-for-branch); omit to keep repo-wide auto-detection.",
+        "verify.py's repo-wide GitHub-settings detection. Omit to auto-resolve from "
+        "worktrail-go-policy.yaml's merge_method_by_base for --base (falling back to "
+        "repo-wide auto-detection when the branch has no override); an explicit value "
+        "always wins over policy.",
     )
     fr.add_argument(
         "--pr-label",
@@ -6603,6 +6625,9 @@ def main(argv=None) -> int:
         post_merge_smoke_cmd = args.post_merge_smoke_cmd
         if post_merge_smoke_cmd is None:
             post_merge_smoke_cmd = _default_post_merge_smoke_cmd(Path(args.repo))
+        merge_method = args.merge_method
+        if merge_method is None:
+            merge_method = _default_merge_method(Path(args.repo), args.base)
         full_real(
             args.repo,
             args.spec,
@@ -6627,7 +6652,7 @@ def main(argv=None) -> int:
             smoke_cmd=smoke_cmd,
             post_merge_smoke_cmd=post_merge_smoke_cmd,
             bootstrap_cmd=args.bootstrap_cmd,
-            merge_method=args.merge_method,
+            merge_method=merge_method,
             pr_labels=args.pr_labels,
             pr_pacing_wait=args.pr_pacing_wait,
             route=args.route,

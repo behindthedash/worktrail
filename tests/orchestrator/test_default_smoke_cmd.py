@@ -101,6 +101,35 @@ class DefaultPostMergeSmokeCmdResolutionTests(unittest.TestCase):
         self.assertIsNone(live._default_post_merge_smoke_cmd(Path(repo)))
 
 
+class DefaultMergeMethodResolutionTests(unittest.TestCase):
+    """Sibling for `live._default_merge_method()`: `merge_method_by_base[base]`
+    resolves the method, any other branch (or no policy) resolves None so
+    verify.py's repo-wide detection still applies. Closes the gap that
+    quarantined datalena group PRs #2688/#2693/#2694 (2026-09-01): the flag
+    was only ever sourced from policy by agent prose, and a launch that
+    omitted it merged with the repo-wide method against a squash-only base."""
+
+    def _repo(self, policy_yaml: str | None) -> str:
+        d = tempfile.mkdtemp(prefix="default-merge-method-")
+        if policy_yaml is not None:
+            spec = Path(d) / ".worktrail"
+            spec.mkdir(parents=True)
+            (spec / "policy.yaml").write_text(policy_yaml, encoding="utf-8")
+        return d
+
+    def test_resolves_override_for_base_branch(self):
+        repo = self._repo("merge_method_by_base:\n  dev: squash\n")
+        self.assertEqual(live._default_merge_method(Path(repo), "dev"), "squash")
+
+    def test_branch_without_override_resolves_none(self):
+        repo = self._repo("merge_method_by_base:\n  dev: squash\n")
+        self.assertIsNone(live._default_merge_method(Path(repo), "stg"))
+
+    def test_unconfigured_repo_resolves_none(self):
+        repo = self._repo(None)
+        self.assertIsNone(live._default_merge_method(Path(repo), "dev"))
+
+
 class FullRealCLIAutoResolveTests(unittest.TestCase):
     """`live.main()` wiring: --smoke-cmd omitted auto-resolves from policy;
     an explicit --smoke-cmd always wins."""
@@ -162,6 +191,24 @@ class FullRealCLIAutoResolveTests(unittest.TestCase):
         repo = self._repo(None)
         captured = self._run(repo)
         self.assertIsNone(captured.get("post_merge_smoke_cmd"))
+
+    def test_merge_method_omitted_auto_resolves_from_policy_for_base(self):
+        # The datalena shape: repo-wide settings allow merge commits (stg/prd
+        # promotions) but policy pins dev to squash. Omitting --merge-method
+        # must still hand verify.py "squash" for a --base dev launch.
+        repo = self._repo("merge_method_by_base:\n  dev: squash\n")
+        captured = self._run(repo, "--base", "dev")
+        self.assertEqual(captured.get("merge_method"), "squash")
+
+    def test_explicit_merge_method_wins_over_policy(self):
+        repo = self._repo("merge_method_by_base:\n  dev: squash\n")
+        captured = self._run(repo, "--base", "dev", "--merge-method", "rebase")
+        self.assertEqual(captured.get("merge_method"), "rebase")
+
+    def test_merge_method_base_without_override_still_passes_none(self):
+        repo = self._repo("merge_method_by_base:\n  dev: squash\n")
+        captured = self._run(repo)  # --base main: no override configured
+        self.assertIsNone(captured.get("merge_method"))
 
 
 if __name__ == "__main__":

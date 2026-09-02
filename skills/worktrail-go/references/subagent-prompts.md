@@ -865,13 +865,16 @@ a role pinned to a different agent falls back to that agent's own default model.
   the integrate+PR-open step across the concurrent per-group IV threads; verify still
   overlaps. Omit the flag when the policy key is unset or 0 (PRs open back-to-back,
   today's behavior).
-- **Branch-aware merge method (opt-in, from policy):** when `docs/specs/worktrail-go-policy.yaml`
-  sets `merge_method_by_base` for `$BASE`, resolve it (`policy.py --merge-method-for-branch
-  "$BASE"`, loaded in Phase 4) and pass it through as `--merge-method <method>`. This
-  overrides `verify.py`'s own repo-wide GitHub-settings query, which cannot tell "this repo
-  allows merge commits for stg/prd promotions" from "dev-target feature PRs should still
-  squash." Omit the flag when the branch has no override (falls back to repo-wide
-  auto-detection, today's behavior).
+- **Branch-aware merge method (auto-resolved from policy):** `worktrail-live full-real`
+  resolves `merge_method_by_base[$BASE]` from the repo policy itself when `--merge-method`
+  is omitted (`live._default_merge_method`, same code-level default as `--smoke-cmd`), so
+  there is no flag to remember here. It overrides `verify.py`'s own repo-wide
+  GitHub-settings query, which cannot tell "this repo allows merge commits for stg/prd
+  promotions" from "dev-target feature PRs should still squash" -- before the default
+  existed, a launch that forgot the flag merged datalena group PRs #2688/#2693/#2694
+  (2026-09-01) with `--merge` against squash-only `dev` and quarantined each on a green
+  tree. Pass `--merge-method <method>` only to override policy for one run; a branch with
+  no override still falls back to repo-wide auto-detection.
 - **Tail tasks (E2E / cleanup) are not auto-run.** `full-real` holds out `kind: e2e` and
   `kind: cleanup` tasks by design (a faithful global E2E runs only after the group PRs
   merge). When it sets `integrate_complete`, it records the outstanding ones as

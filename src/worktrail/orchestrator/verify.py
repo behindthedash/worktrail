@@ -1197,28 +1197,40 @@ class Verifier:
         return False
 
     def _retry_auto_merge_methods(
-        self, gb: str, exclude: str | None
+        self, gb: str, exclude: str | None, *, auto: bool = True
     ) -> tuple[bool, str | None, str]:
-        """Retry `gh pr merge <gb> --auto --<method> --delete-branch` for each
+        """Retry `gh pr merge <gb> [--auto] --<method> --delete-branch` for each
         method besides `exclude`, in preference order (squash, rebase, merge).
 
-        Shared by both `auto_merge` fallback sites that can be rejected by
-        `enablePullRequestAutoMerge` (e.g. `_detect_merge_method` guessed
-        "merge" from repo-wide settings, but the target branch's ruleset only
-        allows squash). Returns (True, working_method, "") on the first
-        method GitHub accepts, or (False, None, last_error) if every
-        remaining method is also rejected.
+        Shared by every `auto_merge` site where GitHub can reject the METHOD
+        rather than the merge (e.g. `_detect_merge_method` guessed "merge"
+        from repo-wide settings, but the target branch's ruleset only allows
+        squash): the two `--auto` arming fallbacks (`auto=True`, rejected by
+        `enablePullRequestAutoMerge`) and the direct merge itself
+        (`auto=False`, rejected with "Merge commits are not allowed on this
+        repository"). Returns (True, working_method, "") on the first method
+        GitHub accepts, or (False, None, last_error) if every remaining
+        method is also rejected. A direct retry (`auto=False`) can also hit a
+        branch-protection block: GitHub accepted the method but the merge
+        itself needs `--auto` arming, so that returns (False, method,
+        protection_error) immediately -- trying further methods would only
+        overwrite the protection signal the caller's arming fallback keys on.
         """
         last_err = ""
+        auto_flag = ["--auto"] if auto else []
         for fallback in ("squash", "rebase", "merge"):
             if fallback == exclude:
                 continue
             p = self._gh(
-                "pr", "merge", gb, "--auto", f"--{fallback}", "--delete-branch"
+                "pr", "merge", gb, *auto_flag, f"--{fallback}", "--delete-branch"
             )
             if getattr(p, "returncode", 1) == 0:
                 return True, fallback, ""
             last_err = (getattr(p, "stderr", "") or "").strip()
+            if not auto and any(
+                sig in last_err.lower() for sig in _BRANCH_PROTECTION_SIGNALS
+            ):
+                return False, fallback, last_err
         return False, None, last_err
 
     def _automerge_label_block_reason(self, gb: str) -> str | None:
@@ -1385,6 +1397,33 @@ class Verifier:
             self.log(f"    [{group['name']}] auto-merged {gb} ({self._merge_method})")
             return True, ""
         err = (getattr(p, "stderr", "") or "").strip()
+        # GitHub rejected the METHOD on the direct merge itself (e.g. `--merge`
+        # against a squash-only base: "Merge commits are not allowed on this
+        # repository"). This is neither a protection block nor transient, and
+        # until now no signal list was consulted on this path, so it fell
+        # straight through to quarantine on a green tree (datalena group PRs
+        # #2688/#2693/#2694, 2026-09-01, each merged by hand with --squash).
+        # Retry the direct merge with each remaining method before anything else.
+        if any(sig in err.lower() for sig in _AUTO_MERGE_METHOD_SIGNALS):
+            original_method = self._merge_method
+            ok_retry, working_method, retry_err = self._retry_auto_merge_methods(
+                gb, original_method, auto=False
+            )
+            if ok_retry:
+                self._merge_method = working_method  # cache for subsequent groups
+                self.log(
+                    f"    [{group['name']}] auto-merged {gb} "
+                    f"({working_method}, method-fallback: {original_method} rejected "
+                    "by GitHub on direct merge)"
+                )
+                return True, ""
+            if working_method:
+                # GitHub accepted this method but protection blocks the merge
+                # itself -- arm --auto below with the accepted method, not the
+                # rejected one.
+                self._merge_method = working_method
+                method_flag = f"--{working_method}"
+            err = retry_err or err
         # Branch-protection blocks are not transient errors -- retrying immediately
         # would just fail again. Enable auto-merge so GitHub queues the merge the
         # moment all requirements (e.g. required reviews) are satisfied. Treat

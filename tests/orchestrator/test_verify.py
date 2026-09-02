@@ -2048,6 +2048,133 @@ class SquashMergeDetection(unittest.TestCase):
         self.assertIn("--squash", merge_calls[0])
 
 
+class DirectMergeMethodRejected(unittest.TestCase):
+    """GitHub rejects the METHOD on the direct `gh pr merge` call itself -- no
+    branch-protection signal involved -- so before this fix the error fell
+    through `auto_merge()`'s generic branch straight to quarantine.
+
+    Real-world trigger: datalena group PRs #2688/#2693/#2694 (2026-09-01).
+    `_detect_merge_method` returned "merge" (repo-wide settings allow merge
+    commits for stg/prd promotions), dev's ruleset is squash-only, and the
+    direct `gh pr merge --merge` failed with "Merge commits are not allowed on
+    this repository" on a fully green tree; each PR was merged by hand with
+    `gh pr merge --squash`.
+    """
+
+    def _make_run(self, squash_rc=0, squash_err=""):
+        merge_calls = []
+
+        class Run:
+            def __init__(self):
+                self.calls = []
+
+            def __call__(self, cmd):
+                self.calls.append(cmd)
+                if cmd[:3] == ["gh", "repo", "view"] and "--json" in cmd:
+                    return Proc(
+                        0,
+                        json.dumps(
+                            {
+                                "mergeCommitAllowed": True,
+                                "squashMergeAllowed": True,
+                                "rebaseMergeAllowed": False,
+                            }
+                        ),
+                        "",
+                    )
+                if cmd[:3] == ["gh", "pr", "merge"]:
+                    merge_calls.append(cmd)
+                    if "--merge" in cmd:
+                        return Proc(
+                            1,
+                            "",
+                            "X Pull request #2693 is not mergeable: Merge commits "
+                            "are not allowed on this repository.",
+                        )
+                    if "--squash" in cmd:
+                        return Proc(squash_rc, "", squash_err)
+                    return Proc(1, "", "method also not allowed")
+                return FakeRun({"run/feature-1": [view()]})(cmd)
+
+        return Run(), merge_calls
+
+    def test_direct_merge_retries_squash_without_arming_auto(self):
+        run, merge_calls = self._make_run()
+        v = mk(run, FakeSpawn(), "/tmp/x")
+
+        ok, msg = v.auto_merge(FEATURE, "run/feature-1")
+
+        self.assertTrue(ok, f"expected a confirmed merge via squash, got: {msg}")
+        self.assertEqual(msg, "", "a direct squash merge is confirmed, not queued")
+        self.assertEqual(
+            [c for c in merge_calls if "--auto" in c],
+            [],
+            "a method rejection on the direct merge must retry directly, not arm --auto",
+        )
+        squash_calls = [c for c in merge_calls if "--squash" in c]
+        self.assertEqual(len(squash_calls), 1)
+        self.assertEqual(
+            v._merge_method, "squash", "working method cached for later groups"
+        )
+
+    def test_squash_retry_hitting_protection_falls_into_auto_path(self):
+        # The method retry can itself surface a protection block; that must
+        # still reach the existing --auto arming fallback rather than quarantine.
+        run, merge_calls = self._make_run(
+            squash_rc=1, squash_err="the base branch policy prohibits the merge"
+        )
+        run_calls = run.calls
+
+        def with_auto(cmd):
+            if cmd[:3] == ["gh", "pr", "merge"] and "--auto" in cmd:
+                run_calls.append(cmd)
+                merge_calls.append(cmd)
+                return Proc(0, "", "")
+            return run(cmd)
+
+        v = mk(with_auto, FakeSpawn(), "/tmp/x")
+
+        ok, msg = v.auto_merge(FEATURE, "run/feature-1")
+
+        self.assertTrue(
+            ok, f"expected --auto arming after protection block, got: {msg}"
+        )
+        self.assertEqual(msg, "queued")
+        auto_calls = [c for c in merge_calls if "--auto" in c]
+        self.assertEqual(len(auto_calls), 1)
+        self.assertIn(
+            "--squash",
+            auto_calls[0],
+            "--auto must arm with the method GitHub accepted, not the rejected --merge",
+        )
+        self.assertEqual(v._merge_method, "squash")
+
+    def test_all_direct_retries_rejected_quarantines(self):
+        run, _merge_calls = self._make_run(
+            squash_rc=1, squash_err="squash also not allowed"
+        )
+        v = mk(run, FakeSpawn(), "/tmp/x")
+
+        ok, msg = v.auto_merge(FEATURE, "run/feature-1")
+
+        self.assertFalse(ok)
+        self.assertIn("auto-merge failed", msg)
+
+    def test_policy_override_uses_squash_on_first_direct_call(self):
+        # End of the policy chain: live.py's `_default_merge_method` hands
+        # verify.Verifier(merge_method="squash"); the very first direct merge
+        # must then be `--squash`, with no repo-wide detection and no retry.
+        run, merge_calls = self._make_run()
+        v = mk(run, FakeSpawn(), "/tmp/x", merge_method="squash")
+
+        ok, _msg = v.auto_merge(FEATURE, "run/feature-1")
+
+        self.assertTrue(ok)
+        self.assertEqual(len(merge_calls), 1)
+        self.assertIn("--squash", merge_calls[0])
+        self.assertFalse([c for c in run.calls if c[:3] == ["gh", "repo", "view"]])
+
+
 class AutoMergeMethodFallback(unittest.TestCase):
     """Fix 3: enablePullRequestAutoMerge rejects the detected method -> retry with squash/rebase.
 
