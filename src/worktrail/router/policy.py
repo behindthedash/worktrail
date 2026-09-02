@@ -216,6 +216,14 @@ DEFAULTS: dict[str, Any] = {
     # separately. Empty by default: a repo with no add_ons: key gets zero
     # entries, so the runner iterates nothing and behavior is unchanged.
     "add_ons": {},
+    # Per-repo WIP cap on active OpenSpec changes, consulted by
+    # `workqueue/queue_triage.py` at apply time: a `propose-change` verdict is
+    # downgraded to `keep` (with a `## Triage <date>` note naming the cap, the
+    # current count, and the top fold candidates) once the repo's active-change
+    # count is at or over this cap. 0 = disabled — no repo is ever held, so a
+    # repo that hasn't opted in sees no behavior change. `fold-into-change`,
+    # `work-directly`, and `needs-decision` are never throttled by this key.
+    "max_active_changes": 0,
 }
 
 KNOWN_KEYS = set(DEFAULTS) | {"automerge"}
@@ -1250,6 +1258,12 @@ def load_policy(repo: Path) -> dict[str, Any]:
                 f"{key} must be an integer >= {minimum}; dropped ({value!r})"
             )
             policy[key] = DEFAULTS[key]
+    mac = policy.get("max_active_changes")
+    if not isinstance(mac, int) or isinstance(mac, bool):
+        meta["warnings"].append(
+            f"max_active_changes must be an integer; got {mac!r} — forced to 0"
+        )
+        policy["max_active_changes"] = 0
     mmb = policy.get("merge_method_by_base")
     if not isinstance(mmb, dict):
         if mmb:

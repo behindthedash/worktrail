@@ -1876,6 +1876,127 @@ class TestApplyProposeChange(QueueTriageTestBase):
         self.assertTrue((self.queue / "a.md").exists())
 
 
+class TestApplyPropseChangeWipCapDowngrade(QueueTriageTestBase):
+    """3.6: `apply_verdicts()` re-checks the target repo's active-change count
+    against its `max_active_changes` policy cap at apply time (not just
+    2.4's evaluate-time `held_by_wip_cap` preview), downgrading an at/over-cap
+    `propose-change` to a no-op `keep` plus a `## Triage <date>` note naming
+    the cap, the count, and the top fold candidates -- `fold-into-change`,
+    `work-directly`, and `needs-decision` are never throttled by this key.
+    """
+
+    def _make_active_change(self, repo_root: Path, change_id: str) -> None:
+        change_dir = repo_root / "openspec" / "changes" / change_id
+        change_dir.mkdir(parents=True, exist_ok=True)
+        (change_dir / "proposal.md").write_text(
+            f"# {change_id}\n\n## Why\nsome change.\n", encoding="utf-8"
+        )
+        (change_dir / "tasks.md").write_text(
+            "## 1. Tasks\n\n- [ ] 1.1 do the thing\n", encoding="utf-8"
+        )
+
+    def _write_policy(self, repo_root: Path, max_active_changes: int) -> None:
+        policy_dir = repo_root / ".worktrail"
+        policy_dir.mkdir(parents=True, exist_ok=True)
+        (policy_dir / "policy.yaml").write_text(
+            f"max_active_changes: {max_active_changes}\n", encoding="utf-8"
+        )
+
+    def test_propose_change_downgraded_when_over_cap(self):
+        repo_root = self.base / "repo-over-cap"
+        self._make_active_change(repo_root, "change-1")
+        self._write_policy(repo_root, max_active_changes=1)
+        self.write("a.md", repo=str(repo_root), body="## Focus\n\npropose this\n")
+        verdict = qt.Verdict(
+            brief_id="a",
+            verdict="propose-change",
+            duplicate_of=None,
+            evidence="deserves its own change",
+            confidence="high",
+            target_repo=str(repo_root),
+            proposed_change_name="new-thing",
+            repo=str(repo_root),
+        )
+
+        def _run(cmd, **kwargs):
+            raise AssertionError(
+                f"no subprocess call expected once over cap: {cmd}"
+            )
+
+        with mock.patch(
+            "worktrail.workqueue.queue_triage.subprocess.run", side_effect=_run
+        ):
+            log = qt.apply_verdicts([verdict], confirm=True)
+
+        entry = log[0]
+        self.assertEqual(entry["brief_id"], "a")
+        self.assertEqual(entry["action"], "append-triage-note")
+        self.assertEqual(entry["status"], "downgraded-to-keep")
+        self.assertIsNone(entry["error"])
+        self.assertIn("max_active_changes cap of 1", entry["note"])
+        self.assertIn("1 active change", entry["note"])
+        self.assertIn("change-1", entry["note"])
+
+        # brief stays queued (not claimed/closed) with the triage note appended
+        self.assertTrue((self.queue / "a.md").exists())
+        content = (self.queue / "a.md").read_text(encoding="utf-8")
+        run_date = datetime.date.today().isoformat()
+        self.assertIn(f"## Triage {run_date}", content)
+        self.assertIn("change-1", content)
+        fm = qt.read_frontmatter(self.queue / "a.md")
+        self.assertEqual(fm["status"], "queued")
+
+    def test_propose_change_proceeds_when_cap_unset(self):
+        repo_root = self.base / "repo-no-cap"
+        repo_root.mkdir(parents=True, exist_ok=True)
+        self._make_active_change(repo_root, "change-1")
+        # No policy.yaml at all -- max_active_changes defaults to 0 (disabled).
+        self.write("a.md", repo=str(repo_root), body="## Focus\n\npropose this\n")
+        verdict = qt.Verdict(
+            brief_id="a",
+            verdict="propose-change",
+            duplicate_of=None,
+            evidence="deserves its own change",
+            confidence="high",
+            target_repo=str(repo_root),
+            proposed_change_name="new-thing",
+            repo=str(repo_root),
+        )
+
+        with mock.patch(
+            "worktrail.workqueue.queue_triage._apply_propose_change",
+            return_value={"brief_id": "a", "status": "executed-stub"},
+        ) as stub:
+            log = qt.apply_verdicts([verdict], confirm=True)
+
+        stub.assert_called_once()
+        self.assertEqual(log[0]["status"], "executed-stub")
+
+    def test_fold_into_change_not_throttled_even_over_cap(self):
+        repo_root = self.base / "repo-fold-over-cap"
+        self._make_active_change(repo_root, "change-1")
+        self._write_policy(repo_root, max_active_changes=1)
+        self.write("a.md", repo=str(repo_root), body="## Focus\n\nfold this\n")
+        verdict = qt.Verdict(
+            brief_id="a",
+            verdict="fold-into-change",
+            duplicate_of=None,
+            evidence="overlaps change-1's open tasks",
+            confidence="high",
+            target_change="change-1",
+            repo=str(repo_root),
+        )
+
+        with mock.patch(
+            "worktrail.workqueue.queue_triage._apply_fold_into_change",
+            return_value={"brief_id": "a", "status": "executed-stub"},
+        ) as stub:
+            log = qt.apply_verdicts([verdict], confirm=True)
+
+        stub.assert_called_once()
+        self.assertEqual(log[0]["status"], "executed-stub")
+
+
 class TestEvaluateSkipsUnresolvedDecision(QueueTriageTestBase):
     """3.4's `inventory()` skip: a brief with an unresolved (open/answered)
     pending decision must not be re-evaluated by a later `evaluate` run.

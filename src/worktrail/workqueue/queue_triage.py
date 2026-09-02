@@ -439,6 +439,93 @@ def apply_wip_cap_preview(repo: str, verdicts: list[Verdict]) -> list[Verdict]:
     ]
 
 
+def _propose_change_wip_cap_status(v: Verdict) -> tuple[str | None, int, int]:
+    """`(repo, cap, count)` for `v`, a fresh apply-time re-check of the WIP cap.
+
+    Recomputed here rather than trusting `v.held_by_wip_cap` (2.4's evaluate-time
+    preview): `evaluate` and `apply` can run far enough apart that the repo's
+    active-change count or its `max_active_changes` policy value has since
+    changed, and 3.6's enforcement point is apply time, not evaluate time.
+    `repo` is `None` for a repo-less verdict (`NO_REPO_KEY`/falsy `v.repo`), in
+    which case `cap`/`count` are both `0` and the caller never treats it as
+    over cap.
+    """
+    repo = v.repo if v.repo and v.repo != NO_REPO_KEY else None
+    if not repo:
+        return None, 0, 0
+    return repo, _repo_wip_cap(repo), _count_active_changes(repo)
+
+
+def _propose_change_over_cap(v: Verdict) -> bool:
+    """True if `v` is a `propose-change` verdict whose repo is at or over a
+    non-zero `max_active_changes` cap, re-checked fresh (see
+    `_propose_change_wip_cap_status()`). A cap of `0` (unset/disabled) never
+    holds anything."""
+    if v.verdict != "propose-change":
+        return False
+    _repo, cap, count = _propose_change_wip_cap_status(v)
+    return cap > 0 and count >= cap
+
+
+def _propose_change_wip_cap_note(v: Verdict) -> str:
+    """The `## Triage <date>` note body for a `propose-change` downgraded by
+    the WIP cap: names the cap, the current active-change count, and the
+    repo's top fold candidates (2.1's `rank_change_candidates()`, re-ranked
+    against this brief) as an alternative for the operator to consider instead
+    of a new change."""
+    repo, cap, count = _propose_change_wip_cap_status(v)
+    path = _resolve_brief_path(v.brief_id)
+    candidates = rank_change_candidates(path, repo) if path and repo else []
+    return (
+        f"propose-change held by the WIP cap: repo '{repo}' has {count} active "
+        f"change(s), at or over its max_active_changes cap of {cap}. Consider "
+        f"folding into one of the repo's active changes instead: "
+        f"{_format_candidates(candidates)}"
+    )
+
+
+def _apply_propose_change_wip_cap_downgrade(v: Verdict, run_date: str) -> dict:
+    """Downgrade an over-cap `propose-change` verdict to a no-op `keep`.
+
+    Mirrors `_apply_needs_update()`'s in-place `## Triage <run_date>` note
+    append -- the brief is left exactly where it already sits (`queue/` or
+    `picked/`), never claimed or closed, so a held `propose-change` behaves
+    like any other `keep`: it simply remains available for a later triage run
+    once the repo's active-change count drops back under the cap.
+    """
+    note = _propose_change_wip_cap_note(v)
+    base = {
+        "brief_id": v.brief_id,
+        "verdict": v.verdict,
+        "duplicate_of": v.duplicate_of,
+        "action": "append-triage-note",
+        "confirm": True,
+        "note": note,
+    }
+    path = _resolve_brief_path(v.brief_id)
+    if path is None:
+        return {
+            **base,
+            "status": "error",
+            "path": None,
+            "error": "brief not found in queue/ or picked/",
+        }
+    try:
+        content = path.read_text(encoding="utf-8")
+        path.write_text(
+            content.rstrip("\n") + f"\n\n## Triage {run_date}\n\n{note}\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        return {**base, "status": "error", "path": str(path), "error": str(exc)}
+    return {
+        **base,
+        "status": "downgraded-to-keep",
+        "path": str(path),
+        "error": None,
+    }
+
+
 def _format_candidates(candidates: list[dict[str, Any]]) -> str:
     """Render `rank_change_candidates()`'s output for one brief's prompt line.
 
@@ -1636,6 +1723,13 @@ def _preview_verdict(v: Verdict, run_date: str) -> dict:
     }
 
     if v.verdict in ("fold-into-change", "propose-change"):
+        if v.verdict == "propose-change" and _propose_change_over_cap(v):
+            return {
+                **base,
+                "action": "append-triage-note",
+                "status": "planned-downgrade-to-keep",
+                "note": _propose_change_wip_cap_note(v),
+            }
         return {
             **base,
             "action": "open-pull-request",
@@ -1791,6 +1885,8 @@ def apply_verdicts(
         elif action == "open-pull-request":
             if v.verdict == "fold-into-change":
                 log.append(_apply_fold_into_change(v))
+            elif _propose_change_over_cap(v):
+                log.append(_apply_propose_change_wip_cap_downgrade(v, run_date))
             else:
                 log.append(_apply_propose_change(v, agent=agent))
         else:
