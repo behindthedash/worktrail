@@ -107,11 +107,14 @@ sdd-workflow seed prompt `Agent CLI:`) MUST use `$INVOCATION_CONTEXT_AGENT`.
 Do NOT re-detect the host or re-read env vars in child processes — the resolved
 values are the durable per-invocation identity.
 
-Hold all four values for the entire session. When the policy `run_record_dir` is set,
-pass `--agent "$INVOCATION_CONTEXT_AGENT"` to every `worktrail-run-record` call, and on
-the `start` call also pass `--native-skill-available "$INVOCATION_CONTEXT_NATIVE_SKILL"`
-and `--dispatch-mode "$INVOCATION_CONTEXT_DISPATCH_MODE"` so the audit record captures
-which path was taken and why.
+Hold all four values for the entire session. Only `worktrail-run-record start` accepts
+`--agent` (with `--native-skill-available "$INVOCATION_CONTEXT_NATIVE_SKILL"` and
+`--dispatch-mode "$INVOCATION_CONTEXT_DISPATCH_MODE"`), so the audit record captures
+which path was taken and why; the agent is stamped on the record once there. Every other
+subcommand (`scope-review`, `set`, `finish`, ...) rejects `--agent` — do not pass it.
+On `finish`, pass `--pr <url>` for any PR-owning completion state: the brief-closure
+evidence gate (`worktrail-work-queue done --run`) reads the record's `pull_request`
+field, and `--merge-result` prose alone does not satisfy it.
 
 `$INVOCATION_CONTEXT_DISPATCH_ID` is the stable identity for this one `/go` invocation.
 Pass it as `--by "$INVOCATION_CONTEXT_DISPATCH_ID"` to every `worktrail-work-queue
