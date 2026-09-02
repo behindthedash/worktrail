@@ -14,9 +14,9 @@ implements the read-only-parent-home fallback this feature needs to verify:
 `select_codex_home` keeps an inherited `CODEX_HOME` only when
 `codex_home_write_remediation` finds it writable, otherwise falls back to
 `default_worktrail_codex_home()` (`~/.worktrail/codex-home`) and reports
-`automatic_home=True`. Auth inheritance (`inherit_codex_chatgpt_auth`) copies
-only a verified, owner-only, size-bounded `auth.json` into the child home
-after confirming `codex login status` reports the ChatGPT ok line — it never
+`automatic_home=True`. Auth inheritance (`inherit_codex_chatgpt_auth`) symlinks
+only a verified, owner-only `auth.json` into the child home (a write-through
+link, so refresh-token rotation lands in the parent's file) after confirming `codex login status` reports the ChatGPT ok line — it never
 returns file contents to a caller.
 
 `check_agent_contract.py` is the closest existing precedent: an on-demand,
