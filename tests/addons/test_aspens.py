@@ -50,7 +50,10 @@ class InstallTests(_MarkerIsolation):
         stale = time.time() - (aspens_module.CHECK_INTERVAL_SECONDS + 60)
         self.marker.write_text(str(stale))
 
-        with patch("worktrail.addons.aspens.subprocess.run") as mock_run:
+        with (
+            patch("worktrail.addons.aspens.shutil.which", return_value=None),
+            patch("worktrail.addons.aspens.subprocess.run") as mock_run,
+        ):
             mock_run.return_value = SimpleNamespace(returncode=0)
             AspensAddOn().install(ctx=None)
 
@@ -59,11 +62,29 @@ class InstallTests(_MarkerIsolation):
         self.assertEqual(args, ["npm", "install", "-g", "aspens"])
 
     def test_install_runs_npm_call_when_marker_is_missing(self):
-        with patch("worktrail.addons.aspens.subprocess.run") as mock_run:
+        with (
+            patch("worktrail.addons.aspens.shutil.which", return_value=None),
+            patch("worktrail.addons.aspens.subprocess.run") as mock_run,
+        ):
             mock_run.return_value = SimpleNamespace(returncode=0)
             AspensAddOn().install(ctx=None)
 
         mock_run.assert_called_once()
+
+    def test_install_skips_npm_call_when_cli_already_on_path(self):
+        """A present CLI (e.g. an operator's `npm link`ed fork) is never
+        overwritten by a registry install; the marker is still refreshed."""
+        with (
+            patch(
+                "worktrail.addons.aspens.shutil.which",
+                return_value="/usr/local/bin/aspens",
+            ),
+            patch("worktrail.addons.aspens.subprocess.run") as mock_run,
+        ):
+            AspensAddOn().install(ctx=None)
+
+        mock_run.assert_not_called()
+        self.assertTrue(self.marker.exists())
 
     def test_install_touches_marker_after_checking(self):
         self.assertFalse(self.marker.exists())
