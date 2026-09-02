@@ -1,0 +1,13 @@
+## 1. Scan Module
+
+- [ ] 1.1 Add `src/worktrail/workqueue/check_corpus_style.py` with a `scan_corpus(queue_base: Path) -> list[dict]` function that walks `queue/*.md` and `picked/*.md` under `queue_base`, and for each file: reads its text, gets `frontmatter, _ = split_frontmatter(content)`; if `frontmatter` is empty, appends a finding `{"path": <str>, "classification": "malformed"}`; else if `not is_canonical_style(content)`, appends `{"path": <str>, "classification": "style-mismatch"}`; files that are canonical produce no entry. Reuse `split_frontmatter` and `is_canonical_style` from `..shared.brief_frontmatter` unchanged. Cover a canonical brief (no finding), a non-canonical-but-parseable brief (`style-mismatch`), a brief with no frontmatter fence (`malformed`), and a brief with unparseable YAML (`malformed`) in `tests/workqueue/test_check_corpus_style.py`. (Requirement: Corpus scan detects non-canonical frontmatter style) (Requirement: Scan distinguishes style mismatches from malformed frontmatter)
+- [ ] 1.2 In the same module, add a `main(argv=None) -> int` CLI: `--queue-dir` (defaults to `$WORK_QUEUE_DIR` / `~/work-queue`, matching `work_queue.py`'s own default resolution) and `--json`; human output prints each finding's path and classification (or a clean-corpus message), JSON output is `{"findings": [...]}`; returns exit code `1` if any finding exists, `0` otherwise. Cover both output modes and both exit codes in `tests/workqueue/test_check_corpus_style.py`; depends on 1.1. (Requirement: Scan output supports external scheduling)
+- [ ] 1.3 Register `worktrail-check-corpus-canonical-style = "worktrail.workqueue.check_corpus_style:main"` in `pyproject.toml`'s `[project.scripts]`, alphabetically placed alongside the other `worktrail-check-*`/`worktrail-work-queue*` entries; depends on 1.2.
+
+## 2. Non-Mutation Guarantee
+
+- [ ] 2.1 Add a regression in `tests/workqueue/test_check_corpus_style.py` that builds a fixture `$WORK_QUEUE_DIR` with a mix of canonical, style-mismatched, and malformed briefs in both `queue/` and `picked/`, hashes every file's bytes and captures every file's mtime before running `scan_corpus()` and `main()` (both JSON and human modes), then asserts all bytes and mtimes are unchanged afterward and that both `queue/` and `picked/` findings are reported. (Requirement: Scan is read-only) (Requirement: Corpus scan detects non-canonical frontmatter style — scenario: Scan covers both queue/ and picked/)
+
+## 3. Verification
+
+- [ ] 3.1 [e2e] Run `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` and confirm both repository gates pass; depends on 1.3, 2.1.
