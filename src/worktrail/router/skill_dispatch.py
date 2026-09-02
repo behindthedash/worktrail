@@ -26,6 +26,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Sequence
+from dataclasses import asdict
 from pathlib import Path
 from unittest import mock
 
@@ -192,6 +193,85 @@ def _stamp_presented(run_path: str | None, decision_id: str) -> None:
             f"run record {run_path}: {exc}",
             file=sys.stderr,
         )
+
+
+# --- single-brief intake triage boundary (worktrail-go BRIEF-ID gate) ---------
+#
+# `worktrail-go BRIEF-ID` for an intake-kind brief (spec `intake-to-spec-triage`,
+# 1.1's `work_queue.brief_kind()`) must not run the ordinary claim+dispatch path
+# at all -- there is nothing to implement yet, only a triage decision to make and
+# present. `brief_dispatch_mode()` is the single gate that branch lives behind;
+# `evaluate_single_brief()`/`apply_single_brief_verdict()` reuse `queue_triage`'s
+# own per-repo evaluator and apply pipeline (2.x/3.x) scoped to exactly one brief
+# instead of re-implementing triage here.
+
+
+def brief_dispatch_mode(frontmatter: dict) -> str:
+    """`"triage"` for an intake-kind brief, `"claim"` for an execution-kind one.
+
+    Delegates kind derivation to `work_queue.brief_kind()` (1.1) -- the
+    provenance rule (non-empty `seeded-from:` -> execution, everything else,
+    including a consolidated batch, -> intake) is not re-implemented here.
+    """
+    from ..workqueue.work_queue import brief_kind
+
+    return "claim" if brief_kind(frontmatter) == "execution" else "triage"
+
+
+def evaluate_single_brief(
+    brief_path: str | Path,
+    *,
+    repo: str | None,
+    agent: str = "claude",
+    cwd: str | None = None,
+):
+    """Evaluate exactly one intake brief via `queue_triage`'s per-repo evaluator.
+
+    Reuses `evaluate_group()` (2.x) with a single-brief group so the same
+    ranked-candidates prompt, archived-repo short-circuit, and WIP-cap preview
+    apply to an interactive single-brief triage as to a full `evaluate` run --
+    the only difference is the group has one member. `cwd` defaults to `repo`
+    (or the current directory for a repo-less brief), matching `cmd_evaluate()`'s
+    own per-group `cwd` choice. Returns the parsed `Verdict` for `brief_path`, or
+    `None` on the (should-not-happen) case that the evaluator produced no
+    verdict at all for this brief's id -- callers must treat that as "nothing to
+    present or apply", never guess a verdict.
+    """
+    from ..workqueue.queue_triage import (
+        NO_REPO_KEY,
+        apply_wip_cap_preview,
+        evaluate_group,
+        parse_verdicts,
+    )
+
+    path = Path(brief_path)
+    group_repo = repo if repo else NO_REPO_KEY
+    group_cwd = cwd or (repo if repo else os.getcwd())
+    [result] = evaluate_group(group_repo, [path], agent=agent, cwd=group_cwd)
+    verdicts = parse_verdicts(
+        result["raw_text"],
+        result["brief_ids"],
+        candidates_by_brief=result["candidates_by_brief"],
+    )
+    verdicts = apply_wip_cap_preview(group_repo, verdicts)
+    return next((v for v in verdicts if v.brief_id == path.stem), None)
+
+
+def apply_single_brief_verdict(
+    verdict, *, confirm: bool, agent: str = "claude"
+) -> dict:
+    """Apply (or, without `confirm`, only preview) one brief's triage verdict.
+
+    Runs `verdict` through `resolve_duplicate_targets()` before
+    `apply_verdicts()`, same as `cmd_apply()`'s whole-file path (3.5's "apply
+    step never closes a brief without an approved verdict" holds per-verdict,
+    not just per-file), then returns that single verdict's action-log entry.
+    """
+    from ..workqueue.queue_triage import apply_verdicts, resolve_duplicate_targets
+
+    [resolved] = resolve_duplicate_targets([verdict])
+    [entry] = apply_verdicts([resolved], confirm=confirm, agent=agent)
+    return entry
 
 
 def _prompt(agent: str, skill: str, args: str) -> str:
@@ -746,14 +826,64 @@ def main(argv: list[str] | None = None) -> int:
         "skipped_cells audit trail receives any capacity-gated cell "
         "select_cell() walked past (with --routing)",
     )
+    parser.add_argument(
+        "--evaluate-brief-triage",
+        metavar="BRIEF_PATH",
+        default=None,
+        help="single-brief intake triage (worktrail-go BRIEF-ID on an "
+        "intake-kind brief): evaluate this brief via queue_triage's "
+        "per-repo evaluator, print the parsed verdict JSON, and exit "
+        "without spawning a dispatch child",
+    )
+    parser.add_argument(
+        "--apply-brief-triage",
+        metavar="VERDICT_JSON",
+        default=None,
+        help="apply (or, without --confirm, only preview) one verdict JSON "
+        "object -- as printed by --evaluate-brief-triage -- via "
+        "queue_triage's apply path, print the action-log entry, and exit "
+        "without spawning a dispatch child",
+    )
+    parser.add_argument(
+        "--triage-repo",
+        default=None,
+        help="repo: value for --evaluate-brief-triage/--apply-brief-triage "
+        "(omit for a repo-less brief)",
+    )
+    parser.add_argument(
+        "--triage-agent",
+        default="claude",
+        choices=SUPPORTED_AGENTS,
+        help="evaluator/proposer agent hint for --evaluate-brief-triage/"
+        "--apply-brief-triage (default claude)",
+    )
+    parser.add_argument(
+        "--confirm",
+        action="store_true",
+        help="with --apply-brief-triage, execute the verdict's action "
+        "instead of only previewing it",
+    )
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parsed = parser.parse_args(argv)
-    if parsed.present_decision is None and not parsed.skill:
-        parser.error("--skill is required unless --present-decision is used")
-    if parsed.present_decision is None and not parsed.agent and not parsed.routing:
+    triage_mode = (
+        parsed.evaluate_brief_triage is not None
+        or parsed.apply_brief_triage is not None
+    )
+    if parsed.present_decision is None and not triage_mode and not parsed.skill:
         parser.error(
-            "--agent is required unless --present-decision or --routing is used"
+            "--skill is required unless --present-decision, "
+            "--evaluate-brief-triage, or --apply-brief-triage is used"
+        )
+    if (
+        parsed.present_decision is None
+        and not triage_mode
+        and not parsed.agent
+        and not parsed.routing
+    ):
+        parser.error(
+            "--agent is required unless --present-decision, "
+            "--evaluate-brief-triage, --apply-brief-triage, or --routing is used"
         )
     if parsed.no_inherit_codex_auth and parsed.agent != "codex":
         parser.error("--no-inherit-codex-auth is only valid with --agent codex")
@@ -765,6 +895,23 @@ def main(argv: list[str] | None = None) -> int:
         _stamp_presented(parsed.run, envelope["decision_id"])
         print(json.dumps(envelope))
         return 0
+    if parsed.evaluate_brief_triage is not None:
+        verdict = evaluate_single_brief(
+            parsed.evaluate_brief_triage,
+            repo=parsed.triage_repo,
+            agent=parsed.triage_agent,
+        )
+        print(json.dumps(asdict(verdict) if verdict is not None else None))
+        return 0 if verdict is not None else 1
+    if parsed.apply_brief_triage is not None:
+        from ..workqueue.queue_triage import Verdict
+
+        verdict = Verdict(**json.loads(parsed.apply_brief_triage))
+        entry = apply_single_brief_verdict(
+            verdict, confirm=parsed.confirm, agent=parsed.triage_agent
+        )
+        print(json.dumps(entry))
+        return 1 if entry.get("status") == "error" else 0
     try:
         dispatch_depth = int(os.environ.get(_DISPATCH_DEPTH_ENV, "0"))
     except ValueError:

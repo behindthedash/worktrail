@@ -1334,5 +1334,223 @@ class MainRoutingIntegrationTests(unittest.TestCase):
             skill_dispatch.main(["--skill", "worktrail-sdd-workflow"])
 
 
+class BriefDispatchModeTests(unittest.TestCase):
+    """1.3: `worktrail-go BRIEF-ID` routes an intake brief to single-brief
+    triage instead of claim+dispatch, leaving execution briefs on the
+    existing claim path -- `brief_dispatch_mode()` is the gate both paths
+    branch on."""
+
+    def test_intake_brief_routes_to_triage(self):
+        self.assertEqual(skill_dispatch.brief_dispatch_mode({}), "triage")
+        self.assertEqual(
+            skill_dispatch.brief_dispatch_mode({"related": "20260101-x"}),
+            "triage",
+        )
+
+    def test_execution_brief_routes_to_claim(self):
+        self.assertEqual(
+            skill_dispatch.brief_dispatch_mode(
+                {"seeded-from": "triage:2026-08-01:direct"}
+            ),
+            "claim",
+        )
+
+    def test_blank_seeded_from_still_counts_as_intake(self):
+        self.assertEqual(
+            skill_dispatch.brief_dispatch_mode({"seeded-from": ""}), "triage"
+        )
+
+
+class SingleBriefTriageTests(unittest.TestCase):
+    """1.3: single-brief intake triage reuses `queue_triage`'s own per-repo
+    evaluator (2.x) and apply pipeline (3.x) scoped to exactly one brief,
+    rather than reimplementing triage in the adapter boundary."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.brief = Path(self.tmp.name) / "20260101-000000-example.md"
+        self.brief.write_text(
+            "---\nfocus: example brief\nstatus: queued\n---\n\nBody.\n",
+            encoding="utf-8",
+        )
+
+    def test_evaluate_single_brief_returns_the_parsed_verdict(self):
+        from worktrail.orchestrator.spawnlib import SpawnResult
+        from worktrail.workqueue.queue_triage import Verdict
+
+        evaluator_text = (
+            f'{{"brief_id": "{self.brief.stem}", "verdict": "keep", '
+            '"duplicate_of": null, "evidence": "still relevant", '
+            '"confidence": "medium"}'
+        )
+        with patch(
+            "worktrail.orchestrator.spawnlib.spawn_agent",
+            return_value=SpawnResult(text=evaluator_text, usage={}),
+        ) as mock_spawn:
+            verdict = skill_dispatch.evaluate_single_brief(
+                self.brief, repo=None, cwd=self.tmp.name
+            )
+
+        mock_spawn.assert_called_once()
+        self.assertIsInstance(verdict, Verdict)
+        self.assertEqual(verdict.brief_id, self.brief.stem)
+        self.assertEqual(verdict.verdict, "keep")
+
+    def test_evaluate_single_brief_returns_none_when_evaluator_yields_nothing_for_id(
+        self,
+    ):
+        from worktrail.workqueue.queue_triage import NO_REPO_KEY
+
+        with patch(
+            "worktrail.workqueue.queue_triage.evaluate_group",
+            return_value=[
+                {
+                    "repo": NO_REPO_KEY,
+                    "brief_ids": [],
+                    "raw_text": "",
+                    "candidates_by_brief": {},
+                }
+            ],
+        ):
+            verdict = skill_dispatch.evaluate_single_brief(
+                self.brief, repo=None, cwd=self.tmp.name
+            )
+        self.assertIsNone(verdict)
+
+    def test_apply_single_brief_verdict_keep_is_a_noop_even_without_confirm(self):
+        from worktrail.workqueue.queue_triage import Verdict
+
+        verdict = Verdict(
+            brief_id=self.brief.stem,
+            verdict="keep",
+            duplicate_of=None,
+            evidence="still relevant",
+        )
+        entry = skill_dispatch.apply_single_brief_verdict(verdict, confirm=False)
+        self.assertEqual(entry["status"], "noop")
+        self.assertEqual(entry["brief_id"], self.brief.stem)
+
+    def test_apply_single_brief_verdict_previews_a_non_keep_verdict_without_confirm(
+        self,
+    ):
+        from worktrail.workqueue.queue_triage import Verdict
+
+        verdict = Verdict(
+            brief_id=self.brief.stem,
+            verdict="stale-close",
+            duplicate_of=None,
+            evidence="repo archived",
+        )
+        entry = skill_dispatch.apply_single_brief_verdict(verdict, confirm=False)
+        self.assertEqual(entry["status"], "planned")
+        self.assertEqual(entry["action"], "claim+done")
+        self.assertFalse(entry["confirm"])
+
+
+class SingleBriefTriageCliTests(unittest.TestCase):
+    """`worktrail-skill-dispatch --evaluate-brief-triage`/`--apply-brief-triage`
+    expose 1.3's single-brief triage boundary to `worktrail-go`'s bash
+    procedure without spawning a dispatch child."""
+
+    def test_evaluate_brief_triage_prints_verdict_json_and_exits(self):
+        from worktrail.workqueue.queue_triage import Verdict
+
+        verdict = Verdict(
+            brief_id="20260101-000000-example",
+            verdict="keep",
+            duplicate_of=None,
+            evidence="still relevant",
+        )
+        stdout = StringIO()
+        with (
+            redirect_stdout(stdout),
+            patch.object(
+                skill_dispatch, "evaluate_single_brief", return_value=verdict
+            ) as mock_eval,
+        ):
+            rc = skill_dispatch.main(
+                [
+                    "--evaluate-brief-triage",
+                    "/tmp/queue/20260101-000000-example.md",
+                    "--triage-repo",
+                    "behindthedash/worktrail",
+                ]
+            )
+        self.assertEqual(rc, 0)
+        mock_eval.assert_called_once()
+        self.assertEqual(json.loads(stdout.getvalue())["verdict"], "keep")
+
+    def test_evaluate_brief_triage_no_verdict_exits_nonzero(self):
+        stdout = StringIO()
+        with (
+            redirect_stdout(stdout),
+            patch.object(skill_dispatch, "evaluate_single_brief", return_value=None),
+        ):
+            rc = skill_dispatch.main(
+                ["--evaluate-brief-triage", "/tmp/queue/missing.md"]
+            )
+        self.assertEqual(rc, 1)
+        self.assertIsNone(json.loads(stdout.getvalue()))
+
+    def test_apply_brief_triage_dry_run_previews_without_confirm(self):
+        verdict_json = json.dumps(
+            {
+                "brief_id": "20260101-000000-example",
+                "verdict": "keep",
+                "duplicate_of": None,
+                "evidence": "still relevant",
+            }
+        )
+        stdout = StringIO()
+        with (
+            redirect_stdout(stdout),
+            patch.object(
+                skill_dispatch,
+                "apply_single_brief_verdict",
+                return_value={"status": "noop", "brief_id": "20260101-000000-example"},
+            ) as mock_apply,
+        ):
+            rc = skill_dispatch.main(["--apply-brief-triage", verdict_json])
+        self.assertEqual(rc, 0)
+        _args, kwargs = mock_apply.call_args
+        self.assertFalse(kwargs.get("confirm"))
+        self.assertEqual(json.loads(stdout.getvalue())["status"], "noop")
+
+    def test_apply_brief_triage_confirm_executes_and_reports_error_status(self):
+        verdict_json = json.dumps(
+            {
+                "brief_id": "20260101-000000-example",
+                "verdict": "stale-close",
+                "duplicate_of": None,
+                "evidence": "confirmed closed",
+            }
+        )
+        stdout = StringIO()
+        with (
+            redirect_stdout(stdout),
+            patch.object(
+                skill_dispatch,
+                "apply_single_brief_verdict",
+                return_value={"status": "error", "error": "boom"},
+            ) as mock_apply,
+        ):
+            rc = skill_dispatch.main(
+                ["--apply-brief-triage", verdict_json, "--confirm"]
+            )
+        self.assertEqual(rc, 1)
+        _args, kwargs = mock_apply.call_args
+        self.assertTrue(kwargs.get("confirm"))
+
+    def test_evaluate_and_apply_brief_triage_do_not_require_skill_or_agent(self):
+        stdout = StringIO()
+        with (
+            redirect_stdout(stdout),
+            patch.object(skill_dispatch, "evaluate_single_brief", return_value=None),
+        ):
+            rc = skill_dispatch.main(["--evaluate-brief-triage", "/tmp/x.md"])
+        self.assertEqual(rc, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
