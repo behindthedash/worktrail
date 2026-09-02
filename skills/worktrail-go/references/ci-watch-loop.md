@@ -341,6 +341,15 @@ not the change under test, is why the loop stopped.
    git commit -m "fix: <one-line root cause>"
    PUSH_SHA=$(git rev-parse HEAD)
    git push     # triggers a new CI run automatically
+   # GitHub's PR object can lag a confirmed-successful push by minutes (datalena #2695,
+   # 2026-09-01: `pulls/N.head.sha` still reported the pre-fix SHA while the repo's own
+   # auto-merge fired against it and landed the known-bad head). Anything that reads the
+   # PR before it catches up -- a re-arming auto-merge workflow, the watch loop below --
+   # is looking at the OLD head, so confirm the head advanced before re-entering the loop.
+   for _ in $(seq 1 30); do
+     [ "$(gh pr view "$PR_NUM" --repo "$OWNER/$REPO_NAME" --json headRefOid -q .headRefOid)" = "$PUSH_SHA" ] && break
+     sleep 10
+   done
    ```
    Increment `PATCH_ITER`. Emit: `CI watch iteration $PATCH_ITER/5 — $FAIL_COUNT failing: $FAIL_NAMES`.
    Re-enter the watch loop with `$PUSH_SHA` held for the case-1 stale-head guard. If the

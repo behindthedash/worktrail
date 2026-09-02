@@ -205,6 +205,8 @@
           "AddOn",
           "worktree",
           "spec_ref",
+          "merge_method_by_base",
+          "auto_merge",
           "worktrail",
           "task",
           "orchestration",

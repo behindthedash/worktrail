@@ -17,6 +17,8 @@ triggers:
     - AddOn
     - worktree
     - spec_ref
+    - merge_method_by_base
+    - auto_merge
 ---
 
 You are working on **worktrail's task-orchestration core**: compiling specs/changes into a
@@ -57,8 +59,23 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
   the machine-local freshness marker when the CLI is present. An unconditional install replaced an
   operator's `npm link`ed fork with the registry build (2026-09-01) and reintroduced a destructive
   doc-sync rewrite — keep the PATH check.
-- **Adding a new add-on**: implement `AddOn` (`addons/base.py`), register it in
-  `addons/resolve.addon_for` — an unresolved name must raise `ValueError`, never silently no-op.
+- **Policy-sourced defaults for `full-real` flags live in code, not in agent prose.**
+  `live._default_merge_method` (sibling of `_default_post_merge_smoke_cmd`) resolves
+  `merge_method_by_base[--base]` via `router/policy.merge_method_for_branch` whenever
+  `--merge-method` is omitted; an explicit flag always wins, and a branch with no override
+  resolves `None` so `verify._detect_merge_method`'s repo-wide GitHub-settings query still
+  applies. Before this default existed the flag was only ever sourced from policy by the calling
+  agent, and a launch that forgot it merged datalena group PRs with `--merge` against a
+  squash-only `dev` and quarantined each on a green tree (2026-09-01). Never add a new
+  policy-backed `full-real` flag that relies on the agent remembering to pass it.
+- **`auto_merge()` treats a GitHub METHOD rejection as retryable, not a quarantine.** When the
+  direct `gh pr merge` fails with an `_AUTO_MERGE_METHOD_SIGNALS` match (e.g. "Merge commits are
+  not allowed on this repository"), `_retry_auto_merge_methods(..., auto=False)` retries the
+  direct merge with each remaining method (squash, rebase, merge) before anything else and caches
+  the working method on `self._merge_method` for later groups. A direct retry that hits a
+  `_BRANCH_PROTECTION_SIGNALS` block returns `(False, method, err)` immediately so the existing
+  `--auto` arming fallback arms with the method GitHub accepted, not the rejected one — do not
+  keep iterating methods past a protection block or you overwrite that signal.
 
 ## Critical files
 - `conductor/runplan.py` — RunPlan safety rule and `unordered_file_collisions()` assertion
@@ -66,6 +83,10 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
 - `taskformats/base.py` — `TaskSource` protocol; `orchestrator/` must never construct a
   format-specific task path itself, always go through the active `TaskSource`
 - `addons/runner.py` — the only caller of `AddOn.install`/`configure`/`run`
+- `orchestrator/live.py` — `_default_merge_method`/`_default_post_merge_smoke_cmd`: the
+  code-level policy defaults `main()` applies to `full-real` when a flag is omitted
+- `orchestrator/verify.py` — `auto_merge()` and `_retry_auto_merge_methods`; the only place a
+  merge-method rejection is turned into a method retry
 
 ---
 **Last Updated:** 2026-09-02
