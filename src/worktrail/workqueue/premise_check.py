@@ -37,6 +37,19 @@ _ALLOWED_COMMANDS = frozenset(
     }
 )
 
+# First-token verbs that mark a quoted string as command-shaped even though
+# it is not allow-listed to actually run -- recorded as an unrunnable
+# `command` needle instead of silently dropped.
+_COMMAND_LOOKING_VERBS = frozenset(
+    {"rm", "git", "make", "curl", "wget", "sudo", "docker", "npm", "pip",
+     "pip3", "bash", "sh", "chmod", "chown", "kill", "mv", "cp"}
+)
+
+
+def _looks_command_shaped(stripped: str) -> bool:
+    first = stripped.split(None, 1)[0] if stripped else ""
+    return first in _COMMAND_LOOKING_VERBS or first.startswith("worktrail-")
+
 _QUOTED_RE = re.compile(r"'([^']+)'|\"([^\"]+)\"|`([^`]+)`")
 
 _MIN_QUOTED_LEN = 12
@@ -84,11 +97,11 @@ def _extract_command_needles(focus: str) -> list[Needle]:
         stripped = value.strip()
         if not stripped or stripped in seen:
             continue
-        looks_command = any(
+        allow_listed = any(
             stripped == allowed or stripped.startswith(allowed + " ")
             for allowed in _ALLOWED_COMMANDS
         )
-        if not looks_command:
+        if not allow_listed and not _looks_command_shaped(stripped):
             continue
         seen.add(stripped)
         needles.append(Needle("command", stripped, _line_of(focus, match.start())))
@@ -111,7 +124,7 @@ def extract_needles(focus: str) -> list[Needle]:
 
 def _git_grep_whole_string(repo_path: Path, needle: str) -> dict[str, Any] | None:
     result = subprocess.run(
-        ["git", "grep", "-nIF", needle],
+        ["git", "grep", "-nIF", "-e", needle],
         cwd=repo_path,
         capture_output=True,
         text=True,
@@ -138,7 +151,7 @@ def _fragments(needle: str) -> list[str]:
 def _git_grep_fragments(repo_path: Path, needle: str) -> dict[str, Any]:
     for fragment in _fragments(needle):
         result = subprocess.run(
-            ["git", "grep", "-nIF", fragment],
+            ["git", "grep", "-nIF", "-e", fragment],
             cwd=repo_path,
             capture_output=True,
             text=True,
