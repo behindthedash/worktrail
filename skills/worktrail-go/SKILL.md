@@ -33,8 +33,8 @@ spellings that are still accepted (`auto`, `drain`, `new`, `implement spec`, `fi
 - `worktrail-go handoff new "<focus>"` — capture a brief via `worktrail-handoff`, no dispatch
 - `worktrail-go handoff list` — list queued briefs, no dispatch
 - `worktrail-go BRIEF-ID` (or `handoff start BRIEF-ID`) — claim or resume a specific queued
-  brief; an untriaged intake brief (no `seeded-from:`) is triaged interactively instead
-  (spec `intake-to-spec-triage`)
+  brief; an untriaged intake brief (no `seeded-from:`) is triaged instead: evaluate → apply →
+  report; work-directly continues into claim + dispatch (spec `intake-to-spec-triage`)
 - `worktrail-go handoff auto` or `worktrail-go REPO handoff auto` — auto-pick the next ranked queue brief and start it, no selection prompt (spec 017)
 - `worktrail-go handoff drain [max-items] [repo]` — delegate to the unattended queue drain
 - `worktrail-go spec new X` — plan a new feature (Route C+D)
@@ -272,32 +272,37 @@ repo token in the invocation itself) before doing anything else:
      VERDICT_JSON=$(worktrail-skill-dispatch \
        --evaluate-brief-triage "$BRIEF_PATH" \
        ${BRIEF_REPO:+--triage-repo "$BRIEF_REPO"} \
-       --triage-agent "$INVOCATION_CONTEXT_AGENT")
+       --triage-agent "$INVOCATION_CONTEXT_AGENT" \
+       --triage-repos-root "${REPOS_ROOT:-$HOME/projects}")
      ```
-     A brief with no `repo:` frontmatter (`$BRIEF_REPO` empty) omits `--triage-repo`
-     (evaluated in the `NO_REPO_KEY` group, same as a full `evaluate` run). Exit 1 with `VERDICT_JSON`
-     printing `null` means the evaluator produced no identifiable verdict for this
-     brief id at all — report that and stop rather than guessing one.
-  2. Present the verdict (`verdict`, `evidence`, `confidence`, and any target field —
-     `target_change`/`target_repo`/`proposed_change_name`/`question`) to the user and ask
-     for confirmation via `AskUserQuestion` before acting on it — never auto-apply a
-     triage verdict from an interactive pickup, even a high-confidence one. `auto`/drain
-     dispatches never reach this gate (1.2's `intake-untriaged` skip already keeps an
-     intake brief out of `auto_pick`), so there is no unattended branch to cover here.
-  3. Apply on confirmation via the same `queue_triage` apply path 3.x's scheduled runs
-     use (`resolve_duplicate_targets()` + `apply_verdicts()`), scoped to this one verdict:
+     A brief with no `repo:` frontmatter (`$BRIEF_REPO` empty) omits `--triage-repo`;
+     the evaluator infers the repo from the brief's focus under `--triage-repos-root`
+     and writes it back to the brief's `repo:` frontmatter before evaluating in that
+     group (same repo-inference rule a scheduled `evaluate` run applies). A due
+     null-repo brief the inference can't resolve is still verdicted by the matrix, not
+     skipped. Exit 1 with `VERDICT_JSON` printing `null` means the evaluator produced no
+     identifiable verdict for this brief id at all — report that and stop rather than
+     guessing one.
+  2. Apply the verdict unconditionally via the same `queue_triage` apply path 3.x's
+     scheduled runs use (`resolve_duplicate_targets()` + `apply_verdicts()`), scoped to
+     this one verdict — no confirmation prompt first; the evidence-required verdict
+     rule already gates what `--evaluate-brief-triage` is willing to return, so an
+     interactive pickup applies it the same way a scheduled `evaluate`/`apply` pair
+     does:
      ```bash
      ACTION_LOG_JSON=$(worktrail-skill-dispatch \
        --apply-brief-triage "$VERDICT_JSON" \
        --triage-agent "$INVOCATION_CONTEXT_AGENT" \
        --confirm)
      ```
-     A decline leaves the brief queued untouched — do not call `--apply-brief-triage`
-     at all. Report the resulting action-log entry (`action`, `status`, `path`/`error`)
-     to the user and STOP; a triaged intake brief is never carried forward into Phase
-     3's claim+dispatch flow in the same invocation, regardless of what the verdict was
-     (including `work-directly`, which converts it into a future execution brief for a
-     *later* `worktrail-go` pickup, not this one).
+     Report the resulting action-log entry (`action`, `status`, `path`/`error`) to the
+     user. A `work-directly` verdict whose action-log entry lands with
+     `status: executed` continues straight into Phase 3's `claim` action for this same
+     `$BRIEF_ID`, in this same invocation — it is now an execution brief, and the
+     triage gate above no longer applies to it (its `kind` is `execution` on
+     re-inspection). Every other verdict (`keep`, `duplicate-of`, `needs-decision`, or a
+     `work-directly` action-log entry that did not land as `executed`) STOPS here; it is
+     never carried forward into Phase 3's claim+dispatch flow in the same invocation.
 
 Resolve the user's choice and dispatch by its `action`:
 
@@ -990,8 +995,9 @@ When a brief is claimed, surface any related briefs from its `related` frontmatt
 ```
 /go 20260613-001000-raw-handoff
 ```
-→ One-line dashboard summary → `kind: intake` → single-brief triage gate → evaluate,
-present the verdict, apply on confirmation → STOP (no claim, no sdd-workflow dispatch)
+→ One-line dashboard summary → `kind: intake` → single-brief triage gate → evaluate →
+apply → report; work-directly continues into claim + dispatch, every other verdict
+STOPs (no claim, no sdd-workflow dispatch)
 
 **Auto mode (spec 017)**
 ```
