@@ -3,41 +3,67 @@
 parse_invocation: the front door's invocation grammar, as code.
 
 The `worktrail-go` skill's Phase 1 ("Classify the Invocation") is the single place
-front-door argument parsing happens, but until now it existed only as an ordered
-list of prose bullets in `skills/worktrail-go/SKILL.md`. Every other command a
-SKILL.md issues is a console script from this package -- the grammar was the one
-exception, which is why it drifted: `fix <request>` is advertised in
-`skills/worktrail-help/SKILL.md` and matched by no bullet at all, and the
-`/handoff consume` spelling outlived the skill rename that made it unresolvable.
-Prose cannot be unit-tested, so nothing caught either one.
+front-door argument parsing happens. It used to be an ordered list of prose
+bullets in `skills/worktrail-go/SKILL.md`, which is why it drifted: `fix <request>`
+was advertised and matched by no bullet, and `/handoff consume` outlived the
+skill rename that made it unresolvable. Prose cannot be unit-tested, so nothing
+caught either one. This module is what the skill calls instead.
 
-This module encodes that same ordered grammar so it can be. It deliberately
-reproduces the CURRENT precedence rather than improving it -- a regularized
-noun-then-verb grammar is a separate, later change, and it is only safe to make
-once the existing forms are pinned by tests.
+The grammar is `<front-door> [<repo>] <noun> <verb> [args]`, with three nouns:
 
-Precedence, matching `SKILL.md`'s bullet order exactly:
+    handoff   the work queue        new | list | start <id> | auto | drain [n] [repo]
+    spec      spec-driven work      new | implement <id> | continue [<id>] | fix
+                                    | explore | route <A-J> [<id>]
+    pr        an open pull request  fix
 
-    1. (empty)         -> dashboard
-    2. help            -> delegate to worktrail-help, never render the dashboard
-    3. drain           -> `drain [max-items] [repo]`
-    4. auto            -> modifier; combinable with a leading repo (`/go REPO auto`)
-    5. route:<A-J>     -> explicit route override
-    6. v1 intent       -> new | implement | continue | pr | brainstorm
-    7. handoff:<id>    -> explicit brief id
-    8. bare integer    -> Level-2 picker index only; standalone it is free text
-    9. bare/prefix id  -> resolved against queue/ (same resolution `claim` uses)
-   10. free text       -> classified downstream by classify.py
+Two bare shortcuts stay outside that shape on purpose, because they are the
+two most-typed invocations and carry real muscle memory: a bare `<brief-id>`
+(same as `handoff start <id>`) and a bare `<repo>` (that repo's dashboard).
+`help` and the empty invocation are the read-only exceptions.
 
-A leading token that names a known repo is lifted out as `repo` before the rest
-is classified, which is how `/go REPO auto` and `/go REPO implement spec X` work
-today. Repo names are injected by the caller (`--repos`) rather than discovered
-here: `resolve_repo.py` already owns that lookup, and duplicating it would create
-exactly the second implementation this module exists to prevent.
+Every pre-noun-verb spelling (`auto`, `drain`, `new`, `implement spec <id>`,
+`continue`, `pr`, `brainstorm`, `fix`, `route:<A-J>`, `handoff:<id>`) is still
+accepted and rewritten to its canonical form before matching -- see `ALIASES`.
+The result's `canonical` field carries the rewritten spelling so a caller can
+teach it back.
 
-Brief-id resolution is likewise delegated -- to `work_queue.resolve()`, the same
-function `claim` uses -- so a bare id can never resolve one way here and another
-way at claim time.
+Precedence:
+
+    1. (empty)               -> dashboard
+    2. help [topic]          -> delegate to worktrail-help, never render the dashboard
+    3. leading <repo>        -> lifted out as a scope modifier; alone, that repo's dashboard
+    4. alias rewrite         -> old spellings become their canonical noun-verb form
+    5. <noun> <verb> [args]  -> the grammar; a noun with no recognized verb is a help
+                                request for that noun, never free text
+    6. bare integer          -> Level-2 picker index only; standalone it is free text
+    7. bare/prefix <brief-id>-> resolved against queue/ (same resolution `claim` uses)
+    8. free text             -> classified downstream by classify.py
+
+Matching the noun-verb forms ABOVE the old bare intent words matters: `new` is
+also the v1 intent keyword for "plan a feature", so `handoff new` must never
+reach the intent branch as repo=handoff, intent=new. The alias rewrite runs
+first and only ever rewrites a bare leading token, so a spelled-out noun-verb
+form is never rewritten a second time.
+
+Free text containing the word "handoff" classifies to Route E at high
+confidence in classify.py (a joint-highest-weight signal plus a state boost
+whenever the queue is non-empty), so anything that escapes this parser lands
+on the wrong route silently. That is why a noun without a verb returns `help`
+rather than falling through.
+
+The internal dispatch contract is unchanged: the front door still speaks
+`handoff:<id>`, `route:<X>`, and the v1 intent words (`new`, `implement`,
+`continue`, `pr`, `brainstorm`) to `worktrail-sdd-workflow`. The `intent` field
+therefore carries the executor's vocabulary, not the user's: `spec explore`
+yields `intent: brainstorm`, and `spec fix` yields `route: F`, because the
+executor has no `fix` intent -- Route F is what `fix` has always meant.
+
+Repo names are injected by the caller (`--repos`) rather than discovered here:
+`resolve_repo.py` already owns that lookup, and duplicating it would create
+exactly the second implementation this module exists to prevent. Brief-id
+resolution is likewise delegated to `work_queue.resolve()`, the same function
+`claim` uses, so a bare id can never resolve one way here and another way at
+claim time.
 
 The parser never shells out and never writes; it reads `queue/` only when a
 folder is supplied.
@@ -57,17 +83,23 @@ from typing import Any, NamedTuple
 # v1 intent keywords, mapped to routes by the executor (see
 # skills/worktrail-sdd-workflow/SKILL.md's positional table):
 # new -> C+D, implement -> D, continue -> E, pr -> E(pr), brainstorm -> A.
+# These are the executor's vocabulary; the front door translates into them.
 V1_INTENTS: tuple[str, ...] = ("new", "implement", "continue", "pr", "brainstorm")
 
+NOUNS: tuple[str, ...] = ("handoff", "spec", "pr")
+
+_ROUTE_LETTER_RE = re.compile(r"^[A-J]$", re.IGNORECASE)
 _ROUTE_RE = re.compile(r"^route:([A-J])$", re.IGNORECASE)
 _HANDOFF_RE = re.compile(r"^handoff:(.+)$", re.IGNORECASE)
 _INT_RE = re.compile(r"^\d+$")
 
 # Modes are the primary dispatch decision. `repo` and `auto` are modifiers that
-# coexist with them -- `/go REPO auto` carries mode="auto" AND repo="REPO".
+# coexist with them -- `/go REPO handoff auto` carries mode="auto" AND repo="REPO".
 MODES: tuple[str, ...] = (
     "dashboard",
     "help",
+    "capture",
+    "list",
     "drain",
     "auto",
     "route",
@@ -81,12 +113,11 @@ MODES: tuple[str, ...] = (
 class Form(NamedTuple):
     """One advertised front-door form.
 
-    `parsed` records whether a precedence bullet actually matches the form, or
-    whether it merely reads like one and reaches `classify.py` as free text.
-    `fix <request>` is the latter: long advertised in worktrail-help, matched by
-    no bullet. Recording that honestly is the point -- the previous table stated
-    it alongside genuinely parsed forms, which is how the difference went
-    unnoticed.
+    `parsed` records whether the grammar actually matches the form, or whether
+    it merely reads like one and reaches `classify.py` as free text. Only
+    `<free text>` itself is the latter now; `fix <request>` used to be, which is
+    why the flag exists -- the previous table stated it alongside genuinely
+    parsed forms, and that is how the difference went unnoticed.
     """
 
     syntax: str
@@ -95,54 +126,55 @@ class Form(NamedTuple):
     parsed: bool
 
 
+class Alias(NamedTuple):
+    """An older spelling that is still accepted, and the form it now means."""
+
+    old: str
+    new: str
+
+
 # The canonical list of advertised forms, in precedence order so the table
 # teaches the grammar rather than just listing it. `worktrail-help`'s reference
 # block is generated from this and pinned by
-# tests/router/test_help_forms_match_the_parser.
+# tests/router/test_parse_invocation.py::test_help_forms_block_matches_the_parser_registry.
 FORMS: tuple[Form, ...] = (
     Form("<front-door>", "dashboard and interactive picker", "dashboard", True),
-    Form("<front-door> help", "show this reference", "help", True),
+    Form("<front-door> help [topic]", "show this reference", "help", True),
+    Form("<front-door> <repo>", "show active work for a repository", "dashboard", True),
     Form(
-        "<front-door> drain [max-items] [repo]",
+        "<front-door> handoff new <focus>",
+        "capture a new handoff brief",
+        "capture",
+        True,
+    ),
+    Form("<front-door> handoff list", "list queued handoff briefs", "list", True),
+    Form(
+        "<front-door> handoff start <id>",
+        "claim or resume a queued handoff",
+        "brief",
+        True,
+    ),
+    Form("<front-door> handoff auto", "auto-pick one ranked queue brief", "auto", True),
+    Form(
+        "<front-door> handoff drain [max-items] [repo]",
         "drain multiple items in fresh contexts",
         "drain",
         True,
     ),
-    Form("<front-door> auto", "auto-pick one ranked queue brief", "auto", True),
+    Form("<front-door> spec new <request>", "plan a new feature", "intent", True),
+    Form("<front-door> spec implement <id>", "execute a specification", "intent", True),
+    Form("<front-door> spec continue [<id>]", "resume in-flight work", "intent", True),
+    Form("<front-door> spec fix <request>", "defect repair (Route F)", "route", True),
     Form(
-        "<front-door> <repo> auto",
-        "auto-pick one brief for that repository",
-        "auto",
+        "<front-door> spec explore <idea>", "idea discovery (Route A)", "intent", True
+    ),
+    Form("<front-door> spec route <A-J> [<id>]", "force a route", "route", True),
+    Form("<front-door> pr fix", "PR / CI repair", "intent", True),
+    Form(
+        "<front-door> <brief-id>",
+        "claim or resume a queued handoff (same as handoff start)",
+        "brief",
         True,
-    ),
-    Form("<front-door> route:<A-J>", "force a route", "route", True),
-    Form(
-        "<front-door> <repo> route:<A-J> <id>",
-        "force a route for a repo/spec",
-        "route",
-        True,
-    ),
-    Form("<front-door> new <request>", "plan a new feature", "intent", True),
-    Form("<front-door> implement spec <id>", "execute a specification", "intent", True),
-    Form(
-        "<front-door> <repo> implement spec <id>",
-        "execute a specification in that repo",
-        "intent",
-        True,
-    ),
-    Form("<front-door> continue", "resume in-flight work", "intent", True),
-    Form("<front-door> pr", "PR / CI repair", "intent", True),
-    Form("<front-door> brainstorm", "idea discovery", "intent", True),
-    Form(
-        "<front-door> handoff:<id>", "claim or resume a queued handoff", "brief", True
-    ),
-    Form("<front-door> <brief-id>", "claim or resume a queued handoff", "brief", True),
-    Form("<front-door> <repo>", "show active work for a repository", "dashboard", True),
-    Form(
-        "<front-door> fix <request>",
-        "classify and route a defect/request",
-        "free_text",
-        False,
     ),
     Form(
         "<front-door> <free text>",
@@ -152,11 +184,44 @@ FORMS: tuple[Form, ...] = (
     ),
 )
 
+# Older spellings, still accepted. Each is rewritten to its canonical form
+# before matching; nothing that worked before this grammar stops working.
+ALIASES: tuple[Alias, ...] = (
+    Alias("auto", "handoff auto"),
+    Alias("drain [max-items] [repo]", "handoff drain [max-items] [repo]"),
+    Alias("handoff:<id>", "handoff start <id>"),
+    Alias("new <request>", "spec new <request>"),
+    Alias("implement [spec] <id>", "spec implement <id>"),
+    Alias("continue [<id>]", "spec continue [<id>]"),
+    Alias("fix <request>", "spec fix <request>"),
+    Alias("brainstorm <idea>", "spec explore <idea>"),
+    Alias("spec brainstorm <idea>", "spec explore <idea>"),
+    Alias("route:<A-J> [<id>]", "spec route <A-J> [<id>]"),
+    Alias("pr", "pr fix"),
+)
+
+# Bare leading words rewritten to a noun-verb pair. `pr` is absent because it
+# is also a noun; `_canonicalize` handles it explicitly.
+_BARE_WORD_ALIASES: dict[str, tuple[str, str]] = {
+    "auto": ("handoff", "auto"),
+    "drain": ("handoff", "drain"),
+    "new": ("spec", "new"),
+    "implement": ("spec", "implement"),
+    "continue": ("spec", "continue"),
+    "fix": ("spec", "fix"),
+    "brainstorm": ("spec", "explore"),
+}
+
 _FOOTNOTE = "* not a parsed form -- reaches the route classifier as free text"
+_REPO_NOTE = (
+    "Every <noun> <verb> form takes an optional leading <repo> to scope it, "
+    "e.g. <front-door> <repo> spec implement <id>."
+)
+_ALIAS_HEADING = "Compatibility spellings, still accepted and read as the form shown:"
 
 
 def render_forms() -> str:
-    """Render FORMS as the aligned reference block worktrail-help publishes."""
+    """Render FORMS and ALIASES as the reference block worktrail-help publishes."""
     width = max(len(f.syntax) for f in FORMS) + 2
     lines = []
     for f in FORMS:
@@ -164,6 +229,12 @@ def render_forms() -> str:
         lines.append(f"{f.syntax.ljust(width)}{marker}{f.meaning}".rstrip())
     lines.append("")
     lines.append(_FOOTNOTE)
+    lines.append(_REPO_NOTE)
+    lines.append("")
+    lines.append(_ALIAS_HEADING)
+    alias_width = max(len(a.old) for a in ALIASES) + 2
+    for a in ALIASES:
+        lines.append(f"<front-door> {a.old.ljust(alias_width)}= <front-door> {a.new}")
     return "\n".join(lines)
 
 
@@ -175,6 +246,7 @@ def _result(raw: str, mode: str, reason: str, **fields: Any) -> dict[str, Any]:
     """
     out: dict[str, Any] = {
         "raw": raw,
+        "canonical": None,
         "mode": mode,
         "repo": None,
         "auto": False,
@@ -206,6 +278,47 @@ def _tokens(raw: str) -> list[str]:
         return shlex.split(raw)
     except ValueError:
         return raw.split()
+
+
+def _canonicalize(tokens: list[str]) -> list[str]:
+    """Rewrite an older leading spelling into its canonical noun-verb tokens.
+
+    Only a bare leading token is ever rewritten, so a spelled-out noun-verb form
+    passes through untouched and can never be rewritten twice.
+    """
+    head = tokens[0]
+    lower = head.lower()
+    rest = tokens[1:]
+
+    if lower in _BARE_WORD_ALIASES:
+        return _drop_spec_filler([*_BARE_WORD_ALIASES[lower], *rest])
+    if lower == "spec":
+        if rest and rest[0].lower() == "brainstorm":
+            return ["spec", "explore", *rest[1:]]
+        return _drop_spec_filler(tokens)
+    if lower == "pr":
+        # `pr` is both the old bare intent and the noun; `pr fix` is already canonical.
+        if rest and rest[0].lower() == "fix":
+            return tokens
+        return ["pr", "fix", *rest]
+    handoff_match = _HANDOFF_RE.match(head)
+    if handoff_match:
+        return ["handoff", "start", handoff_match.group(1), *rest]
+    route_match = _ROUTE_RE.match(head)
+    if route_match:
+        return ["spec", "route", route_match.group(1).upper(), *rest]
+    return tokens
+
+
+def _drop_spec_filler(tokens: list[str]) -> list[str]:
+    """`implement spec <id>` carried a literal filler token; keep accepting it."""
+    if (
+        len(tokens) > 2
+        and tokens[1].lower() in ("implement", "continue")
+        and tokens[2].lower() == "spec"
+    ):
+        return tokens[:2] + tokens[3:]
+    return tokens
 
 
 def parse(
@@ -242,7 +355,12 @@ def parse(
     if not tokens:
         return _result(raw, "dashboard", "no arguments -- orientation dashboard")
 
-    # A leading known repo name is a scope modifier, not the invocation itself.
+    # 2. help -- delegate and stop; never fetch or render the dashboard.
+    if tokens[0].lower() == "help":
+        topic = " ".join(tokens[1:]) or None
+        return _result(raw, "help", "help requested", help_topic=topic)
+
+    # 3. A leading known repo name is a scope modifier, not the invocation itself.
     repo: str | None = None
     if known_repos and tokens[0].lower() in {r.lower() for r in known_repos}:
         repo = tokens[0]
@@ -252,83 +370,20 @@ def parse(
                 raw, "dashboard", "repo only -- that repo's dashboard", repo=repo
             )
 
+    # 4. Alias rewrite, then 5. the noun-verb grammar.
+    tokens = _canonicalize(tokens)
+    canonical = " ".join(([repo] if repo else []) + tokens)
     head = tokens[0].lower()
-    rest = tokens[1:]
-
-    # 2. help -- delegate and stop; never fetch or render the dashboard.
-    if head == "help":
-        topic = " ".join(rest) or None
-        return _result(raw, "help", "help requested", repo=repo, help_topic=topic)
-
-    # 3. drain [max-items] [repo]
-    if head == "drain":
-        max_items: int | None = None
-        drain_repo: str | None = None
-        remaining = list(rest)
-        if remaining and _INT_RE.match(remaining[0]):
-            max_items = int(remaining[0])
-            remaining = remaining[1:]
-        if remaining:
-            drain_repo = remaining[0]
-        return _result(
+    if head in NOUNS:
+        return _parse_noun_verb(
             raw,
-            "drain",
-            "drain requested",
+            tokens,
             repo=repo,
-            drain_max_items=max_items,
-            drain_repo=drain_repo,
-        )
-
-    # 4. auto -- a modifier, combinable with a leading repo arg (spec 017).
-    if head == "auto":
-        return _result(raw, "auto", "auto-pick one ranked brief", repo=repo, auto=True)
-
-    # 5. route:<A-J>, optionally followed by a spec id.
-    route_match = _ROUTE_RE.match(tokens[0])
-    if route_match:
-        return _result(
-            raw,
-            "route",
-            "explicit route override",
-            repo=repo,
-            route=route_match.group(1).upper(),
-            spec=rest[0] if rest else None,
-        )
-
-    # 6. v1 intent keywords -- skip classification, map straight to routes.
-    if head in V1_INTENTS:
-        spec: str | None = None
-        remaining = list(rest)
-        # `implement spec <id>` carries a literal filler token; `implement <id>`
-        # is equally valid and both are documented.
-        if remaining and remaining[0].lower() == "spec":
-            remaining = remaining[1:]
-        if remaining:
-            spec = remaining[0]
-        return _result(
-            raw,
-            "intent",
-            f"v1 intent keyword: {head}",
-            repo=repo,
-            intent=head,
-            spec=spec,
-            free_text=" ".join(rest) or None,
-        )
-
-    # 7. handoff:<id> -- explicit brief id.
-    handoff_match = _HANDOFF_RE.match(tokens[0])
-    if handoff_match:
-        candidate = handoff_match.group(1)
-        return _resolve_brief(
-            raw,
-            candidate,
-            repo=repo,
+            canonical=canonical,
             queue_folder=queue_folder,
-            reason="explicit handoff:<id>",
-            require_match=False,
         )
 
-    # 8. Bare integer -- a picker index only while a picker is open.
+    # 6. Bare integer -- a picker index only while a picker is open.
     if _INT_RE.match(tokens[0]) and len(tokens) == 1:
         if picker_active:
             return _result(
@@ -346,22 +401,142 @@ def parse(
             free_text=raw,
         )
 
-    # 9. Bare or prefix brief id -- resolved against queue/ before anything else
+    # 7. Bare or prefix brief id -- resolved against queue/ before anything else
     #    is done with it. Only a single token can be one.
     if len(tokens) == 1:
         return _resolve_brief(
             raw,
             tokens[0],
             repo=repo,
+            canonical=f"{repo + ' ' if repo else ''}handoff start {tokens[0]}",
             queue_folder=queue_folder,
             reason="bare or prefix brief id",
             require_match=True,
         )
 
-    # 10. Free text -- classified downstream by classify.py (Phase 5).
+    # 8. Free text -- classified downstream by classify.py (Phase 5).
     return _result(
         raw, "free_text", "unstructured request", repo=repo, free_text=" ".join(tokens)
     )
+
+
+def _parse_noun_verb(
+    raw: str,
+    tokens: list[str],
+    *,
+    repo: str | None,
+    canonical: str,
+    queue_folder: Path | None,
+) -> dict[str, Any]:
+    """Match `<noun> <verb> [args]` once the tokens are canonical."""
+    noun = tokens[0].lower()
+    verb = tokens[1].lower() if len(tokens) > 1 else None
+    args = tokens[2:]
+    text = " ".join(args) or None
+    common = {"repo": repo, "canonical": canonical}
+
+    def unknown() -> dict[str, Any]:
+        # A noun on its own, or with an unrecognized verb, is a request to be
+        # told the verbs -- never free text, which classify.py would route
+        # somewhere confident and wrong (module docstring).
+        what = f"{noun} {verb}" if verb else noun
+        return _result(
+            raw,
+            "help",
+            f"`{what}` is not a form -- showing the {noun} forms",
+            repo=repo,
+            canonical=canonical,
+            help_topic=noun,
+        )
+
+    if noun == "handoff":
+        if verb == "new":
+            return _result(
+                raw, "capture", "capture a new handoff brief", free_text=text, **common
+            )
+        if verb == "list":
+            return _result(raw, "list", "list queued handoff briefs", **common)
+        if verb == "start" and args:
+            return _resolve_brief(
+                raw,
+                args[0],
+                repo=repo,
+                canonical=canonical,
+                queue_folder=queue_folder,
+                reason="explicit handoff start <id>",
+                require_match=False,
+            )
+        if verb == "auto":
+            return _result(
+                raw, "auto", "auto-pick one ranked brief", auto=True, **common
+            )
+        if verb == "drain":
+            max_items: int | None = None
+            drain_repo: str | None = None
+            remaining = list(args)
+            if remaining and _INT_RE.match(remaining[0]):
+                max_items = int(remaining[0])
+                remaining = remaining[1:]
+            if remaining:
+                drain_repo = remaining[0]
+            return _result(
+                raw,
+                "drain",
+                "drain requested",
+                drain_max_items=max_items,
+                drain_repo=drain_repo,
+                **common,
+            )
+        return unknown()
+
+    if noun == "spec":
+        if verb in ("new", "explore"):
+            intent = "brainstorm" if verb == "explore" else "new"
+            return _result(
+                raw,
+                "intent",
+                f"spec {verb} -> v1 intent {intent}",
+                intent=intent,
+                free_text=text,
+                **common,
+            )
+        if verb in ("implement", "continue"):
+            return _result(
+                raw,
+                "intent",
+                f"spec {verb} -> v1 intent {verb}",
+                intent=verb,
+                spec=args[0] if args else None,
+                free_text=text,
+                **common,
+            )
+        if verb == "fix":
+            # The executor has no `fix` intent; Route F is what fix has always meant.
+            return _result(
+                raw, "route", "spec fix -> Route F", route="F", free_text=text, **common
+            )
+        if verb == "route" and args and _ROUTE_LETTER_RE.match(args[0]):
+            return _result(
+                raw,
+                "route",
+                "explicit route override",
+                route=args[0].upper(),
+                spec=args[1] if len(args) > 1 else None,
+                **common,
+            )
+        return unknown()
+
+    # noun == "pr"
+    if verb == "fix":
+        return _result(
+            raw,
+            "intent",
+            "pr fix -> v1 intent pr",
+            intent="pr",
+            free_text=text,
+            **common,
+        )
+    return unknown()
 
 
 def _resolve_brief(
@@ -369,6 +544,7 @@ def _resolve_brief(
     candidate: str,
     *,
     repo: str | None,
+    canonical: str,
     queue_folder: Path | None,
     reason: str,
     require_match: bool,
@@ -377,9 +553,9 @@ def _resolve_brief(
 
     `require_match` distinguishes the two callers. A bare token is only a brief
     id if it actually resolves -- `none`/`ambiguous` means it was never one, and
-    it falls through to free text (SKILL.md's bullet 9). An explicit
-    `handoff:<id>` was declared to be a brief id, so a failed resolution is
-    reported as such instead of being silently reinterpreted as a request.
+    it falls through to free text. An explicit `handoff start <id>` was declared
+    to be a brief id, so a failed resolution is reported as such instead of
+    being silently reinterpreted as a request.
     """
     if queue_folder is None:
         # Without the queue we cannot tell a brief id from a request. Report the
@@ -390,6 +566,7 @@ def _resolve_brief(
             mode,
             f"{reason} (unresolved -- no queue folder supplied)",
             repo=repo,
+            canonical=canonical if mode == "brief" else None,
             brief_id=candidate,
             free_text=raw if mode == "free_text" else None,
         )
@@ -406,6 +583,7 @@ def _resolve_brief(
             "brief",
             reason,
             repo=repo,
+            canonical=canonical,
             brief_id=candidate,
             brief_path=candidates[0],
             brief_status=status,
@@ -428,6 +606,7 @@ def _resolve_brief(
         "brief",
         f"{reason} ({status})",
         repo=repo,
+        canonical=canonical,
         brief_id=candidate,
         brief_status=status,
         brief_candidates=candidates,
