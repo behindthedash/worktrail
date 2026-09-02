@@ -1,6 +1,6 @@
 ## 1. Repo inference module (independent lane)
 
-- [ ] 1.1 Create `src/worktrail/workqueue/repo_inference.py` with `InferenceResult(repo, rule,
+- [x] 1.1 Create `src/worktrail/workqueue/repo_inference.py` with `InferenceResult(repo, rule,
       candidates)` and `infer_repo(focus, repos_root=None)` implementing design D1: known
       repos = direct subdirectories of `repos_root` (default `~/projects`) containing a
       `.git` entry; rule (a) `Repo:`/`repo:` token anywhere (basename match, accepts
