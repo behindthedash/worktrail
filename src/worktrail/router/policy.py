@@ -224,6 +224,17 @@ DEFAULTS: dict[str, Any] = {
     # repo that hasn't opted in sees no behavior change. `fold-into-change`,
     # `work-directly`, and `needs-decision` are never throttled by this key.
     "max_active_changes": 0,
+    # Per-repo cap on consecutive `keep` verdicts before queue_triage.py's
+    # escalation forces the next verdict to `needs-decision` instead of another
+    # silent `keep`. Consumed by `workqueue/queue_triage.py`'s escalation via
+    # `.get("triage_keep_limit", 2)`, so either side can land first. 2 = a
+    # brief may be kept twice in a row before it must be escalated.
+    "triage_keep_limit": 2,
+    # Per-repo cap, in days, on how long a brief may sit in the queue before
+    # queue_triage.py's escalation forces the next verdict to `needs-decision`
+    # regardless of keep count. Consumed the same way, via
+    # `.get("triage_max_queue_age_days", 14)`. 14 = two weeks.
+    "triage_max_queue_age_days": 14,
 }
 
 KNOWN_KEYS = set(DEFAULTS) | {"automerge"}
@@ -1264,6 +1275,13 @@ def load_policy(repo: Path) -> dict[str, Any]:
             f"max_active_changes must be an integer; got {mac!r} — forced to 0"
         )
         policy["max_active_changes"] = 0
+    for key in ("triage_keep_limit", "triage_max_queue_age_days"):
+        value = policy.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            meta["warnings"].append(
+                f"{key} must be an integer >= 1; got {value!r} — forced to {DEFAULTS[key]!r}"
+            )
+            policy[key] = DEFAULTS[key]
     mmb = policy.get("merge_method_by_base")
     if not isinstance(mmb, dict):
         if mmb:
