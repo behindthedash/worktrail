@@ -36,7 +36,6 @@ SUPPORTED_AGENTS = ("claude", "codex", "opencode")
 _SKILL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
 _DEFAULT_WORKTRAIL_CODEX_HOME = "~/.worktrail/codex-home"
 _CODEX_AUTH_FILE = "auth.json"
-_MAX_CODEX_AUTH_BYTES = 1024 * 1024
 _CHATGPT_LOGIN_STATUS = "Logged in using ChatGPT"
 _INTERNAL_SKILLS = frozenset({"worktrail-sdd-workflow"})
 _DISPATCH_DEPTH_ENV = "WORKTRAIL_SKILL_DISPATCH_DEPTH"
@@ -421,8 +420,9 @@ def _is_chatgpt_login_status(status: subprocess.CompletedProcess[str]) -> bool:
     return _CHATGPT_LOGIN_STATUS in lines
 
 
-def _read_private_regular_file(path: Path) -> bytes:
-    """Read a bounded, owner-only regular file without following symlinks."""
+def _validate_private_regular_file(path: Path) -> None:
+    """Require an owner-only regular file, without following symlinks or
+    reading its contents."""
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(path, flags)
@@ -432,38 +432,20 @@ def _read_private_regular_file(path: Path) -> bytes:
         ) from exc
     try:
         metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode):
-            raise OSError(
-                f"Codex authentication source must be a regular file: {path.name}"
-            )
-        if metadata.st_uid != os.geteuid():
-            raise OSError(
-                f"Codex authentication source is not owned by the current user: {path.name}"
-            )
-        if stat.S_IMODE(metadata.st_mode) & 0o077:
-            raise OSError(
-                f"Codex authentication source permissions must be 0600: {path.name}"
-            )
-        if metadata.st_size > _MAX_CODEX_AUTH_BYTES:
-            raise OSError(
-                f"Codex authentication source is unexpectedly large: {path.name}"
-            )
-        chunks: list[bytes] = []
-        remaining = _MAX_CODEX_AUTH_BYTES + 1
-        while remaining:
-            chunk = os.read(descriptor, min(65536, remaining))
-            if not chunk:
-                break
-            chunks.append(chunk)
-            remaining -= len(chunk)
-        data = b"".join(chunks)
-        if len(data) > _MAX_CODEX_AUTH_BYTES:
-            raise OSError(
-                f"Codex authentication source is unexpectedly large: {path.name}"
-            )
-        return data
     finally:
         os.close(descriptor)
+    if not stat.S_ISREG(metadata.st_mode):
+        raise OSError(
+            f"Codex authentication source must be a regular file: {path.name}"
+        )
+    if metadata.st_uid != os.geteuid():
+        raise OSError(
+            f"Codex authentication source is not owned by the current user: {path.name}"
+        )
+    if stat.S_IMODE(metadata.st_mode) & 0o077:
+        raise OSError(
+            f"Codex authentication source permissions must be 0600: {path.name}"
+        )
 
 
 def _atomic_private_write(path: Path, data: bytes) -> None:
@@ -488,7 +470,15 @@ def _atomic_private_write(path: Path, data: bytes) -> None:
 
 
 def inherit_codex_chatgpt_auth(parent_home: Path, child_home: Path) -> None:
-    """Copy a verified file-backed ChatGPT session into a private child home."""
+    """Link a verified file-backed ChatGPT session into a private child home.
+
+    ``auth.json`` is symlinked, never copied: ChatGPT refresh tokens are
+    single-use and rotate on every refresh, so a copy strands the rotated
+    token in the child home while the parent (and every later copy) keeps
+    presenting the consumed one -- ``401: Your refresh token has already been
+    used``.  Codex writes ``auth.json`` in place (verified against codex-cli
+    0.152.1), so the link keeps rotation landing in the one real file.
+    """
     if parent_home.is_symlink():
         raise OSError("parent CODEX_HOME must not be a symlink")
     if child_home.is_symlink():
@@ -506,8 +496,14 @@ def inherit_codex_chatgpt_auth(parent_home: Path, child_home: Path) -> None:
             "parent Codex is not authenticated with ChatGPT; run 'codex login' "
             "or omit --inherit-codex-auth"
         )
-    auth = _read_private_regular_file(parent_home / _CODEX_AUTH_FILE)
-    _atomic_private_write(child_home / _CODEX_AUTH_FILE, auth)
+    source = parent_home / _CODEX_AUTH_FILE
+    _validate_private_regular_file(source)
+    link = child_home / _CODEX_AUTH_FILE
+    if link.is_symlink() or link.exists():
+        # A stale per-spawn copy from the previous behavior holds a burned
+        # token; replace it with the write-through link.
+        link.unlink()
+    link.symlink_to(source)
     _atomic_private_write(
         child_home / "config.toml",
         b'cli_auth_credentials_store = "file"\n',

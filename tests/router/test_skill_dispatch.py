@@ -569,6 +569,11 @@ class CodexHomePreflightTests(unittest.TestCase):
                     0,
                 )
 
+            # A symlink, never a copy: ChatGPT refresh tokens are single-use
+            # and rotate on refresh, so the child's rotated token must land
+            # in the parent's auth.json (brief 20260901-175653).
+            self.assertTrue((child / "auth.json").is_symlink())
+            self.assertEqual((child / "auth.json").readlink(), parent / "auth.json")
             self.assertEqual((child / "auth.json").read_bytes(), secret)
             self.assertEqual(
                 (child / "config.toml").read_text(),
@@ -580,6 +585,30 @@ class CodexHomePreflightTests(unittest.TestCase):
                 stat.S_IMODE((child / "config.toml").stat().st_mode), 0o600
             )
             self.assertNotIn("private-model", (child / "config.toml").read_text())
+
+    @patch("worktrail.router.skill_dispatch.subprocess.run")
+    def test_auth_inheritance_replaces_stale_copy_with_symlink(self, run):
+        # A child home provisioned by the old copy-per-spawn code holds a
+        # burned refresh token as a regular file; it must be swapped for the
+        # write-through link, not left in place or re-copied over.
+        run.return_value = subprocess.CompletedProcess(
+            [], 0, "Logged in using ChatGPT\n", ""
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp) / "parent"
+            child = Path(tmp) / "child"
+            parent.mkdir(mode=0o700)
+            child.mkdir(mode=0o700)
+            (parent / "auth.json").write_bytes(b'{"tokens":"live"}')
+            (parent / "auth.json").chmod(0o600)
+            (child / "auth.json").write_bytes(b'{"tokens":"burned"}')
+            (child / "auth.json").chmod(0o600)
+
+            skill_dispatch.inherit_codex_chatgpt_auth(parent, child)
+
+            self.assertTrue((child / "auth.json").is_symlink())
+            self.assertEqual((child / "auth.json").read_bytes(), b'{"tokens":"live"}')
+            self.assertEqual((parent / "auth.json").read_bytes(), b'{"tokens":"live"}')
 
     @patch("worktrail.router.skill_dispatch.subprocess.run")
     def test_explicit_isolated_mode_does_not_read_or_copy_parent_auth(self, run):
