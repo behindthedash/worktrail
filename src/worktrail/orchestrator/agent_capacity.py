@@ -31,7 +31,10 @@ DEFAULT_COOLDOWNS = {
     "startup": 60,
     "sandbox": 60,
     "transport": 30,
-    "auth": 3600,
+    # auth never self-heals (needs `codex login` / a fresh key): a 1h gate just
+    # re-burned spawn_agent's retry budget every hour of a multi-hour run
+    # (brief 20260901-175101). Operators clear it explicitly once fixed.
+    "auth": 86400,
     "billing": 3600,
     "model_unavailable": 86400,
 }
@@ -297,8 +300,20 @@ def classify_failure(returncode: int, stdout: str, stderr: str) -> str:
         )
     ):
         return "model_unavailable"
+    # "refresh token" / "log out and sign in" cover codex's own consumed-refresh-
+    # token wording (confirmed live 2026-09-01: "Your access token could not be
+    # refreshed because your refresh token was already used. Please log out and
+    # sign in again.") -- the accompanying "401 Unauthorized" line is not always
+    # present in the captured stream.
     if any(
-        token in text for token in ("authentication", "unauthorized", "invalid api key")
+        token in text
+        for token in (
+            "authentication",
+            "unauthorized",
+            "invalid api key",
+            "refresh token",
+            "log out and sign in",
+        )
     ):
         return "auth"
     # "usage limit"/"session limit" cover Codex's and Claude's own wording for a
