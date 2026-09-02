@@ -1919,9 +1919,7 @@ class TestApplyPropseChangeWipCapDowngrade(QueueTriageTestBase):
         )
 
         def _run(cmd, **kwargs):
-            raise AssertionError(
-                f"no subprocess call expected once over cap: {cmd}"
-            )
+            raise AssertionError(f"no subprocess call expected once over cap: {cmd}")
 
         with mock.patch(
             "worktrail.workqueue.queue_triage.subprocess.run", side_effect=_run
@@ -1940,7 +1938,7 @@ class TestApplyPropseChangeWipCapDowngrade(QueueTriageTestBase):
         # brief stays queued (not claimed/closed) with the triage note appended
         self.assertTrue((self.queue / "a.md").exists())
         content = (self.queue / "a.md").read_text(encoding="utf-8")
-        run_date = datetime.date.today().isoformat()
+        run_date = datetime.date.today().isoformat()  # noqa: DTZ011
         self.assertIn(f"## Triage {run_date}", content)
         self.assertIn("change-1", content)
         fm = qt.read_frontmatter(self.queue / "a.md")
