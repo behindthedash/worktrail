@@ -259,6 +259,36 @@ def test_pr_fix_is_the_v1_pr_intent():
 
 
 # --------------------------------------------------------------------------- #
+# decision <verb>
+# --------------------------------------------------------------------------- #
+
+
+def test_decision_list_is_its_own_mode():
+    r = parse("decision list")
+    assert r["mode"] == "decision_list"
+    assert r["decision_id"] is None
+
+
+def test_decision_answer_carries_the_decision_id():
+    r = parse("decision answer dec-20260830-204220-dead-code-decision-02e29b429070")
+    assert r["mode"] == "decision_answer"
+    assert r["decision_id"] == "dec-20260830-204220-dead-code-decision-02e29b429070"
+
+
+def test_decision_answer_without_an_id_is_help():
+    r = parse("decision answer")
+    assert r["mode"] == "help"
+    assert r["help_topic"] == "decision"
+
+
+def test_decision_answer_is_never_a_brief_id_lookup(queue: Path):
+    """A decision id is not a queue brief; the parser must not try to resolve it."""
+    r = parse("decision answer dec-20260823-083210-x", queue_folder=queue)
+    assert r["mode"] == "decision_answer"
+    assert r["brief_status"] is None
+
+
+# --------------------------------------------------------------------------- #
 # A noun with no verb is a help request, never free text
 # --------------------------------------------------------------------------- #
 
@@ -353,6 +383,7 @@ def _probe(syntax: str) -> str:
         w.replace("<focus>", "x")
         .replace("<request>", "x")
         .replace("<idea>", "x")
+        .replace("<decision-id>", "dec-20260823-083210-x-0000")
         .replace("<id>", "20260823-083210")
         .replace("<A-J>", "F")
         for w in words
@@ -471,6 +502,7 @@ def test_every_result_carries_the_full_key_set():
         "brief_path",
         "brief_status",
         "brief_candidates",
+        "decision_id",
         "picker_index",
         "free_text",
         "reason",
@@ -486,6 +518,8 @@ def test_every_result_carries_the_full_key_set():
         "spec fix x",
         "spec new x",
         "handoff start 1",
+        "decision list",
+        "decision answer d1",
         "handoff",
         "3",
         "hello",

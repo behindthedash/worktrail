@@ -6,11 +6,11 @@ description: >
   Renders the orientation dashboard, classifies free-text requests,
   claims/resumes handoff briefs, and dispatches SDD work without requiring the user
   to know sdd-workflow. Grammar: worktrail-go [REPO] <noun> <verb>, nouns
-  handoff / spec / pr. Triggers: worktrail-go, worktrail-go help,
+  handoff / spec / pr / decision. Triggers: worktrail-go, worktrail-go help,
   worktrail-go spec fix, worktrail-go spec implement, worktrail-go spec route F,
-  worktrail-go handoff new, worktrail-go handoff auto, worktrail-go BRIEF-ID,
-  bare worktrail-go, multi-repo orientation.
-argument-hint: "[help | BRIEF-ID | REPO | [REPO] handoff|spec|pr <verb> [args] | free-text request]"
+  worktrail-go handoff new, worktrail-go handoff auto, worktrail-go decision answer,
+  worktrail-go BRIEF-ID, bare worktrail-go, multi-repo orientation.
+argument-hint: "[help | BRIEF-ID | REPO | [REPO] handoff|spec|pr|decision <verb> [args] | free-text request]"
 allowed-tools: Read, Bash, AskUserQuestion, Skill, Agent
 ---
 
@@ -22,8 +22,9 @@ Universal engineering front door for a Worktrail workspace. Work invocations sta
 
 ## When to Use
 
-The grammar is `worktrail-go [REPO] <noun> <verb> [args]` with three nouns — `handoff`
-(the work queue), `spec` (spec-driven work), `pr` (an open pull request) — plus two bare
+The grammar is `worktrail-go [REPO] <noun> <verb> [args]` with four nouns — `handoff`
+(the work queue), `spec` (spec-driven work), `pr` (an open pull request), `decision` (the
+human-decision queue) — plus two bare
 shortcuts (`BRIEF-ID`, `REPO`) and free text. The full form table, including the older
 spellings that are still accepted (`auto`, `drain`, `new`, `implement spec`, `fix`,
 `route:X`, `handoff:ID`, …), is `worktrail-go-parse --forms` / `worktrail-help`.
@@ -42,6 +43,8 @@ spellings that are still accepted (`auto`, `drain`, `new`, `implement spec`, `fi
 - `worktrail-go spec fix X` — defect repair, Route F, no classification
 - `worktrail-go spec route F` or `worktrail-go REPO spec route D spec-folder` — explicit route, no classification
 - `worktrail-go pr fix` — PR / CI repair
+- `worktrail-go decision list` — list open product decisions, no dispatch
+- `worktrail-go decision answer DECISION-ID` — answer one filed decision interactively, no dispatch
 - `worktrail-go REPO` — check what's active in a specific repo
 - Anything else — classified and dispatched as a free-text request
 
@@ -170,6 +173,8 @@ current grammar. Act on `mode`:
 | `help` | Delegate to `Skill("worktrail-help", args="<help_topic>")` and stop; do not fetch or render the dashboard. A bare noun (`worktrail-go handoff`) or an unrecognised verb lands here too, with the noun as `help_topic`. |
 | `capture` | Delegate to `Skill("worktrail-handoff", args="<free_text>")` and stop; do not fetch or render the dashboard, and do not claim or dispatch anything — this is issue capture, not work. |
 | `list` | Run `worktrail-work-queue list` and print its output verbatim, then stop; do not fetch or render the dashboard. |
+| `decision_list` | Run `worktrail-decision list --status open` and print its output verbatim, then stop; do not fetch or render the dashboard. |
+| `decision_answer` | Hold `decision_id` as `$ID` and run `references/answer-decision.md` exactly as the dashboard's `answer-decision` picker action does, then stop; do not fetch or render the dashboard. A `worktrail-decision show` failure means the id is not on file — say so and point at `decision list`. |
 | `drain` | Read `references/drain.md` and run the installed `worktrail-drain` console script with the resolved invocation agent, passing `drain_max_items` and `drain_repo`. Do not fetch or render the dashboard, and do not claim a brief in the interactive process. The console script is an internal executor; users enter drain requests through `worktrail-go` only. |
 | `auto` | Hold `$AUTO_MODE=true` for the rest of the dispatch (spec 017). `repo`, when set, scopes it. |
 | `route` | Explicit route override: hold `route` as `$ROUTE_OVERRIDE` and `spec` as `$ARG_SPEC`. Skip classification later (Phase 5) and dispatch directly. |
@@ -180,7 +185,7 @@ current grammar. Act on `mode`:
 
 Then hold `$ARG_REPO` from `repo`, `$ARG_INTENT` from `intent` (or `free_text` when no intent keyword was given), and `$ARG_SPEC` from `spec`.
 
-**Now fetch the dashboard** (already skipped entirely above for `help`/`capture`/`list`/`drain`). Detect mode via `resolve_repo.py --start "$PWD" --json`. Fetch queue JSON first and pass it to dashboard so the picker options are computed by the script, not by Claude — pass `--auto`/`--auto-repo` here when `$AUTO_MODE=true`, since that changes what the script itself computes.
+**Now fetch the dashboard** (already skipped entirely above for `help`/`capture`/`list`/`decision_list`/`decision_answer`/`drain`). Detect mode via `resolve_repo.py --start "$PWD" --json`. Fetch queue JSON first and pass it to dashboard so the picker options are computed by the script, not by Claude — pass `--auto`/`--auto-repo` here when `$AUTO_MODE=true`, since that changes what the script itself computes.
 
 **Pass the queue/decisions JSON via file, not inline argv.** Linux caps a single argv
 string at ~128KB (`MAX_ARG_STRLEN`); a personal queue with 100+ handoffs routinely
