@@ -1849,7 +1849,39 @@ def _resolve_ref_to_sha(repo: Path, ref: str) -> str:
     return resolved.stdout.strip() if resolved.returncode == 0 else ref
 
 
-def dependency_start_ref(repo: Path, spec_id: str, task: dict, by_id: dict) -> tuple:
+def _live_base_ref(repo: Path, remote: str, base: str) -> str | None:
+    """Fetch `remote`/`base` (best-effort) and return the resolvable live base ref:
+    `remote/base` when it exists, else the local `base`, else None."""
+    _git(repo, "fetch", "-q", remote, base, check=False)  # offline stays a no-op
+    ref = f"{remote}/{base}" if _branch_exists(repo, f"{remote}/{base}") else base
+    return ref if _branch_exists(repo, ref) else None
+
+
+def _branch_content_in_base(repo: Path, branch: str, base_ref: str) -> bool:
+    """True when `branch`'s changes are already present in `base_ref`, whether it
+    landed as a merge/rebase (plain ancestry) or as a SQUASH -- a squash-merge
+    produces a commit that is not a descendant of the task branch tip, so
+    `_is_ancestor` alone reports a merged dependency as unmerged (brief
+    20260901-175031). For that case, a three-way merge of `branch` into
+    `base_ref` (`git merge-tree --write-tree`) yields exactly `base_ref`'s own
+    tree iff the branch contributes nothing base doesn't already have. A
+    conflicted or failed merge-tree is treated as "not in base" (fail-open to
+    the ancestry-stacking path, unchanged behavior)."""
+    if _is_ancestor(repo, branch, base_ref):
+        return True
+    merged = _git(repo, "merge-tree", "--write-tree", base_ref, branch, check=False)
+    if merged.returncode != 0:
+        return False
+    base_tree = _git(
+        repo, "rev-parse", "--verify", f"{base_ref}^{{tree}}", check=False
+    ).stdout.strip()
+    merged_tree = (merged.stdout or "").strip().splitlines()
+    return bool(base_tree) and bool(merged_tree) and merged_tree[0] == base_tree
+
+
+def dependency_start_ref(
+    repo: Path, spec_id: str, task: dict, by_id: dict, base_ref: str | None = None
+) -> tuple:
     """Pick the git ref a task's worktree should branch FROM so it STACKS on its
     dependencies' commits instead of bare HEAD.
 
@@ -1871,6 +1903,15 @@ def dependency_start_ref(repo: Path, spec_id: str, task: dict, by_id: dict) -> t
     (contracts/worker-context-worktree-stacking.md Part B).
 
     Orchestrator feedback defect A (dependent tasks were fanned out off base).
+
+    `base_ref` (the live base, e.g. `origin/main`), when given, prunes every
+    dependency branch whose content is already in base
+    (`_branch_content_in_base`): once a dependency's group PR has squash-merged,
+    its surviving task branch is no longer a usable stacking point -- a worktree
+    forked from it fails the retained-branch ancestry guard and conflicts on
+    the base carry (brief 20260901-175031). Such dependencies are satisfied by
+    base content instead: when pruning leaves no branch to stack on, the task
+    starts from `base_ref` itself.
     """
     deps = [d for d in task.get("deps", []) if d in by_id]
     dep_branches = [f"{spec_id}/{d.lower()}" for d in deps]
@@ -1884,6 +1925,13 @@ def dependency_start_ref(repo: Path, spec_id: str, task: dict, by_id: dict) -> t
         dep_branches.append(f"{sibling_spec_id}/{sibling_task_id.lower()}")
 
     existing = [b for b in dep_branches if _branch_exists(repo, b)]
+    if base_ref:
+        unmerged = [
+            b for b in existing if not _branch_content_in_base(repo, b, base_ref)
+        ]
+        if not unmerged:
+            return (base_ref if existing else "HEAD"), []
+        existing = unmerged
     if not existing:
         return "HEAD", []
     return existing[0], existing[1:]
@@ -2193,11 +2241,8 @@ def _carry_squash_merged_dependencies(
     if not stale_deps:
         return
 
-    _git(
-        repo, "fetch", "-q", remote, base, check=False
-    )  # best-effort; offline stays a no-op
-    ref = f"{remote}/{base}" if _branch_exists(repo, f"{remote}/{base}") else base
-    if not _branch_exists(repo, ref):
+    ref = _live_base_ref(repo, remote, base)
+    if ref is None:
         return  # neither ref resolvable; _require_dependency_files raises with forensics
 
     if _is_ancestor(wt, ref, "HEAD"):
@@ -2268,7 +2313,8 @@ def add_stacked_worktree(
     failure (a git fetch/lock hiccup, brief 20260822-115008) a real second
     chance without depending on that unreliable downstream gate.
     """
-    start, extra = dependency_start_ref(repo, spec_id, task, by_id)
+    base_ref = _live_base_ref(repo, remote, base) if remote and base else None
+    start, extra = dependency_start_ref(repo, spec_id, task, by_id, base_ref=base_ref)
     branch = f"{spec_id}/{task['id'].lower()}"
 
     if _branch_exists(repo, branch):
@@ -3854,7 +3900,15 @@ def live_run_real(
             # `npm ci` never serializes other tasks' worktree creation.
             bootstrap_worktree(wt, bootstrap_cmd, required=bool(bootstrap_cmd))
         else:
-            start, _ = dependency_start_ref(repo, spec_id, task, by_id)
+            start, _ = dependency_start_ref(
+                repo,
+                spec_id,
+                task,
+                by_id,
+                base_ref=_live_base_ref(repo, remote, base)
+                if remote and base
+                else None,
+            )
             branch = _git(
                 wt, "rev-parse", "--abbrev-ref", "HEAD", check=False
             ).stdout.strip()
@@ -5112,7 +5166,15 @@ def _pipeline_scheduler(
             # `npm ci` never serializes other tasks' worktree creation.
             bootstrap_worktree(wt, bootstrap_cmd, required=bool(bootstrap_cmd))
         else:
-            start, _ = dependency_start_ref(repo, spec_id, task, by_id)
+            start, _ = dependency_start_ref(
+                repo,
+                spec_id,
+                task,
+                by_id,
+                base_ref=_live_base_ref(repo, remote, base)
+                if remote and base
+                else None,
+            )
             branch = _git(
                 wt, "rev-parse", "--abbrev-ref", "HEAD", check=False
             ).stdout.strip()
