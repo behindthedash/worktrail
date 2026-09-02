@@ -8,6 +8,7 @@ hand-running the CLI or its own post-commit hook.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -36,8 +37,16 @@ class AspensAddOn:
 
         Gated by a machine-local marker (not per-repo/per-worktree) so a fresh
         check doesn't add a network round trip to every task's pre-PR flow.
+
+        Only installs when `aspens` is absent from PATH. An unconditional
+        `npm install -g aspens` replaced an operator's `npm link`ed fork with
+        the registry build (live, 2026-09-01), reintroducing the destructive
+        doc-sync rewrite the fork had already fixed.
         """
         if self._marker_is_fresh():
+            return
+        if shutil.which("aspens"):
+            self._touch_marker()
             return
         try:
             subprocess.run(
