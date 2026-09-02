@@ -37,7 +37,7 @@ import subprocess
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime
 from pathlib import Path
 
@@ -5400,46 +5400,9 @@ def _pipeline_scheduler(
     _emit_group_phases()
     print(f"{_ts()} === PIPELINE: FAN-OUT + CONCURRENT INTEGRATE+VERIFY ===")
 
-    while True:
-        if run_budget_eff:
-            now = time.time()
-            with state_lock:
-                total_pauses = sum(_budget_pauses)
-            effective = (now - run_start) - total_pauses
-            if effective > run_budget_eff:
-                # Budget exceeded: stop dispatching new tasks but leave pending
-                # (and mid-flight) tasks in their current state so the next
-                # resume continues the fan-out. Do NOT journal them as failed.
-                budget_exceeded = True
-                _budget_stopped_at[0] = now
-                with state_lock:
-                    _record()
-                print(
-                    f"{_ts()} PIPELINE RUN BUDGET {run_budget_eff}s exceeded after {tick} tick(s) "
-                    f"(effective {effective:.0f}s; {total_pauses:.0f}s session-limit "
-                    f"sleeps excluded) -- pending tasks left for resume"
-                )
-                break
-        _annotate_external_deps(repo, tasks, spec_rel)
-        frontier = coordinator.runnable_frontier(tasks, max_workers)
-        if not frontier:
-            break
-        tick += 1
-        ids_str = ", ".join(t["id"] for t in frontier)
-        if len(frontier) == 1:
-            print(f"{_ts()} PIPELINE TICK {tick}: {ids_str}")
-            _safe_drive(by_id[frontier[0]["id"]])
-        else:
-            print(
-                f"{_ts()} PIPELINE TICK {tick} [parallel x{len(frontier)}]: {ids_str}"
-            )
-            with ThreadPoolExecutor(max_workers=len(frontier)) as ex:
-                futs = [ex.submit(_safe_drive, by_id[ft["id"]]) for ft in frontier]
-                for fut in futs:
-                    fut.result()
-
-        # After this tick: detect newly-complete groups and submit them to the
-        # IV pool (non-blocking submit allows continued fan-out while IV runs).
+    def _dispatch_terminal_groups() -> None:
+        # Detect newly-complete groups and submit them to the IV pool
+        # (non-blocking submit allows continued fan-out while IV runs).
         for g in groups:
             gname = g["name"]
             if gname not in dispatched_groups and _group_is_terminal(g):
@@ -5448,6 +5411,71 @@ def _pipeline_scheduler(
                     _group_phase_map[gname] = "integrating"
                 _emit_group_phases()
                 iv_pool.submit(_integrate_verify_group, g)
+
+    # Slot-refilling fan-out: a worker slot freed by a fast task is refilled as
+    # soon as a newly-runnable task exists, instead of idling until the slowest
+    # task of the same tick (and its review/fix strikes) finishes. Observed on
+    # run orchestrator-throughput (2026-09-02): 2 of 3 slots sat idle for 35+
+    # minutes with 4 ready tasks waiting behind one task's review loop.
+    # `runnable_frontier` already excludes in-flight tasks, locks their files,
+    # and counts them against `max_workers`, so re-running it while tasks are
+    # in flight is safe -- provided a dispatched task is marked in-flight
+    # *before* the next frontier computation (see the `claimed` transition).
+    fanout_pool = ThreadPoolExecutor(max_workers=max(1, max_workers))
+    in_flight_futs: dict = {}
+    try:
+        while True:
+            if run_budget_eff:
+                now = time.time()
+                with state_lock:
+                    total_pauses = sum(_budget_pauses)
+                effective = (now - run_start) - total_pauses
+                if effective > run_budget_eff:
+                    # Budget exceeded: stop dispatching new tasks but leave pending
+                    # (and mid-flight) tasks in their current state so the next
+                    # resume continues the fan-out. Do NOT journal them as failed.
+                    budget_exceeded = True
+                    _budget_stopped_at[0] = now
+                    with state_lock:
+                        _record()
+                    print(
+                        f"{_ts()} PIPELINE RUN BUDGET {run_budget_eff}s exceeded after {tick} tick(s) "
+                        f"(effective {effective:.0f}s; {total_pauses:.0f}s session-limit "
+                        f"sleeps excluded) -- pending tasks left for resume"
+                    )
+                    break
+            _annotate_external_deps(repo, tasks, spec_rel)
+            with state_lock:
+                frontier = coordinator.runnable_frontier(tasks, max_workers)
+                for ft in frontier:
+                    # Mark in-flight now so the next frontier pass neither
+                    # re-dispatches this task nor hands out its files.
+                    if ft["status"] == "pending":
+                        ft["status"] = "claimed"
+            if frontier:
+                tick += 1
+                ids_str = ", ".join(t["id"] for t in frontier)
+                if len(frontier) == 1:
+                    print(f"{_ts()} PIPELINE TICK {tick}: {ids_str}")
+                else:
+                    print(
+                        f"{_ts()} PIPELINE TICK {tick} [parallel x{len(frontier)}]: {ids_str}"
+                    )
+                for ft in frontier:
+                    fut = fanout_pool.submit(_safe_drive, by_id[ft["id"]])
+                    in_flight_futs[fut] = ft["id"]
+            if not in_flight_futs:
+                break  # nothing running and nothing runnable: fan-out complete
+            done_futs, _ = wait(list(in_flight_futs), return_when=FIRST_COMPLETED)
+            for fut in done_futs:
+                in_flight_futs.pop(fut, None)
+                fut.result()
+            _dispatch_terminal_groups()
+    finally:
+        # A budget break leaves mid-flight tasks running; let them reach a
+        # terminal state (they are journaled as they go) before moving on.
+        fanout_pool.shutdown(wait=True)
+    _dispatch_terminal_groups()
 
     # Post-fanout: dispatch any groups that became terminal after the last tick
     # (e.g. the final frontier emptied but a budget break left groups undispatched).
