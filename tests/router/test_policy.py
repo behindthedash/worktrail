@@ -244,6 +244,30 @@ class TestValidation(unittest.TestCase):
         pol = load_policy(_repo_with("pr_pacing_wait_s: 1800\n"))
         self.assertEqual(pol["pr_pacing_wait_s"], 1800)
 
+    def test_max_active_changes_default_is_zero(self):
+        self.assertEqual(DEFAULTS["max_active_changes"], 0)
+        pol = load_policy(_repo_with(""))
+        self.assertEqual(pol["max_active_changes"], 0)
+
+    def test_max_active_changes_loaded(self):
+        pol = load_policy(_repo_with("max_active_changes: 3\n"))
+        self.assertEqual(pol["max_active_changes"], 3)
+        self.assertFalse(
+            any("max_active_changes" in w for w in pol["_meta"]["warnings"])
+        )
+
+    def test_max_active_changes_non_int_forced_to_zero_with_warning(self):
+        for bad in (
+            "max_active_changes: not-a-number\n",
+            "max_active_changes: true\n",
+        ):
+            pol = load_policy(_repo_with(bad))
+            self.assertEqual(pol["max_active_changes"], 0, msg=bad)
+            self.assertTrue(
+                any("max_active_changes" in w for w in pol["_meta"]["warnings"]),
+                msg=bad,
+            )
+
 
 class TestAutomergeEligibility(unittest.TestCase):
     def setUp(self):
