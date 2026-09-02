@@ -548,6 +548,67 @@ class TestDoneRelease(QueueTestBase):
         self.assertEqual(res["status"], "awaiting_implementation_decision")
         self.assertEqual(q._read_frontmatter(path)["status"], "picked")
 
+    def test_route_c_triage_closure_bypasses_transition_gate(self):
+        """A stale-close verdict from queue-triage is neither planning nor
+        implementation, so the Route-C decision gate must not apply (live
+        2026-09-02: 9 of 27 applied verdicts rolled back on this gate)."""
+        path = self._write_route_c_picked()
+        res = q.done(
+            "20260531-141200-feature", note="superseded by PR #77", triaged=True
+        )
+        self.assertEqual(res["status"], "done")
+        self.assertEqual(q._read_frontmatter(path)["status"], "done")
+
+    def test_route_c_triaged_to_closure_bypasses_transition_gate(self):
+        path = self._write_route_c_picked()
+        res = q.done(
+            "20260531-141200-feature",
+            note="folded",
+            triaged_to="https://github.com/acme/widgets/pull/9",
+        )
+        self.assertEqual(res["status"], "done")
+        fm = q._read_frontmatter(path)
+        self.assertEqual(fm["status"], "done")
+        self.assertEqual(fm["triaged-to"], "https://github.com/acme/widgets/pull/9")
+
+    def test_duplicate_of_stamps_frontmatter_and_bypasses_route_c_gate(self):
+        path = self._write_route_c_picked()
+        res = q.done(
+            "20260531-141200-feature",
+            note="same defect as the newer brief",
+            duplicate_of="20260601-000000-newer",
+        )
+        self.assertEqual(res["status"], "done")
+        fm = q._read_frontmatter(path)
+        self.assertEqual(fm["status"], "done")
+        self.assertEqual(fm["duplicate-of"], "20260601-000000-newer")
+
+    def test_duplicate_of_waives_consolidation_evidence_gate(self):
+        """A consolidated batch closed as a duplicate has its sub-items carried
+        by the surviving brief; demanding per-sub-item shipping evidence here
+        is the wrong question (live 2026-09-02: 2 verdicts rolled back)."""
+        self.picked.mkdir(parents=True, exist_ok=True)
+        path = self.picked / "20260531-141200-batch.md"
+        path.write_text(
+            _consolidated_brief("batch", ["member-a", "member-b"]), encoding="utf-8"
+        )
+        blocked = q.done("20260531-141200-batch", note="dup of the newer batch")
+        self.assertEqual(blocked["status"], "unverified_consolidation_closure")
+
+        res = q.done(
+            "20260531-141200-batch",
+            note="dup of the newer batch",
+            duplicate_of="20260601-000000-newer-batch",
+        )
+        self.assertEqual(res["status"], "done")
+        content = path.read_text(encoding="utf-8")
+        self.assertEqual(
+            q._read_frontmatter(path)["duplicate-of"], "20260601-000000-newer-batch"
+        )
+        self.assertIn(
+            "member-a, member-b are carried by 20260601-000000-newer-batch", content
+        )
+
     def test_route_c_can_explicitly_stop_planning_only(self):
         path = self._write_route_c_picked()
         res = q.done("20260531-141200-feature", planning_only=True)

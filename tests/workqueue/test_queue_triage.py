@@ -828,6 +828,54 @@ class TestApplyVerdicts(QueueTriageTestBase):
         picked = self.base / "picked"
         self.assertFalse(picked.exists() and any(picked.iterdir()))
 
+    def _write_route_c(self, name: str, body: str) -> Path:
+        path = self.write(name, body=body)
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "status: queued", "status: queued\nrecommended-route: C", 1
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    def test_stale_close_on_route_c_brief_executes(self):
+        """The Route-C planning/implementation decision gate must not block a
+        triage closure (live 2026-09-02: 9 verdicts rolled back on it)."""
+        self._write_route_c("a.md", "## Focus\n\nsome brief\n")
+        verdict = qt.Verdict(
+            brief_id="a",
+            verdict="stale-close",
+            duplicate_of=None,
+            evidence="PR #42 already shipped this",
+            confidence="high",
+        )
+
+        log = qt.apply_verdicts([verdict], confirm=True)
+
+        self.assertEqual(log[0]["status"], "executed", log[0])
+        self.assertEqual(qt.read_frontmatter(Path(log[0]["path"]))["status"], "done")
+
+    def test_duplicate_of_on_consolidated_route_c_brief_executes(self):
+        self._write_route_c(
+            "a.md",
+            "## Consolidated from\n\n- member-x\n- member-y\n",
+        )
+        self.write("b.md", body="## Focus\n\nthe surviving brief\n")
+        verdict = qt.Verdict(
+            brief_id="a",
+            verdict="duplicate-of",
+            duplicate_of="b",
+            evidence="same findings as b",
+            confidence="high",
+        )
+
+        log = qt.apply_verdicts([verdict], confirm=True)
+
+        self.assertEqual(log[0]["status"], "executed", log[0])
+        fm = qt.read_frontmatter(Path(log[0]["path"]))
+        self.assertEqual(fm["status"], "done")
+        self.assertEqual(fm["duplicate-of"], "b")
+
     def test_confirm_true_executes_stale_close_via_claim_and_done(self):
         self.write("a.md", body="## Focus\n\nsome brief\n")
         self.write("b.md", body="## Focus\n\nanother brief\n")
@@ -1491,13 +1539,30 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
             args=["fake"], returncode=returncode, stdout=stdout, stderr=stderr
         )
 
-    def _dispatcher(self, *, pr_returncode: int = 0, validate_returncode: int = 0):
+    def _dispatcher(
+        self,
+        *,
+        pr_returncode: int = 0,
+        validate_returncode: int = 0,
+        compile_returncode: int = 0,
+        push_default: str | None = None,
+    ):
         pr_url = "https://github.com/acme/widgets/pull/42"
+        self.seen: list[list[str]] = []
 
         def _run(cmd, **kwargs):
+            self.seen.append(list(cmd))
             if cmd[0] == "git" and "-C" in cmd:
                 if "symbolic-ref" in cmd:
                     return self._completed(0, stdout="origin/main\n")
+                if "config" in cmd and "remote.pushDefault" in cmd:
+                    if push_default is None:
+                        return self._completed(1)
+                    return self._completed(0, stdout=f"{push_default}\n")
+                if "remote" in cmd and "get-url" in cmd:
+                    return self._completed(
+                        0, stdout="git@github.com:acme-fork/widgets.git\n"
+                    )
                 if "worktree" in cmd and "add" in cmd:
                     self._seed_change()
                     return self._completed(0)
@@ -1511,7 +1576,24 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
                     stdout="valid\n" if validate_returncode == 0 else "",
                     stderr="" if validate_returncode == 0 else "task 1.2 has no owner",
                 )
+            if cmd[0] == "worktrail-compile":
+                if compile_returncode == 0:
+                    (Path(cmd[1]) / ".compile-ok").write_text("fp\n", encoding="utf-8")
+                return self._completed(
+                    compile_returncode,
+                    stderr=""
+                    if compile_returncode == 0
+                    else "task 2.1 has no file scope",
+                )
             if cmd[0] == "git" and cmd[1] in ("add", "commit"):
+                if cmd[1] == "commit":
+                    self.marker_at_commit = (
+                        self.worktree_dir
+                        / "openspec"
+                        / "changes"
+                        / self.target_change
+                        / ".compile-ok"
+                    ).is_file()
                 return self._completed(0)
             if cmd[0] == "git" and cmd[1] == "push":
                 return self._completed(0)
@@ -1638,6 +1720,88 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
         self.assertEqual(entry["branch"], self.branch)
         self.assertTrue((self.queue / "a.md").exists())
 
+    def test_compile_marker_is_written_before_commit(self):
+        """CI's Scope check (`check_compile_markers.py`) refuses a change PR
+        whose `.compile-ok` is missing or stale against `tasks.md` (live
+        2026-09-02: worktrail #897/#898)."""
+        run, _ = self._dispatcher()
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+            ),
+            mock.patch(
+                "worktrail.workqueue.queue_triage._refresh_pr_labels",
+                return_value=["go:risk-low"],
+            ),
+        ):
+            log = qt.apply_verdicts([self.verdict], confirm=True)
+
+        self.assertEqual(log[0]["status"], "executed", log[0])
+        self.assertTrue(self.marker_at_commit)
+        compile_calls = [c for c in self.seen if c[0] == "worktrail-compile"]
+        self.assertEqual(len(compile_calls), 1)
+        self.assertTrue(compile_calls[0][1].endswith(self.target_change))
+
+    def test_compile_failure_blocks_pr_and_leaves_brief_untouched(self):
+        run, _ = self._dispatcher(compile_returncode=1)
+        before = self.brief_path.read_text(encoding="utf-8")
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+            ),
+            mock.patch(
+                "worktrail.workqueue.queue_triage._refresh_pr_labels",
+                return_value=["go:risk-low"],
+            ),
+        ):
+            log = qt.apply_verdicts([self.verdict], confirm=True)
+
+        self.assertEqual(log[0]["status"], "error")
+        self.assertIn("worktrail-compile failed", log[0]["error"])
+        self.assertFalse(any(c[:3] == ["gh", "pr", "create"] for c in self.seen))
+        self.assertFalse(any(c[:2] == ["git", "push"] for c in self.seen))
+        self.assertEqual(self.brief_path.read_text(encoding="utf-8"), before)
+
+    def test_push_default_remote_routes_push_and_pr_to_the_fork(self):
+        """`git config remote.pushDefault fork` means push there and open the
+        PR against that remote's repo, never upstream `origin` (live
+        2026-09-02: aspens propose-change pushed to aspenkit/aspens, denied)."""
+        run, _ = self._dispatcher(push_default="fork")
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+            ),
+            mock.patch(
+                "worktrail.workqueue.queue_triage._refresh_pr_labels",
+                return_value=["go:risk-low"],
+            ),
+        ):
+            log = qt.apply_verdicts([self.verdict], confirm=True)
+
+        self.assertEqual(log[0]["status"], "executed", log[0])
+        push = next(c for c in self.seen if c[:2] == ["git", "push"])
+        self.assertEqual(push, ["git", "push", "-u", "fork", self.branch])
+        pr = next(c for c in self.seen if c[:3] == ["gh", "pr", "create"])
+        self.assertEqual(pr[3:5], ["-R", "acme-fork/widgets"])
+
+    def test_without_push_default_pushes_origin_and_lets_gh_infer_repo(self):
+        run, _ = self._dispatcher()
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+            ),
+            mock.patch(
+                "worktrail.workqueue.queue_triage._refresh_pr_labels",
+                return_value=["go:risk-low"],
+            ),
+        ):
+            qt.apply_verdicts([self.verdict], confirm=True)
+
+        push = next(c for c in self.seen if c[:2] == ["git", "push"])
+        self.assertEqual(push[3], "origin")
+        pr = next(c for c in self.seen if c[:3] == ["gh", "pr", "create"])
+        self.assertNotIn("-R", pr)
+
 
 class TestApplyProposeChange(QueueTriageTestBase):
     """3.2's `propose-change` apply action: fresh worktree off the target
@@ -1714,6 +1878,8 @@ class TestApplyProposeChange(QueueTriageTestBase):
             if cmd[0] == "git" and "-C" in cmd:
                 if "symbolic-ref" in cmd:
                     return self._completed(0, stdout="origin/main\n")
+                if "config" in cmd and "remote.pushDefault" in cmd:
+                    return self._completed(1)
                 if "worktree" in cmd and "add" in cmd:
                     self.worktree_dir.mkdir(parents=True, exist_ok=True)
                     return self._completed(0)
@@ -1735,6 +1901,10 @@ class TestApplyProposeChange(QueueTriageTestBase):
                     stdout="valid\n" if validate_returncode == 0 else "",
                     stderr="" if validate_returncode == 0 else "task 1.1 has no owner",
                 )
+            if cmd[0] == "worktrail-compile":
+                Path(cmd[1]).mkdir(parents=True, exist_ok=True)
+                (Path(cmd[1]) / ".compile-ok").write_text("fp\n", encoding="utf-8")
+                return self._completed(0)
             if cmd[0] == "git" and cmd[1] in ("add", "commit"):
                 return self._completed(0)
             if cmd[0] == "git" and cmd[1] == "push":

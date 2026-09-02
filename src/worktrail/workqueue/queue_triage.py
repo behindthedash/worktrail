@@ -969,9 +969,13 @@ def _resolve_brief_path(identifier: str) -> Path | None:
 def _apply_close(v: Verdict) -> dict:
     """`stale-close`/`duplicate-of`: `claim()` then `done(..., note=evidence)`.
 
-    If `done()` doesn't return "done" (e.g. a Route-C brief that needs an
-    explicit `planning_only`/`implementation_complete` decision `done()`
-    refuses to make on our behalf), the brief must not stay stranded in
+    Passes `triaged=True` (plus `duplicate_of` for `duplicate-of`) so `done()`
+    treats this as a triage closure: the Route-C planning-vs-implementation
+    decision gate does not apply, and a consolidated batch closed as a
+    duplicate is not asked for per-sub-item shipping evidence (its sub-items
+    live on in the surviving brief). If `done()` still doesn't return "done"
+    (ownership mismatch, an unbacked re-verification claim, ...), the brief
+    must not stay stranded in
     `picked/` under a `queue-triage` claim nobody will ever release -- so
     this releases it back to `queue/` before returning the error entry,
     keeping a failed apply a true no-op.
@@ -994,7 +998,9 @@ def _apply_close(v: Verdict) -> dict:
             "error": f"claim: {claim_res['status']}"
             + (f" ({detail})" if detail else ""),
         }
-    done_res = done(v.brief_id, note=v.evidence)
+    done_res = done(
+        v.brief_id, note=v.evidence, triaged=True, duplicate_of=v.duplicate_of
+    )
     if done_res["status"] != "done":
         detail = done_res.get("error")
         release_res = release(v.brief_id)
@@ -1313,6 +1319,50 @@ def _next_task_group_number(tasks_text: str) -> int:
     return max(numbers) + 1 if numbers else 1
 
 
+_GITHUB_SLUG_RE = re.compile(r"github\.com[:/]([^/\s]+/[^/\s]+?)(?:\.git)?/?$")
+# `worktrail-compile` on an OpenSpec change may run one model inference pass
+# (no static per-task file scope in tasks.md); bound it well above the
+# evaluator's own spawn so a slow pass fails loud instead of hanging the drain.
+_COMPILE_TIMEOUT_S = 900
+
+
+def _github_slug(url: str) -> str | None:
+    m = _GITHUB_SLUG_RE.search(url.strip())
+    return m.group(1) if m else None
+
+
+def _push_target(repo_path: Path) -> tuple[str, str | None]:
+    """Remote to push a triage branch to, plus its GitHub `owner/repo` slug for
+    `gh pr create -R`.
+
+    Honours `git config remote.pushDefault` -- the standard git knob for "I
+    push to my fork, not upstream" -- and falls back to `origin` with no slug
+    (so `gh` infers the base repo the way it always did). Live 2026-09-02: the
+    first unattended propose-change against `aspens`, whose `origin` is the
+    upstream `aspenkit/aspens`, pushed there and was denied; the fork remote
+    was never consulted.
+    """
+    cfg = subprocess.run(
+        ["git", "-C", str(repo_path), "config", "--get", "remote.pushDefault"],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    remote = (cfg.stdout or "").strip() if cfg.returncode == 0 else ""
+    if not remote:
+        return "origin", None
+    url = subprocess.run(
+        ["git", "-C", str(repo_path), "remote", "get-url", remote],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    slug = _github_slug(url.stdout or "") if url.returncode == 0 else None
+    return remote, slug
+
+
 def _worktree_pr_close(
     v: Verdict,
     *,
@@ -1331,8 +1381,12 @@ def _worktree_pr_close(
     fail-closed" requirement: creates a fresh worktree on `branch` off
     `base_branch`, calls `prepare(worktree_dir)` to let the caller author the
     change in place (returning an error string on failure, `None` on
-    success), runs `openspec validate <validate_target> --strict`, commits,
-    pushes, and opens the pull request via `gh pr create`. Only once
+    success), runs `openspec validate <validate_target> --strict`, runs
+    `worktrail-compile` on the change so its `.compile-ok` marker matches the
+    edited `tasks.md` (CI's Scope check, `check_compile_markers.py`, refuses a
+    change PR without one -- live 2026-09-02, worktrail #897/#898 both failed
+    it), commits, pushes to `_push_target()`'s remote, and opens the pull
+    request via `gh pr create` against that remote's repo. Only once
     `gh pr create` reports a URL does this claim and close the brief (via
     `claim()`/`done(..., triaged_to=pr_url)`, with rollback on `done()`
     failure) -- any failure before that point returns `status="error"` with
@@ -1410,6 +1464,29 @@ def _worktree_pr_close(
                 "branch": branch,
             }
 
+        compiled = subprocess.run(
+            [
+                "worktrail-compile",
+                str(worktree_dir / "openspec" / "changes" / validate_target),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=str(worktree_dir),
+            timeout=_COMPILE_TIMEOUT_S,
+        )
+        if compiled.returncode != 0:
+            return {
+                **result,
+                "status": "error",
+                "path": None,
+                "error": (
+                    "worktrail-compile failed: "
+                    f"{(compiled.stderr or compiled.stdout).strip()}"
+                ),
+                "branch": branch,
+            }
+
         for git_args in (["add", "-A"], ["commit", "-m", commit_message]):
             r = subprocess.run(
                 ["git", *git_args],
@@ -1431,8 +1508,9 @@ def _worktree_pr_close(
                     "branch": branch,
                 }
 
+        push_remote, base_slug = _push_target(repo_path)
         push = subprocess.run(
-            ["git", "push", "-u", "origin", branch],
+            ["git", "push", "-u", push_remote, branch],
             check=False,
             capture_output=True,
             text=True,
@@ -1451,7 +1529,10 @@ def _worktree_pr_close(
         labels = _refresh_pr_labels(worktree_dir, ["go:risk-low"], base_branch) or [
             "go:risk-low"
         ]
-        pr_cmd = ["gh", "pr", "create", "--base", base_branch, "--head", branch]
+        pr_cmd = ["gh", "pr", "create"]
+        if base_slug:
+            pr_cmd += ["-R", base_slug]
+        pr_cmd += ["--base", base_branch, "--head", branch]
         for label in labels:
             pr_cmd += ["--label", label]
         pr_cmd += [

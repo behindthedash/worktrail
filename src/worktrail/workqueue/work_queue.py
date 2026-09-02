@@ -1326,8 +1326,23 @@ def done(
     by: str | None = None,
     force: bool = False,
     triaged_to: str | None = None,
+    triaged: bool = False,
+    duplicate_of: str | None = None,
 ) -> dict[str, Any]:
     """Stamp a picked brief as completed.
+
+    ``triaged`` / ``triaged_to`` / ``duplicate_of`` mark a *triage closure*
+    (`queue_triage.py`'s stale-close, fold-into-change, propose-change and
+    duplicate-of apply actions): the brief closes because its work is stale,
+    now lives in an OpenSpec change, or is already tracked by another brief.
+    Such a closure is neither "planned" nor "implemented", so the Route-C
+    continue-vs-planning-only gate below does not apply to it. ``duplicate_of``
+    additionally stamps ``duplicate-of:`` frontmatter and waives the
+    consolidation-evidence gate -- a consolidated batch closed as a duplicate
+    has its sub-items carried by the surviving brief, not shipped by this one.
+    Live 2026-09-02: the first unattended intake-triage pass hit the Route-C
+    gate on 9 of its 27 applied verdicts and the consolidation gate on 2 more,
+    rolling every one back.
 
     ``run``, with ``implementation_complete``: path to the run record that
     implemented this brief. When given, it is verified (`status:
@@ -1404,7 +1419,12 @@ def done(
         return block
     fm = _read_frontmatter(path)
     route = str(fm.get("recommended-route") or "").strip().upper()
-    if route == "C" and not (planning_only or implementation_complete):
+    triaged_to_stripped = (triaged_to or "").strip()
+    duplicate_of_stripped = (duplicate_of or "").strip()
+    triage_closure = triaged or bool(triaged_to_stripped) or bool(duplicate_of_stripped)
+    if route == "C" and not (
+        planning_only or implementation_complete or triage_closure
+    ):
         return {
             "status": "awaiting_implementation_decision",
             "path": str(path),
@@ -1460,7 +1480,7 @@ def done(
             "error": str(exc),
         }
     consolidation_missing = _consolidation_closure_missing_evidence(original, note)
-    if consolidation_missing:
+    if consolidation_missing and not duplicate_of_stripped:
         return {
             "status": "unverified_consolidation_closure",
             "path": str(path),
@@ -1480,6 +1500,12 @@ def done(
     closure_note_parts = []
     if note:
         closure_note_parts.append(note)
+    if duplicate_of_stripped and consolidation_missing:
+        closure_note_parts.append(
+            "duplicate-of: sub-item(s) "
+            + ", ".join(consolidation_missing)
+            + f" are carried by {duplicate_of_stripped}, not shipped by this brief."
+        )
     if checkbox_out_of_sync:
         closure_note_parts.append(
             f"checkbox-sync: target-task {fm.get('target-task')} in "
@@ -1503,9 +1529,10 @@ def done(
                 "error": str(exc),
             }
     fields = {"status": "done", "completed-at": _now_iso()}
-    triaged_to_stripped = (triaged_to or "").strip()
     if triaged_to_stripped:
         fields["triaged-to"] = triaged_to_stripped
+    if duplicate_of_stripped:
+        fields["duplicate-of"] = duplicate_of_stripped
     try:
         _set_fm_fields(path, fields)
     except (OSError, ValueError) as exc:
@@ -1883,6 +1910,20 @@ def main(argv=None) -> int:
         dest="triaged_to",
         help="stamp triaged-to: frontmatter (e.g. a target change id or landed PR URL)",
     )
+    dp.add_argument(
+        "--triaged",
+        action="store_true",
+        help="close as a queue-triage verdict (e.g. stale-close): the Route-C "
+        "planning/implementation decision gate does not apply",
+    )
+    dp.add_argument(
+        "--duplicate-of",
+        default=None,
+        dest="duplicate_of",
+        help="close as a duplicate of BRIEF-ID: stamps duplicate-of:, and neither "
+        "the Route-C gate nor the consolidation-evidence gate applies (sub-items "
+        "are carried by the surviving brief)",
+    )
     sp = subs.add_parser(
         "release", parents=[common], help="return a picked brief to the queue"
     )
@@ -1937,6 +1978,8 @@ def main(argv=None) -> int:
             by=args.by,
             force=args.force,
             triaged_to=args.triaged_to,
+            triaged=args.triaged,
+            duplicate_of=args.duplicate_of,
         )
     elif args.cmd == "link":
         result = link(args.id_a, args.id_b)
