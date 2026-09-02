@@ -20,7 +20,12 @@ triggers:
     - merge_method_by_base
     - auto_merge
     - _pipeline_scheduler
+    - _slot_refilling_fanout
+    - _resolve_max_workers
+    - max_parallel_workers
     - FIRST_COMPLETED
+    - QUARANTINED
+    - _salvage_uncommitted
 ---
 
 You are working on **worktrail's task-orchestration core**: compiling specs/changes into a
@@ -42,8 +47,9 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
 - **`TAIL_KINDS = {"e2e", "cleanup"}`** are always held out of the parallel fan-out and run
   serialized last — a RunPlan can add fields but can never "un-hold-out" a tail task (`kind` is
   sticky in the safe direction).
-- **The pipeline fan-out refills a freed slot immediately, never per tick**
-  (`live._pipeline_scheduler`): tasks run in one long-lived `ThreadPoolExecutor(max_workers)`
+- **Both fan-outs refill a freed slot immediately, never per tick**, through the one shared
+  helper `live._slot_refilling_fanout` (called by `live_run_real` and `_pipeline_scheduler`):
+  tasks run in one long-lived `ThreadPoolExecutor(max_workers)`
   and the loop `wait(..., return_when=FIRST_COMPLETED)`s, re-running `runnable_frontier` after
   every completion. The old loop blocked on the whole tick's futures, so a fast task's slot
   idled behind the slowest task's review/fix strikes (2 of 3 slots idle 35+ min with 4 ready
@@ -51,12 +57,41 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
   flight is only safe because a dispatched task is flipped `pending -> "claimed"` under
   `state_lock` *before* the next frontier pass — `coordinator.IN_FLIGHT` includes `claimed`, so
   the frontier neither re-dispatches it nor hands out its files. Never submit a task to the
-  pool without that transition, and never compute the frontier outside the lock.
-- **A run-budget break does not abandon mid-flight tasks**: the fan-out pool is shut down with
+  pool without that transition, and never compute the frontier outside the lock. Do not
+  reintroduce a private fan-out loop in either engine; extend the helper instead.
+- **Journal-replayed mid-flight tasks resume inside the pool, concurrently** — passed to the
+  helper as `initial_in_flight` and submitted before the first frontier pass, alongside
+  newly-runnable pending tasks. They used to be driven one at a time before fan-out began.
+- **A run-budget break does not abandon mid-flight tasks**: the budget check is the helper's
+  `should_stop(tick)` callback (`_budget_stop` in each engine) — True only stops *new* dispatch;
+  the fan-out pool is shut down with
   `wait=True` in a `finally`, so running tasks reach a terminal state (journaled as they go)
   before `_dispatch_terminal_groups()` runs a final time and integrate/verify proceeds.
   `tests/orchestrator/test_slot_refill_scheduler.py` pins both the refill and the
-  `max_workers` cap / dependency ordering.
+  `max_workers` cap / dependency ordering, plus the concurrent in-flight resume and the
+  legacy-engine refill.
+- **Fan-out width is resolved in code, not fixed at 3** (`live._resolve_max_workers`, applied in
+  `_pipeline_scheduler` right after `apply_run_plan`): an explicit `--max-workers` wins; else the
+  repo policy's `max_workers`; else the plan's own width (`conductor.parallelism.profile`) capped
+  by policy `max_parallel_workers` (default 6). `--max-workers` therefore defaults to `None` and
+  `full_real`/`_full_real_inner`/`_pipeline_scheduler` accept `int | None`. The fixed default of
+  3 silently ran a width-7 plan as three serial ticks (2026-09-02); the effective value is printed
+  next to the plan so the cap is visible.
+- **A group entering QUARANTINED prints `!! QUARANTINED [<name>] <reason>` the moment it
+  happens** (`_pipeline_scheduler`'s group-state recorder). Three groups sat quarantined for over
+  an hour while the log showed only ticks and CI polls (2026-09-02); do not rely on the journal
+  alone to surface it.
+- **`precheck` treats "every listed file already exists" as INFO, not WARN, for OpenSpec tasks**
+  (task `path` ends in `tasks.md`): an OpenSpec `files:` line is a shared-checklist scope with no
+  per-task create/modify split, so all files existing is the normal state of a task editing
+  existing modules. Devkit `TASK-NNN.md` tasks keep the "possibly already implemented" WARN. The
+  WARN false-fired (exit 1) on every unattended launch touching existing files on 2026-09-02.
+- **A timed-out review/ci-fix worker's uncommitted work is salvaged, not discarded**
+  (`verify.Verifier._salvage_uncommitted`): tracked modifications only (`git add -u`), committed
+  and pushed to the group branch before the strike is counted; a salvage failure never masks the
+  strike. And in `wait_and_fix_ci`, a failed or timed-out ci-fix attempt is *one strike*, not the
+  end of the loop — it re-polls CI (a salvaged commit may already be green) and spends the
+  remaining strikes before returning "CI fix loop exhausted".
 - **AddOns run after a task's own work, before commit** (`addons/runner.run_addons`,
   called from `orchestrator/integrate.py` and `router/preflight.py`). `install`/`configure`
   failures are swallowed (best-effort priming); `run()` failures propagate. An add-on config'd
@@ -85,6 +120,7 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
   agent, and a launch that forgot it merged datalena group PRs with `--merge` against a
   squash-only `dev` and quarantined each on a green tree (2026-09-01). Never add a new
   policy-backed `full-real` flag that relies on the agent remembering to pass it.
+  `_resolve_max_workers` is the same pattern for `--max-workers`.
 - **`auto_merge()` treats a GitHub METHOD rejection as retryable, not a quarantine.** When the
   direct `gh pr merge` fails with an `_AUTO_MERGE_METHOD_SIGNALS` match (e.g. "Merge commits are
   not allowed on this repository"), `_retry_auto_merge_methods(..., auto=False)` retries the
@@ -101,12 +137,15 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
 - `taskformats/base.py` — `TaskSource` protocol; `orchestrator/` must never construct a
   format-specific task path itself, always go through the active `TaskSource`
 - `addons/runner.py` — the only caller of `AddOn.install`/`configure`/`run`
-- `orchestrator/live.py` — `_default_merge_method`/`_default_post_merge_smoke_cmd`: the
-  code-level policy defaults `main()` applies to `full-real` when a flag is omitted;
-  `_pipeline_scheduler`: the slot-refilling fan-out loop and its `_dispatch_terminal_groups`
-  hand-off to the integrate+verify pool
+- `orchestrator/live.py` — `_default_merge_method`/`_default_post_merge_smoke_cmd`/
+  `_resolve_max_workers`: the code-level policy defaults `main()` applies to `full-real` when a
+  flag is omitted; `_slot_refilling_fanout`: the one slot-refilling fan-out loop both
+  `live_run_real` and `_pipeline_scheduler` drive, with its `on_completion` hand-off to
+  `_dispatch_terminal_groups` and the integrate+verify pool; `precheck`: the OpenSpec-vs-devkit
+  "all files exist" INFO/WARN split
 - `orchestrator/verify.py` — `auto_merge()` and `_retry_auto_merge_methods`; the only place a
-  merge-method rejection is turned into a method retry
+  merge-method rejection is turned into a method retry; `_salvage_uncommitted` and the
+  per-strike `continue` in `wait_and_fix_ci`
 
 ---
 **Last Updated:** 2026-09-02
