@@ -32,7 +32,7 @@
 
 ## 2. Premise check module (independent lane)
 
-- [ ] 2.1 Create `src/worktrail/workqueue/premise_check.py` per design D3: `Needle(kind,
+- [x] 2.1 Create `src/worktrail/workqueue/premise_check.py` per design D3: `Needle(kind,
       needle, line)`, `extract_needles(focus)` (kinds `quoted` ≥ 12 chars from `'…'`/`"…"`/
       backticks, `path` via `brief_probes.extract_probes()` with optional `:N`, `command`
       with the allow-list `pytest`, `python -m pytest`, `python3 -m pytest`, `npm test`,
@@ -47,7 +47,7 @@
       output lines, `TimeoutExpired` → unconfirmed with a timeout detail; at most one command
       needle is run per brief. (Requirement: Mechanical premise check precedes evaluation)
       files: src/worktrail/workqueue/premise_check.py
-- [ ] 2.2 Tests in `tests/workqueue/test_premise_check.py` against a `git init`'d `tmp_path`
+- [x] 2.2 Tests in `tests/workqueue/test_premise_check.py` against a `git init`'d `tmp_path`
       fixture: extraction of each kind from the motivating focus (quoted log line, `Repo:`
       not extracted as a command, `src/worktrail/drain/drain.py` as path); whole-string hit;
       fragment fallback confirms `no TASK-*.md found` when the full quoted line is absent
