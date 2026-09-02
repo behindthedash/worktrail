@@ -13,6 +13,8 @@ triggers:
     - queue/
     - queue_triage
     - duplicate-of
+    - repo_inference
+    - infer_repo
 ---
 
 You are working on **worktrail's work-queue handoff system**: the atomic claim/done/release
@@ -69,6 +71,19 @@ move-a-brief mechanism never diverges between callers.
   fork's repo; with no `pushDefault` it pushes `origin` and lets `gh` infer the base repo as
   before (live 2026-09-02: an unattended propose-change against `aspens` pushed to upstream
   `aspenkit/aspens` and was denied because the fork remote was never consulted).
+- **Repo inference never guesses among ambiguous candidates.** `repo_inference.infer_repo(focus,
+  repos_root)` tries three rules in order — (a) an explicit `Repo:`/`repo:` token (basename
+  match, so a path-shaped value works), (b) a known repo name as a whole word (word boundary
+  excludes `-` and `_` so `datalena-worktrees` does not match `datalena`), (c) a path probe from
+  `router.brief_probes.extract_probes()` that exists under exactly one known checkout. The
+  *first rule that finds any candidate at all* decides: exactly one distinct repo resolves it,
+  two or more returns `repo=None` with that rule's sorted `candidates` (a later rule is never
+  consulted to break the tie), zero falls through. A "known repo" is a direct subdirectory of
+  `repos_root` (default `~/projects`) with a `.git` entry — file or directory, so a worktree
+  checkout qualifies. This is separate from `create_handoff._infer_repo_from_focus`, the older
+  creation-time heuristic; the intake-triage evaluator's null-repo write-back
+  (`--triage-repos-root` in `worktrail-go`'s Phase 2 gate) is the intended consumer, and as of
+  2026-09-02 that wiring has not landed in this checkout.
 
 ## Critical files
 - `workqueue/work_queue.py` — the single implementation every consumer shares; do not reimplement
@@ -76,6 +91,8 @@ move-a-brief mechanism never diverges between callers.
 - `workqueue/queue_triage.py` — intake-triage verdict apply actions (stale-close, duplicate-of,
   fold-into-change, propose-change); the only caller that closes briefs with `triaged=True`
 - `workqueue/create_handoff.py` (via `worktrail-handoff`) — brief creation entrypoint
+- `workqueue/repo_inference.py` — `InferenceResult(repo, rule, candidates)` + `infer_repo()`; the
+  deterministic focus-text → repo resolver for briefs with no `repo:` frontmatter
 
 ## Critical Rules
 - Never write directly into `queue/`/`picked/` with plain file I/O from a new call site — always

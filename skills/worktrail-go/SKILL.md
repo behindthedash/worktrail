@@ -5,10 +5,12 @@ description: >
   implement or fix a spec, route engineering work, or orient across repositories.
   Renders the orientation dashboard, classifies free-text requests,
   claims/resumes handoff briefs, and dispatches SDD work without requiring the user
-  to know sdd-workflow. Triggers: worktrail-go, worktrail-go help,
-  worktrail-go fix, worktrail-go implement, worktrail-go route:F,
-  worktrail-go BRIEF-ID, bare worktrail-go, multi-repo orientation.
-argument-hint: "[help | free-text request | route:X | BRIEF-ID | REPO [intent keywords]]"
+  to know sdd-workflow. Grammar: worktrail-go [REPO] <noun> <verb>, nouns
+  handoff / spec / pr. Triggers: worktrail-go, worktrail-go help,
+  worktrail-go spec fix, worktrail-go spec implement, worktrail-go spec route F,
+  worktrail-go handoff new, worktrail-go handoff auto, worktrail-go BRIEF-ID,
+  bare worktrail-go, multi-repo orientation.
+argument-hint: "[help | BRIEF-ID | REPO | [REPO] handoff|spec|pr <verb> [args] | free-text request]"
 allowed-tools: Read, Bash, AskUserQuestion, Skill, Agent
 ---
 
@@ -20,17 +22,28 @@ Universal engineering front door for a Worktrail workspace. Work invocations sta
 
 ## When to Use
 
+The grammar is `worktrail-go [REPO] <noun> <verb> [args]` with three nouns — `handoff`
+(the work queue), `spec` (spec-driven work), `pr` (an open pull request) — plus two bare
+shortcuts (`BRIEF-ID`, `REPO`) and free text. The full form table, including the older
+spellings that are still accepted (`auto`, `drain`, `new`, `implement spec`, `fix`,
+`route:X`, `handoff:ID`, …), is `worktrail-go-parse --forms` / `worktrail-help`.
+
 - Bare `worktrail-go` — orientation dashboard + `AskUserQuestion` picker
 - `worktrail-go help` — delegate to `worktrail-help`
-- `worktrail-go drain [max-items] [repo]` — delegate to the unattended queue drain
-- `worktrail-go fix X` — classify and dispatch a free-text request
-- `worktrail-go implement spec 003` — dispatch to spec execution
-- `worktrail-go route:F` or `worktrail-go REPO route:D spec-folder` — explicit route, no classification
-- `worktrail-go BRIEF-ID` — claim or resume a specific queued brief; an untriaged intake
-  brief (no `seeded-from:`) is triaged instead: evaluate → apply → report; work-directly
-  continues into claim + dispatch (spec `intake-to-spec-triage`)
-- `worktrail-go auto` or `worktrail-go REPO auto` — auto-pick the next ranked queue brief and start it, no selection prompt (spec 017)
+- `worktrail-go handoff new "<focus>"` — capture a brief via `worktrail-handoff`, no dispatch
+- `worktrail-go handoff list` — list queued briefs, no dispatch
+- `worktrail-go BRIEF-ID` (or `handoff start BRIEF-ID`) — claim or resume a specific queued
+  brief; an untriaged intake brief (no `seeded-from:`) is triaged instead: evaluate → apply →
+  report; work-directly continues into claim + dispatch (spec `intake-to-spec-triage`)
+- `worktrail-go handoff auto` or `worktrail-go REPO handoff auto` — auto-pick the next ranked queue brief and start it, no selection prompt (spec 017)
+- `worktrail-go handoff drain [max-items] [repo]` — delegate to the unattended queue drain
+- `worktrail-go spec new X` — plan a new feature (Route C+D)
+- `worktrail-go spec implement 003` — dispatch to spec execution
+- `worktrail-go spec fix X` — defect repair, Route F, no classification
+- `worktrail-go spec route F` or `worktrail-go REPO spec route D spec-folder` — explicit route, no classification
+- `worktrail-go pr fix` — PR / CI repair
 - `worktrail-go REPO` — check what's active in a specific repo
+- Anything else — classified and dispatched as a free-text request
 
 Claude Code exposes this as `/worktrail-go`; Codex exposes it as
 `$worktrail:worktrail-go`. Substitute the host command in the forms below.
@@ -55,7 +68,7 @@ If `worktrail-classify` is not on `PATH`, stop and report that the `worktrail` p
 installed (`pip install worktrail`) rather than attempting to locate scripts on disk.
 `$REPO` starts as `$PWD` and is formally resolved and overwritten by Phase 3.
 
-New spec format: `/go new` uses OpenSpec by default. Set
+New spec format: `/go spec new` uses OpenSpec by default. Set
 `WORKTRAIL_SPEC_FORMAT=devkit` for a repository that must author the legacy
 `docs/specs/` format; existing specs are always detected by their on-disk format.
 
@@ -146,12 +159,17 @@ worktrail-go-parse "$ARGS" --repos "$REPO_NAMES"
 
 `$ARGS` is the raw positional argument string exactly as typed. Add `--picker-active` when a Level-2 category picker is already open (Phase 1b); without it a bare integer is free text, because no global numbered list exists.
 
-The result always carries every field, so no existence checks are needed. Act on `mode`:
+The result always carries every field, so no existence checks are needed. `canonical` is the
+noun-verb spelling of what was typed (`auto` → `handoff auto`); when it differs from `raw`,
+print it once as `(reads as: worktrail-go <canonical>)` so the older spellings teach the
+current grammar. Act on `mode`:
 
 | `mode` | Action |
 |---|---|
 | `dashboard` | Proceed to the orientation dashboard below. When `repo` is set, scope it to that repository. |
-| `help` | Delegate to `Skill("worktrail-help", args="<help_topic>")` and stop; do not fetch or render the dashboard. |
+| `help` | Delegate to `Skill("worktrail-help", args="<help_topic>")` and stop; do not fetch or render the dashboard. A bare noun (`worktrail-go handoff`) or an unrecognised verb lands here too, with the noun as `help_topic`. |
+| `capture` | Delegate to `Skill("worktrail-handoff", args="<free_text>")` and stop; do not fetch or render the dashboard, and do not claim or dispatch anything — this is issue capture, not work. |
+| `list` | Run `worktrail-work-queue list` and print its output verbatim, then stop; do not fetch or render the dashboard. |
 | `drain` | Read `references/drain.md` and run the installed `worktrail-drain` console script with the resolved invocation agent, passing `drain_max_items` and `drain_repo`. Do not fetch or render the dashboard, and do not claim a brief in the interactive process. The console script is an internal executor; users enter drain requests through `worktrail-go` only. |
 | `auto` | Hold `$AUTO_MODE=true` for the rest of the dispatch (spec 017). `repo`, when set, scopes it. |
 | `route` | Explicit route override: hold `route` as `$ROUTE_OVERRIDE` and `spec` as `$ARG_SPEC`. Skip classification later (Phase 5) and dispatch directly. |
@@ -162,7 +180,7 @@ The result always carries every field, so no existence checks are needed. Act on
 
 Then hold `$ARG_REPO` from `repo`, `$ARG_INTENT` from `intent` (or `free_text` when no intent keyword was given), and `$ARG_SPEC` from `spec`.
 
-**Now fetch the dashboard** (already skipped entirely above for `help`/`drain`). Detect mode via `resolve_repo.py --start "$PWD" --json`. Fetch queue JSON first and pass it to dashboard so the picker options are computed by the script, not by Claude — pass `--auto`/`--auto-repo` here when `$AUTO_MODE=true`, since that changes what the script itself computes.
+**Now fetch the dashboard** (already skipped entirely above for `help`/`capture`/`list`/`drain`). Detect mode via `resolve_repo.py --start "$PWD" --json`. Fetch queue JSON first and pass it to dashboard so the picker options are computed by the script, not by Claude — pass `--auto`/`--auto-repo` here when `$AUTO_MODE=true`, since that changes what the script itself computes.
 
 **Pass the queue/decisions JSON via file, not inline argv.** Linux caps a single argv
 string at ~128KB (`MAX_ARG_STRLEN`); a personal queue with 100+ handoffs routinely
@@ -209,9 +227,9 @@ Handle a missing/empty dashboard gracefully (the `rendered` field already prints
 
 **Branch on the classification from above — this decides what gets printed, not the other way around:**
 
-- **Brief-ID** (`$BRIEF_ID` held, from `handoff:ID`, `route:X` naming a brief, or the queue-resolve match above): print only a one-line summary (e.g. `Dashboard: N specs, M in-flight`) — never the full `rendered` dashboard — and skip the picker entirely. Go straight to Phase 2.
+- **Brief-ID** (`$BRIEF_ID` held, from `handoff start ID`, a bare `BRIEF-ID`, `spec route X` naming a brief, or the queue-resolve match above): print only a one-line summary (e.g. `Dashboard: N specs, M in-flight`) — never the full `rendered` dashboard — and skip the picker entirely. Go straight to Phase 2.
 - **Auto** (`$AUTO_MODE=true`): print the `rendered` dashboard as usual, skip BOTH picker levels, and use `$DASHBOARD_JSON.auto_pick`. Phase 5.5's collision branches (`references/spec-collision-check.md`, `references/related-brief-collision-check.md`) and its already-implemented branch (`references/subagent-prompts.md#already-implemented-check`) branch on `$AUTO_MODE` to skip `AskUserQuestion` — that tool is not registered in the headless one-shot processes `worktrail-go drain` spawns (verified 2026-08-10: a direct `claude -p` probe found no such tool available to call, not merely unanswered), so a Phase 5.5 prompt reached from an auto/drain dispatch would fail outright or leave the agent guessing an answer with no human to catch a bad one. Full flow: `references/auto-mode.md`.
-- **Everything else** (`route:X` not naming a brief, a v1 intent keyword, a bare integer with no active picker, or free-text): **print `$DASHBOARD_JSON.rendered` verbatim.** Do NOT re-render, reorder, regroup, or summarize it — rendering it yourself reintroduces the non-determinism this field exists to remove. Proceed to Phase 1b.
+- **Everything else** (`route` mode not naming a brief, `intent` mode, a bare integer with no active picker, or free-text): **print `$DASHBOARD_JSON.rendered` verbatim.** Do NOT re-render, reorder, regroup, or summarize it — rendering it yourself reintroduces the non-determinism this field exists to remove. Proceed to Phase 1b.
 
 ### Phase 1b — Two-Level Picker (AskUserQuestion)
 
@@ -349,7 +367,7 @@ Surface any warnings from the policy. Hold `$POLICY` for risk assessment in Phas
 
 ### Phase 5 — Classify (If No Explicit Route)
 
-If no explicit route (route:X or v1 intent keyword) and not a handoff:ID resumption, run classify.py to classify the free-text request.
+If no explicit route (Phase 1 `route` or `intent` mode) and not a brief resumption, run classify.py to classify the free-text request.
 
 **`--state` is a small signals object, not the dashboard blob.** classify.py's `--state`
 only reads two keys (`active_specs`, `handoff_queue`); it never reads `rendered`,
@@ -943,11 +961,17 @@ When a brief is claimed, surface any related briefs from its `related` frontmatt
 
 ## Examples
 
-**Free-text defect repair**
+**Defect repair**
 ```
-/go fix the upload timeout
+/go spec fix the upload timeout
 ```
-→ Dashboard + category picker → classify.py: Route F, high confidence → dispatch to sdd-workflow
+→ Route F from Phase 1 (`fix` is a parsed form now, not classified) → Phase 5 skipped → dispatch to sdd-workflow
+
+**Free-text request**
+```
+/go the upload silently drops files over 2GB
+```
+→ Dashboard + category picker → classify.py picks the route → dispatch to sdd-workflow
 
 **Bare /go (returning session)**
 ```
@@ -957,9 +981,9 @@ When a brief is claimed, surface any related briefs from its `related` frontmatt
 
 **Explicit route**
 ```
-/go ggb route:D 003-payments
+/go ggb spec route D 003-payments
 ```
-→ route:D detected, Phase 5 skipped → `Skill("worktrail-sdd-workflow", args="<ggb-path> route:D 003-payments")`
+→ route D detected, Phase 5 skipped → `Skill("worktrail-sdd-workflow", args="<ggb-path> route:D 003-payments")`
 
 **Queue claim by ID (execution brief)**
 ```
@@ -977,7 +1001,7 @@ STOPs (no claim, no sdd-workflow dispatch)
 
 **Auto mode (spec 017)**
 ```
-/go auto
+/go handoff auto
 ```
 → No picker → `auto_pick` selects the oldest unblocked brief → `claim-batch` folds in link/spec companions → classify/dispatch/CI-watch as normal
 
