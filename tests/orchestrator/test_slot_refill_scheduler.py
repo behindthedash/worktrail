@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Regression test: the pipeline fan-out refills a freed worker slot immediately.
 
 Defect (run orchestrator-throughput, 2026-09-02): `_pipeline_scheduler` computed a
@@ -154,7 +153,3 @@ class SlotRefillingFanout(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(head.returncode, 0)
-
-
-if __name__ == "__main__":
-    unittest.main()
