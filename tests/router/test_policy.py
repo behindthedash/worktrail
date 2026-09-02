@@ -268,6 +268,65 @@ class TestValidation(unittest.TestCase):
                 msg=bad,
             )
 
+    def test_triage_keys_default_when_omitted(self):
+        self.assertEqual(DEFAULTS["triage_keep_limit"], 2)
+        self.assertEqual(DEFAULTS["triage_max_queue_age_days"], 14)
+        pol = load_policy(_repo_with(""))
+        self.assertEqual(pol["triage_keep_limit"], 2)
+        self.assertEqual(pol["triage_max_queue_age_days"], 14)
+        self.assertFalse(
+            any("triage_keep_limit" in w for w in pol["_meta"]["warnings"])
+        )
+        self.assertFalse(
+            any("triage_max_queue_age_days" in w for w in pol["_meta"]["warnings"])
+        )
+
+    def test_triage_keys_valid_int_kept(self):
+        pol = load_policy(
+            _repo_with("triage_keep_limit: 5\ntriage_max_queue_age_days: 30\n")
+        )
+        self.assertEqual(pol["triage_keep_limit"], 5)
+        self.assertEqual(pol["triage_max_queue_age_days"], 30)
+        self.assertFalse(
+            any("triage_keep_limit" in w for w in pol["_meta"]["warnings"])
+        )
+        self.assertFalse(
+            any("triage_max_queue_age_days" in w for w in pol["_meta"]["warnings"])
+        )
+
+    def test_triage_keys_non_int_falls_back_to_default_with_warning(self):
+        for key, default in (
+            ("triage_keep_limit", 2),
+            ("triage_max_queue_age_days", 14),
+        ):
+            pol = load_policy(_repo_with(f"{key}: not-a-number\n"))
+            self.assertEqual(pol[key], default, msg=key)
+            self.assertTrue(
+                any(key in w for w in pol["_meta"]["warnings"]), msg=key
+            )
+
+    def test_triage_keys_bool_falls_back_to_default_with_warning(self):
+        for key, default in (
+            ("triage_keep_limit", 2),
+            ("triage_max_queue_age_days", 14),
+        ):
+            pol = load_policy(_repo_with(f"{key}: true\n"))
+            self.assertEqual(pol[key], default, msg=key)
+            self.assertTrue(
+                any(key in w for w in pol["_meta"]["warnings"]), msg=key
+            )
+
+    def test_triage_keys_zero_falls_back_to_default_with_warning(self):
+        for key, default in (
+            ("triage_keep_limit", 2),
+            ("triage_max_queue_age_days", 14),
+        ):
+            pol = load_policy(_repo_with(f"{key}: 0\n"))
+            self.assertEqual(pol[key], default, msg=key)
+            self.assertTrue(
+                any(key in w for w in pol["_meta"]["warnings"]), msg=key
+            )
+
 
 class TestAutomergeEligibility(unittest.TestCase):
     def setUp(self):
