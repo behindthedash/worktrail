@@ -152,6 +152,7 @@ from .policy import (
     load_policy,
 )
 from .policy_drift_selfcheck import orphaned_test_paths
+from .run_record import OUT_OF_SCOPE_REASON_PREFIXES
 from .run_record import _load as load_run_record
 
 # Explicit opt-out sentinels for `pre_pr_cmd`. Deliberately narrow: an empty
@@ -350,16 +351,22 @@ def scope_review_failures(run_path: Path | None) -> list[str]:
     if not review:
         return ["no scope review recorded in the run record"]
     failures: list[str] = []
+    # Entries are append-only; the latest entry per item wins so re-recording an
+    # item supersedes an earlier mis-phrased or blocked entry instead of failing
+    # the gate for the rest of the run.
+    latest: dict[str, tuple[str, str]] = {}
     for entry in review:
         parts = entry.split(" | ", 2) if isinstance(entry, str) else []
         if len(parts) != 3:
             failures.append(f"malformed scope review entry: {entry}")
             continue
         status, item, detail = parts
+        latest[item] = (status, detail)
+    for item, (status, detail) in latest.items():
         if status == "blocked":
             failures.append(f"blocked scope item: {item} ({detail})")
-        elif status == "out-of-scope" and not (
-            detail.startswith(("different purpose:", "user approved:"))
+        elif status == "out-of-scope" and not detail.startswith(
+            OUT_OF_SCOPE_REASON_PREFIXES
         ):
             failures.append(
                 f"out-of-scope item lacks a different-purpose or user-approved reason: {item}"

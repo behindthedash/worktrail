@@ -896,19 +896,12 @@ class TestLifecycle(unittest.TestCase):
         self.assertIsNone(_load(Path(res["path"]))["final_status"])
 
     def test_finish_blocks_on_out_of_scope_item_without_reason(self):
+        # The CLI now rejects this reason at write time; inject it directly so
+        # the gate-time check still covers a hand-edited record.
         res = _start(self.tmp, route="F")
-        main(
-            [
-                "scope-review",
-                res["path"],
-                "--item",
-                "unrelated cleanup",
-                "--status",
-                "out-of-scope",
-                "--reason",
-                "not needed",
-            ]
-        )
+        record = _load(Path(res["path"]))
+        record["scope_review"] = ["out-of-scope | unrelated cleanup | not needed"]
+        run_record._save(Path(res["path"]), record)
         with self.assertRaises(SystemExit):
             main(["finish", res["path"], "--status", "completed_pr_open"])
         self.assertIsNone(_load(Path(res["path"]))["final_status"])
@@ -1169,6 +1162,52 @@ class TestLifecycle(unittest.TestCase):
             main(
                 ["scope-review", res["path"], "--item", "smoke", "--status", "complete"]
             )
+
+
+class TestScopeReviewWriteTimeValidation(unittest.TestCase):
+    """`scope-review --status out-of-scope` rejects a reason that lacks the
+    `different purpose:` / `user approved:` prefix at write time, so the
+    mistake surfaces immediately instead of at gate time (brief 20260901-181247)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.path = _start(self.tmp, route="F")["path"]
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_out_of_scope_without_prefix_is_rejected(self):
+        with self.assertRaises(SystemExit) as ctx:
+            main(
+                [
+                    "scope-review",
+                    self.path,
+                    "--item",
+                    "docs",
+                    "--status",
+                    "out-of-scope",
+                    "--reason",
+                    "adjacent cleanup",
+                ]
+            )
+        self.assertIn("different purpose:", str(ctx.exception))
+        self.assertEqual(run_record._load(Path(self.path))["scope_review"], [])
+
+    def test_out_of_scope_with_prefix_is_recorded(self):
+        for reason in ("different purpose: separate PR", "user approved: skip"):
+            main(
+                [
+                    "scope-review",
+                    self.path,
+                    "--item",
+                    "docs",
+                    "--status",
+                    "out-of-scope",
+                    "--reason",
+                    reason,
+                ]
+            )
+        self.assertEqual(len(run_record._load(Path(self.path))["scope_review"]), 2)
 
 
 class TestScopeReviewEmptyDiffCrossCheck(unittest.TestCase):

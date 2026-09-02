@@ -601,8 +601,17 @@ def cmd_capacity_gate(args: argparse.Namespace) -> int:
     return 0
 
 
+OUT_OF_SCOPE_REASON_PREFIXES = ("different purpose:", "user approved:")
+
+
 def cmd_scope_review(args: argparse.Namespace) -> int:
-    """Record evidence that requested scope was completed or explicitly excluded."""
+    """Record evidence that requested scope was completed or explicitly excluded.
+
+    Entries are append-only; `pre_pr_gate.scope_review_failures()` judges only the
+    latest entry per item, so re-recording an item supersedes its earlier entry.
+    An out-of-scope reason is validated here, at write time, so a mis-phrased
+    reason is rejected immediately instead of surfacing at gate time.
+    """
     item = args.item.strip()
     if not item:
         raise SystemExit("scope-review requires a non-empty --item")
@@ -614,6 +623,13 @@ def cmd_scope_review(args: argparse.Namespace) -> int:
         detail = (args.reason or "").strip()
         if not detail:
             raise SystemExit(f"scope-review {args.status} requires --reason")
+        if args.status == "out-of-scope" and not detail.startswith(
+            OUT_OF_SCOPE_REASON_PREFIXES
+        ):
+            raise SystemExit(
+                "scope-review out-of-scope requires --reason beginning "
+                + " or ".join(repr(p) for p in OUT_OF_SCOPE_REASON_PREFIXES)
+            )
     path = Path(args.path)
     record = _load(path)
     record.setdefault("scope_review", []).append(f"{args.status} | {item} | {detail}")

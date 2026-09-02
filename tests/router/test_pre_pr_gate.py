@@ -243,6 +243,33 @@ class TestPrePrGate(unittest.TestCase):
         )
         self.assertTrue(scope_review_failures(run))
 
+    def test_latest_entry_per_item_supersedes_earlier_failure(self) -> None:
+        """Entries are append-only, so a later complete entry for the same item
+        must clear an earlier mis-phrased out-of-scope (or blocked) one instead
+        of failing the gate for the rest of the run (brief 20260901-181247)."""
+        run = Path(tempfile.mkdtemp()) / "run.yaml"
+        run.write_text(
+            "scope_review:\n"
+            '  - "out-of-scope | smoke test | adjacent cleanup"\n'
+            '  - "blocked | docs | provider unavailable"\n'
+            '  - "complete | smoke test | pytest -q"\n'
+            '  - "out-of-scope | docs | different purpose: separate PR"\n',
+            encoding="utf-8",
+        )
+        self.assertEqual(scope_review_failures(run), [])
+
+    def test_latest_entry_per_item_can_also_regress(self) -> None:
+        run = Path(tempfile.mkdtemp()) / "run.yaml"
+        run.write_text(
+            "scope_review:\n"
+            '  - "complete | smoke test | pytest -q"\n'
+            '  - "blocked | smoke test | flaky"\n',
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            scope_review_failures(run), ["blocked scope item: smoke test (flaky)"]
+        )
+
 
 class TestSpecSyncDriftGate(unittest.TestCase):
     """Every consuming repo inherits check_spec_sync.py via pre_pr_gate.py —

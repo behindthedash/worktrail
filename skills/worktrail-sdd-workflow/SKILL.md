@@ -179,7 +179,10 @@ worktrail-run-record scope-review "$RUN" \
 Do not create a follow-up handoff for an incomplete requested outcome. Implement
 it before the PR, or stop with a real blocker/product-decision state. An item
 may be recorded as `out-of-scope` only with a reason beginning `different
-purpose:` or `user approved:`. A `blocked` item fails the pre-PR gate.
+purpose:` or `user approved:` (any other reason is rejected at write time). A
+`blocked` item fails the pre-PR gate. Entries are append-only, but the gate
+judges only the latest entry per `--item`, so re-record an item to supersede an
+earlier `blocked` or mis-phrased entry.
 
 **Mandatory pre-PR test gate — every PR-producing route, every repo, one-off
 claude/codex workers included.** Before `gh pr create` (or updating an existing
