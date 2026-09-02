@@ -217,6 +217,8 @@
           "spec_ref",
           "merge_method_by_base",
           "auto_merge",
+          "_pipeline_scheduler",
+          "FIRST_COMPLETED",
           "worktrail",
           "task",
           "orchestration",
