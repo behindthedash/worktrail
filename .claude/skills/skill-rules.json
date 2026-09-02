@@ -168,6 +168,8 @@
           "handoff brief",
           "picked/",
           "queue/",
+          "queue_triage",
+          "duplicate-of",
           "workqueue",
           "handoff-brief",
           "queue",
