@@ -2291,6 +2291,14 @@ def run_intake_triage_prepass(
     responsible for catching it, logging it, and continuing, exactly like the
     seed-backlog pre-pass below: an intake-triage failure must never abort an
     otherwise-healthy drain run.
+
+    A real (non-dry-run) result carries `briefs_evaluated`, `verdict_counts`
+    (by verdict type), `pull_requests_opened`, and `briefs_held_by_cap` --
+    the `intake_triage` summary block's contract (see
+    `summary_contract.summary_block_contract`) -- read back from evaluate's
+    own `verdict.json` via `queue_triage.compute_run_summary()` before apply
+    consumes it, so these figures can never drift from what apply actually
+    acted on.
     """
     previous_queue_dir = os.environ.get("WORK_QUEUE_DIR")
     if queue_dir is not None:
@@ -2313,13 +2321,30 @@ def run_intake_triage_prepass(
         if exit_code != 0:
             raise RuntimeError(f"queue_triage evaluate exited {exit_code}")
         verdict_file = out_dir / "verdict.json"
+        # Read back evaluate's own verdict file (rather than re-deriving
+        # counts some other way) so this summary can never drift from the
+        # verdict.json apply is about to act on -- same "computed once,
+        # reused everywhere" discipline as queue_triage.compute_run_summary's
+        # own callers (write_report, cmd_evaluate --json).
+        verdicts = [
+            queue_triage_mod.Verdict(**entry)
+            for entry in json.loads(verdict_file.read_text(encoding="utf-8"))
+        ]
+        run_summary = queue_triage_mod.compute_run_summary(verdicts)
         exit_code = queue_triage_mod.main(
             ["apply", "--verdict-file", str(verdict_file), "--confirm"]
         )
         if exit_code != 0:
             raise RuntimeError(f"queue_triage apply exited {exit_code}")
         log(f"intake-triage: applied verdicts from {verdict_file}")
-        return {"out_dir": str(out_dir), "dry_run": False}
+        return {
+            "out_dir": str(out_dir),
+            "dry_run": False,
+            "briefs_evaluated": len(verdicts),
+            "verdict_counts": run_summary["verdict_counts"],
+            "pull_requests_opened": run_summary["pull_requests_opened"],
+            "briefs_held_by_cap": sum(run_summary["held_by_wip_cap"].values()),
+        }
     finally:
         if queue_dir is not None:
             if previous_queue_dir is None:
@@ -2759,11 +2784,21 @@ def drain(
         "resumed_openspec_archive": resumed.get("openspec_archive", []),
         "stuck_remediations": stuck_remediations,
         "seeded_backlog": seeded_backlog,
-        "intake_triage": intake_triage_result,
-        "seed_backlog_pass": seed_backlog_pass_result,
         "decisions_open": len(decisions_mod.open_decision_ids(config.queue_dir)),
         "elapsed_s": int(clock() - started),
     }
+    # `intake_triage`/`seed_backlog` are present only when their own pre-pass
+    # flag (`--intake-triage`/`--seed-backlog`) was set (task
+    # intake-to-spec-triage 4.2) -- a summary consumer sees the block at all
+    # only when the pass that produces it actually ran, matching
+    # `summary_contract.summary_block_contract()`'s documented shape.
+    if config.intake_triage:
+        summary["intake_triage"] = intake_triage_result
+    if config.seed_backlog_pass:
+        seed_backlog_block = dict(seed_backlog_pass_result)
+        if isinstance(seed_backlog_block.get("seeded"), list):
+            seed_backlog_block["seeds_captured"] = len(seed_backlog_block["seeded"])
+        summary["seed_backlog"] = seed_backlog_block
     if pending_approvals:
         log(f"pending human approval: {', '.join(pending_approvals)}")
     if pending_user_decisions:
