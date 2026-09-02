@@ -26,6 +26,11 @@ counterpart that already exists on disk) returned as human-readable problem
 lines. Unlike `profile()`/`estimate_minutes()`, this is not advisory --
 `compile.py` raises `PlanShapeError` when it returns anything, and a rejected
 plan writes no marker.
+
+`format_warning()` stays advisory, for `live.py`'s pre-launch summary line:
+`shape_problems()` only fires on the three D2 rules above, so a plan that
+clears the gate can still be effectively serial (e.g. a long chain that is
+exactly at the width threshold) without any rejection to report.
 """
 
 from __future__ import annotations
@@ -44,6 +49,17 @@ from worktrail.orchestrator.coordinator import TAIL_KINDS, compute_levels
 DEFAULT_MAX_CRITICAL_PATH_OVER_WIDTH = 2
 DEFAULT_MAX_SAME_FILE_CHAIN = 2
 
+# A serial chain this long is where one-at-a-time execution stops being a
+# footnote and starts being the whole run's wall-clock. Shorter chains are
+# normal (a 3-task change usually *is* sequential) and not worth a warning.
+SERIAL_WARN_MIN_TASKS = 6
+
+# "Effectively serial": the critical path covers at least this fraction of the
+# fan-out tasks. Strict width==1 is not enough -- a change can profile as 16
+# tasks, critical path 13, width 2 (one stray pair ran side by side), and
+# still take one task at a time for hours.
+SERIAL_WARN_CHAIN_FRACTION = 0.75
+
 # Per-task cost assumed when no prior run journal on this machine carries
 # timing data yet. Calibrated from the incident run (41-58 min per task with
 # the 3-strike review loop) rounded down, so a cold estimate is not alarmist.
@@ -57,11 +73,21 @@ class Profile:
     width: int  # most tasks that could ever run concurrently
     hot_files: tuple[str, ...]  # files declared by more than half the tasks
 
+    @property
+    def serialized(self) -> bool:
+        """Effectively serial: long enough to matter, and the critical path is
+        (nearly) the whole task list. Width 1 is always a subset of this."""
+        return (
+            self.tasks >= SERIAL_WARN_MIN_TASKS
+            and self.critical_path >= self.tasks * SERIAL_WARN_CHAIN_FRACTION
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "tasks": self.tasks,
             "critical_path": self.critical_path,
             "width": self.width,
+            "serialized": self.serialized,
             "hot_files": list(self.hot_files),
         }
 
@@ -141,6 +167,25 @@ def summary_line(prof: Profile) -> str:
     return (
         f"parallelism: {prof.tasks} task(s), critical path {prof.critical_path}, "
         f"width {prof.width}"
+    )
+
+
+def format_warning(prof: Profile, minutes: float, basis: str) -> str | None:
+    """One actionable line when the plan is effectively serial, else None."""
+    if not prof.serialized:
+        return None
+    hours = minutes / 60.0
+    hot = (
+        f" Most tasks declare {', '.join(prof.hot_files)}; consolidate them into "
+        "fewer, coarser tasks in tasks.md so the same-file ordering stops "
+        "serialising the run."
+        if prof.hot_files
+        else " Consolidate the chain into fewer, coarser tasks in tasks.md."
+    )
+    return (
+        f"WARN: task DAG is effectively serial ({prof.tasks} tasks, critical path "
+        f"{prof.critical_path}, width {prof.width}): max-workers cannot help, "
+        f"projected wall-clock ~{hours:.1f} h ({basis}).{hot}"
     )
 
 
@@ -259,6 +304,8 @@ def shape_problems(
             )
 
     for t in fanout:
+        if t.get("kind") == "docs":
+            continue
         files = t.get("files") or []
         src_files = sorted(f for f in files if f.startswith("src/"))
         if not src_files or any(f.startswith("tests/") for f in files):
