@@ -921,3 +921,22 @@ def test_check_agent_cli_exits_one_when_gated(tmp_path, capsys):
     out = json.loads(capsys.readouterr().out)
     assert out["gated"] is True
     assert out["target"] == "claude-sub"
+
+
+def test_consumed_refresh_token_wording_classifies_as_auth():
+    # Live reproduction 2026-09-01 (brief 20260901-175101): codex-sub's ChatGPT
+    # refresh token had been consumed. The 401 line already matched "unauthorized";
+    # the bare `ERROR:` lines codex also emits must classify as auth on their own.
+    stderr = (
+        "ERROR: Your access token could not be refreshed because your refresh "
+        "token was already used. Please log out and sign in again."
+    )
+    assert agent_capacity.classify_failure(1, "", stderr) == "auth"
+
+
+def test_auth_default_cooldown_is_one_day():
+    # An auth failure never self-heals (it needs `codex login` / a new key), so a
+    # one-hour gate just re-burned the per-spawn retry budget every hour of a
+    # multi-hour run. Match model_unavailable's one-day default; operators clear
+    # it explicitly once auth is fixed.
+    assert agent_capacity.DEFAULT_COOLDOWNS["auth"] == 86400

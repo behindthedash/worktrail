@@ -383,6 +383,16 @@ def is_infra_failure(returncode: int, stdout: str | None) -> bool:
     return _opencode_error_event(stdout) is not None
 
 
+def _is_auth_failure(proc: subprocess.CompletedProcess, raw: str | None) -> bool:
+    """True when an infra failure's output classifies as an auth failure (401 /
+    consumed refresh token / "log out and sign in again") -- a condition that
+    cannot clear itself, so `spawn_agent` gates the cell without retrying."""
+    return (
+        agent_capacity.classify_failure(proc.returncode, raw or "", proc.stderr or "")
+        == "auth"
+    )
+
+
 def _opencode_unknown_error_failure_class(cell: Cell, raw: str | None) -> str | None:
     """When *cell*'s exhausted-retries raw output carries a top-level opencode
     `UnknownError` (see `_opencode_error_event`), distinguish a retired/renamed
@@ -860,7 +870,10 @@ def spawn_agent(
     looping forever.
 
     An ordinary infra failure (non-zero exit / empty stdout) retries the SAME
-    cell up to `retries` times first. Once that budget is exhausted the cell
+    cell up to `retries` times first -- except an auth-class failure (401,
+    consumed refresh token), which cannot clear itself and so gates the cell
+    on the first attempt (`_is_auth_failure`) with no retry or backoff. Once
+    that budget is exhausted the cell
     is gated `failure_class="infra"` (via `agent_capacity.classify_failure`)
     and, exactly like the session-limit path above, we re-select from the same
     row -- the fresh gate excludes the failed cell -- and continue this same
@@ -1130,7 +1143,19 @@ def spawn_agent(
 
         if not is_infra_failure(proc.returncode, last_raw):
             agent_capacity.record(cell.target, cell.model, outcome="available")
-        elif attempt >= attempts:
+            return finish(last_raw)
+        if attempt < attempts and _is_auth_failure(proc, last_raw):
+            # An auth failure (401, consumed refresh token) is deterministic
+            # until the operator re-authenticates: retrying the same cell only
+            # burns the budget + backoff on every spawn of the run (brief
+            # 20260901-175101). Treat the budget as exhausted -- gate now, hop.
+            log(
+                f"    auth failure on {cell.target} ({cell.harness}:{cell.model}); "
+                "gating without retry -- clear with `worktrail-agent-capacity "
+                "clear` once re-authenticated"
+            )
+            attempt = attempts
+        if attempt >= attempts:
             failure_class = _opencode_unknown_error_failure_class(cell, last_raw)
             if failure_class is None:
                 failure_class = agent_capacity.classify_failure(
@@ -1144,8 +1169,6 @@ def spawn_agent(
                 retry_after=agent_capacity.retry_time(failure_class),
             )
 
-        if not is_infra_failure(proc.returncode, last_raw):
-            return finish(last_raw)
         if proc.returncode != 0:
             sys.stderr.write(
                 f"[{cell.harness} worker exit {proc.returncode}] {(proc.stderr or '')[-400:]}\n"

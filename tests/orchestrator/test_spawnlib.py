@@ -1997,6 +1997,58 @@ class InfraFailureFallback(unittest.TestCase):
         # the hop, since the opencode cell succeeds on its first try.
         self.assertEqual(len(sleeps), 2)
 
+    def test_auth_failure_gates_the_cell_without_burning_retries(self):
+        """brief 20260901-175101: an auth-class failure (consumed refresh token,
+        401) is deterministic until the operator re-authenticates, so it must
+        gate the served cell on the FIRST attempt and hop -- not burn the
+        per-spawn retry budget (and its backoff sleeps) on every spawn."""
+        calls = []
+        sleeps = []
+        logs = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[0] == "claude":
+                return Proc(
+                    1,
+                    "",
+                    "ERROR: Your access token could not be refreshed because "
+                    "your refresh token was already used. Please log out and "
+                    "sign in again.\n",
+                )
+            return Proc(
+                0,
+                json.dumps({"type": "result", "result": "opencode ok", "usage": {}})
+                + "\n",
+                "",
+            )
+
+        original = spawnlib.subprocess.run
+        spawnlib.subprocess.run = fake_run
+        try:
+            with (
+                tempfile.TemporaryDirectory() as cwd,
+                _patch_routing(CLAUDE_THEN_OPENCODE_ROUTING),
+            ):
+                out = spawnlib.spawn_agent(
+                    "prompt",
+                    cwd,
+                    tier="t2-build",
+                    retries=2,
+                    sleep=lambda seconds: sleeps.append(seconds),
+                    log=logs.append,
+                )
+        finally:
+            spawnlib.subprocess.run = original
+        self.assertEqual(out.text, "opencode ok")
+        # exactly one claude attempt, then the hop -- no retries, no backoff
+        self.assertEqual([c[0] for c in calls], ["claude", "opencode"])
+        self.assertEqual(sleeps, [])
+        gate = spawnlib.agent_capacity.load()["providers"]["claude-sub:sonnet"]
+        self.assertEqual(gate["status"], "unavailable")
+        self.assertEqual(gate["failure_class"], "auth")
+        self.assertTrue(any("auth failure on claude-sub" in line for line in logs))
+
     def test_every_cell_exhausted_returns_last_raw_output(self):
         calls = []
 
