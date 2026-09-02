@@ -1272,6 +1272,13 @@ def test_the_cli_auto_repairs_an_unordered_file_collision(tmp_path, capsys):
         "## 1. Core\n\n- [ ] 1.1 Add the parser\n\n"
         "## 2. Verify\n\n- [ ] 2.1 Check a\n- [ ] 2.2 Check b\n"
     )
+    # The repair below makes this 3-task plan's critical path 3 with width 1,
+    # which would otherwise trip the plan-shape gate's serial rule (D2) --
+    # not what this test is about, so raise its threshold out of the way.
+    (repo / ".worktrail").mkdir()
+    (repo / ".worktrail" / "policy.yaml").write_text(
+        "compile_max_critical_path_over_width: 100\n"
+    )
 
     reply = _reply(
         **{
@@ -1306,6 +1313,10 @@ def test_the_cli_json_mode_auto_repairs_an_unordered_file_collision(tmp_path, ca
     (d / "tasks.md").write_text(
         "## 1. Core\n\n- [ ] 1.1 Add the parser\n\n"
         "## 2. Verify\n\n- [ ] 2.1 Check a\n- [ ] 2.2 Check b\n"
+    )
+    (repo / ".worktrail").mkdir()
+    (repo / ".worktrail" / "policy.yaml").write_text(
+        "compile_max_critical_path_over_width: 100\n"
     )
 
     reply = _reply(
@@ -1761,13 +1772,12 @@ def test_cli_compiling_from_a_worktree_caches_under_the_canonical_repo(
     assert str(worktree) not in cache_line
 
 
-def test_the_cli_warns_when_the_repaired_dag_collapses_to_a_serial_chain(
+def test_the_cli_rejects_a_repaired_dag_that_collapses_to_a_serial_chain(
     tmp_path, capsys
 ):
     """The 2026-09-01 incident shape: every task declares the same file, so the
-    same-file repair serialises all of them. The compile is *correct* (exit 0,
-    marker written) but must now say so out loud instead of only printing the
-    dep table."""
+    same-file repair serialises all of them. That is now a plan-shape
+    rejection (`PlanShapeError`, design D2), not just a stderr note."""
     import subprocess
     from unittest.mock import patch
 
@@ -1787,21 +1797,18 @@ def test_the_cli_warns_when_the_repaired_dag_collapses_to_a_serial_chain(
     with patch("worktrail.conductor.compile._default_spawn", return_value=reply):
         rc = conductor_compile.main([str(d)])
     out, err = capsys.readouterr()
-    assert rc == 0
-    assert "auto-repaired" in out
-    assert f"parallelism: {n} task(s), critical path {n}, width 1" in out
-    assert "WARN: task DAG is effectively serial" in err
+    assert rc == 1
+    assert "same-file chain" in err
     assert "src/triage.py" in err
+    assert not (d / conductor_compile.COMPILE_MARKER_NAME).exists()
 
     with patch("worktrail.conductor.compile._default_spawn", return_value=reply):
         rc = conductor_compile.main([str(d), "--json"])
     out, err = capsys.readouterr()
-    assert rc == 0
-    payload = json.loads(out)
-    assert payload["parallelism"]["serialized"] is True
-    assert payload["parallelism"]["critical_path"] == n
-    assert payload["parallelism"]["estimated_minutes"] > 0
-    assert "WARN: task DAG is effectively serial" in err
+    assert rc == 1
+    assert out == ""  # rejected before any plan payload is ever printed
+    assert "same-file chain" in err
+    assert not (d / conductor_compile.COMPILE_MARKER_NAME).exists()
 
 
 def test_the_cli_prints_the_parallelism_summary_without_a_warning_for_a_fan_out(
@@ -1829,3 +1836,91 @@ def test_the_cli_prints_the_parallelism_summary_without_a_warning_for_a_fan_out(
     assert rc == 0
     assert "parallelism: 2 task(s), critical path 1, width 2" in out
     assert "WARN" not in err
+
+
+# --------------------------------------------------------------------------- #
+# Plan-shape gate (design D2): PlanShapeError propagation
+# --------------------------------------------------------------------------- #
+FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "plan_shape"
+
+
+def _make_change(repo: Path, fixture_name: str) -> Path:
+    import subprocess
+
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    d = repo / "openspec" / "changes" / "add-thing"
+    d.mkdir(parents=True)
+    (d / "proposal.md").write_text("## Why\nBecause.\n")
+    (d / "tasks.md").write_text((FIXTURES_DIR / fixture_name).read_text())
+    return d
+
+
+def test_the_serial_fixture_is_rejected_with_no_llm_and_no_marker(tmp_path, capsys):
+    """The `full-1788369246` group 4 shape: three tasks chained on
+    `queue_triage.py`, plus a task touching a module with an existing test
+    file it never declares. All of the fixture's tasks declare their own
+    `files:`, so `--no-llm` never has to spawn a model."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    d = _make_change(repo, "serial-group4.tasks.md")
+    test_counterpart = repo / "tests" / "workqueue" / "test_create_handoff.py"
+    test_counterpart.parent.mkdir(parents=True)
+    test_counterpart.write_text("")
+
+    rc = conductor_compile.main([str(d), "--no-llm"])
+    out, err = capsys.readouterr()
+    assert rc == 1
+    assert "same-file chain" in err
+    assert "queue_triage.py" in err
+    assert "missing test scope" in err
+    assert "create_handoff.py" in err
+    assert not (d / conductor_compile.COMPILE_MARKER_NAME).exists()
+
+    rc = conductor_compile.main([str(d), "--no-llm", "--json"])
+    out, err = capsys.readouterr()
+    assert rc == 1
+    assert out == ""
+    assert "same-file chain" in err
+    assert not (d / conductor_compile.COMPILE_MARKER_NAME).exists()
+
+
+def test_the_consolidated_fixture_passes(tmp_path, capsys):
+    """One task per module, tests co-scoped, plus an `[e2e]` tail: no rule
+    fires."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    d = _make_change(repo, "consolidated.tasks.md")
+
+    rc = conductor_compile.main([str(d), "--no-llm"])
+    out, err = capsys.readouterr()
+    assert rc == 0
+    assert "same-file chain" not in err
+    assert "serial" not in err
+    assert "missing test scope" not in err
+    assert (d / conductor_compile.COMPILE_MARKER_NAME).exists()
+
+
+def test_compile_run_plan_raises_plan_shape_error_on_a_cache_hit(tmp_path):
+    """A plan cached by an earlier, laxer policy must still be rejected on a
+    later cache-hit read, not only the first time it is compiled."""
+    from worktrail.conductor.compile import PlanShapeError, compile_run_plan
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    d = _make_change(repo, "serial-group4.tasks.md")
+    from worktrail.taskformats import resolve
+
+    spec_id, tasks = resolve.load_spec(str(d))
+    cache_dir = tmp_path / "cache"
+
+    with pytest.raises(PlanShapeError):
+        compile_run_plan(
+            d, tasks, spec_id=spec_id, repo=repo, cache_dir=cache_dir, allow_llm=False
+        )
+
+    # Cached (the shape check runs *after* `runplan.store`), so a second call
+    # -- the cache-hit path -- must raise again from the cached plan alone.
+    with pytest.raises(PlanShapeError):
+        compile_run_plan(
+            d, tasks, spec_id=spec_id, repo=repo, cache_dir=cache_dir, allow_llm=False
+        )
