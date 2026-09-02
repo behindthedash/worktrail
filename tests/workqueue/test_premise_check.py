@@ -62,7 +62,7 @@ def test_whole_string_hit_confirms(repo: Path) -> None:
     _add(repo, "logs/output.txt", "a very specific error message here\n")
 
     results = run_premise_check(focus, repo)
-    quoted = [r for r in results if r["kind"] == "quoted"][0]
+    quoted = next(r for r in results if r["kind"] == "quoted")
 
     assert quoted["confirmed"] is True
     assert "matched whole string" in quoted["detail"]
@@ -74,7 +74,7 @@ def test_fragment_fallback_confirms(repo: Path) -> None:
     _add(repo, "logs/output.txt", "no TASK-*.md found\n")
 
     results = run_premise_check(focus, repo)
-    quoted = [r for r in results if r["kind"] == "quoted"][0]
+    quoted = next(r for r in results if r["kind"] == "quoted")
 
     assert quoted["confirmed"] is True
     assert "whole string not found" in quoted["detail"]
@@ -86,7 +86,7 @@ def test_quoted_no_hit_is_unconfirmed(repo: Path) -> None:
     focus = "The log said 'this text never appears anywhere in the repo'."
 
     results = run_premise_check(focus, repo)
-    quoted = [r for r in results if r["kind"] == "quoted"][0]
+    quoted = next(r for r in results if r["kind"] == "quoted")
 
     assert quoted["confirmed"] is False
     assert quoted["detail"] == "no match for whole string or fragments"
@@ -97,7 +97,7 @@ def test_path_present(repo: Path) -> None:
     focus = "See `src/worktrail/drain/drain.py` for the loop."
 
     results = run_premise_check(focus, repo)
-    path_result = [r for r in results if r["kind"] == "path"][0]
+    path_result = next(r for r in results if r["kind"] == "path")
 
     assert path_result["confirmed"] is True
     assert "path exists" in path_result["detail"]
@@ -107,7 +107,7 @@ def test_path_absent(repo: Path) -> None:
     focus = "See `src/worktrail/does_not_exist.py` for the loop."
 
     results = run_premise_check(focus, repo)
-    path_result = [r for r in results if r["kind"] == "path"][0]
+    path_result = next(r for r in results if r["kind"] == "path")
 
     assert path_result["confirmed"] is False
     assert "does not exist" in path_result["detail"]
@@ -118,7 +118,7 @@ def test_path_with_line_beyond_file_length(repo: Path) -> None:
     focus = "See `src/worktrail/drain/drain.py:42` for the loop."
 
     results = run_premise_check(focus, repo)
-    path_result = [r for r in results if r["kind"] == "path"][0]
+    path_result = next(r for r in results if r["kind"] == "path")
 
     assert path_result["confirmed"] is False
     assert "only 2 lines" in path_result["detail"]
@@ -130,25 +130,29 @@ def test_path_with_line_within_file_length(repo: Path) -> None:
     focus = "See `src/worktrail/drain/drain.py:2` for the loop."
 
     results = run_premise_check(focus, repo)
-    path_result = [r for r in results if r["kind"] == "path"][0]
+    path_result = next(r for r in results if r["kind"] == "path")
 
     assert path_result["confirmed"] is True
     assert "line 2 present" in path_result["detail"]
 
 
-def test_allow_listed_command_nonzero_exit_confirms(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_allow_listed_command_nonzero_exit_confirms(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     focus = "Reproduce with `pytest tests/drain/test_drain_loop.py`."
     captured: dict = {}
 
     def fake_run(args, **kwargs):
         captured["args"] = args
         captured["cwd"] = kwargs.get("cwd")
-        return subprocess.CompletedProcess(args, returncode=1, stdout="1 failed\n", stderr="")
+        return subprocess.CompletedProcess(
+            args, returncode=1, stdout="1 failed\n", stderr=""
+        )
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     results = run_premise_check(focus, repo)
-    command_result = [r for r in results if r["kind"] == "command"][0]
+    command_result = next(r for r in results if r["kind"] == "command")
 
     assert command_result["confirmed"] is True
     assert "exit code 1" in command_result["detail"]
@@ -162,12 +166,14 @@ def test_allow_listed_command_zero_exit_does_not_confirm(
     focus = "Reproduce with `pytest tests/drain/test_drain_loop.py`."
 
     def fake_run(args, **kwargs):
-        return subprocess.CompletedProcess(args, returncode=0, stdout="1 passed\n", stderr="")
+        return subprocess.CompletedProcess(
+            args, returncode=0, stdout="1 passed\n", stderr=""
+        )
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     results = run_premise_check(focus, repo)
-    command_result = [r for r in results if r["kind"] == "command"][0]
+    command_result = next(r for r in results if r["kind"] == "command")
 
     assert command_result["confirmed"] is False
     assert "exit code 0" in command_result["detail"]
@@ -188,7 +194,7 @@ def test_non_allow_listed_command_never_run_and_recorded_unrunnable(
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     results = run_premise_check(focus, repo)
-    command_result = [r for r in results if r["kind"] == "command"][0]
+    command_result = next(r for r in results if r["kind"] == "command")
 
     assert command_result["needle"] == "rm -rf /tmp/whatever"
     assert command_result["confirmed"] is False
@@ -209,7 +215,7 @@ def test_timeout_expired_is_unconfirmed_with_timeout_detail(
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     results = run_premise_check(focus, repo, timeout_s=5)
-    command_result = [r for r in results if r["kind"] == "command"][0]
+    command_result = next(r for r in results if r["kind"] == "command")
 
     assert command_result["confirmed"] is False
     assert "timed out after 5s" in command_result["detail"]

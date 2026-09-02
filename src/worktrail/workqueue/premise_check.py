@@ -41,14 +41,32 @@ _ALLOWED_COMMANDS = frozenset(
 # it is not allow-listed to actually run -- recorded as an unrunnable
 # `command` needle instead of silently dropped.
 _COMMAND_LOOKING_VERBS = frozenset(
-    {"rm", "git", "make", "curl", "wget", "sudo", "docker", "npm", "pip",
-     "pip3", "bash", "sh", "chmod", "chown", "kill", "mv", "cp"}
+    {
+        "rm",
+        "git",
+        "make",
+        "curl",
+        "wget",
+        "sudo",
+        "docker",
+        "npm",
+        "pip",
+        "pip3",
+        "bash",
+        "sh",
+        "chmod",
+        "chown",
+        "kill",
+        "mv",
+        "cp",
+    }
 )
 
 
 def _looks_command_shaped(stripped: str) -> bool:
     first = stripped.split(None, 1)[0] if stripped else ""
     return first in _COMMAND_LOOKING_VERBS or first.startswith("worktrail-")
+
 
 _QUOTED_RE = re.compile(r"'([^']+)'|\"([^\"]+)\"|`([^`]+)`")
 
@@ -128,6 +146,7 @@ def _git_grep_whole_string(repo_path: Path, needle: str) -> dict[str, Any] | Non
         cwd=repo_path,
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode != 0 or not result.stdout.strip():
         return None
@@ -155,6 +174,7 @@ def _git_grep_fragments(repo_path: Path, needle: str) -> dict[str, Any]:
             cwd=repo_path,
             capture_output=True,
             text=True,
+            check=False,
         )
         if result.returncode == 0 and result.stdout.strip():
             hits = result.stdout.strip("\n").split("\n")[:_MAX_GIT_GREP_HITS]
@@ -216,7 +236,10 @@ def _check_command(
     ):
         return {"confirmed": False, "detail": "command not allow-listed; not run"}
     if already_ran:
-        return {"confirmed": False, "detail": "skipped: another command needle already ran"}
+        return {
+            "confirmed": False,
+            "detail": "skipped: another command needle already ran",
+        }
     try:
         result = subprocess.run(
             shlex.split(needle),
@@ -224,6 +247,7 @@ def _check_command(
             timeout=timeout_s,
             capture_output=True,
             text=True,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         return {"confirmed": False, "detail": f"timed out after {timeout_s}s"}
