@@ -23,3 +23,7 @@ None.
 - `src/worktrail/router/dashboard.py`: `_load_tasks` gains a `reconciled` flag per row; `_count_tasks`, `_pending_impl_stale`, `_pending_tail_stale` honour it.
 - `tests/router/test_dashboard.py`: regression coverage for the marker, the opt-out, the pending-with-marker and implemented-without-marker negatives, and a reconciled task beside a genuinely stale sibling.
 - OpenSpec-format changes are unaffected (`tasks.md` checkboxes have no `status: implemented` state).
+
+## Folded from 20260831-060019-stale-bookkeeping-worktrail
+
+openspec/changes/stale-sweep-reconciled-task-exemption exists and its stated modified capability ('stale-bookkeeping-sweep-check ... SHALL skip reconciled tasks') directly matches this brief's topic (stale bookkeeping drift findings); it is also the top-ranked candidate (score 0.43).
