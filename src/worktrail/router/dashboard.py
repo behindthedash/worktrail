@@ -266,6 +266,26 @@ def find_spec_file(spec_dir: Path) -> Path | None:
 # fan-out that skips them every time); detect_stage handles them via pending_tail.
 _TAIL_KINDS = ("e2e", "cleanup")
 
+# A devkit task deliberately parked at `status: implemented` because the work it
+# shipped was later removed or superseded (its ACs can no longer be verified, so
+# the DoD gate refuses `completed`) is *reconciled* bookkeeping, not stale
+# bookkeeping. Without this, every stale-bookkeeping sweep re-flags it as
+# "confirm & close" forever (brief 20260901-181244, GGB TASK-CHG-003). Recognised
+# by an explicit frontmatter opt-out (`stale-sweep: exempt`) or, for
+# `status: implemented` only, a leading blockquote reconciliation marker.
+_RECONCILED_MARKER_RE = re.compile(
+    r"^>\s*\*\*(?:UI REMOVED|SUPERSEDED)\b", re.IGNORECASE | re.MULTILINE
+)
+
+
+def _is_reconciled_task(fm: dict[str, Any], body: str) -> bool:
+    if str(fm.get("stale-sweep", "")).strip().lower() == "exempt":
+        return True
+    return fm.get("status") == "implemented" and bool(
+        _RECONCILED_MARKER_RE.search(body)
+    )
+
+
 # Task statuses that count as "done" (terminal) for counting purposes.
 # Mirror of check_spec_sync.py's TERMINAL_STATUSES — a superseded task's target
 # was intentionally removed/made irrelevant and should not count as pending work.
@@ -313,9 +333,10 @@ def _load_tasks(spec_dir: Path) -> list[dict[str, Any]] | None:
     for d in _task_dirs(spec_dir):
         for f in _task_files(d):
             try:
-                fm = _parse_fm(f.read_text(errors="ignore"))
+                text = f.read_text(errors="ignore")
+                fm = _parse_fm(text)
             except OSError:
-                fm = {}
+                text, fm = "", {}
             rows.append(
                 {
                     "id": fm.get("id", f.stem),
@@ -323,6 +344,7 @@ def _load_tasks(spec_dir: Path) -> list[dict[str, Any]] | None:
                     "kind": fm.get("kind", "impl") or "impl",
                     "files": fm.get("files", []),
                     "deps": fm.get("dependencies", []),
+                    "reconciled": _is_reconciled_task(fm, text),
                 }
             )
     return rows or None
@@ -342,11 +364,16 @@ def _count_tasks(
         tasks = _load_tasks(spec_dir)
     if not tasks:
         return None
-    completed = sum(1 for t in tasks if t.get("status") in _TERMINAL_STATUSES)
+    # A reconciled task (see _is_reconciled_task) is settled bookkeeping: it is
+    # neither real pending work nor stale bookkeeping, so it counts as done.
+    completed = sum(
+        1 for t in tasks if t.get("status") in _TERMINAL_STATUSES or t.get("reconciled")
+    )
     pending_tail = sum(
         1
         for t in tasks
         if t.get("status") not in _TERMINAL_STATUSES
+        and not t.get("reconciled")
         and t.get("kind", "impl") in _TAIL_KINDS
     )
     pending = len(tasks) - completed
@@ -664,6 +691,7 @@ def _pending_impl_stale(
         t
         for t in tasks
         if t.get("status") != "completed"
+        and not t.get("reconciled")
         and t.get("kind", "impl") not in _TAIL_KINDS
         and t.get("files")
     ]
@@ -741,6 +769,7 @@ def _pending_tail_stale(
         t
         for t in tasks
         if t.get("status") != "completed"
+        and not t.get("reconciled")
         and t.get("kind", "impl") in _TAIL_KINDS
         and t.get("files")
     ]
