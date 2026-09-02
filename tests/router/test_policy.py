@@ -301,9 +301,7 @@ class TestValidation(unittest.TestCase):
         ):
             pol = load_policy(_repo_with(f"{key}: not-a-number\n"))
             self.assertEqual(pol[key], default, msg=key)
-            self.assertTrue(
-                any(key in w for w in pol["_meta"]["warnings"]), msg=key
-            )
+            self.assertTrue(any(key in w for w in pol["_meta"]["warnings"]), msg=key)
 
     def test_triage_keys_bool_falls_back_to_default_with_warning(self):
         for key, default in (
@@ -312,9 +310,7 @@ class TestValidation(unittest.TestCase):
         ):
             pol = load_policy(_repo_with(f"{key}: true\n"))
             self.assertEqual(pol[key], default, msg=key)
-            self.assertTrue(
-                any(key in w for w in pol["_meta"]["warnings"]), msg=key
-            )
+            self.assertTrue(any(key in w for w in pol["_meta"]["warnings"]), msg=key)
 
     def test_triage_keys_zero_falls_back_to_default_with_warning(self):
         for key, default in (
@@ -323,9 +319,7 @@ class TestValidation(unittest.TestCase):
         ):
             pol = load_policy(_repo_with(f"{key}: 0\n"))
             self.assertEqual(pol[key], default, msg=key)
-            self.assertTrue(
-                any(key in w for w in pol["_meta"]["warnings"]), msg=key
-            )
+            self.assertTrue(any(key in w for w in pol["_meta"]["warnings"]), msg=key)
 
 
 class TestAutomergeEligibility(unittest.TestCase):
