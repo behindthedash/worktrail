@@ -13,6 +13,7 @@ triggers:
     - automerge_eligible
     - risk label
     - classify
+    - scope_review
 ---
 
 You are working on **worktrail's GO v2 front door**: loading repo policy, classifying free-text
@@ -43,6 +44,15 @@ agents or writes task files — that is `orchestrator/`'s job.
   (a route-A run cannot finish on an implementation-completion state without a recorded
   `decisions` entry first) and `pre_pr_gate.py`'s `scope_review_failures()`, unconditional on
   route, exactly once per run regardless of how many group PRs the orchestrator created.
+- **Scope-review entries are append-only; the gate judges only the latest entry per `--item`.**
+  `scope_review_failures()` collapses `status | item | detail` entries to the last one per item
+  before checking `blocked` / `out-of-scope`, so re-recording an item supersedes an earlier
+  mis-phrased or blocked entry (and a later `blocked` entry can equally regress a prior
+  `complete`). Malformed entries still fail regardless of position.
+- **An `out-of-scope` reason must begin with a prefix from `run_record.OUT_OF_SCOPE_REASON_PREFIXES`**
+  (`different purpose:` / `user approved:`). `cmd_scope_review` rejects any other reason at write
+  time with `SystemExit`, and `scope_review_failures()` re-checks the same tuple at gate time so a
+  hand-edited record is still caught. Extend the tuple, never the two call sites separately.
 - **`finish` best-effort-applies the `go:risk-*` PR label correction** (`pr_labels.
   ensure_pr_risk_label`) whenever the record carries a `pull_request` — a spawned headless agent's
   raw `gh pr create` is never reachable by the interactive Claude Code PreToolUse
@@ -60,11 +70,14 @@ agents or writes task files — that is `orchestrator/`'s job.
 
 ## Critical files
 - `router/policy.py` — `load_policy()`; the single source of truth for a repo's resolved GO policy
-- `router/run_record.py` — `finish()`'s ten-state enforcement and its two code-enforced gates
+- `router/run_record.py` — `finish()`'s ten-state enforcement and its two code-enforced gates;
+  `cmd_scope_review` write-time reason validation and `OUT_OF_SCOPE_REASON_PREFIXES`
+- `router/pre_pr_gate.py` — `scope_review_failures()`, the latest-entry-per-item scope gate
+  that `finish` calls
 - `router/pr_labels.py` — the one place that issues the `go:risk-*` REST label correction; both
   `drain.py` and sdd-workflow's Phase 8 call into it rather than reimplementing it
 - `router/dashboard.py` — pure file inspection (no git, network, or agents); spec lifecycle stage
   and next-action detection
 
 ---
-**Last Updated:** 2026-08-16
+**Last Updated:** 2026-09-02
