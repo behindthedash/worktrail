@@ -212,6 +212,58 @@ FILE_CONSUMERS = {
 KNOWN_FILES = set(FILE_CONSUMERS)
 
 
+def _phase_2_intake_gate_text() -> str:
+    """worktrail-go/SKILL.md's Phase 2 intake-brief triage gate, from the
+    `--evaluate-brief-triage` call through the `--apply-brief-triage` call and
+    its surrounding prose (up to the "Resolve the user's choice" line that
+    starts the next section)."""
+    text = (SKILLS_ROOT / "worktrail-go" / "SKILL.md").read_text()
+    start = text.index("--evaluate-brief-triage")
+    end = text.index("Resolve the user's choice", start)
+    return text[start:end]
+
+
+class TestPhase2IntakeGateNoConfirmationPrompt(unittest.TestCase):
+    """Design D10: the Phase 2 intake-brief triage gate evaluates and applies
+    a verdict with no human confirmation step in between, always passing
+    `--confirm`, and names the `work-directly` -> Phase 3 continuation.
+    (autonomous-intake-brief-convergence 5.2)"""
+
+    def test_no_ask_user_question_between_evaluate_and_apply(self):
+        gate_text = _phase_2_intake_gate_text()
+        self.assertNotIn(
+            "AskUserQuestion",
+            gate_text,
+            "Phase 2 intake-brief triage gate still calls AskUserQuestion "
+            "between --evaluate-brief-triage and --apply-brief-triage -- "
+            "D10 removed the confirmation prompt",
+        )
+
+    def test_apply_call_passes_confirm(self):
+        gate_text = _phase_2_intake_gate_text()
+        apply_start = gate_text.index("--apply-brief-triage")
+        apply_call = gate_text[apply_start : apply_start + 200]
+        self.assertIn(
+            "--confirm",
+            apply_call,
+            "Phase 2 intake-brief triage gate's --apply-brief-triage call no "
+            "longer passes --confirm",
+        )
+
+    def test_names_work_directly_continues_to_phase_3_claim(self):
+        gate_text = _phase_2_intake_gate_text()
+        self.assertIn("work-directly", gate_text)
+        self.assertIn("Phase 3", gate_text)
+        self.assertIn("claim", gate_text)
+        self.assertIn(
+            "executed",
+            gate_text,
+            "Phase 2 intake-brief triage gate no longer names the "
+            "status: executed condition that continues a work-directly "
+            "verdict into Phase 3's claim action",
+        )
+
+
 class TestSkillProseEnforcementCoverage(unittest.TestCase):
     def test_every_label_correction_mention_has_a_registered_consumer(self):
         found = extract_label_correction_mentions()

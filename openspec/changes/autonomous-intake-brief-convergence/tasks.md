@@ -200,7 +200,7 @@
 
 ## 5. worktrail-go skill prose (independent lane)
 
-- [ ] 5.1 In `skills/worktrail-go/SKILL.md`: rewrite the Phase 2 "Intake-brief triage gate"
+- [x] 5.1 In `skills/worktrail-go/SKILL.md`: rewrite the Phase 2 "Intake-brief triage gate"
       per design D10 — step 1 adds `--triage-repos-root "${REPOS_ROOT:-$HOME/projects}"` and
       notes that a null-repo brief is inferred and written back; delete step 2's
       `AskUserQuestion` confirmation; step 3 always passes `--confirm`, reports the
@@ -212,7 +212,7 @@
       "evaluate → apply → report; work-directly continues into claim + dispatch".
       (Requirement: Interactive pickup of an intake brief triages it)
       files: skills/worktrail-go/SKILL.md
-- [ ] 5.2 In `tests/router/test_skill_prose_enforcement_coverage.py` (or the existing
+- [x] 5.2 In `tests/router/test_skill_prose_enforcement_coverage.py` (or the existing
       SKILL.md assertion test it delegates to), add an assertion that the Phase 2 intake
       gate contains no `AskUserQuestion` between `--evaluate-brief-triage` and
       `--apply-brief-triage`, that the apply block passes `--confirm`, and that it names the
