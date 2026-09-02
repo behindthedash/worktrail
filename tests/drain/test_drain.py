@@ -63,6 +63,7 @@ from worktrail.drain.drain import (
 from worktrail.drain.summary_contract import (
     load_nightly_drain_summary_contract,
     stop_semantics,
+    summary_block_contract,
 )
 from worktrail.orchestrator import agent_capacity
 from worktrail.router import run_record as run_record_mod
@@ -4033,6 +4034,61 @@ def test_run_intake_triage_prepass_evaluates_then_applies(tmp_path, monkeypatch)
     assert Path(result["out_dir"]).is_dir()
 
 
+def test_run_intake_triage_prepass_populates_summary_stats(tmp_path, monkeypatch):
+    """A real (non-dry-run) pass returns the `intake_triage` summary block's
+    contract fields (task 4.2), read back from evaluate's own verdict.json
+    before apply consumes it -- so `apply --confirm` never runs on anything
+    other than the exact verdicts this pass reports."""
+    verdict_entries = [
+        {
+            "brief_id": "b1",
+            "verdict": "keep",
+            "duplicate_of": None,
+            "evidence": "still relevant",
+            "repo": "repo-a",
+        },
+        {
+            "brief_id": "b2",
+            "verdict": "stale-close",
+            "duplicate_of": None,
+            "evidence": "closed upstream",
+            "repo": "repo-a",
+        },
+        {
+            "brief_id": "b3",
+            "verdict": "propose-change",
+            "duplicate_of": None,
+            "evidence": "needs a new change",
+            "repo": "repo-a",
+            "proposed_change_name": "add-thing",
+            "held_by_wip_cap": True,
+        },
+    ]
+
+    def fake_main(argv):
+        if argv[0] == "evaluate":
+            out_dir = Path(argv[argv.index("--out-dir") + 1])
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "verdict.json").write_text(
+                json.dumps(verdict_entries), encoding="utf-8"
+            )
+        return 0
+
+    monkeypatch.setattr(drain.queue_triage_mod, "main", fake_main)
+
+    result = run_intake_triage_prepass(tmp_path / "wq", log=lambda _l: None)
+
+    assert result["briefs_evaluated"] == 3
+    assert result["verdict_counts"] == {
+        "keep": 1,
+        "stale-close": 1,
+        "propose-change": 1,
+    }
+    # propose-change is held by the WIP cap, so it does not count as a PR opened.
+    assert result["pull_requests_opened"] == 0
+    assert result["briefs_held_by_cap"] == 1
+
+
 def test_run_intake_triage_prepass_scopes_queue_dir_env_for_apply(
     tmp_path, monkeypatch
 ):
@@ -4126,7 +4182,7 @@ def test_drain_intake_triage_flag_off_never_runs(tmp_path, monkeypatch):
     )
 
     assert calls == []
-    assert summary["intake_triage"] == {}
+    assert "intake_triage" not in summary
 
 
 def test_drain_intake_triage_flag_on_runs_prepass(tmp_path, monkeypatch):
@@ -4164,6 +4220,25 @@ def test_drain_intake_triage_failure_never_aborts(tmp_path, monkeypatch):
     assert any("intake-triage error" in line for line in logs)
 
 
+def test_summary_block_contract_documents_intake_triage_and_seed_backlog():
+    """The `intake_triage`/`seed_backlog` block contract (task 4.2) documents
+    the exact fields `drain()` populates them with."""
+    assert summary_block_contract("intake_triage") == {
+        "flag": "--intake-triage",
+        "fields": (
+            "briefs_evaluated",
+            "verdict_counts",
+            "pull_requests_opened",
+            "briefs_held_by_cap",
+        ),
+    }
+    assert summary_block_contract("seed_backlog") == {
+        "flag": "--seed-backlog",
+        "fields": ("seeds_captured",),
+    }
+    assert summary_block_contract("no_such_block") is None
+
+
 def test_drain_seed_backlog_pass_flag_off_never_runs(tmp_path, monkeypatch):
     repos_root = tmp_path / "projects"
     (repos_root / "repo-a" / ".git").mkdir(parents=True)
@@ -4183,7 +4258,7 @@ def test_drain_seed_backlog_pass_flag_off_never_runs(tmp_path, monkeypatch):
     )
 
     assert seed_calls == []
-    assert summary["seed_backlog_pass"] == {}
+    assert "seed_backlog" not in summary
 
 
 def test_drain_seed_backlog_pass_flag_on_runs_seeder(tmp_path, monkeypatch):
@@ -4201,8 +4276,9 @@ def test_drain_seed_backlog_pass_flag_on_runs_seeder(tmp_path, monkeypatch):
         config, spawner=lambda c, t: SpawnOutcome(0), log=lambda _l: None
     )
 
-    seeded = summary["seed_backlog_pass"]["seeded"]
+    seeded = summary["seed_backlog"]["seeded"]
     assert [s["seed_key"] for s in seeded] == ["repo-a:spec:010-alpha"]
+    assert summary["seed_backlog"]["seeds_captured"] == 1
     assert summary["seeded_backlog"] == {}
 
 
@@ -4223,7 +4299,7 @@ def test_drain_seed_backlog_pass_failure_never_aborts(tmp_path, monkeypatch):
     summary = drain.drain(config, spawner=lambda c, t: SpawnOutcome(0), log=logs.append)
 
     assert summary["stopped"].startswith("queue_empty")
-    assert summary["seed_backlog_pass"] == {"error": "queue dir unwritable"}
+    assert summary["seed_backlog"] == {"error": "queue dir unwritable"}
     assert any("seed-backlog error" in line for line in logs)
 
 
@@ -4256,9 +4332,13 @@ def test_drain_seed_backlog_pass_flag_on_with_default_seed_backlog_shares_one_ca
     )
 
     assert len(seed_calls) == 1
-    seeded = summary["seed_backlog_pass"]["seeded"]
+    seeded = summary["seed_backlog"]["seeded"]
     assert [s["seed_key"] for s in seeded] == ["repo-a:spec:010-alpha"]
-    assert summary["seeded_backlog"] == summary["seed_backlog_pass"]
+    assert summary["seed_backlog"]["seeds_captured"] == 1
+    # `seeded_backlog` is the raw shared seeder result (no seeds_captured
+    # field of its own -- that's `seed_backlog`'s addition), so compare on
+    # the shared "seeded" list only, not dict equality.
+    assert summary["seeded_backlog"]["seeded"] == summary["seed_backlog"]["seeded"]
 
 
 def test_drain_intake_triage_dry_run_previews_and_populates_summary(
@@ -4303,9 +4383,10 @@ def test_drain_seed_backlog_pass_dry_run_previews_and_populates_summary(
         config, spawner=lambda c, t: SpawnOutcome(0), log=lambda _l: None
     )
 
-    seeded = summary["seed_backlog_pass"]["seeded"]
+    seeded = summary["seed_backlog"]["seeded"]
     assert [s["seed_key"] for s in seeded] == ["repo-a:spec:010-alpha"]
     assert seeded[0]["brief_id"] is None
+    assert summary["seed_backlog"]["seeds_captured"] == 1
     assert not (queue_base / "queue").is_dir()
 
 
