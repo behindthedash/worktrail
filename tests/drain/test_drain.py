@@ -4028,10 +4028,35 @@ def test_run_intake_triage_prepass_evaluates_then_applies(tmp_path, monkeypatch)
     result = run_intake_triage_prepass(tmp_path / "wq", log=lambda _l: None)
 
     assert calls[0][0] == "evaluate"
-    assert "--queue-dir" in calls[0]
     assert calls[1][0] == "apply"
     assert "--confirm" in calls[1]
     assert Path(result["out_dir"]).is_dir()
+
+
+def test_run_intake_triage_prepass_scopes_queue_dir_env_for_apply(
+    tmp_path, monkeypatch
+):
+    """`apply` has no `--queue-dir` of its own -- it must see the override via
+    `WORK_QUEUE_DIR`, restored afterwards (task 4.1 review, major #1)."""
+    monkeypatch.delenv("WORK_QUEUE_DIR", raising=False)
+    queue_dir = tmp_path / "wq"
+    seen_during_apply = []
+
+    def fake_main(argv):
+        if argv[0] == "evaluate":
+            out_dir = Path(argv[argv.index("--out-dir") + 1])
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "verdict.json").write_text("[]", encoding="utf-8")
+        else:
+            seen_during_apply.append(os.environ.get("WORK_QUEUE_DIR"))
+        return 0
+
+    monkeypatch.setattr(drain.queue_triage_mod, "main", fake_main)
+
+    run_intake_triage_prepass(queue_dir, log=lambda _l: None)
+
+    assert seen_during_apply == [str(queue_dir)]
+    assert "WORK_QUEUE_DIR" not in os.environ
 
 
 def test_run_intake_triage_prepass_raises_on_evaluate_failure(tmp_path):
@@ -4061,25 +4086,29 @@ def test_run_intake_triage_prepass_raises_on_apply_failure(tmp_path):
         run_intake_triage_prepass(tmp_path / "wq", log=lambda _l: None)
 
 
-def test_run_intake_triage_prepass_dry_run_previews_without_confirm(tmp_path):
-    calls = []
+def test_run_intake_triage_prepass_dry_run_spawns_no_agent(tmp_path, monkeypatch):
+    """Under `--dry-run`, no evaluator agent may be spawned -- `evaluate`'s
+    real implementation fans out one cold headless agent per repo group, which
+    would violate --dry-run's own "launch nothing" contract (task 4.1 review,
+    critical #1). The pass falls back to an inventory-only preview instead."""
 
-    def fake_main(argv):
-        calls.append(argv)
-        if argv[0] == "evaluate":
-            out_dir = Path(argv[argv.index("--out-dir") + 1])
-            out_dir.mkdir(parents=True, exist_ok=True)
-            (out_dir / "verdict.json").write_text("[]", encoding="utf-8")
-        return 0
-
-    with mock.patch.object(drain.queue_triage_mod, "main", fake_main):
-        result = run_intake_triage_prepass(
-            tmp_path / "wq", log=lambda _l: None, dry_run=True
+    def fail_main(argv):
+        raise AssertionError(
+            f"queue_triage_mod.main() must not run under dry_run: {argv}"
         )
 
-    assert calls[1][0] == "apply"
-    assert "--confirm" not in calls[1]
-    assert result["dry_run"] is True
+    monkeypatch.setattr(drain.queue_triage_mod, "main", fail_main)
+    monkeypatch.setattr(
+        drain.queue_triage_mod,
+        "inventory",
+        lambda within_days: ({"repo-a": [Path("brief.md")]}, [Path("skipped.md")]),
+    )
+
+    result = run_intake_triage_prepass(
+        tmp_path / "wq", log=lambda _l: None, dry_run=True
+    )
+
+    assert result == {"dry_run": True, "groups": 1, "briefs_skipped": 1}
 
 
 def test_drain_intake_triage_flag_off_never_runs(tmp_path, monkeypatch):

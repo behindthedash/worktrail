@@ -2272,34 +2272,60 @@ def run_intake_triage_prepass(
     every queued intake brief, then `apply --confirm` the resulting verdicts,
     closing the intake loop before drain's own claim loop ever runs.
 
-    Under `dry_run`, `apply` is invoked without `--confirm` -- its documented
-    preview path (task 3.5) -- so the pass still populates the summary block
-    without mutating the queue.
+    Under `dry_run`, no evaluator agent is spawned at all -- `evaluate`
+    fans out one cold headless agent per repo group
+    (`queue_triage.evaluate_group()`), which would violate `--dry-run`'s own
+    "report the first decision + command, launch nothing" contract. Instead
+    this reports an inventory-only preview (`queue_triage.inventory()`, the
+    same read-only scan `evaluate` itself starts from) so the summary block
+    is still populated without mutating anything or spending agent budget.
+
+    `queue_dir`, when set, is exported as `WORK_QUEUE_DIR` for the duration
+    of this pass (restored in a `finally`) so `apply` -- which has no
+    `--queue-dir` of its own and resolves the queue from the environment via
+    `work_queue.claim()`/`done()` -- acts on the same queue `evaluate` just
+    inventoried, rather than silently falling back to the process's real
+    `$WORK_QUEUE_DIR`.
 
     Raises on any evaluate/apply failure -- the caller (`drain()`) is
     responsible for catching it, logging it, and continuing, exactly like the
     seed-backlog pre-pass below: an intake-triage failure must never abort an
     otherwise-healthy drain run.
     """
-    out_dir = _intake_triage_out_dir()
-    log(f"intake-triage: evaluating queued briefs (out-dir={out_dir})")
-    evaluate_argv = ["evaluate", "--out-dir", str(out_dir)]
+    previous_queue_dir = os.environ.get("WORK_QUEUE_DIR")
     if queue_dir is not None:
-        evaluate_argv += ["--queue-dir", str(queue_dir)]
-    exit_code = queue_triage_mod.main(evaluate_argv)
-    if exit_code != 0:
-        raise RuntimeError(f"queue_triage evaluate exited {exit_code}")
-    verdict_file = out_dir / "verdict.json"
-    apply_argv = ["apply", "--verdict-file", str(verdict_file)]
-    if not dry_run:
-        apply_argv.append("--confirm")
-    exit_code = queue_triage_mod.main(apply_argv)
-    if exit_code != 0:
-        raise RuntimeError(f"queue_triage apply exited {exit_code}")
-    log(
-        f"intake-triage: {'previewed' if dry_run else 'applied'} verdicts from {verdict_file}"
-    )
-    return {"out_dir": str(out_dir), "dry_run": dry_run}
+        os.environ["WORK_QUEUE_DIR"] = str(queue_dir)
+    try:
+        if dry_run:
+            groups, skipped = queue_triage_mod.inventory(within_days=25)
+            log(
+                f"intake-triage: dry-run preview -- {len(groups)} repo group(s), "
+                f"{len(skipped)} brief(s) already triaged/skipped, no agent spawned"
+            )
+            return {
+                "dry_run": True,
+                "groups": len(groups),
+                "briefs_skipped": len(skipped),
+            }
+        out_dir = _intake_triage_out_dir()
+        log(f"intake-triage: evaluating queued briefs (out-dir={out_dir})")
+        exit_code = queue_triage_mod.main(["evaluate", "--out-dir", str(out_dir)])
+        if exit_code != 0:
+            raise RuntimeError(f"queue_triage evaluate exited {exit_code}")
+        verdict_file = out_dir / "verdict.json"
+        exit_code = queue_triage_mod.main(
+            ["apply", "--verdict-file", str(verdict_file), "--confirm"]
+        )
+        if exit_code != 0:
+            raise RuntimeError(f"queue_triage apply exited {exit_code}")
+        log(f"intake-triage: applied verdicts from {verdict_file}")
+        return {"out_dir": str(out_dir), "dry_run": False}
+    finally:
+        if queue_dir is not None:
+            if previous_queue_dir is None:
+                os.environ.pop("WORK_QUEUE_DIR", None)
+            else:
+                os.environ["WORK_QUEUE_DIR"] = previous_queue_dir
 
 
 def drain(
@@ -2354,10 +2380,12 @@ def drain(
             # triage turns into an execution brief (work-directly) or a fold/
             # propose PR can drain in this same pass. Best-effort, same
             # never-abort discipline as the seed-backlog pass below. Runs
-            # under --dry-run too (as a preview, apply without --confirm) so
+            # under --dry-run too, but `run_intake_triage_prepass()` itself
+            # switches to an inventory-only preview there -- no evaluator
+            # agent spawned, no queue mutation -- so
             # `--intake-triage --seed-backlog --dry-run --json` still
-            # populates this summary block without mutating anything (task
-            # intake-to-spec-triage 5.2).
+            # populates this summary block while matching --dry-run's own
+            # "launch nothing" contract (task intake-to-spec-triage 5.2).
             try:
                 intake_triage_result = run_intake_triage_prepass(
                     config.queue_dir, log, dry_run=config.dry_run
