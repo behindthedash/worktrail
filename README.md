@@ -22,15 +22,26 @@ authenticating or launching model work.
 
 `worktrail-drain` runs the work queue unattended: each iteration spawns one fresh-context
 headless one-shot (Claude, Codex, or OpenCode) that claims a queued brief, does the work, and
-opens a PR. Around that loop sit three subsystems that keep it fed, unblocked, and honest:
+opens a PR. Around that loop sit several subsystems that keep it fed, unblocked, and honest:
 
-**Backlog seeding** (`worktrail-seed-backlog`, run automatically pre-loop by every drain pass).
-Planning backlog that no brief points at is converted into queue briefs mechanically: a spec in
-the `needs-tasks` dashboard stage becomes a planning-only brief to generate its task DAG, and an
-epic under `docs/specs/epics/` with more `### Feature` headings than specs citing its id becomes
-a brief to spec the next feature. Seeding is capped per sweep, deterministic, and deduplicated
-via a `seeded-from:` frontmatter key — a fruitless completed brief never loops, while real
-progress (a new citing spec) re-arms the epic's next feature.
+**Intake triage pre-pass** (controlled by `--intake-triage` flag, default off). Before the main
+drain loop, when enabled, intake briefs are evaluated and triaged: each unexamined brief is
+scored against active changes in its target repo (candidate ranking), the evaluator proposes a
+verdict (fold-into-change, propose-change, work-directly, needs-decision, or keep), and
+approved verdicts are applied — opening PRs for folds and proposes, converting work-directly
+briefs into seeded execution briefs, or filing decision records. This closes the intake loop
+before drain's own claim loop runs, converting the highest-confidence intake work into
+execution briefs ready for the main loop. The pre-pass captures results into the drain summary
+(`briefs_evaluated`, verdict counts, `pull_requests_opened`, `briefs_held_by_cap`).
+
+**Backlog seeding** (controlled by `--seed-backlog` flag; default on). Planning backlog that no
+brief points at is converted into queue briefs mechanically: a spec in the `needs-tasks`
+dashboard stage becomes a planning-only brief to generate its task DAG, and an epic under
+`docs/specs/epics/` with more `### Feature` headings than specs citing its id becomes a brief
+to spec the next feature. Seeding is capped per sweep, deterministic, and deduplicated via a
+`seeded-from:` frontmatter key — a fruitless completed brief never loops, while real progress
+(a new citing spec) re-arms the epic's next feature. Seed results are captured into the drain
+summary (`seeds_captured`).
 
 **The human decision queue** (`worktrail-decision`). When an unattended run hits a genuine
 product decision — the one thing it must never guess — it files a structured record (question,
@@ -56,7 +67,10 @@ spawn path uses — provider/pool preference is target file order, not a separat
 agent or fallback chain. An explicit CLI flag still wins entirely over the resolved
 selection, so explicit automation is never affected while config-less manual drains honor
 the operator's declared target order. The `drain:` block itself now holds only
-machine-wide non-selection defaults (`max_workers`).
+machine-wide non-selection defaults (`max_workers`). Per-repo policy can set `max_active_changes`
+to cap the number of simultaneously active OpenSpec changes in that repo; when a repo hits this
+cap, triage verdicts of `propose-change` are downgraded to `keep` with a note listing the cap,
+the current active count, and top fold-candidate recommendations.
 
 The drain also sweeps for resumable states before and after each pass (budget-exhausted
 quarantines, verify-pending and sync-pending specs, stale bookkeeping), so interrupted pipeline
