@@ -134,7 +134,7 @@
 
 ## 7. This repository's policy
 
-- [ ] 7.1 In `.worktrail/policy.yaml` set `pre_commit_cmd: "ruff check . --fix && ruff format ."`,
+- [x] 7.1 In `.worktrail/policy.yaml` set `pre_commit_cmd: "ruff check . --fix && ruff format ."`,
       append `&& ruff check . && ruff format --check .` to `integrate_smoke_cmd`, and set
       `review_skip_max_diff_lines: 40`, each with a one-line comment naming this change; in
       `pyproject.toml` add `ruff` to the `dev` extra so `dev-install.sh` provides the binary the
