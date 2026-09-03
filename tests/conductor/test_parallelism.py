@@ -1,4 +1,5 @@
-"""Tests for the advisory DAG-shape / wall-clock signal (parallelism.py).
+"""Tests for the DAG-shape signal (parallelism.py): profile()/estimate_minutes()
+stay advisory, shape_problems() is design D2's compile-time enforcement.
 
 The incident this guards against (docstring of the module): a correct plan
 whose same-file repair serialised 19 tasks, with no signal until hours in.
@@ -24,15 +25,7 @@ def _chain(n, file="src/hot.py"):
 def test_a_fully_serialised_chain_is_reported_as_width_one():
     prof = parallelism.profile(_chain(19))
     assert (prof.tasks, prof.critical_path, prof.width) == (19, 19, 1)
-    assert prof.serialized
     assert prof.hot_files == ("src/hot.py",)
-
-
-def test_a_short_chain_is_serial_but_not_worth_a_warning():
-    prof = parallelism.profile(_chain(parallelism.SERIAL_WARN_MIN_TASKS - 1))
-    assert prof.width == 1
-    assert not prof.serialized
-    assert parallelism.format_warning(prof, 100.0, "x") is None
 
 
 def test_a_fan_out_reports_its_width_and_its_longest_chain():
@@ -45,25 +38,7 @@ def test_a_fan_out_reports_its_width_and_its_longest_chain():
     ]
     prof = parallelism.profile(tasks)
     assert (prof.tasks, prof.critical_path, prof.width) == (5, 3, 3)
-    assert not prof.serialized
     assert prof.hot_files == ()
-
-
-def test_a_nearly_serial_dag_with_one_stray_parallel_pair_still_warns():
-    """The incident change's real shape: 16 tasks, critical path 13, width 2."""
-    tasks = _chain(13)
-    tasks += [_task(f"s{i}", deps=["t0"], files=[f"s{i}.py"]) for i in range(3)]
-    prof = parallelism.profile(tasks)
-    assert (prof.tasks, prof.critical_path) == (16, 13)
-    assert prof.width > 1
-    assert prof.serialized
-
-
-def test_a_wide_dag_whose_chain_is_under_the_fraction_does_not_warn():
-    tasks = _chain(6) + [_task(f"s{i}", files=[f"s{i}.py"]) for i in range(6)]
-    prof = parallelism.profile(tasks)
-    assert (prof.tasks, prof.critical_path) == (12, 6)
-    assert not prof.serialized
 
 
 def test_tail_tasks_are_excluded_like_the_collision_check_does():
@@ -101,11 +76,117 @@ def test_the_estimate_falls_back_to_the_default_and_says_so(tmp_path):
     assert "default" in basis
 
 
-def test_the_warning_names_the_hot_file_and_the_projected_hours():
-    prof = parallelism.profile(_chain(19))
-    line = parallelism.format_warning(prof, 19 * 50.0, "50 min/task, test")
-    assert line.startswith(
-        "WARN: task DAG is effectively serial (19 tasks, critical path 19, width 1)"
-    )
-    assert "~15.8 h" in line
-    assert "src/hot.py" in line and "consolidate" in line
+# --------------------------------------------------------------------------- #
+# shape_problems() -- design D2's three rules
+# --------------------------------------------------------------------------- #
+def test_a_new_module_with_no_test_counterpart_passes(tmp_path):
+    tasks = [
+        _task("a", files=["src/a.py"]),
+        _task("b", files=["src/b.py"]),
+    ]
+    assert parallelism.shape_problems(tasks, tmp_path, {}) == []
+
+
+def test_empty_fanout_passes(tmp_path):
+    tasks = [_task("v", files=["src/hot.py"], kind="e2e")]
+    assert parallelism.shape_problems(tasks, tmp_path, {}) == []
+
+
+def test_serial_rule_fires_naming_the_longest_chain(tmp_path):
+    tasks = [
+        _task(f"t{i}", deps=[f"t{i - 1}"] if i else [], files=[f"f{i}.py"])
+        for i in range(5)
+    ]
+    problems = parallelism.shape_problems(tasks, tmp_path, {})
+    assert len(problems) == 1
+    assert "serial" in problems[0]
+    assert "t0 -> t1 -> t2 -> t3 -> t4" in problems[0]
+
+
+def test_serial_rule_respects_the_policy_threshold(tmp_path):
+    tasks = [
+        _task(f"t{i}", deps=[f"t{i - 1}"] if i else [], files=[f"f{i}.py"])
+        for i in range(5)
+    ]
+    policy = {"compile_max_critical_path_over_width": 10}
+    assert parallelism.shape_problems(tasks, tmp_path, policy) == []
+
+
+def test_serial_rule_default_threshold_is_two(tmp_path):
+    # critical path 3, width 1: 3 > max(1, 2) fires with the default policy.
+    tasks = [
+        _task(f"t{i}", deps=[f"t{i - 1}"] if i else [], files=[f"f{i}.py"])
+        for i in range(3)
+    ]
+    problems = parallelism.shape_problems(tasks, tmp_path, {})
+    assert any("serial" in p for p in problems)
+
+
+def test_same_file_chain_rule_fires_naming_ids_and_file(tmp_path):
+    tasks = _chain(3, file="src/hot.py")
+    # Suppress the serial rule so only the same-file rule is under test.
+    policy = {"compile_max_critical_path_over_width": 100}
+    problems = parallelism.shape_problems(tasks, tmp_path, policy)
+    assert len(problems) == 1
+    assert "same-file chain" in problems[0]
+    assert "t0 -> t1 -> t2" in problems[0]
+    assert "src/hot.py" in problems[0]
+
+
+def test_same_file_chain_rule_respects_the_policy_threshold(tmp_path):
+    tasks = _chain(3, file="src/hot.py")
+    policy = {
+        "compile_max_critical_path_over_width": 100,
+        "compile_max_same_file_chain": 5,
+    }
+    assert parallelism.shape_problems(tasks, tmp_path, policy) == []
+
+
+def test_same_file_chain_rule_default_threshold_is_two(tmp_path):
+    tasks = _chain(3, file="src/hot.py")
+    problems = parallelism.shape_problems(tasks, tmp_path, {})
+    assert any("same-file chain" in p for p in problems)
+
+
+def test_missing_test_scope_rule_names_the_existing_test_file(tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_foo.py").write_text("")
+    tasks = [_task("a", files=["src/foo.py"])]
+    problems = parallelism.shape_problems(tasks, tmp_path, {})
+    assert len(problems) == 1
+    assert "a" in problems[0]
+    assert "src/foo.py" in problems[0]
+    assert "test_foo.py" in problems[0]
+
+
+def test_missing_test_scope_rule_exempt_when_no_test_counterpart_exists(tmp_path):
+    tasks = [_task("a", files=["src/bar.py"])]
+    assert parallelism.shape_problems(tasks, tmp_path, {}) == []
+
+
+def test_missing_test_scope_rule_exempt_when_the_task_co_scopes_its_test(tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_foo.py").write_text("")
+    tasks = [_task("a", files=["src/foo.py", "tests/test_foo.py"])]
+    assert parallelism.shape_problems(tasks, tmp_path, {}) == []
+
+
+def test_missing_test_scope_rule_exempt_for_non_src_paths_like_docs(tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_guide.py").write_text("")
+    tasks = [_task("a", files=["docs/guide.md"])]
+    assert parallelism.shape_problems(tasks, tmp_path, {}) == []
+
+
+def test_missing_test_scope_rule_exempt_for_docs_kind_task(tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_foo.py").write_text("")
+    tasks = [_task("a", files=["src/foo.py"], kind="docs")]
+    assert parallelism.shape_problems(tasks, tmp_path, {}) == []
+
+
+def test_missing_test_scope_rule_exempt_for_tail_kinds(tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_foo.py").write_text("")
+    tasks = [_task("a", files=["src/foo.py"], kind="e2e")]
+    assert parallelism.shape_problems(tasks, tmp_path, {}) == []

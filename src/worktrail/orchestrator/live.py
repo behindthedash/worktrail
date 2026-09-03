@@ -440,6 +440,10 @@ def apply_run_plan(
                 f"{_ts()} run plan: cache unreadable ({exc}); using the spec's own deps"
             )
             return tasks
+        except conductor_compile.PlanShapeError as exc:
+            raise RuntimeError(
+                "run plan rejected (plan shape): " + "; ".join(exc.problems)
+            ) from exc
 
     merged, notes = _runplan.apply_to_tasks(tasks, plan)
     for n in notes:
@@ -451,20 +455,12 @@ def apply_run_plan(
 
 
 def _parallelism_lines(repo: Path, merged: list[dict]) -> list[str]:
-    """Advisory DAG-shape lines for a merged task list: the parallelism
-    summary always, plus `parallelism.format_warning`'s serialised-chain
-    warning when it applies (see that module's docstring for the incident)."""
+    """Advisory DAG-shape line for a merged task list: the parallelism
+    summary. Serial and same-file-chain plans are rejected at compile by
+    `conductor.parallelism.shape_problems` (D2), not warned about here."""
     from ..conductor import parallelism
 
-    prof = parallelism.profile(merged)
-    minutes, basis = parallelism.estimate_minutes(
-        prof, parallelism.journals_beside(repo)
-    )
-    lines = [parallelism.summary_line(prof)]
-    warning = parallelism.format_warning(prof, minutes, basis)
-    if warning:
-        lines.append(warning)
-    return lines
+    return [parallelism.summary_line(parallelism.profile(merged))]
 
 
 def _pinned_plan_fingerprint(repo: Path, spec_rel: str) -> str | None:
@@ -1198,16 +1194,23 @@ def precheck(repo: Path, spec_rel: str) -> int:
     spec_id, tasks = taskformats.load_spec(str(repo / spec_rel))
     warn_count = 0
 
-    # DAG-shape check against the plan `full-real` would actually schedule
-    # (cached/seeded only -- precheck never spends a model call). A fully
-    # serialised chain is a WARN so the operator can re-scope tasks.md before
-    # launch instead of discovering the projected wall-clock hours in.
-    for line in _parallelism_lines(
-        repo, _planned_tasks_without_llm(repo, spec_rel, spec_id, tasks)
-    ):
-        if line.startswith("WARN:"):
-            print(line)
+    # Plan-shape check against the plan `full-real` would actually schedule
+    # (cached/seeded only -- precheck never spends a model call). A plan
+    # `compile_run_plan` rejects (D2: serial, same-file chain, missing test
+    # scope) is a WARN so the operator re-scopes tasks.md before launch.
+    from ..conductor import compile as conductor_compile
+
+    try:
+        planned = _planned_tasks_without_llm(repo, spec_rel, spec_id, tasks)
+    except conductor_compile.PlanShapeError as exc:
+        for problem in exc.problems:
+            print(f"WARN: plan shape: {problem}")
             warn_count += 1
+    else:
+        for line in _parallelism_lines(repo, planned):
+            if line.startswith("WARN:"):
+                print(line)
+                warn_count += 1
 
     validate_dependencies = getattr(
         taskformats.task_source_for(repo / spec_rel), "validate_dependencies", None
@@ -1337,7 +1340,7 @@ def _planned_tasks_without_llm(
 ) -> list[dict]:
     """Tasks merged with the cached or seeded RunPlan, never a fresh compile.
     Falls back to the raw tasks when no plan can be read, so precheck stays a
-    read-only, no-spawn step."""
+    read-only, no-spawn step. A `PlanShapeError` propagates to the caller."""
     from ..conductor import compile as conductor_compile
     from ..conductor import runplan as _runplan
 

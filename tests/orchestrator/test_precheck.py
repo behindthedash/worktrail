@@ -1099,7 +1099,7 @@ class TestPrecheckSerialisedDag(unittest.TestCase):
             )
         return tasks
 
-    def test_a_long_serial_chain_warns_with_a_wall_clock_projection(self):
+    def test_a_long_serial_chain_is_rejected_by_the_plan_shape_gate(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_root = Path(tmp)
             _make_spec_dir(tmp_root, self._chain(6))
@@ -1109,15 +1109,14 @@ class TestPrecheckSerialisedDag(unittest.TestCase):
             output = captured.getvalue()
             self.assertEqual(result, 1)
             self.assertIn(
-                "WARN: task DAG is effectively serial (6 tasks, critical path 6, width 1)",
+                "WARN: plan shape: serial: critical path 6 exceeds max(width 1, 2)",
                 output,
             )
-            self.assertIn("projected wall-clock", output)
 
     def test_a_short_chain_stays_silent(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_root = Path(tmp)
-            _make_spec_dir(tmp_root, self._chain(3))
+            _make_spec_dir(tmp_root, self._chain(2))
             captured = io.StringIO()
             with mock.patch("sys.stdout", captured):
                 result = live.precheck(tmp_root, "specs/001-test")

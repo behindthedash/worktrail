@@ -14,13 +14,19 @@ which is exactly why no existing check fired.
 `profile()` reduces a merged task list to two numbers a human can act on
 before launching: the critical-path length (the longest dependency chain,
 which bounds wall-clock no matter how many workers run) and the parallel
-width (how many tasks could ever run at once). `format_warning()` turns a
-fully-serialised plan into one actionable line recommending consolidation of
-the tasks that share the hot file. `estimate_minutes()` multiplies the chain
-length by the historical mean per-task cost read from prior run journals, so
-the warning carries a wall-clock number rather than an abstract shape.
+width (how many tasks could ever run at once). `estimate_minutes()`
+multiplies the chain length by the historical mean per-task cost read from
+prior run journals, so a plan's wall-clock projection carries a real number
+rather than an abstract shape.
 
-This is advisory: it never changes a plan and never fails a compile.
+`shape_problems()` is the enforcement half: design D2's three rules (a
+critical path too long relative to its own width, a same-file dependency
+chain past a threshold, and an implementation task that skipped a test
+counterpart that already exists on disk) returned as human-readable problem
+lines. Unlike `profile()`/`estimate_minutes()`, this is not advisory --
+`compile.py` raises `PlanShapeError` when it returns anything, and a rejected
+plan writes no marker.
+
 """
 
 from __future__ import annotations
@@ -33,16 +39,11 @@ from typing import Any
 
 from worktrail.orchestrator.coordinator import TAIL_KINDS, compute_levels
 
-# A serial chain this long is where one-at-a-time execution stops being a
-# footnote and starts being the whole run's wall-clock. Shorter chains are
-# normal (a 3-task change usually *is* sequential) and not worth a warning.
-SERIAL_WARN_MIN_TASKS = 6
-
-# "Effectively serial": the critical path covers at least this fraction of the
-# fan-out tasks. Strict width==1 is not enough -- the incident change itself
-# profiles as 16 tasks, critical path 13, width 2 (one stray pair ran side by
-# side), and it still took one task at a time for hours.
-SERIAL_WARN_CHAIN_FRACTION = 0.75
+# Defaults for shape_problems()'s two policy-tunable thresholds, used when the
+# repo's policy dict does not set `compile_max_critical_path_over_width` /
+# `compile_max_same_file_chain`.
+DEFAULT_MAX_CRITICAL_PATH_OVER_WIDTH = 2
+DEFAULT_MAX_SAME_FILE_CHAIN = 2
 
 # Per-task cost assumed when no prior run journal on this machine carries
 # timing data yet. Calibrated from the incident run (41-58 min per task with
@@ -57,21 +58,11 @@ class Profile:
     width: int  # most tasks that could ever run concurrently
     hot_files: tuple[str, ...]  # files declared by more than half the tasks
 
-    @property
-    def serialized(self) -> bool:
-        """Effectively serial: long enough to matter, and the critical path is
-        (nearly) the whole task list. Width 1 is always a subset of this."""
-        return (
-            self.tasks >= SERIAL_WARN_MIN_TASKS
-            and self.critical_path >= self.tasks * SERIAL_WARN_CHAIN_FRACTION
-        )
-
     def to_dict(self) -> dict[str, Any]:
         return {
             "tasks": self.tasks,
             "critical_path": self.critical_path,
             "width": self.width,
-            "serialized": self.serialized,
             "hot_files": list(self.hot_files),
         }
 
@@ -154,20 +145,140 @@ def summary_line(prof: Profile) -> str:
     )
 
 
-def format_warning(prof: Profile, minutes: float, basis: str) -> str | None:
-    """One actionable line when the plan is effectively serial, else None."""
-    if not prof.serialized:
-        return None
-    hours = minutes / 60.0
-    hot = (
-        f" Most tasks declare {', '.join(prof.hot_files)}; consolidate them into "
-        "fewer, coarser tasks in tasks.md so the same-file ordering stops "
-        "serialising the run."
-        if prof.hot_files
-        else " Consolidate the chain into fewer, coarser tasks in tasks.md."
+def _longest_chain(subset: Iterable[str], ancestors: dict[str, set[str]]) -> list[str]:
+    """One longest totally-or-partially ordered chain within *subset*.
+
+    `ancestors[tid]` is every id (in the full merged graph, not just
+    *subset*) that `tid` transitively depends on. A chain here is any
+    sequence of `subset` ids where each is an ancestor of the next -- not
+    necessarily connected by a direct dependency edge, since intermediate
+    tasks outside *subset* (e.g. other files' writers) can sit between two
+    same-file writers without breaking their ordering.
+    """
+    ids = set(subset)
+    order = sorted(ids, key=lambda tid: len(ancestors[tid] & ids))
+    best_len: dict[str, int] = {}
+    best_prev: dict[str, str | None] = {}
+    for tid in order:
+        preds = [p for p in ids if p != tid and p in ancestors[tid]]
+        if preds:
+            best_pred = max(preds, key=lambda p: best_len[p])
+            best_len[tid] = best_len[best_pred] + 1
+            best_prev[tid] = best_pred
+        else:
+            best_len[tid] = 1
+            best_prev[tid] = None
+    end = max(order, key=lambda tid: best_len[tid])
+    chain: list[str] = []
+    cur: str | None = end
+    while cur is not None:
+        chain.append(cur)
+        cur = best_prev[cur]
+    chain.reverse()
+    return chain
+
+
+def shape_problems(
+    merged: Sequence[dict[str, Any]], repo: str | Path, policy: dict[str, Any]
+) -> list[str]:
+    """Design D2's three plan-shape rules, as human-readable problem lines.
+
+    Called on the *merged* task list (post `runplan.apply_to_tasks`), the
+    same precondition `unordered_file_collisions` documents: two tasks
+    declaring the same file are already ordered by a dependency edge (direct
+    or transitive), so restricting to one file's writers always yields a
+    totally-ordered chain, not merely a partial one.
+
+    An empty result means the plan is fine; any non-empty result is meant to
+    fail the compile (`compile.py` raises `PlanShapeError`), not just warn.
+    """
+    repo = Path(repo)
+    fanout = [t for t in merged if t.get("kind") not in TAIL_KINDS]
+    if not fanout:
+        return []
+
+    max_ratio = policy.get(
+        "compile_max_critical_path_over_width", DEFAULT_MAX_CRITICAL_PATH_OVER_WIDTH
     )
-    return (
-        f"WARN: task DAG is effectively serial ({prof.tasks} tasks, critical path "
-        f"{prof.critical_path}, width {prof.width}): max-workers cannot help, "
-        f"projected wall-clock ~{hours:.1f} h ({basis}).{hot}"
+    max_same_file = policy.get(
+        "compile_max_same_file_chain", DEFAULT_MAX_SAME_FILE_CHAIN
     )
+
+    ids = {t["id"] for t in fanout}
+    by_id = {
+        t["id"]: {**t, "deps": [d for d in t.get("deps") or [] if d in ids]}
+        for t in fanout
+    }
+
+    ancestors: dict[str, set[str]] = {}
+
+    def ancestors_of(tid: str, path: frozenset) -> set[str]:
+        if tid in ancestors:
+            return ancestors[tid]
+        if tid in path:  # a cycle here is apply_to_tasks's failure to report, not ours
+            return set()
+        found: set[str] = set()
+        for d in by_id[tid]["deps"]:
+            found.add(d)
+            found |= ancestors_of(d, path | {tid})
+        ancestors[tid] = found
+        return found
+
+    for tid in by_id:
+        ancestors_of(tid, frozenset())
+
+    levels = compute_levels(list(by_id.values()))
+    per_level: dict[int, int] = {}
+    for lvl in levels.values():
+        per_level[lvl] = per_level.get(lvl, 0) + 1
+    critical_path = max(levels.values()) + 1
+    width = max(per_level.values())
+
+    problems: list[str] = []
+
+    threshold = max(width, max_ratio)
+    if critical_path > threshold:
+        chain = _longest_chain(by_id, ancestors)
+        problems.append(
+            f"serial: critical path {critical_path} exceeds max(width {width}, "
+            f"{max_ratio}): {' -> '.join(chain)}"
+        )
+
+    writers: dict[str, set[str]] = {}
+    for tid, t in by_id.items():
+        for f in t.get("files") or []:
+            writers.setdefault(f, set()).add(tid)
+    for f in sorted(writers):
+        subset = writers[f]
+        if len(subset) <= max_same_file:
+            continue
+        chain = _longest_chain(subset, ancestors)
+        if len(chain) > max_same_file:
+            problems.append(
+                f"same-file chain: {' -> '.join(chain)} all declare {f} "
+                f"({len(chain)} > {max_same_file})"
+            )
+
+    for t in fanout:
+        if t.get("kind") == "docs":
+            continue
+        files = t.get("files") or []
+        src_files = sorted(f for f in files if f.startswith("src/"))
+        if not src_files or any(f.startswith("tests/") for f in files):
+            continue
+        for f in src_files:
+            stem = Path(f).stem
+            matches = sorted(repo.glob(f"tests/**/test_{stem}*.py"))
+            if not matches:
+                continue
+            try:
+                test_name = matches[0].relative_to(repo)
+            except ValueError:
+                test_name = matches[0]
+            problems.append(
+                f"missing test scope: {t['id']} touches {f} with no tests/ path, "
+                f"but {test_name} already exists"
+            )
+            break
+
+    return problems
