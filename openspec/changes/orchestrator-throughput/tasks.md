@@ -97,7 +97,7 @@
 
 ## 5. Worker prompts and the review transition
 
-- [ ] 5.1 In `src/worktrail/orchestrator/dispatch.py`: add the `missing_context` path rule to the
+- [x] 5.1 In `src/worktrail/orchestrator/dispatch.py`: add the `missing_context` path rule to the
       review action text and the fix action text (untouchable files listed as repo-relative
       paths, never only in `notes`; a declined out-of-scope finding is `status: failed` with the
       paths); add a hard rule to `build_worker_prompt` for implement and fix and to
@@ -114,7 +114,7 @@
 
 ## 6. Policy keys and repo-init seeding
 
-- [ ] 6.1 In `src/worktrail/router/policy.py` add `compile_max_critical_path_over_width: 2`,
+- [x] 6.1 In `src/worktrail/router/policy.py` add `compile_max_critical_path_over_width: 2`,
       `compile_max_same_file_chain: 2`, `review_skip_max_diff_lines: 0`, and
       `pre_commit_cmd: None` to `DEFAULTS` with comment blocks naming their consumers, extend the
       integer-validation block (the two compile keys >= 1, the review key >= 0, non-bool, else
