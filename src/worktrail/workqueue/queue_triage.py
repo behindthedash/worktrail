@@ -1847,9 +1847,23 @@ def _apply_propose_change(
     stamped: dict[str, str] | None = None
     if v.repo == NO_REPO_KEY:
         brief_path = _resolve_brief_path(v.brief_id)
-        if brief_path is not None:
+        if brief_path is None:
+            return {
+                **result,
+                "status": "error",
+                "path": None,
+                "error": "brief not found in queue/ or picked/ to stamp repo",
+            }
+        try:
             _set_fm_fields(brief_path, {"repo": repo})
-            stamped = {"repo": repo}
+        except (OSError, ValueError) as exc:
+            return {
+                **result,
+                "status": "error",
+                "path": str(brief_path),
+                "error": str(exc),
+            }
+        stamped = {"repo": repo}
 
     branch = _planned_fold_propose_branch(v)
     base_branch = _repo_base_branch(repo_path)

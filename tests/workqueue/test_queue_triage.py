@@ -2618,6 +2618,40 @@ class TestApplyProposeChangeRepoLessStamp(QueueTriageTestBase):
         self.assertEqual(fm["repo"], "widgets")
         self.assertEqual(fm["status"], "queued")
 
+    def test_missing_brief_fails_closed_before_worktree_op(self):
+        # No brief written to queue/ or picked/ for brief_id "a" -- the stamp
+        # is required but there is nothing to stamp, so this must error out
+        # before touching a worktree/PR, not silently proceed unstamped.
+        verdict = self._verdict()
+
+        with mock.patch("worktrail.workqueue.queue_triage.subprocess.run") as run_mock:
+            log = qt.apply_verdicts([verdict], confirm=True, repos_root=self.repos_root)
+
+        run_mock.assert_not_called()
+        entry = log[0]
+        self.assertEqual(entry["status"], "error")
+        self.assertIn("brief not found", entry["error"])
+        self.assertNotIn("stamped", entry)
+
+    def test_failed_stamp_write_fails_closed_before_worktree_op(self):
+        # An unterminated frontmatter fence makes _set_fm_fields() raise
+        # ValueError -- that must surface as an error action-log entry, not
+        # an uncaught exception that abandons the rest of the verdict batch.
+        path = self.queue / "a.md"
+        path.write_text(
+            "---\nfocus: a\nstatus: queued\n## Focus\n\nbody\n", encoding="utf-8"
+        )
+        verdict = self._verdict()
+
+        with mock.patch("worktrail.workqueue.queue_triage.subprocess.run") as run_mock:
+            log = qt.apply_verdicts([verdict], confirm=True, repos_root=self.repos_root)
+
+        run_mock.assert_not_called()
+        entry = log[0]
+        self.assertEqual(entry["status"], "error")
+        self.assertIn("closing fence", entry["error"])
+        self.assertNotIn("stamped", entry)
+
     def test_unresolvable_target_repo_stamps_nothing(self):
         self.write("a.md", body="## Focus\n\npropose this\n")
         verdict = self._verdict(target_repo="no-such-repo")
