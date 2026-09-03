@@ -180,6 +180,37 @@ def test_load_surfaces_duplicate_files_declaration_as_a_frontmatter_warning(tmp_
     assert any("more than one" in w for w in task["frontmatter_warnings"])
 
 
+REVIEW_SKIP_MD = textwrap.dedent(
+    """\
+    ## 1. Setup
+
+    - [ ] 1.1 Create export module structure
+      review: skip
+    - [ ] 1.2 Add CSV encoder dependency
+    """
+)
+
+
+def test_load_carries_review_skip_onto_task_dict(tmp_path):
+    _, tasks = OpenSpecTaskSource(_change(tmp_path, tasks=REVIEW_SKIP_MD)).load(
+        "add-export"
+    )
+    by_id = {t["id"]: t for t in tasks}
+    assert by_id["1.1"]["review"] == "skip"
+    assert "review" not in by_id["1.2"]
+
+
+def test_live_review_exempt_true_for_review_skip_task(tmp_path):
+    from worktrail.orchestrator import live
+
+    _, tasks = OpenSpecTaskSource(_change(tmp_path, tasks=REVIEW_SKIP_MD)).load(
+        "add-export"
+    )
+    by_id = {t["id"]: t for t in tasks}
+    assert live._review_exempt(by_id["1.1"]) is True
+    assert live._review_exempt(by_id["1.2"]) is False
+
+
 # --------------------------------------------------------------------------- #
 # paths + guards
 # --------------------------------------------------------------------------- #
