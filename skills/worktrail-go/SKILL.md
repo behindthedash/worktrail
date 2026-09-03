@@ -35,7 +35,8 @@ spellings that are still accepted (`auto`, `drain`, `new`, `implement spec`, `fi
 - `worktrail-go handoff list` — list queued briefs, no dispatch
 - `worktrail-go BRIEF-ID` (or `handoff start BRIEF-ID`) — claim or resume a specific queued
   brief; an untriaged intake brief (no `seeded-from:`) is triaged instead: evaluate → apply →
-  report; work-directly continues into claim + dispatch (spec `intake-to-spec-triage`)
+  report; a `work-directly` verdict continues by re-invoking `worktrail-land-pr` until a
+  terminal outcome, then stops — still no Phase 3 claim/dispatch (spec `intake-to-spec-triage`)
 - `worktrail-go handoff auto` or `worktrail-go REPO handoff auto` — auto-pick the next ranked queue brief and start it, no selection prompt (spec 017)
 - `worktrail-go handoff drain [max-items] [repo]` — delegate to the unattended queue drain
 - `worktrail-go spec new X` — plan a new feature (Route C+D)
@@ -1002,8 +1003,9 @@ When a brief is claimed, surface any related briefs from its `related` frontmatt
 /go 20260613-001000-raw-handoff
 ```
 → One-line dashboard summary → `kind: intake` → single-brief triage gate → evaluate →
-apply → report; work-directly continues into claim + dispatch, every other verdict
-STOPs (no claim, no sdd-workflow dispatch)
+apply → report; a `work-directly` verdict continues by re-invoking `worktrail-land-pr`
+until a terminal outcome, then stops — every other verdict STOPs (no claim, no
+sdd-workflow dispatch, no Phase 3)
 
 **Auto mode (spec 017)**
 ```
