@@ -324,11 +324,17 @@ _ROLE_ACTION = {
         "{review_checklist}"
         "Write `{spec_folder}reviews/{task_id}-review.md` with "
         "frontmatter `review_status: PASSED|FAILED`, `critical_issues:`, `major_issues:`. "
-        "{review_verdict_rule}"
+        "{review_verdict_rule} "
+        "If a finding requires touching a file outside this task's scope, list the "
+        "untouchable file(s) as repo-relative paths in the report-back's "
+        "`missing_context` field — never only in `notes`."
     ),
     ROLE_FIX: (
         "Read `{spec_folder}reviews/{task_id}-review.md` and fix ONLY the listed findings. "
-        "Re-run the task's tests. Commit."
+        "Re-run the task's tests. Commit. "
+        "If a finding requires touching a file outside this task's scope, decline it: "
+        "report `status: failed` and list the untouchable file(s) as repo-relative paths "
+        "in the report-back's `missing_context` field — never only in `notes`."
     ),
     ROLE_CLEANUP: (
         "Run cleanup on ONLY the files this task changed: remove debug logs + "
@@ -407,6 +413,7 @@ class WorkerPromptCtx:
     gitnexus_capability: dict[str, Any] | None = None
     reviewer_agent: str | None = None
     default_agent: str | None = None
+    pre_commit_cmd: str | None = None
 
 
 @dataclass(kw_only=True)
@@ -724,6 +731,11 @@ def build_worker_prompt(
                 "`tsc -p tsconfig.json --noEmit` before committing. Fix ALL type errors "
                 "it reports before pushing — CI will surface the same errors one at a time."
             ),
+            *(
+                [f"  - Run `{ctx.pre_commit_cmd}` before every commit."]
+                if role in (ROLE_IMPLEMENT, ROLE_FIX) and ctx.pre_commit_cmd
+                else []
+            ),
             "  - Commit your work with a clear message.",
             "",
             "End your reply with EXACTLY one fenced ```json block (the report-back):",
@@ -866,6 +878,11 @@ def build_group_prompt(role: str, group: dict[str, Any], ctx: dict[str, Any]) ->
             ),
         ]
         hard_rules_extra = [
+            *(
+                [f"  - Run `{ctx['pre_commit_cmd']}` before every commit."]
+                if ctx.get("pre_commit_cmd")
+                else []
+            ),
             (
                 f"  - Push to `{remote} {gb}` so the existing PR updates (do NOT open a "
                 "new PR or merge it yourself)."
@@ -1119,13 +1136,16 @@ def transition(
     # roles. Checking review_status first prevents the fix cycle from being bypassed.
     if role == ROLE_REVIEW:
         rs = (report.get("review_status") or "").upper()
-        if rs not in ("PASSED", "FAILED"):
+        if rs not in ("PASSED", "FAILED", "SKIPPED-SMALL-DIFF"):
             raise ValueError(
                 "successful review report missing valid review_status "
-                "(PASSED|FAILED) -- treat as malformed, re-dispatch review"
+                "(PASSED|FAILED|SKIPPED-SMALL-DIFF) -- treat as malformed, "
+                "re-dispatch review"
             )
         if rs == "PASSED":
             return "cleaning", 0
+        if rs == "SKIPPED-SMALL-DIFF":
+            return "cleaning", retry_count
         retry_count += 1
         if retry_count >= max_retries:
             return "escalated", retry_count  # 3 strikes -> circuit breaker
