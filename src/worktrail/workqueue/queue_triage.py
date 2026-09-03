@@ -226,10 +226,15 @@ expected shape if unsure).
 Brief evidence (why this change is being proposed):
 {evidence}
 
-When you are done, the change must pass `openspec validate \
-{proposed_change_name} --strict` -- run it yourself and fix any errors \
-before finishing. Do not `git commit` or `git push`; that is handled by the \
-caller once you're done.
+When you are done, the change must pass BOTH of these before finishing --
+run each yourself and fix any reported problem:
+1. `openspec validate {proposed_change_name} --strict`
+2. `worktrail-compile openspec/changes/{proposed_change_name}` -- this \
+checks `tasks.md` for problems `openspec validate` does not catch, such as \
+a same-file task chain or a task touching `src/` with no corresponding \
+`tests/` task; fix `tasks.md` and re-run until it passes.
+Do not `git commit` or `git push`; that is handled by the caller once \
+you're done.
 """
 
 
