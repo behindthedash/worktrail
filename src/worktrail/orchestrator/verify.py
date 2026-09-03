@@ -331,6 +331,11 @@ class Verifier:
         self.remote = remote
         self.base = base
         self.spec_id = spec_id
+        # Threaded into the ci-fix group ctx (see `_spawn_group_worker`) so
+        # `build_group_prompt` can add the pre_commit_cmd hard rule (design D6).
+        from ..router.policy import load_policy
+
+        self.pre_commit_cmd = load_policy(self.repo).get("pre_commit_cmd")
         # Repo-relative path of the spec/change this run drives. Optional so
         # existing callers are unaffected; when absent the deny-list falls back
         # to the devkit prefix, which is today's behavior.
@@ -1014,7 +1019,11 @@ class Verifier:
                 dispatch.ROLE_CI_FIX,
                 group,
                 gb,
-                {"failing_checks": names, "failure_log": log},
+                {
+                    "failing_checks": names,
+                    "failure_log": log,
+                    "pre_commit_cmd": self.pre_commit_cmd,
+                },
             )
             if not ok_fix:
                 # A failed or timed-out ci-fix attempt is one strike, not the end

@@ -110,6 +110,11 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
   `build_worker_prompt`): only implement and fix prompts (and `build_group_prompt`'s ci-fix
   prompt, via `ctx["pre_commit_cmd"]`) get `Run \`<cmd>\` before every commit.`; review and
   cleanup prompts never carry it, and an unset/`None` command emits no line at all.
+- **`LiveSpawn.pre_commit_cmd` is a lazy property, not resolved in `__init__`**: the policy
+  file is read via `router/policy.load_policy(self.repo)` only on first access (first spawn),
+  and the setter marks it loaded so tests can inject a value without touching a policy file. A
+  fan-out that never spawns, or a test driving `live_run_real` with a stub repo, must never read
+  the policy — do not move the load back into the constructor.
 - **AddOns run after a task's own work, before commit** (`addons/runner.run_addons`,
   called from `orchestrator/integrate.py` and `router/preflight.py`). `install`/`configure`
   failures are swallowed (best-effort priming); `run()` failures propagate. An add-on config'd
@@ -163,7 +168,8 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
   flag is omitted; `_slot_refilling_fanout`: the one slot-refilling fan-out loop both
   `live_run_real` and `_pipeline_scheduler` drive, with its `on_completion` hand-off to
   `_dispatch_terminal_groups` and the integrate+verify pool; `precheck`: the OpenSpec-vs-devkit
-  "all files exist" INFO/WARN split
+  "all files exist" INFO/WARN split; `LiveSpawn.pre_commit_cmd`: the lazy policy-backed
+  property threaded into the worker ctx
 - `orchestrator/verify.py` — `auto_merge()` and `_retry_auto_merge_methods`; the only place a
   merge-method rejection is turned into a method retry; `_salvage_uncommitted` and the
   per-strike `continue` in `wait_and_fix_ci`
