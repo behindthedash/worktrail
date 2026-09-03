@@ -2662,11 +2662,13 @@ class LiveSpawn:
         # back to the literal "HEAD" sentinel, matching pre-fix behavior.
         self.repo = repo
         # Threaded into the worker ctx (see __call__) so `build_worker_prompt`
-        # can add the pre-every-commit hard rule (design D6). None when no
-        # canonical repo was given, matching base_commit's own fallback.
-        from ..router.policy import load_policy as _load_policy
-
-        self.pre_commit_cmd = _load_policy(repo).get("pre_commit_cmd") if repo else None
+        # can add the pre-every-commit hard rule (design D6). Resolved lazily
+        # by the `pre_commit_cmd` property on first spawn -- not here -- so a
+        # fan-out that never spawns (or a test driving live_run_real with a
+        # stub repo) never reads the policy file. None when no canonical repo
+        # was given, matching base_commit's own fallback.
+        self._pre_commit_cmd: str | None = None
+        self._pre_commit_cmd_loaded = False
         self.timeout = timeout
         # Accepted for CLI/caller backward compatibility only -- __call__'s
         # tier-based dispatch (task 4.2) never reads self.model; a spawn's
@@ -2736,6 +2738,23 @@ class LiveSpawn:
         # served the most recently completed __call__. Set every call; read by
         # the caller (drive()/_commit_step) right after the call returns.
         self.last_agent: str | None = None
+
+    @property
+    def pre_commit_cmd(self) -> str | None:
+        """The repo policy's `pre_commit_cmd`, read once on first access."""
+        if not self._pre_commit_cmd_loaded:
+            from ..router.policy import load_policy as _load_policy
+
+            self._pre_commit_cmd = (
+                _load_policy(self.repo).get("pre_commit_cmd") if self.repo else None
+            )
+            self._pre_commit_cmd_loaded = True
+        return self._pre_commit_cmd
+
+    @pre_commit_cmd.setter
+    def pre_commit_cmd(self, value: str | None) -> None:
+        self._pre_commit_cmd = value
+        self._pre_commit_cmd_loaded = True
 
     def _task_brief_ctx(self) -> dict:
         """Format templates for where a worker reads its brief.
