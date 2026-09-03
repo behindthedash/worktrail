@@ -763,6 +763,30 @@ class TestEvaluatorPromptTemplate(unittest.TestCase):
             self.assertIn(field, qt.EVALUATOR_PROMPT_TEMPLATE)
 
 
+class TestProposeChangePromptTemplate(unittest.TestCase):
+    """The propose-change authoring prompt must name both gates the
+    generated change is checked against -- `openspec validate --strict`
+    and `worktrail-compile` -- so the agent knows to write `tasks.md` file
+    scope that clears the compile gate's own checks, not just validate's.
+    """
+
+    def _formatted(self) -> str:
+        return qt.PROPOSE_CHANGE_PROMPT_TEMPLATE.format(
+            repo="repo",
+            proposed_change_name="some-change",
+            brief_id="a",
+            evidence="evidence text",
+        )
+
+    def test_prompt_names_openspec_validate(self):
+        self.assertIn("openspec validate some-change --strict", self._formatted())
+
+    def test_prompt_names_worktrail_compile(self):
+        self.assertIn(
+            "worktrail-compile openspec/changes/some-change", self._formatted()
+        )
+
+
 class TestFormatCandidates(unittest.TestCase):
     def test_empty_list_renders_none(self):
         self.assertEqual(qt._format_candidates([]), "(none)")
