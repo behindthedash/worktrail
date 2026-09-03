@@ -1893,7 +1893,7 @@ def test_the_consolidated_fixture_passes(tmp_path, capsys):
     d = _make_change(repo, "consolidated.tasks.md")
 
     rc = conductor_compile.main([str(d), "--no-llm"])
-    out, err = capsys.readouterr()
+    _out, err = capsys.readouterr()
     assert rc == 0
     assert "same-file chain" not in err
     assert "serial" not in err
