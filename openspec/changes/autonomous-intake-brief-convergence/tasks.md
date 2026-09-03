@@ -10,7 +10,7 @@
       distinct repo, zero falls through, two or more returns `repo=None` with `rule` and
       `candidates` set. Returns the absolute resolved checkout path. (Requirement: Brief
       repo is inferred deterministically from its focus)
-      files: src/worktrail/workqueue/repo_inference.py
+      files: src/worktrail/workqueue/repo_inference.py, tests/workqueue/test_repo_inference.py
 - [x] 1.2 In `src/worktrail/workqueue/create_handoff.py`, replace `_infer_repo_from_focus`'s
       body with a delegation to `repo_inference.infer_repo(focus)` returning `.repo`, falling
       back to the original `_FOCUS_REPO_PREFIX` prefix match only when `repo_inference` found
