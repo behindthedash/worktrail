@@ -532,6 +532,70 @@ class TestParseVerdicts(unittest.TestCase):
         self.assertEqual(v.verdict, "keep")
         self.assertEqual(v.evidence, snippet)
 
+    def test_repo_less_propose_change_naming_known_repo_parses_as_is(self):
+        raw = (
+            '{"brief_id": "a", "verdict": "propose-change", "duplicate_of": null, '
+            '"target_repo": "widgets", '
+            '"proposed_change_name": "add-widget-export", '
+            '"evidence": "clearly belongs in widgets", "confidence": "high"}'
+        )
+        verdicts = qt.parse_verdicts(
+            raw, ["a"], known_repos_by_brief={"a": ["widgets", "gadgets"]}
+        )
+
+        v = verdicts[0]
+        self.assertEqual(v.verdict, "propose-change")
+        self.assertEqual(v.target_repo, "widgets")
+
+    def test_repo_less_propose_change_naming_unlisted_repo_downgrades_to_keep(self):
+        snippet = (
+            '{"brief_id": "a", "verdict": "propose-change", "duplicate_of": null, '
+            '"target_repo": "not-a-known-repo", '
+            '"proposed_change_name": "add-widget-export", '
+            '"evidence": "clearly belongs somewhere", "confidence": "high"}'
+        )
+        raw = f"analysis before verdict\n{snippet}\nanalysis after verdict"
+        verdicts = qt.parse_verdicts(
+            raw, ["a"], known_repos_by_brief={"a": ["widgets", "gadgets"]}
+        )
+
+        v = verdicts[0]
+        self.assertEqual(v.verdict, "keep")
+        self.assertEqual(v.evidence, snippet)
+
+    def test_repo_less_fold_into_change_downgrades_to_keep(self):
+        snippet = (
+            '{"brief_id": "a", "verdict": "fold-into-change", "duplicate_of": null, '
+            '"target_change": "widget-export-pipeline", '
+            '"evidence": "looks related", "confidence": "medium"}'
+        )
+        raw = f"analysis before verdict\n{snippet}\nanalysis after verdict"
+        verdicts = qt.parse_verdicts(
+            raw,
+            ["a"],
+            candidates_by_brief={"a": []},
+            known_repos_by_brief={"a": ["widgets"]},
+        )
+
+        v = verdicts[0]
+        self.assertEqual(v.verdict, "keep")
+        self.assertEqual(v.evidence, snippet)
+
+    def test_repo_bearing_group_propose_change_unaffected_by_known_repos(self):
+        raw = (
+            '{"brief_id": "a", "verdict": "propose-change", "duplicate_of": null, '
+            '"target_repo": "behindthedash/worktrail", '
+            '"proposed_change_name": "add-widget-export", '
+            '"evidence": "no existing change covers this", "confidence": "high"}'
+        )
+        # No entry for "a" in known_repos_by_brief -- mirrors evaluate_group()
+        # only populating the map for `NO_REPO_KEY` groups' briefs.
+        verdicts = qt.parse_verdicts(raw, ["a"], known_repos_by_brief={})
+
+        v = verdicts[0]
+        self.assertEqual(v.verdict, "propose-change")
+        self.assertEqual(v.target_repo, "behindthedash/worktrail")
+
     def test_second_candidate_used_when_first_is_malformed(self):
         good = (
             '{"brief_id": "a", "verdict": "keep", "duplicate_of": null, '
@@ -677,7 +741,12 @@ class TestEvaluatorPromptTemplate(unittest.TestCase):
     def test_prompt_states_needs_decision_rule_for_no_repo_groups(self):
         self.assertIn(
             "If `{repo}` is `{no_repo_key}` (no target repo), "
-            "`fold-into-change` and `propose-change` are never valid",
+            "`fold-into-change` is never valid",
+            qt.EVALUATOR_PROMPT_TEMPLATE,
+        )
+        self.assertIn(
+            "`propose-change` is valid only when your evidence names one of "
+            "these known repos as the `target_repo`: {known_repos}",
             qt.EVALUATOR_PROMPT_TEMPLATE,
         )
         self.assertIn("use `needs-decision`", qt.EVALUATOR_PROMPT_TEMPLATE)
@@ -774,6 +843,47 @@ class TestEvaluateGroupCandidateContext(QueueTriageTestBase):
             result = qt.evaluate_group(qt.NO_REPO_KEY, [brief_path], cwd=self.base)
 
         self.assertEqual(result[0]["candidates_by_brief"], {"a": []})
+
+    def test_no_repo_group_lists_known_repos_in_prompt_and_result(self):
+        from worktrail.orchestrator.spawnlib import SpawnResult
+
+        repos_root = self.base / "repos"
+        (repos_root / "widgets").mkdir(parents=True, exist_ok=True)
+        (repos_root / "gadgets").mkdir(parents=True, exist_ok=True)
+        brief_path = self.write("a.md", body="## Focus\n\nanything at all\n")
+
+        with mock.patch(
+            "worktrail.orchestrator.spawnlib.spawn_agent",
+            return_value=SpawnResult(text="", usage={}),
+        ) as mock_spawn:
+            result = qt.evaluate_group(
+                qt.NO_REPO_KEY, [brief_path], cwd=self.base, repos_root=repos_root
+            )
+
+        self.assertEqual(
+            result[0]["known_repos_by_brief"], {"a": ["gadgets", "widgets"]}
+        )
+        prompt_sent = mock_spawn.call_args.args[0]
+        self.assertIn("gadgets", prompt_sent)
+        self.assertIn("widgets", prompt_sent)
+
+    def test_repo_bearing_group_has_no_known_repos_restriction(self):
+        from worktrail.orchestrator.spawnlib import SpawnResult
+
+        repo_root = self.base / "repo"
+        brief_path = self.write(
+            "a.md", repo=str(repo_root), body="## Focus\n\nanything at all\n"
+        )
+
+        with mock.patch(
+            "worktrail.orchestrator.spawnlib.spawn_agent",
+            return_value=SpawnResult(text="", usage={}),
+        ):
+            result = qt.evaluate_group(
+                str(repo_root), [brief_path], cwd=repo_root, repos_root=self.base
+            )
+
+        self.assertEqual(result[0]["known_repos_by_brief"], {})
 
 
 class TestApplyVerdicts(QueueTriageTestBase):
@@ -2391,6 +2501,167 @@ class TestApplyRepoResolution(QueueTriageTestBase):
         )
 
 
+class TestApplyProposeChangeRepoLessStamp(QueueTriageTestBase):
+    """2.5: a `propose-change` verdict from the `__none__` group carries its
+    target repo on `target_repo`, not `repo` -- `_apply_propose_change()` must
+    resolve that effective repo, stamp `repo:` onto the still-queued brief
+    before touching a worktree, and only when resolution actually succeeds.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.repos_root = self.base / "repos"
+        self.repos_root.mkdir(parents=True, exist_ok=True)
+        self.repo_dir = self.repos_root / "widgets"
+        self.repo_dir.mkdir(parents=True, exist_ok=True)
+        self.proposed_change_name = "widget-export-pipeline-v2"
+
+    @staticmethod
+    def _completed(returncode: int, stdout: str = "", stderr: str = "") -> Any:
+        return subprocess.CompletedProcess(
+            args=["fake"], returncode=returncode, stdout=stdout, stderr=stderr
+        )
+
+    def _verdict(self, *, target_repo: str = "widgets") -> qt.Verdict:
+        return qt.Verdict(
+            brief_id="a",
+            verdict="propose-change",
+            duplicate_of=None,
+            evidence="no clear owning repo, but this one fits",
+            confidence="high",
+            target_repo=target_repo,
+            proposed_change_name=self.proposed_change_name,
+            repo=qt.NO_REPO_KEY,
+        )
+
+    def _seed_change(self, worktree_dir: Path) -> None:
+        change_dir = worktree_dir / "openspec" / "changes" / self.proposed_change_name
+        change_dir.mkdir(parents=True, exist_ok=True)
+        (change_dir / "proposal.md").write_text(
+            "# Widget export pipeline v2\n\n## Why\n\nAgent-authored rationale.\n",
+            encoding="utf-8",
+        )
+        (change_dir / "tasks.md").write_text(
+            "## 1. Tasks\n\n- [ ] 1.1 Agent-authored task\n", encoding="utf-8"
+        )
+
+    def _dispatcher(self, worktree_dir: Path, *, validate_returncode: int = 0):
+        pr_url = "https://github.com/acme/widgets/pull/43"
+
+        def _run(cmd, **kwargs):
+            if cmd[0] == "git" and "-C" in cmd:
+                if "symbolic-ref" in cmd:
+                    return self._completed(0, stdout="origin/main\n")
+                if "config" in cmd and "remote.pushDefault" in cmd:
+                    return self._completed(1)
+                if "worktree" in cmd and "add" in cmd:
+                    worktree_dir.mkdir(parents=True, exist_ok=True)
+                    return self._completed(0)
+                if "worktree" in cmd and "remove" in cmd:
+                    return self._completed(0)
+                if "branch" in cmd and "-D" in cmd:
+                    return self._completed(0)
+            if cmd[0] == "openspec" and cmd[1:3] == ["new", "change"]:
+                return self._completed(0)
+            if cmd[0] == "openspec" and cmd[1] == "validate":
+                return self._completed(
+                    validate_returncode,
+                    stdout="valid\n" if validate_returncode == 0 else "",
+                    stderr="" if validate_returncode == 0 else "invalid change",
+                )
+            if cmd[0] == "worktrail-compile":
+                Path(cmd[1]).mkdir(parents=True, exist_ok=True)
+                (Path(cmd[1]) / ".compile-ok").write_text("fp\n", encoding="utf-8")
+                return self._completed(0)
+            if cmd[0] == "git" and cmd[1] in ("add", "commit"):
+                return self._completed(0)
+            if cmd[0] == "git" and cmd[1] == "push":
+                return self._completed(0)
+            if cmd[0] == "gh" and cmd[1:3] == ["pr", "create"]:
+                return self._completed(0, stdout=f"{pr_url}\n")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        return _run, pr_url
+
+    def test_stamps_repo_before_worktree_op_and_survives_pr_failure(self):
+        self.write("a.md", body="## Focus\n\npropose this\n")
+        verdict = self._verdict()
+        branch = qt._planned_fold_propose_branch(verdict)
+        worktree_dir = qt._fold_propose_worktree_dir(self.repo_dir, branch)
+        run, _pr_url = self._dispatcher(worktree_dir, validate_returncode=1)
+
+        def _spawn(prompt, cwd, **kwargs):
+            from worktrail.orchestrator.spawnlib import SpawnResult
+
+            self._seed_change(worktree_dir)
+            return SpawnResult(text="done authoring the change", usage={})
+
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+            ),
+            mock.patch(
+                "worktrail.orchestrator.spawnlib.spawn_agent", side_effect=_spawn
+            ) as mock_spawn,
+        ):
+            log = qt.apply_verdicts([verdict], confirm=True, repos_root=self.repos_root)
+
+        entry = log[0]
+        self.assertEqual(entry["status"], "error")
+        self.assertIn("openspec validate failed", entry["error"])
+        self.assertEqual(entry["stamped"], {"repo": "widgets"})
+        mock_spawn.assert_called_once()
+
+        # brief still queued (open-pull-request never closes on failure), but
+        # the repo stamp survives the downstream PR failure regardless.
+        fm = qt.read_frontmatter(self.queue / "a.md")
+        self.assertEqual(fm["repo"], "widgets")
+        self.assertEqual(fm["status"], "queued")
+
+    def test_unresolvable_target_repo_stamps_nothing(self):
+        self.write("a.md", body="## Focus\n\npropose this\n")
+        verdict = self._verdict(target_repo="no-such-repo")
+
+        with mock.patch("worktrail.workqueue.queue_triage.subprocess.run") as run_mock:
+            log = qt.apply_verdicts([verdict], confirm=True, repos_root=self.repos_root)
+
+        run_mock.assert_not_called()
+        entry = log[0]
+        self.assertEqual(entry["status"], "error")
+        self.assertIn("no-such-repo", entry["error"])
+        self.assertNotIn("stamped", entry)
+
+        fm = qt.read_frontmatter(self.queue / "a.md")
+        self.assertNotIn("repo", fm)
+
+    def test_preview_reports_planned_stamp(self):
+        verdict = self._verdict()
+
+        log = qt.apply_verdicts([verdict], confirm=False, repos_root=self.repos_root)
+
+        entry = log[0]
+        self.assertEqual(entry["status"], "planned")
+        self.assertEqual(entry["planned_stamp"], {"repo": "widgets"})
+
+    def test_wip_cap_check_reads_effective_repo(self):
+        change_dir = self.repo_dir / "openspec" / "changes" / "existing-change"
+        change_dir.mkdir(parents=True, exist_ok=True)
+        (change_dir / "proposal.md").write_text(
+            "# Existing change\n\n## Why\nalready in flight.\n", encoding="utf-8"
+        )
+        (change_dir / "tasks.md").write_text(
+            "## 1. Tasks\n\n- [ ] 1.1 do the thing\n", encoding="utf-8"
+        )
+        policy_dir = self.repo_dir / ".worktrail"
+        policy_dir.mkdir(parents=True, exist_ok=True)
+        (policy_dir / "policy.yaml").write_text(
+            "max_active_changes: 1\n", encoding="utf-8"
+        )
+
+        verdict = self._verdict(target_repo=str(self.repo_dir))
+        self.assertTrue(qt._propose_change_over_cap(verdict))
+
+
 class TestApplyPropseChangeWipCapDowngrade(QueueTriageTestBase):
     """3.6: `apply_verdicts()` re-checks the target repo's active-change count
     against its `max_active_changes` policy cap at apply time (not just
@@ -2874,7 +3145,9 @@ class TestReportAndVerdictFileOutput(QueueTriageTestBase):
             body=f"## Triage {today}\n\nstill fresh, do not re-evaluate\n",
         )
 
-        def fake_evaluate_group(repo, briefs, *, agent="claude", model=None, cwd=None):
+        def fake_evaluate_group(
+            repo, briefs, *, agent="claude", model=None, cwd=None, repos_root=None
+        ):
             ids = [p.stem for p in briefs]
             if repo == "behindthedash/repo-a":
                 raw = "\n".join(
@@ -2943,6 +3216,7 @@ class TestReportAndVerdictFileOutput(QueueTriageTestBase):
                     "brief_ids": ids,
                     "raw_text": raw,
                     "candidates_by_brief": {bid: [] for bid in ids},
+                    "known_repos_by_brief": {},
                 }
             ]
 
@@ -3187,7 +3461,9 @@ class TestWipCapPreviewAndCounts(QueueTriageTestBase):
         self._write_policy(repo_root, max_active_changes=1)
         self.write("a.md", repo=str(repo_root))
 
-        def fake_evaluate_group(repo, briefs, *, agent="claude", cwd=None):
+        def fake_evaluate_group(
+            repo, briefs, *, agent="claude", cwd=None, repos_root=None
+        ):
             ids = [p.stem for p in briefs]
             raw = json.dumps(
                 {
@@ -3206,6 +3482,7 @@ class TestWipCapPreviewAndCounts(QueueTriageTestBase):
                     "brief_ids": ids,
                     "raw_text": raw,
                     "candidates_by_brief": {bid: [] for bid in ids},
+                    "known_repos_by_brief": {},
                 }
             ]
 
