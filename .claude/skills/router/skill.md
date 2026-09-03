@@ -137,6 +137,17 @@ agents or writes task files — that is `orchestrator/`'s job.
   spec doc, with a dated filename winning when several exist. A `## Clarifications` heading is
   NOT the resolution-gate signal — only ~22/46 real specs carry one; the gate keys on unresolved
   `[NEEDS CLARIFICATION: ...]` markers in the spec body instead.
+- **`skill_dispatch.evaluate_single_brief()`/`apply_single_brief_verdict()` resolve a bare `repo:`
+  value to an on-disk checkout before using it as `cwd`.** A brief's `repo:` frontmatter is almost
+  always a short name (e.g. `"worktrail"`), not a path. `evaluate_single_brief` runs it through
+  `dashboard._resolve_repo_dir(resolved_repo, repos_root)` to build `group_cwd` whenever an
+  explicit repo is resolved and no `cwd` override was passed — previously it passed the bare name
+  straight through, which `subprocess.run` then rejected as a nonexistent relative `cwd` when
+  invoked from outside the target repo (e.g. `worktrail-go`'s normal cwd). `apply_single_brief_verdict`
+  now takes and forwards a `repos_root` parameter to `queue_triage.apply_verdicts()` so a
+  `propose-change`/`fold-into-change` verdict's own `_resolve_repo_dir()` call can find the repo
+  too — both call sites must resolve consistently, not just the evaluate path (fixed together
+  2026-09-03).
 
 ## Critical files
 - `router/parse_invocation.py` — the `worktrail-go` Phase 1 grammar (`parse`, `FORMS`, `ALIASES`,
@@ -151,7 +162,8 @@ agents or writes task files — that is `orchestrator/`'s job.
 - `router/pr_labels.py` — the one place that issues the `go:risk-*` REST label correction; both
   `drain.py` and sdd-workflow's Phase 8 call into it rather than reimplementing it
 - `router/dashboard.py` — pure file inspection (no git, network, or agents); spec lifecycle stage
-  and next-action detection
+  and next-action detection; also the source of `_resolve_repo_dir()`, which `skill_dispatch.py`'s
+  single-brief-triage path uses to resolve a bare `repo:` value to an on-disk checkout
 
 ---
 **Last Updated:** 2026-09-03
