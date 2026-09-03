@@ -3423,9 +3423,7 @@ def _apply_pre_commit_backstop(
         return
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip()[:500]
-        task["_pre_commit_error"] = (
-            f"pre_commit_cmd exited {proc.returncode}: {detail}"
-        )
+        task["_pre_commit_error"] = f"pre_commit_cmd exited {proc.returncode}: {detail}"
         return
     status = _git(wt, "status", "--porcelain", check=False).stdout
     in_scope = {os.path.normpath(p) for p in (task.get("files") or [])}
@@ -4309,7 +4307,9 @@ def live_run_real(
                 )
             return old, new
 
-    def _commit_skip_review(task: dict, review_status: str, t0: float, t1: float) -> tuple:
+    def _commit_skip_review(
+        task: dict, review_status: str, t0: float, t1: float
+    ) -> tuple:
         with state_lock:
             old, new = _apply_skip_review_commit(
                 tasks=tasks,
@@ -4484,17 +4484,11 @@ def live_run_real(
                     task["_extra_reads"] = [str(p) for p in mr]
             # Design D5: scope escalation (missing_context widening a fix's
             # scope) fires for a FAILED review verdict, not only a failed fix.
-            if role == dispatch.ROLE_FIX:
-                scope_files = _scope_escalation_files(
-                    task, rep, wt, by_id, failed=True
-                )
-            elif (
+            if role == dispatch.ROLE_FIX or (
                 role == dispatch.ROLE_REVIEW
                 and (rep.get("review_status") or "").upper() == "FAILED"
             ):
-                scope_files = _scope_escalation_files(
-                    task, rep, wt, by_id, failed=True
-                )
+                scope_files = _scope_escalation_files(task, rep, wt, by_id, failed=True)
             else:
                 scope_files = []
             if scope_files:
@@ -5615,7 +5609,9 @@ def _pipeline_scheduler(
                 agent=agent,
             )
 
-    def _commit_skip_review(task: dict, review_status: str, t0: float, t1: float) -> tuple:
+    def _commit_skip_review(
+        task: dict, review_status: str, t0: float, t1: float
+    ) -> tuple:
         with state_lock:
             return _apply_skip_review_commit(
                 tasks=tasks,
@@ -5735,17 +5731,11 @@ def _pipeline_scheduler(
                     task["_extra_reads"] = [str(p) for p in mr]
             # Design D5: scope escalation fires for a FAILED review verdict too,
             # not only a failed fix.
-            if role == dispatch.ROLE_FIX:
-                scope_files = _scope_escalation_files(
-                    task, rep, wt, by_id, failed=True
-                )
-            elif (
+            if role == dispatch.ROLE_FIX or (
                 role == dispatch.ROLE_REVIEW
                 and (rep.get("review_status") or "").upper() == "FAILED"
             ):
-                scope_files = _scope_escalation_files(
-                    task, rep, wt, by_id, failed=True
-                )
+                scope_files = _scope_escalation_files(task, rep, wt, by_id, failed=True)
             else:
                 scope_files = []
             if scope_files:

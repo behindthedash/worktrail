@@ -193,7 +193,9 @@ class _ImplementOnlySpawn:
         f = Path(wt) / "src" / "foo.py"
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_text("impl\n")
-        subprocess.run(["git", "-C", str(wt), "add", "-A"], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(wt), "add", "-A"], check=True, capture_output=True
+        )
         subprocess.run(
             ["git", "-C", str(wt), "commit", "-q", "-m", "implement"],
             check=True,
@@ -218,7 +220,7 @@ class TestPreCommitBackstopIntegration(unittest.TestCase):
             repo = _init_spec_repo(Path(tmp))
             journal_path = str(Path(tmp) / "run-001-x.json")
             wt_base = Path(tmp) / "repo-worktrees"
-            cmd = f'echo "# formatted" >> $(git rev-parse --show-toplevel)/src/foo.py'
+            cmd = 'echo "# formatted" >> $(git rev-parse --show-toplevel)/src/foo.py'
             spawn = _ImplementOnlySpawn(pre_commit_cmd=cmd)
             live.live_run_real(
                 repo,

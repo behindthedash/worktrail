@@ -184,7 +184,9 @@ def _add_committed_file(repo: Path, rel: str, content: str = "x\n") -> None:
     f = repo / rel
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_text(content)
-    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True
+    )
     subprocess.run(
         ["git", "-C", str(repo), "commit", "-q", "-m", f"add {rel}"],
         check=True,
