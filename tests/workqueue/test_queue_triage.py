@@ -921,8 +921,12 @@ class TestApplyVerdicts(QueueTriageTestBase):
         self.assertIn("target file renamed, brief needs a refresh", content)
         self.assertTrue(qt.is_recently_triaged(b_path, within_days=1))
 
-    def test_keep_verdict_is_always_a_noop_regardless_of_confirm(self):
-        self.write("a.md", body="## Focus\n\nsome brief\n")
+    def test_keep_verdict_appends_a_triage_note_instead_of_being_a_noop(self):
+        """`keep` is never a stable verdict (design D2): it appends an
+        in-place `## Triage <date>` note recording the keep streak --
+        previewed without `--confirm`, executed with it -- rather than being
+        a pure no-op."""
+        path = self.write("a.md", body="## Focus\n\nsome brief\n")
         verdicts = [
             qt.Verdict(
                 brief_id="a",
@@ -933,11 +937,18 @@ class TestApplyVerdicts(QueueTriageTestBase):
             )
         ]
 
-        for confirm in (False, True):
-            log = qt.apply_verdicts(verdicts, confirm=confirm)
-            self.assertEqual(log[0]["status"], "noop")
-            self.assertEqual(log[0]["action"], "noop")
-            self.assertTrue((self.queue / "a.md").exists())
+        preview = qt.apply_verdicts(verdicts, confirm=False)
+        self.assertEqual(preview[0]["status"], "planned")
+        self.assertEqual(preview[0]["action"], "append-triage-note")
+        self.assertNotIn("## Triage", path.read_text(encoding="utf-8"))
+
+        executed = qt.apply_verdicts(verdicts, confirm=True)
+        self.assertEqual(executed[0]["status"], "executed")
+        self.assertEqual(executed[0]["action"], "append-triage-note")
+        body = path.read_text(encoding="utf-8")
+        self.assertIn("verdict: keep", body)
+        self.assertIn("keep-count: 1", body)
+        self.assertTrue((self.queue / "a.md").exists())
 
     def test_confirm_false_previews_fold_propose_branch_and_pr_title(self):
         """3.5: without `--confirm`, fold-into-change/propose-change verdicts

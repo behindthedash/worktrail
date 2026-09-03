@@ -191,6 +191,24 @@ def test_create_handoff_explicit_repo_wins_over_focus_prefix(
     )
 
 
+def test_create_handoff_infers_repo_from_focus_repo_token(tmp_path: Path, monkeypatch):
+    """`_infer_repo_from_focus` delegates to `repo_inference.infer_repo`, whose
+    rule (a) resolves an explicit `Repo:` token against a `.git`'d checkout --
+    this must keep working through `create_handoff`'s call site."""
+    projects = tmp_path / "home" / "projects"
+    fixture = projects / "worktrail"
+    fixture.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(fixture)], check=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+
+    result = create_handoff(
+        "drain loop hangs on resume. Repo: worktrail",
+        queue_base=tmp_path / "queue",
+    )
+
+    assert read_frontmatter(Path(result["path"]))["repo"] == str(fixture.resolve())
+
+
 def test_create_handoff_focus_prefix_without_matching_checkout_stays_null(
     tmp_path: Path, monkeypatch
 ):

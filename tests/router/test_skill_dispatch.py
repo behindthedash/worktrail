@@ -1479,7 +1479,11 @@ class SingleBriefTriageTests(unittest.TestCase):
 
         self.assertEqual(captured["cwd"], "/fake/repo/root")
 
-    def test_apply_single_brief_verdict_keep_is_a_noop_even_without_confirm(self):
+    def test_apply_single_brief_verdict_keep_previews_a_triage_note_without_confirm(
+        self,
+    ):
+        """`keep` is never a stable verdict (design D2): it previews an
+        appended `## Triage <date>` note, not a pure no-op."""
         from worktrail.workqueue.queue_triage import Verdict
 
         verdict = Verdict(
@@ -1489,7 +1493,8 @@ class SingleBriefTriageTests(unittest.TestCase):
             evidence="still relevant",
         )
         entry = skill_dispatch.apply_single_brief_verdict(verdict, confirm=False)
-        self.assertEqual(entry["status"], "noop")
+        self.assertEqual(entry["status"], "planned")
+        self.assertEqual(entry["action"], "append-triage-note")
         self.assertEqual(entry["brief_id"], self.brief.stem)
 
     def test_apply_single_brief_verdict_previews_a_non_keep_verdict_without_confirm(

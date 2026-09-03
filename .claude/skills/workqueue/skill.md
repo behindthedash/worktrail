@@ -69,6 +69,18 @@ move-a-brief mechanism never diverges between callers.
   it", or "I read/inspected the file" does not qualify, nor do the bare words "command"/"check"
   (live 2026-09-03, brief 20260903-111047: high-confidence evidence citing `gh repo view` and
   `grep -rn` was downgraded because the regex only knew test-runner and lint tools).
+- **`keep` is no longer a no-op verdict.** `apply_verdicts()` routes `keep` to `_apply_keep()`,
+  which appends an in-place `## Triage <run-date>` note stamping `verdict: keep` and
+  `keep-count: <n+1>` ahead of the evidence text — `n` from `consecutive_keep_count()`, the
+  trailing run of `keep` notes read off `triage_history()` — previewed as `status: planned` /
+  `action: append-triage-note` without `--confirm`, executed with it. `triage_history()` parses
+  every `## Triage <date>` section in a brief's body into a `TriageNote(date, verdict,
+  keep_count)`; `is_recently_triaged()` is rebuilt on top of it and ignores `verdict:
+  repo-inferred` notes (queue-time repo inference, not a triage outcome), so that note alone
+  never blocks a later evaluation. The escalation matrix that reads this streak to force a
+  repeatedly-kept brief to `needs-decision`/`propose-change` has not landed in this checkout yet
+  (queue_triage's own tasks.md task 4.1(b) is still open as of 2026-09-03) — only the streak
+  bookkeeping itself is live.
 - **Worktree-PR closures (fold-into-change / propose-change) run `worktrail-compile` on the
   change before committing** so the `.compile-ok` marker matches the edited `tasks.md` — CI's
   Scope check (`check_compile_markers.py`) refuses a change PR without one (live 2026-09-02:
@@ -89,19 +101,24 @@ move-a-brief mechanism never diverges between callers.
   two or more returns `repo=None` with that rule's sorted `candidates` (a later rule is never
   consulted to break the tie), zero falls through. A "known repo" is a direct subdirectory of
   `repos_root` (default `~/projects`) with a `.git` entry — file or directory, so a worktree
-  checkout qualifies. This is separate from `create_handoff._infer_repo_from_focus`, the older
-  creation-time heuristic; the intake-triage evaluator's null-repo write-back is the intended
-  consumer, and as of 2026-09-03 that wiring has not landed in this checkout — `worktrail-go`'s
-  Phase 2 gate no longer passes a `--triage-repos-root` flag (it never existed on
-  `worktrail-skill-dispatch`); a brief with no `repo:` frontmatter is evaluated in the repo-less
-  `__none__` group and comes back `needs-decision` when the target cannot be told from the brief.
+  checkout qualifies. `create_handoff._infer_repo_from_focus` now delegates to this at
+  creation time, falling back to its own older bare `<project>:` prefix match against a plain
+  (non-`.git`) `~/projects/<name>` directory only when `infer_repo` matched no rule at all — a
+  rule that matched but stayed ambiguous (`rule` set, `repo=None`) is a deliberate refusal to
+  guess and the prefix fallback must never override it. The intake-triage evaluator's null-repo
+  write-back is a separate, not-yet-landed consumer as of 2026-09-03 (queue_triage tasks.md
+  group 4, tasks 4.1(c)–4.3) — `worktrail-go`'s Phase 2 gate still does not pass a
+  `--triage-repos-root` flag, and a brief with no `repo:` frontmatter reaching evaluation is
+  still evaluated in the repo-less `__none__` group and comes back `needs-decision` when the
+  target cannot be told from the brief.
 
 ## Critical files
 - `workqueue/work_queue.py` — the single implementation every consumer shares; do not reimplement
   claim/done/release logic at a new call site
 - `workqueue/queue_triage.py` — intake-triage verdict apply actions (stale-close, duplicate-of,
-  fold-into-change, propose-change); the only caller that closes briefs with `triaged=True`
-- `workqueue/create_handoff.py` (via `worktrail-handoff`) — brief creation entrypoint
+  fold-into-change, propose-change, keep); the only caller that closes briefs with `triaged=True`
+- `workqueue/create_handoff.py` (via `worktrail-handoff`) — brief creation entrypoint; delegates
+  repo inference to `repo_inference.infer_repo()` with a prefix-match fallback
 - `workqueue/repo_inference.py` — `InferenceResult(repo, rule, candidates)` + `infer_repo()`; the
   deterministic focus-text → repo resolver for briefs with no `repo:` frontmatter
 

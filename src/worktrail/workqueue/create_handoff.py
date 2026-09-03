@@ -22,7 +22,7 @@ from ..shared.brief_frontmatter import (
     serialize_frontmatter,
     validate_brief,
 )
-from . import score_candidates, work_queue
+from . import repo_inference, score_candidates, work_queue
 from .slug import fallback_slugify
 from .work_queue import normalize_dependency_reference
 
@@ -148,17 +148,31 @@ _FOCUS_REPO_PREFIX = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]*):\s")
 
 
 def _infer_repo_from_focus(focus: str) -> str | None:
-    """Infer the repo from a leading `<project>: ` focus prefix.
+    """Infer the repo a brief's `focus` refers to.
 
     Briefs captured outside a checkout (a workspace-rooted /go session) carry
     `repo: null` even when the focus itself names the project ("datalena: add
     a CI guard ..."). A null repo makes the brief invisible to same-repo batch
     detection, so a whole cluster of near-identical briefs gets worked one PR
-    and one CI run at a time. Only a token that resolves to an existing
-    `~/projects/<name>` directory is accepted -- anything else stays null
-    rather than guessing.
+    and one CI run at a time. Delegates to `repo_inference.infer_repo`, which
+    only resolves an unambiguous match -- anything else stays null rather
+    than guessing.
+
+    Falls back to a bare leading `<project>: ` prefix match against
+    `~/projects/<name>` when that delegation finds nothing:
+    `repo_inference` only recognizes checkouts with a `.git` entry, while a
+    plain project directory (no `.git`, e.g. not yet initialized) still
+    names an unambiguous local project via this prefix. The fallback only
+    fires when no rule matched at all (`rule is None`) -- when a rule did
+    match but stayed ambiguous (two or more candidates), that deliberate
+    refusal to guess must not be overridden by the prefix fallback.
     """
-    match = _FOCUS_REPO_PREFIX.match(focus)
+    result = repo_inference.infer_repo(focus)
+    if result.repo:
+        return result.repo
+    if result.rule is not None:
+        return None
+    match = _FOCUS_REPO_PREFIX.match(focus) if focus else None
     if not match:
         return None
     candidate = Path.home() / "projects" / match.group(1)

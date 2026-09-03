@@ -232,27 +232,99 @@ def group_queue_by_repo() -> dict[str, list[Path]]:
     return groups
 
 
+@dataclass
+class TriageNote:
+    """One `## Triage <date>` section, as parsed by `triage_history()`.
+
+    `verdict` is the section's first non-blank line's `verdict: <x>` value, or
+    `"legacy"` when the section predates that convention (e.g. a plain-text
+    `_apply_needs_update()`/`_apply_work_directly()` note) or has no non-blank
+    line at all. `keep_count` is the section's `keep-count: <n>` line, parsed
+    as an int, or `None` when the section carries none (every verdict but
+    `keep`).
+    """
+
+    date: datetime.date
+    verdict: str
+    keep_count: int | None = None
+
+
+_TRIAGE_VERDICT_LINE_RE = re.compile(r"^verdict:\s*(\S.*?)\s*$")
+_TRIAGE_KEEP_COUNT_LINE_RE = re.compile(r"^keep-count:\s*(\d+)\s*$")
+
+
+def triage_history(path: Path) -> list[TriageNote]:
+    """Every `## Triage <date>` section in `path`'s body, oldest first.
+
+    Shares `is_recently_triaged()`'s lenient error handling: an unreadable
+    file or a body with no `## Triage` sections returns `[]` rather than
+    raising, and a section whose heading date fails to parse is skipped
+    rather than aborting the whole scan.
+    """
+    try:
+        content = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return []
+    _, body = split_frontmatter(content)
+
+    headings = list(_TRIAGE_HEADING_RE.finditer(body))
+    notes: list[TriageNote] = []
+    for i, m in enumerate(headings):
+        try:
+            date = datetime.date.fromisoformat(m.group(1))
+        except ValueError:
+            continue
+        start = m.end()
+        end = headings[i + 1].start() if i + 1 < len(headings) else len(body)
+        section = body[start:end]
+
+        verdict = "legacy"
+        for line in section.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            vm = _TRIAGE_VERDICT_LINE_RE.match(stripped)
+            if vm:
+                verdict = vm.group(1)
+            break
+
+        keep_count: int | None = None
+        for line in section.splitlines():
+            km = _TRIAGE_KEEP_COUNT_LINE_RE.match(line.strip())
+            if km:
+                keep_count = int(km.group(1))
+                break
+
+        notes.append(TriageNote(date=date, verdict=verdict, keep_count=keep_count))
+    return notes
+
+
+def consecutive_keep_count(path: Path) -> int:
+    """Length of the trailing run of `verdict: keep` notes in `path`'s `triage_history()`.
+
+    Reads back to back with `_apply_keep()`'s writes: each new `keep` note's
+    `keep-count:` is this count plus one, so a subsequent run's escalation
+    check (4.2) can read the streak straight off the file.
+    """
+    count = 0
+    for note in reversed(triage_history(path)):
+        if note.verdict != "keep":
+            break
+        count += 1
+    return count
+
+
 def is_recently_triaged(path: Path, within_days: int) -> bool:
-    """True if `path`'s most recent ``## Triage <ISO date>`` section is within `within_days`.
+    """True if `path`'s most recent non-`repo-inferred` ``## Triage`` section is within `within_days`.
 
     Lenient like the rest of this module's date handling (`work_queue._is_not_yet_due`,
     `_recently_released_info`): an unreadable file, a body with no `## Triage` section, or
     every such section carrying an unparsable date all fall through to False rather than
     raising, since a dedup check that can't confirm recency must not block a brief from
-    being evaluated.
+    being evaluated. Per design D2, a `verdict: repo-inferred` note (queue-time repo
+    inference, not a triage outcome) never counts toward this window on its own.
     """
-    try:
-        content = Path(path).read_text(encoding="utf-8")
-    except OSError:
-        return False
-    _, body = split_frontmatter(content)
-
-    dates: list[datetime.date] = []
-    for raw in _TRIAGE_HEADING_RE.findall(body):
-        try:
-            dates.append(datetime.date.fromisoformat(raw))
-        except ValueError:
-            continue
+    dates = [n.date for n in triage_history(path) if n.verdict != "repo-inferred"]
     if not dates:
         return False
 
@@ -1052,6 +1124,46 @@ def _apply_needs_update(v: Verdict, run_date: str) -> dict:
         content = path.read_text(encoding="utf-8")
         path.write_text(
             content.rstrip("\n") + f"\n\n## Triage {run_date}\n\n{v.evidence}\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        return {**base, "status": "error", "path": str(path), "error": str(exc)}
+    return {**base, "status": "executed", "path": str(path), "error": None}
+
+
+def _apply_keep(v: Verdict, run_date: str) -> dict:
+    """`keep`: append an in-place `## Triage <run_date>` note recording the streak.
+
+    Mirrors `_apply_needs_update()`'s append shape but stamps `verdict: keep`
+    and `keep-count: <n+1>` ahead of the evidence -- `n` is `path`'s current
+    `consecutive_keep_count()`, read before this note is appended -- so a
+    later run's `consecutive_keep_count()`/`escalation_due()` (4.2) can read
+    the streak straight off the file without re-deriving it from evidence
+    text.
+    """
+    base = {
+        "brief_id": v.brief_id,
+        "verdict": v.verdict,
+        "duplicate_of": v.duplicate_of,
+        "action": "append-triage-note",
+        "confirm": True,
+        "note": v.evidence,
+    }
+    path = _resolve_brief_path(v.brief_id)
+    if path is None:
+        return {
+            **base,
+            "status": "error",
+            "path": None,
+            "error": "brief not found in queue/ or picked/",
+        }
+    next_count = consecutive_keep_count(path) + 1
+    try:
+        content = path.read_text(encoding="utf-8")
+        path.write_text(
+            content.rstrip("\n")
+            + f"\n\n## Triage {run_date}\n\nverdict: keep\nkeep-count: {next_count}"
+            f"\n\n{v.evidence}\n",
             encoding="utf-8",
         )
     except OSError as exc:
@@ -1940,8 +2052,10 @@ def apply_verdicts(
     an agent to author the new change's `proposal.md`/`design.md`/`specs/`/
     `tasks.md`, validates, and opens a pull request before closing the brief
     (`_apply_propose_change`, using `agent` as the evaluator harness/model
-    hint per `spawnlib.spawn_agent()`'s `prefer` parameter). `keep` is always
-    a no-op.
+    hint per `spawnlib.spawn_agent()`'s `prefer` parameter). `keep` appends
+    an in-place `## Triage <run-date>` note recording the streak
+    (`_apply_keep`) rather than being a no-op -- it never claims or closes
+    the brief.
 
     When `confirm` is false, nothing is executed and nothing is written to
     the queue or any repo -- every other non-`keep` verdict is instead
@@ -1959,19 +2073,22 @@ def apply_verdicts(
     log: list[dict] = []
     for v in verdicts:
         if v.verdict == "keep":
-            log.append(
-                {
-                    "brief_id": v.brief_id,
-                    "verdict": v.verdict,
-                    "duplicate_of": v.duplicate_of,
-                    "action": "noop",
-                    "confirm": confirm,
-                    "status": "noop",
-                    "path": None,
-                    "note": None,
-                    "error": None,
-                }
-            )
+            if confirm:
+                log.append(_apply_keep(v, run_date))
+            else:
+                log.append(
+                    {
+                        "brief_id": v.brief_id,
+                        "verdict": v.verdict,
+                        "duplicate_of": v.duplicate_of,
+                        "action": "append-triage-note",
+                        "confirm": confirm,
+                        "status": "planned",
+                        "path": None,
+                        "note": v.evidence,
+                        "error": None,
+                    }
+                )
             continue
 
         if not confirm:
