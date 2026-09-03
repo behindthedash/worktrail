@@ -1,6 +1,6 @@
 ## 1. Task authoring guidance
 
-- [ ] 1.1 In `skills/openspec-propose/SKILL.md`'s tasks-artifact step add three sub-bullets after
+- [x] 1.1 In `skills/openspec-propose/SKILL.md`'s tasks-artifact step add three sub-bullets after
       the existing hot-file guidance, cross-referencing it rather than restating it: (a) one
       implementation task per module per phase sized for roughly 20-60 minutes, consecutive
       same-file steps folded into one task with sub-bullets, never a dependent chain; (b) an
