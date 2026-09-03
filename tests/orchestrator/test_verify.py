@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
+import unittest.mock
 from collections import deque, namedtuple
 from pathlib import Path
 
@@ -298,6 +299,63 @@ class CiFixExhaustionPath(unittest.TestCase):
         self.assertFalse(run.find("gh", "pr", "merge", "run/feature-1"))
         # worktree KEPT: no task-worktree teardown
         self.assertFalse(run.find("git", "-C", "/repo", "worktree", "remove"))
+
+
+class CiFixCtxCarriesPreCommitCmd(unittest.TestCase):
+    """design D6: the ci-fix group ctx threads `pre_commit_cmd` so
+    `build_group_prompt` can add the pre-every-commit hard rule (task 5.1)."""
+
+    def test_ci_fix_ctx_carries_configured_pre_commit_cmd(self):
+        run = FakeRun(
+            {"run/feature-1": [view(rollup=RED)]},
+            runs=json.dumps(
+                [{"databaseId": 9, "conclusion": "FAILURE", "headSha": "abc"}]
+            ),
+        )
+        spawn = FakeSpawn()
+        v = mk(run, spawn, "/tmp/x")
+        v.pre_commit_cmd = "ruff check . --fix"
+        seen_ctxs = []
+        orig = verify.dispatch.build_group_prompt
+
+        def _capture(role, group, ctx):
+            seen_ctxs.append((role, dict(ctx)))
+            return orig(role, group, ctx)
+
+        with unittest.mock.patch.object(
+            verify.dispatch, "build_group_prompt", side_effect=_capture
+        ):
+            v.run_all([FEATURE], {"feature-1": "run/feature-1"})
+
+        ci_fix_ctxs = [ctx for role, ctx in seen_ctxs if role == "ci-fix"]
+        self.assertTrue(ci_fix_ctxs)
+        self.assertEqual(ci_fix_ctxs[0]["pre_commit_cmd"], "ruff check . --fix")
+
+    def test_ci_fix_ctx_carries_none_when_unconfigured(self):
+        run = FakeRun(
+            {"run/feature-1": [view(rollup=RED)]},
+            runs=json.dumps(
+                [{"databaseId": 9, "conclusion": "FAILURE", "headSha": "abc"}]
+            ),
+        )
+        spawn = FakeSpawn()
+        v = mk(run, spawn, "/tmp/x")
+        self.assertIsNone(v.pre_commit_cmd)
+        seen_ctxs = []
+        orig = verify.dispatch.build_group_prompt
+
+        def _capture(role, group, ctx):
+            seen_ctxs.append((role, dict(ctx)))
+            return orig(role, group, ctx)
+
+        with unittest.mock.patch.object(
+            verify.dispatch, "build_group_prompt", side_effect=_capture
+        ):
+            v.run_all([FEATURE], {"feature-1": "run/feature-1"})
+
+        ci_fix_ctxs = [ctx for role, ctx in seen_ctxs if role == "ci-fix"]
+        self.assertTrue(ci_fix_ctxs)
+        self.assertIsNone(ci_fix_ctxs[0]["pre_commit_cmd"])
 
 
 class LiveMergeRecheckUnit(unittest.TestCase):
