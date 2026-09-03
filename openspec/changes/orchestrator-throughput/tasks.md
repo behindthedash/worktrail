@@ -18,7 +18,7 @@
 
 ## 2. tasks.md review declaration
 
-- [ ] 2.1 In `src/worktrail/taskformats/openspec/schema.py` add `REVIEW_RE` matched in the same
+- [x] 2.1 In `src/worktrail/taskformats/openspec/schema.py` add `REVIEW_RE` matched in the same
       continuation window as `FILES_RE` (first declaration wins; a duplicate or an empty value
       appends a warning naming the task), a `review: str = ""` field on `ParsedTask`, and its
       population in `parse_tasks_md`; in `src/worktrail/taskformats/openspec/source.py` copy
