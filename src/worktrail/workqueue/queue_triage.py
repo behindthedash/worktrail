@@ -462,7 +462,9 @@ def _effective_repo(v: Verdict) -> str | None:
     return v.target_repo or None
 
 
-def _propose_change_wip_cap_status(v: Verdict) -> tuple[str | None, int, int]:
+def _propose_change_wip_cap_status(
+    v: Verdict, repos_root: str | Path | None = None
+) -> tuple[str | None, int, int]:
     """`(repo, cap, count)` for `v`, a fresh apply-time re-check of the WIP cap.
 
     Recomputed here rather than trusting `v.held_by_wip_cap` (2.4's evaluate-time
@@ -471,32 +473,41 @@ def _propose_change_wip_cap_status(v: Verdict) -> tuple[str | None, int, int]:
     changed, and 3.6's enforcement point is apply time, not evaluate time.
     `repo` (`_effective_repo(v)`) is `None` for a verdict with neither a group
     repo nor a `target_repo`, in which case `cap`/`count` are both `0` and the
-    caller never treats it as over cap.
+    caller never treats it as over cap. `_effective_repo(v)` can be a bare
+    directory basename (2.5's `NO_REPO_KEY` propose-change flow shows the
+    evaluator only basenames) -- resolve it against `repos_root` via
+    `_resolve_repo_dir()` before reading its cap/count, falling back to the
+    raw value only when it doesn't resolve, so the reported `repo` still
+    reflects what was checked.
     """
     repo = _effective_repo(v)
     if not repo:
         return None, 0, 0
-    return repo, _repo_wip_cap(repo), _count_active_changes(repo)
+    repo_path = _resolve_repo_dir(repo, repos_root)
+    checked = str(repo_path) if repo_path is not None else repo
+    return repo, _repo_wip_cap(checked), _count_active_changes(checked)
 
 
-def _propose_change_over_cap(v: Verdict) -> bool:
+def _propose_change_over_cap(v: Verdict, repos_root: str | Path | None = None) -> bool:
     """True if `v` is a `propose-change` verdict whose repo is at or over a
     non-zero `max_active_changes` cap, re-checked fresh (see
     `_propose_change_wip_cap_status()`). A cap of `0` (unset/disabled) never
     holds anything."""
     if v.verdict != "propose-change":
         return False
-    _repo, cap, count = _propose_change_wip_cap_status(v)
+    _repo, cap, count = _propose_change_wip_cap_status(v, repos_root)
     return cap > 0 and count >= cap
 
 
-def _propose_change_wip_cap_note(v: Verdict) -> str:
+def _propose_change_wip_cap_note(
+    v: Verdict, repos_root: str | Path | None = None
+) -> str:
     """The `## Triage <date>` note body for a `propose-change` downgraded by
     the WIP cap: names the cap, the current active-change count, and the
     repo's top fold candidates (2.1's `rank_change_candidates()`, re-ranked
     against this brief) as an alternative for the operator to consider instead
     of a new change."""
-    repo, cap, count = _propose_change_wip_cap_status(v)
+    repo, cap, count = _propose_change_wip_cap_status(v, repos_root)
     path = _resolve_brief_path(v.brief_id)
     candidates = rank_change_candidates(path, repo) if path and repo else []
     return (
@@ -507,7 +518,9 @@ def _propose_change_wip_cap_note(v: Verdict) -> str:
     )
 
 
-def _apply_propose_change_wip_cap_downgrade(v: Verdict, run_date: str) -> dict:
+def _apply_propose_change_wip_cap_downgrade(
+    v: Verdict, run_date: str, repos_root: str | Path | None = None
+) -> dict:
     """Downgrade an over-cap `propose-change` verdict to a no-op `keep`.
 
     Mirrors `_apply_needs_update()`'s in-place `## Triage <run_date>` note
@@ -516,7 +529,7 @@ def _apply_propose_change_wip_cap_downgrade(v: Verdict, run_date: str) -> dict:
     like any other `keep`: it simply remains available for a later triage run
     once the repo's active-change count drops back under the cap.
     """
-    note = _propose_change_wip_cap_note(v)
+    note = _propose_change_wip_cap_note(v, repos_root)
     base = {
         "brief_id": v.brief_id,
         "verdict": v.verdict,
@@ -1893,7 +1906,9 @@ def _apply_propose_change(
     return entry
 
 
-def _preview_verdict(v: Verdict, run_date: str) -> dict:
+def _preview_verdict(
+    v: Verdict, run_date: str, repos_root: str | Path | None = None
+) -> dict:
     """The no-`--confirm` preview of one non-`keep` verdict's apply action.
 
     Never claims, closes, stamps, or files anything -- every field here is
@@ -1922,12 +1937,12 @@ def _preview_verdict(v: Verdict, run_date: str) -> dict:
     }
 
     if v.verdict in ("fold-into-change", "propose-change"):
-        if v.verdict == "propose-change" and _propose_change_over_cap(v):
+        if v.verdict == "propose-change" and _propose_change_over_cap(v, repos_root):
             return {
                 **base,
                 "action": "append-triage-note",
                 "status": "planned-downgrade-to-keep",
-                "note": _propose_change_wip_cap_note(v),
+                "note": _propose_change_wip_cap_note(v, repos_root),
             }
         entry = {
             **base,
@@ -2070,7 +2085,12 @@ def apply_verdicts(
             continue
 
         if not confirm:
-            log.append({**_preview_verdict(v, run_date), "confirm": confirm})
+            log.append(
+                {
+                    **_preview_verdict(v, run_date, repos_root=repos_root),
+                    "confirm": confirm,
+                }
+            )
             continue
 
         if v.verdict in ("stale-close", "duplicate-of"):
@@ -2093,8 +2113,12 @@ def apply_verdicts(
         elif action == "open-pull-request":
             if v.verdict == "fold-into-change":
                 log.append(_apply_fold_into_change(v, repos_root=repos_root))
-            elif _propose_change_over_cap(v):
-                log.append(_apply_propose_change_wip_cap_downgrade(v, run_date))
+            elif _propose_change_over_cap(v, repos_root):
+                log.append(
+                    _apply_propose_change_wip_cap_downgrade(
+                        v, run_date, repos_root=repos_root
+                    )
+                )
             else:
                 log.append(_apply_propose_change(v, agent=agent, repos_root=repos_root))
         else:

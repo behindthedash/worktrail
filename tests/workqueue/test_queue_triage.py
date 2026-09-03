@@ -2661,6 +2661,38 @@ class TestApplyProposeChangeRepoLessStamp(QueueTriageTestBase):
         verdict = self._verdict(target_repo=str(self.repo_dir))
         self.assertTrue(qt._propose_change_over_cap(verdict))
 
+    def test_wip_cap_check_resolves_bare_repo_name_under_repos_root(self):
+        """The `__none__` flow's `target_repo` is a bare basename (e.g.
+        `widgets`), not an absolute path -- `_propose_change_over_cap()` must
+        resolve it against `repos_root` before reading its cap/count, not
+        inspect a `./widgets` relative to the process cwd."""
+        change_dir = self.repo_dir / "openspec" / "changes" / "existing-change"
+        change_dir.mkdir(parents=True, exist_ok=True)
+        (change_dir / "proposal.md").write_text(
+            "# Existing change\n\n## Why\nalready in flight.\n", encoding="utf-8"
+        )
+        (change_dir / "tasks.md").write_text(
+            "## 1. Tasks\n\n- [ ] 1.1 do the thing\n", encoding="utf-8"
+        )
+        policy_dir = self.repo_dir / ".worktrail"
+        policy_dir.mkdir(parents=True, exist_ok=True)
+        (policy_dir / "policy.yaml").write_text(
+            "max_active_changes: 1\n", encoding="utf-8"
+        )
+
+        verdict = self._verdict(target_repo="widgets")
+
+        self.assertFalse(qt._propose_change_over_cap(verdict))
+        self.assertTrue(
+            qt._propose_change_over_cap(verdict, repos_root=self.repos_root)
+        )
+
+        self.write("a.md", repo=qt.NO_REPO_KEY, body="## Focus\n\npropose this\n")
+        log = qt.apply_verdicts([verdict], confirm=True, repos_root=self.repos_root)
+        entry = log[0]
+        self.assertEqual(entry["status"], "downgraded-to-keep")
+        self.assertIn("widgets", entry["note"])
+
 
 class TestApplyPropseChangeWipCapDowngrade(QueueTriageTestBase):
     """3.6: `apply_verdicts()` re-checks the target repo's active-change count
