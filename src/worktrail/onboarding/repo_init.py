@@ -165,9 +165,7 @@ def detect_pre_commit_cmd(repo: Path) -> str | None:
             for step in steps:
                 if isinstance(step, dict) and isinstance(step.get("run"), str):
                     text += step["run"] + "\n"
-    detected = [
-        cmd for tool, cmd in PRE_COMMIT_CMD_BY_LINTER.items() if tool in text
-    ]
+    detected = [cmd for tool, cmd in PRE_COMMIT_CMD_BY_LINTER.items() if tool in text]
     return " && ".join(detected) if detected else None
 
 

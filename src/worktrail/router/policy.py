@@ -247,10 +247,15 @@ DEFAULTS: dict[str, Any] = {
     # tasks longer than the widest parallel group is tolerated before the
     # author is asked to consolidate or declare disjoint file scope.
     "compile_max_critical_path_over_width": 2,
+    # Plan-shape gate consumed by `conductor/compile.py`: a compiled plan is
+    # rejected when a dependent chain of tasks all touching the same file
+    # exceeds this length. Default 2 — a same-file chain of up to two tasks is
+    # tolerated before the author is asked to consolidate or split file scope.
     "compile_max_same_file_chain": 2,
-    # Optional fast path consumed by `orchestrator/verify.py`: when > 0, a
-    # task's first review is skipped once the implement report is a verified
-    # success under this many added+removed diff lines (test files excluded).
+    # Optional fast path consumed by `orchestrator/live.py`'s `drive()`,
+    # beside the `_review_exempt` fast path: when > 0, a task's first review
+    # is skipped once the implement report is a verified success under this
+    # many added+removed diff lines (test files excluded).
     # 0 = disabled — every task's first review still spawns, unchanged.
     "review_skip_max_diff_lines": 0,
     # Optional shell command consumed by `orchestrator/dispatch.py` (worker

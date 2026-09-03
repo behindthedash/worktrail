@@ -2512,7 +2512,10 @@ class CompilePlanShapeKeysTests(unittest.TestCase):
         )
 
     def test_invalid_values_fall_back_with_warning(self):
-        for key in ("compile_max_critical_path_over_width", "compile_max_same_file_chain"):
+        for key in (
+            "compile_max_critical_path_over_width",
+            "compile_max_same_file_chain",
+        ):
             for bad in ("yes", "0", "many"):
                 pol = load_policy(_repo_with(f"{key}: {bad}\n"))
                 self.assertEqual(pol[key], 2, (key, bad))
@@ -2538,7 +2541,9 @@ class ReviewSkipMaxDiffLinesKeyTests(unittest.TestCase):
             pol = load_policy(_repo_with(f"review_skip_max_diff_lines: {bad}\n"))
             self.assertEqual(pol["review_skip_max_diff_lines"], 0, bad)
             self.assertTrue(
-                any("review_skip_max_diff_lines" in w for w in pol["_meta"]["warnings"]),
+                any(
+                    "review_skip_max_diff_lines" in w for w in pol["_meta"]["warnings"]
+                ),
                 bad,
             )
 
@@ -2553,13 +2558,9 @@ class PreCommitCmdKeyTests(unittest.TestCase):
             _repo_with('pre_commit_cmd: "ruff check . --fix && ruff format ."\n')
         )
         self.assertEqual(pol["pre_commit_cmd"], "ruff check . --fix && ruff format .")
-        self.assertFalse(
-            any("pre_commit_cmd" in w for w in pol["_meta"]["warnings"])
-        )
+        self.assertFalse(any("pre_commit_cmd" in w for w in pol["_meta"]["warnings"]))
 
     def test_non_string_forced_to_none_with_warning(self):
         pol = load_policy(_repo_with("pre_commit_cmd: true\n"))
         self.assertIsNone(pol["pre_commit_cmd"])
-        self.assertTrue(
-            any("pre_commit_cmd" in w for w in pol["_meta"]["warnings"])
-        )
+        self.assertTrue(any("pre_commit_cmd" in w for w in pol["_meta"]["warnings"]))
