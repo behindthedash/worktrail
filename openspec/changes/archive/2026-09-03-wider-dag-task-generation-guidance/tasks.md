@@ -7,5 +7,5 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [e2e] Confirm `skills/openspec-propose/SKILL.md` still passes `tests/test_plugin_surface.py` (no new skill directory or console script introduced by this change)
-- [ ] 2.2 [e2e] Run `PYTHONPATH=src pytest -q && PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` and confirm both pass with no regressions
+- [x] 2.1 [e2e] Confirm `skills/openspec-propose/SKILL.md` still passes `tests/test_plugin_surface.py` (no new skill directory or console script introduced by this change)
+- [x] 2.2 [e2e] Run `PYTHONPATH=src pytest -q && PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` and confirm both pass with no regressions
