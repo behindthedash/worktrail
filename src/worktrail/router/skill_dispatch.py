@@ -223,14 +223,29 @@ def evaluate_single_brief(
     repo: str | None,
     agent: str = "claude",
     cwd: str | None = None,
+    repos_root: str | Path | None = None,
 ):
     """Evaluate exactly one intake brief via `queue_triage`'s per-repo evaluator.
 
-    Reuses `evaluate_group()` (2.x) with a single-brief group so the same
-    ranked-candidates prompt, archived-repo short-circuit, and WIP-cap preview
-    apply to an interactive single-brief triage as to a full `evaluate` run --
-    the only difference is the group has one member. `cwd` defaults to `repo`
-    (or `_worktrail_repo_root()` for a repo-less brief), matching
+    When `repo` is falsy, runs `group_queue_by_repo()`'s D2/D8 pre-pass on
+    this one brief before evaluating: an answered repo-assignment decision is
+    consumed (`consume_repo_decision()`), and failing that,
+    `repo_inference.infer_repo()` is tried against the brief's focus text.
+    Either path that resolves a repo stamps it onto the brief
+    (`_write_repo_inference()`) and uses it as this brief's evaluation group,
+    exactly like a full `evaluate` run.
+
+    A brief that still has no repo after the pre-pass and is due for
+    escalation (`escalation_due()`) is verdicted directly by the escalation
+    matrix (`escalate()`), matching `cmd_evaluate()`'s
+    `escalate_without_evaluator` handling -- there is nothing an evaluator
+    spawn could add to a brief that can only ever resolve to
+    `needs-decision`, so none is spawned.
+
+    Otherwise delegates to `queue_triage.evaluate_briefs()` (design D9)
+    rather than hand-wiring `evaluate_group`/`parse_verdicts`/
+    `apply_wip_cap_preview` here. `cwd` defaults to the resolved repo (or
+    `_worktrail_repo_root()` for a still-repo-less brief), matching
     `cmd_evaluate()`'s own per-group `cwd` choice exactly. Returns the parsed
     `Verdict` for `brief_path`, or `None` on the (should-not-happen) case that
     the evaluator produced no verdict at all for this brief's id -- callers
@@ -238,22 +253,50 @@ def evaluate_single_brief(
     """
     from ..workqueue.queue_triage import (
         NO_REPO_KEY,
+        Verdict,
+        _brief_focus,
         _worktrail_repo_root,
+        _write_repo_inference,
         apply_wip_cap_preview,
-        evaluate_group,
-        parse_verdicts,
+        consume_repo_decision,
+        escalate,
+        escalation_due,
+        evaluate_briefs,
+        repo_inference,
     )
 
     path = Path(brief_path)
-    group_repo = repo if repo else NO_REPO_KEY
-    group_cwd = cwd or (repo if repo else str(_worktrail_repo_root()))
-    [result] = evaluate_group(group_repo, [path], agent=agent, cwd=group_cwd)
-    verdicts = parse_verdicts(
-        result["raw_text"],
-        result["brief_ids"],
-        candidates_by_brief=result["candidates_by_brief"],
+    resolved_repo = repo.strip() if isinstance(repo, str) and repo.strip() else None
+    if resolved_repo is None:
+        decision_outcome = consume_repo_decision(path, repos_root)
+        if decision_outcome is not None:
+            if decision_outcome.get("resolved"):
+                resolved_repo = decision_outcome["repo"]
+        else:
+            result = repo_inference.infer_repo(_brief_focus(path), repos_root)
+            if result.repo:
+                _write_repo_inference(path, result)
+                resolved_repo = result.repo
+
+    if resolved_repo is None and escalation_due(path, None):
+        seed = Verdict(
+            brief_id=path.stem,
+            verdict="keep",
+            duplicate_of=None,
+            evidence=(
+                "brief is due for escalation with no target repo -- verdicted "
+                "via the escalation matrix without spawning an evaluator"
+            ),
+        )
+        escalated = escalate(seed, path, NO_REPO_KEY, [])
+        [applied] = apply_wip_cap_preview(NO_REPO_KEY, [escalated])
+        return applied
+
+    group_repo = resolved_repo or NO_REPO_KEY
+    group_cwd = cwd or (resolved_repo if resolved_repo else str(_worktrail_repo_root()))
+    verdicts = evaluate_briefs(
+        group_repo, [path], agent=agent, cwd=group_cwd, repos_root=repos_root
     )
-    verdicts = apply_wip_cap_preview(group_repo, verdicts)
     return next((v for v in verdicts if v.brief_id == path.stem), None)
 
 
@@ -855,6 +898,13 @@ def main(argv: list[str] | None = None) -> int:
         "--apply-brief-triage (default claude)",
     )
     parser.add_argument(
+        "--triage-repos-root",
+        default=str(Path.home() / "projects"),
+        help="repos_root for --evaluate-brief-triage's repo-assignment "
+        "decision/inference pre-pass and escalation matrix (default "
+        "~/projects)",
+    )
+    parser.add_argument(
         "--confirm",
         action="store_true",
         help="with --apply-brief-triage, execute the verdict's action "
@@ -897,6 +947,7 @@ def main(argv: list[str] | None = None) -> int:
             parsed.evaluate_brief_triage,
             repo=parsed.triage_repo,
             agent=parsed.triage_agent,
+            repos_root=parsed.triage_repos_root,
         )
         print(json.dumps(asdict(verdict) if verdict is not None else None))
         return 0 if verdict is not None else 1
