@@ -867,3 +867,23 @@ def test_unattended_handoff_names_the_drain_stop_kind_and_recovery_pair():
         assert "worktrail-skill-dispatch --resume-decision" in text, (
             f"{path.name} lacks the exact-id-resume half of the recovery pair"
         )
+
+
+def test_openspec_propose_tasks_artifact_documents_decomposition_rules():
+    """The tasks-artifact step's task-sizing, test-co-scoping, and `review: skip`
+    sub-bullets are what keep implementation tasks coarse, module-scoped, and
+    co-scoped with the tests they change — and let mechanical tasks opt out of
+    review at authoring time. If this prose regresses, generated tasks.md files
+    silently drift back to over-fine or test-split decomposition."""
+    text = (
+        REPO_ROOT / "skills" / "openspec-propose" / "SKILL.md"
+    ).read_text()
+
+    assert "20-60 minutes" in text
+    assert "rather than a dependent" in text and "chain of tasks" in text
+
+    assert "MUST" in text and "existing test file asserting behavior" in text
+    assert "Never split a task's implementation and its tests" in text
+
+    assert "review: skip" in text
+    assert "executable behavior never" in text
