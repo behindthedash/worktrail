@@ -27,7 +27,7 @@
 
 ## 2. Repo-less propose-change
 
-- [ ] 2.1 Let the `__none__` group propose into a known repo and stamp it on
+- [x] 2.1 Let the `__none__` group propose into a known repo and stamp it on
       the brief (design.md Decisions 4-5). In
       `src/worktrail/workqueue/queue_triage.py`: give `evaluate_group()` a
       `repos_root: str | Path | None = None` parameter and, when `repo ==
@@ -61,8 +61,8 @@
 
 ## 3. Verification
 
-- [ ] 3.1 [cleanup] Run `PYTHONPATH=src pytest -q tests/workqueue/test_queue_triage.py`
+- [x] 3.1 [cleanup] Run `PYTHONPATH=src pytest -q tests/workqueue/test_queue_triage.py`
       and confirm it is green, including the new tests from sections 1-2.
       Verification-only — no file changes expected.
-- [ ] 3.2 [cleanup] Run `PYTHONPATH=src pytest -q` (full suite) and confirm
+- [x] 3.2 [cleanup] Run `PYTHONPATH=src pytest -q` (full suite) and confirm
       it is green. Verification-only — no file changes expected.

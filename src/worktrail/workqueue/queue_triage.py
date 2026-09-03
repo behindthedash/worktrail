@@ -146,10 +146,12 @@ change that wasn't presented to you, even a plausible-looking one. If none of \
 the listed candidates are a good fit but the brief still clearly belongs in \
 this repo, use `propose-change` with a `target_repo` and a kebab-case \
 `proposed_change_name` instead. If `{repo}` is `{no_repo_key}` (no target \
-repo), `fold-into-change` and `propose-change` are never valid for these \
-briefs — if the brief needs to land somewhere but you cannot tell where, use \
-`needs-decision` with a `question` asking which repo it belongs to, rather \
-than guessing a target.
+repo), `fold-into-change` is never valid for these briefs. `propose-change` \
+is valid only when your evidence names one of these known repos as the \
+`target_repo`: {known_repos}. If the brief needs to land somewhere but none \
+of these repos fit, or you cannot tell which one does, use `needs-decision` \
+with a `question` asking which repo it belongs to, rather than guessing a \
+target.
 
 Step 2b — work-directly requires reproduction evidence:
 Use `work-directly` only when your evidence cites a specific test, check, or \
@@ -521,41 +523,63 @@ def apply_wip_cap_preview(repo: str, verdicts: list[Verdict]) -> list[Verdict]:
     ]
 
 
-def _propose_change_wip_cap_status(v: Verdict) -> tuple[str | None, int, int]:
+def _effective_repo(v: Verdict) -> str | None:
+    """The repo `v` actually targets: the group's own `repo` when it is not
+    `NO_REPO_KEY`, else `v.target_repo` -- 2.5's rule letting a repo-less
+    (`NO_REPO_KEY`) group's `propose-change` verdict name its own target repo,
+    since its group has none. `None` when neither is set.
+    """
+    if v.repo and v.repo != NO_REPO_KEY:
+        return v.repo
+    return v.target_repo or None
+
+
+def _propose_change_wip_cap_status(
+    v: Verdict, repos_root: str | Path | None = None
+) -> tuple[str | None, int, int]:
     """`(repo, cap, count)` for `v`, a fresh apply-time re-check of the WIP cap.
 
     Recomputed here rather than trusting `v.held_by_wip_cap` (2.4's evaluate-time
     preview): `evaluate` and `apply` can run far enough apart that the repo's
     active-change count or its `max_active_changes` policy value has since
     changed, and 3.6's enforcement point is apply time, not evaluate time.
-    `repo` is `None` for a repo-less verdict (`NO_REPO_KEY`/falsy `v.repo`), in
-    which case `cap`/`count` are both `0` and the caller never treats it as
-    over cap.
+    `repo` (`_effective_repo(v)`) is `None` for a verdict with neither a group
+    repo nor a `target_repo`, in which case `cap`/`count` are both `0` and the
+    caller never treats it as over cap. `_effective_repo(v)` can be a bare
+    directory basename (2.5's `NO_REPO_KEY` propose-change flow shows the
+    evaluator only basenames) -- resolve it against `repos_root` via
+    `_resolve_repo_dir()` before reading its cap/count, falling back to the
+    raw value only when it doesn't resolve, so the reported `repo` still
+    reflects what was checked.
     """
-    repo = v.repo if v.repo and v.repo != NO_REPO_KEY else None
+    repo = _effective_repo(v)
     if not repo:
         return None, 0, 0
-    return repo, _repo_wip_cap(repo), _count_active_changes(repo)
+    repo_path = _resolve_repo_dir(repo, repos_root)
+    checked = str(repo_path) if repo_path is not None else repo
+    return repo, _repo_wip_cap(checked), _count_active_changes(checked)
 
 
-def _propose_change_over_cap(v: Verdict) -> bool:
+def _propose_change_over_cap(v: Verdict, repos_root: str | Path | None = None) -> bool:
     """True if `v` is a `propose-change` verdict whose repo is at or over a
     non-zero `max_active_changes` cap, re-checked fresh (see
     `_propose_change_wip_cap_status()`). A cap of `0` (unset/disabled) never
     holds anything."""
     if v.verdict != "propose-change":
         return False
-    _repo, cap, count = _propose_change_wip_cap_status(v)
+    _repo, cap, count = _propose_change_wip_cap_status(v, repos_root)
     return cap > 0 and count >= cap
 
 
-def _propose_change_wip_cap_note(v: Verdict) -> str:
+def _propose_change_wip_cap_note(
+    v: Verdict, repos_root: str | Path | None = None
+) -> str:
     """The `## Triage <date>` note body for a `propose-change` downgraded by
     the WIP cap: names the cap, the current active-change count, and the
     repo's top fold candidates (2.1's `rank_change_candidates()`, re-ranked
     against this brief) as an alternative for the operator to consider instead
     of a new change."""
-    repo, cap, count = _propose_change_wip_cap_status(v)
+    repo, cap, count = _propose_change_wip_cap_status(v, repos_root)
     path = _resolve_brief_path(v.brief_id)
     candidates = rank_change_candidates(path, repo) if path and repo else []
     return (
@@ -566,7 +590,9 @@ def _propose_change_wip_cap_note(v: Verdict) -> str:
     )
 
 
-def _apply_propose_change_wip_cap_downgrade(v: Verdict, run_date: str) -> dict:
+def _apply_propose_change_wip_cap_downgrade(
+    v: Verdict, run_date: str, repos_root: str | Path | None = None
+) -> dict:
     """Downgrade an over-cap `propose-change` verdict to a no-op `keep`.
 
     Mirrors `_apply_needs_update()`'s in-place `## Triage <run_date>` note
@@ -575,7 +601,7 @@ def _apply_propose_change_wip_cap_downgrade(v: Verdict, run_date: str) -> dict:
     like any other `keep`: it simply remains available for a later triage run
     once the repo's active-change count drops back under the cap.
     """
-    note = _propose_change_wip_cap_note(v)
+    note = _propose_change_wip_cap_note(v, repos_root)
     base = {
         "brief_id": v.brief_id,
         "verdict": v.verdict,
@@ -668,12 +694,30 @@ def _check_repo_archived(repo: str, cwd: str | Path) -> bool | None:
     return data.get("isArchived") is True
 
 
+def _known_repos(repos_root: str | Path | None) -> list[str]:
+    """Sorted basenames of every directory under `repos_root`.
+
+    The set of repos a repo-less (`{no_repo_key}`) group's `propose-change` \
+    verdict may name as `target_repo` -- mirrors `_resolve_repo_dir()`'s own \
+    basename-under-`repos_root` resolution, so a name the evaluator is offered \
+    here is guaranteed to resolve later at apply time. `repos_root` falsy or \
+    not a directory returns `[]` -- there is nothing to offer.
+    """
+    if not repos_root:
+        return []
+    root = Path(repos_root)
+    if not root.is_dir():
+        return []
+    return sorted(p.name for p in root.iterdir() if p.is_dir())
+
+
 def evaluate_group(
     repo: str,
     briefs: list[Path],
     *,
     agent: str = "claude",
     cwd: str | Path,
+    repos_root: str | Path | None = None,
 ) -> list[dict]:
     """Spawn one evaluator agent over `repo`'s brief group, per the pilot's grouping.
 
@@ -694,17 +738,21 @@ def evaluate_group(
     inconclusive) falls through to the normal spawn unchanged.
 
     Returns a single-element list -- `[{"repo", "brief_ids", "raw_text",
-    "candidates_by_brief"}]` -- rather than the raw string directly, so a
-    caller fanning out across multiple groups can `.extend()` every call's
-    result into one flat list, without a shape special-case for the archived
-    short-circuit. `raw_text` is untouched worker output (or, in the archived
-    case, the synthesized equivalent); parsing/validation is `parse_verdicts`'s
-    job, not this function's. `candidates_by_brief` maps each brief id to the
-    list of candidate change ids 2.1's `rank_change_candidates()` presented to
-    the evaluator for it (`[]` for the archived short-circuit and for
-    `{no_repo_key}` groups, which have no target repo to rank against) -- a
-    caller passes this straight through to `parse_verdicts()` so a
-    `fold-into-change` naming anything else is rejected.
+    "candidates_by_brief", "known_repos_by_brief"}]` -- rather than the raw
+    string directly, so a caller fanning out across multiple groups can
+    `.extend()` every call's result into one flat list, without a shape
+    special-case for the archived short-circuit. `raw_text` is untouched
+    worker output (or, in the archived case, the synthesized equivalent);
+    parsing/validation is `parse_verdicts`'s job, not this function's.
+    `candidates_by_brief` maps each brief id to the list of candidate change
+    ids 2.1's `rank_change_candidates()` presented to the evaluator for it
+    (`[]` for the archived short-circuit and for `{no_repo_key}` groups,
+    which have no target repo to rank against) -- a caller passes this
+    straight through to `parse_verdicts()` so a `fold-into-change` naming
+    anything else is rejected. `known_repos_by_brief` maps each brief id to
+    `_known_repos(repos_root)` -- the repos a `{no_repo_key}` group's
+    `propose-change` may legally target -- when `repo` is `{no_repo_key}`,
+    else `{}` (a repo-bearing group's briefs carry no such restriction).
     """
     brief_ids = [path.stem for path in briefs]
 
@@ -727,6 +775,7 @@ def evaluate_group(
                 "brief_ids": brief_ids,
                 "raw_text": raw_text,
                 "candidates_by_brief": {bid: [] for bid in brief_ids},
+                "known_repos_by_brief": {},
             }
         ]
 
@@ -743,22 +792,33 @@ def evaluate_group(
         f"  Candidate targets: {_format_candidates(candidates_by_path[path])}"
         for path in briefs
     )
+    known_repos = _known_repos(repos_root) if repo == NO_REPO_KEY else []
+    known_repos_str = (
+        ", ".join(known_repos)
+        if known_repos
+        else ("(none found)" if repo == NO_REPO_KEY else "(not applicable)")
+    )
     prompt = EVALUATOR_PROMPT_TEMPLATE.format(
         repo=repo,
         briefs=brief_lines,
         no_repo_key=NO_REPO_KEY,
         memory_index=_memory_index_path(cwd),
+        known_repos=known_repos_str,
     )
     result = spawnlib.spawn_agent(prompt, cwd, tier=DEFAULT_TIER, prefer=agent)
     candidates_by_brief = {
         path.stem: [c["id"] for c in candidates_by_path[path]] for path in briefs
     }
+    known_repos_by_brief = (
+        {bid: known_repos for bid in brief_ids} if repo == NO_REPO_KEY else {}
+    )
     return [
         {
             "repo": repo,
             "brief_ids": brief_ids,
             "raw_text": result.text,
             "candidates_by_brief": candidates_by_brief,
+            "known_repos_by_brief": known_repos_by_brief,
         }
     ]
 
@@ -847,6 +907,7 @@ def _has_valid_target(
     obj: dict,
     duplicate_of: str | None,
     presented_candidates: list[str],
+    known_repos: list[str] | None = None,
 ) -> bool:
     """True if `verdict_type`'s required target field(s) are present and valid in `obj`.
 
@@ -856,7 +917,12 @@ def _has_valid_target(
     change ids actually offered to the evaluator for this brief (per 2.1's
     `rank_change_candidates()`) -- a `fold-into-change` naming anything else,
     including a plausible-looking id, is invalid, since accepting it would let the
-    evaluator fold into a change it was never shown.
+    evaluator fold into a change it was never shown. `known_repos`, when not
+    `None`, is the set of repos offered to a `{no_repo_key}` group's brief (per
+    `evaluate_group()`'s `known_repos_by_brief`) -- a `propose-change` for such a
+    brief is only valid when its `target_repo` is one of those; `None` (a
+    repo-bearing brief, which carries no such restriction) leaves the existing
+    well-formedness check as the sole gate.
     """
     if verdict_type == "duplicate-of":
         return duplicate_of is not None
@@ -866,12 +932,17 @@ def _has_valid_target(
     if verdict_type == "propose-change":
         target_repo = obj.get("target_repo")
         proposed_change_name = obj.get("proposed_change_name")
-        return (
+        well_formed = (
             isinstance(target_repo, str)
             and target_repo.strip() != ""
             and isinstance(proposed_change_name, str)
             and bool(_KEBAB_CASE_RE.fullmatch(proposed_change_name))
         )
+        if not well_formed:
+            return False
+        if known_repos is not None:
+            return target_repo.strip() in known_repos
+        return True
     if verdict_type == "needs-decision":
         question = obj.get("question")
         return isinstance(question, str) and question.strip() != ""
@@ -882,6 +953,7 @@ def parse_verdicts(
     raw_text: str,
     expected_brief_ids: list[str],
     candidates_by_brief: dict[str, list[str]] | None = None,
+    known_repos_by_brief: dict[str, list[str]] | None = None,
 ) -> list[Verdict]:
     """Parse `evaluate_group()`'s raw evaluator text into one `Verdict` per expected brief.
 
@@ -890,27 +962,34 @@ def parse_verdicts(
     `_has_valid_target()`) a well-formed target for verdict types that require one --
     `duplicate-of` needs `duplicate_of`, `fold-into-change` needs `target_change`
     naming one of `candidates_by_brief[brief_id]`'s presented candidates,
-    `propose-change` needs `target_repo` and a kebab-case `proposed_change_name`,
-    and `needs-decision` needs `question` -- to be accepted as-is. `work-directly`
-    and `keep` have no target field. Anything missing, unparsable, or failing that
-    check falls back to `keep` with the first JSON snippet the evaluator emitted
-    under this brief_id retained as evidence -- `raw_text` itself is never used
-    here when a group call batches multiple briefs, since it would otherwise bleed
-    every other brief's own verdict/evidence into this one's fallback. Only when
-    the evaluator emitted nothing identifiable for this brief_id at all does
-    `raw_text` remain the fallback, since there is no narrower snippet to prefer --
-    every id in `expected_brief_ids` always appears exactly once in the result, in
-    that order, never silently dropped.
+    `propose-change` needs `target_repo` and a kebab-case `proposed_change_name`
+    (and, for a brief in `known_repos_by_brief`, a `target_repo` in that brief's
+    list -- 2.5's rule letting a repo-less group's `propose-change` name a known
+    repo), and `needs-decision` needs `question` -- to be accepted as-is.
+    `work-directly` and `keep` have no target field. Anything missing, unparsable,
+    or failing that check falls back to `keep` with the first JSON snippet the
+    evaluator emitted under this brief_id retained as evidence -- `raw_text`
+    itself is never used here when a group call batches multiple briefs, since it
+    would otherwise bleed every other brief's own verdict/evidence into this
+    one's fallback. Only when the evaluator emitted nothing identifiable for this
+    brief_id at all does `raw_text` remain the fallback, since there is no
+    narrower snippet to prefer -- every id in `expected_brief_ids` always appears
+    exactly once in the result, in that order, never silently dropped.
 
     `candidates_by_brief` defaults to no candidates presented for any brief, so a
     caller that hasn't wired 2.1's ranking through yet still gets a safe,
     always-downgraded `fold-into-change` rather than an unchecked target.
+    `known_repos_by_brief` defaults to no restriction for any brief (a
+    repo-bearing brief is never in this map to begin with, per
+    `evaluate_group()`), so a caller that hasn't wired this through yet gets the
+    prior, unrestricted `propose-change` well-formedness check unchanged.
 
     `repo`/`held_by_wip_cap` (2.4's per-repo reporting fields) are left at their
     defaults here -- `apply_wip_cap_preview()` stamps them afterward, once per
     group, rather than this per-brief parser threading `repo` through itself.
     """
     candidates_by_brief = candidates_by_brief or {}
+    known_repos_by_brief = known_repos_by_brief or {}
     candidates_by_id: dict[str, list[tuple[str, dict]]] = {
         bid: [] for bid in expected_brief_ids
     }
@@ -929,6 +1008,7 @@ def parse_verdicts(
     for bid in expected_brief_ids:
         chosen: Verdict | None = None
         presented_candidates = candidates_by_brief.get(bid, [])
+        known_repos = known_repos_by_brief.get(bid)
         # This brief's own best-effort evidence when nothing valid is found: the
         # first JSON snippet the evaluator emitted under this brief_id, so a
         # downgrade never falls back past it to `raw_text` -- in a multi-brief
@@ -951,7 +1031,7 @@ def parse_verdicts(
             has_evidence = isinstance(evidence, str) and evidence.strip() != ""
             has_verdict = verdict_type in VALID_VERDICT_TYPES
             has_valid_target = has_verdict and _has_valid_target(
-                verdict_type, obj, duplicate_of, presented_candidates
+                verdict_type, obj, duplicate_of, presented_candidates, known_repos
             )
 
             if has_verdict and has_evidence and has_valid_target:
@@ -1840,6 +1920,15 @@ def _apply_propose_change(
     sequence (mirroring `_apply_fold_into_change()`, per the spec's "Fold
     and propose are applied as a pull request, fail-closed" requirement,
     which covers both verdict types).
+
+    `repo` is `_effective_repo(v)` -- the group's own `repo` when it is not
+    `NO_REPO_KEY`, else `v.target_repo` (2.5). When the group repo *was*
+    `NO_REPO_KEY`, the queued brief itself carries no `repo:` yet, so once
+    `_resolve_repo_dir()` confirms `repo` resolves to a real checkout (and
+    before any worktree op), this stamps `repo: <repo>` onto the brief's
+    frontmatter -- the stamp is reported back in the action-log entry, and
+    survives even if the worktree/PR sequence that follows fails, since it
+    happens first.
     """
     result = {
         "brief_id": v.brief_id,
@@ -1849,7 +1938,7 @@ def _apply_propose_change(
         "confirm": True,
         "note": v.evidence,
     }
-    repo = v.repo if v.repo and v.repo != NO_REPO_KEY else None
+    repo = _effective_repo(v)
     if not repo or not v.proposed_change_name:
         return {
             **result,
@@ -1866,6 +1955,28 @@ def _apply_propose_change(
             "path": None,
             "error": f"could not resolve repo '{repo}' to a checkout on disk",
         }
+
+    stamped: dict[str, str] | None = None
+    if v.repo == NO_REPO_KEY:
+        brief_path = _resolve_brief_path(v.brief_id)
+        if brief_path is None:
+            return {
+                **result,
+                "status": "error",
+                "path": None,
+                "error": "brief not found in queue/ or picked/ to stamp repo",
+            }
+        try:
+            _set_fm_fields(brief_path, {"repo": repo})
+        except (OSError, ValueError) as exc:
+            return {
+                **result,
+                "status": "error",
+                "path": str(brief_path),
+                "error": str(exc),
+            }
+        stamped = {"repo": repo}
+
     branch = _planned_fold_propose_branch(v)
     base_branch = _repo_base_branch(repo_path)
     worktree_dir = _fold_propose_worktree_dir(repo_path, branch)
@@ -1905,7 +2016,7 @@ def _apply_propose_change(
             )
         return None
 
-    return _worktree_pr_close(
+    entry = _worktree_pr_close(
         v,
         repo_path=repo_path,
         branch=branch,
@@ -1916,9 +2027,14 @@ def _apply_propose_change(
         commit_message=f"Propose change: {v.proposed_change_name}",
         pr_body=f"{v.evidence}\n\nProposed via queue-triage from brief `{v.brief_id}`.",
     )
+    if stamped is not None:
+        entry = {**entry, "stamped": stamped}
+    return entry
 
 
-def _preview_verdict(v: Verdict, run_date: str) -> dict:
+def _preview_verdict(
+    v: Verdict, run_date: str, repos_root: str | Path | None = None
+) -> dict:
     """The no-`--confirm` preview of one non-`keep` verdict's apply action.
 
     Never claims, closes, stamps, or files anything -- every field here is
@@ -1928,7 +2044,10 @@ def _preview_verdict(v: Verdict, run_date: str) -> dict:
     "Apply step never closes a brief without an approved verdict"
     requirement. `fold-into-change`/`propose-change` preview their planned
     branch, target change, and PR title -- those fields are fully determined
-    by the verdict alone, without running either apply action. `work-directly`
+    by the verdict alone, without running either apply action. A repo-less
+    (`NO_REPO_KEY`) group's `propose-change` additionally previews the
+    `repo:` stamp `_apply_propose_change()` would make, as
+    `planned_stamp: {"repo": ...}`. `work-directly`
     previews its planned
     frontmatter stamp (or the same downgrade-to-keep `_apply_work_directly`
     would make); `needs-decision` previews the `awaiting-decision` stamp and
@@ -1944,14 +2063,14 @@ def _preview_verdict(v: Verdict, run_date: str) -> dict:
     }
 
     if v.verdict in ("fold-into-change", "propose-change"):
-        if v.verdict == "propose-change" and _propose_change_over_cap(v):
+        if v.verdict == "propose-change" and _propose_change_over_cap(v, repos_root):
             return {
                 **base,
                 "action": "append-triage-note",
                 "status": "planned-downgrade-to-keep",
-                "note": _propose_change_wip_cap_note(v),
+                "note": _propose_change_wip_cap_note(v, repos_root),
             }
-        return {
+        entry = {
             **base,
             "action": "open-pull-request",
             "status": "planned",
@@ -1960,6 +2079,11 @@ def _preview_verdict(v: Verdict, run_date: str) -> dict:
             "planned_target_change": _planned_fold_propose_target(v),
             "planned_pr_title": _planned_fold_propose_pr_title(v),
         }
+        if v.verdict == "propose-change" and v.repo == NO_REPO_KEY:
+            repo = _effective_repo(v)
+            if repo:
+                entry["planned_stamp"] = {"repo": repo}
+        return entry
 
     if v.verdict == "work-directly":
         if not _REPRODUCTION_EVIDENCE_RE.search(v.evidence or ""):
@@ -2092,7 +2216,12 @@ def apply_verdicts(
             continue
 
         if not confirm:
-            log.append({**_preview_verdict(v, run_date), "confirm": confirm})
+            log.append(
+                {
+                    **_preview_verdict(v, run_date, repos_root=repos_root),
+                    "confirm": confirm,
+                }
+            )
             continue
 
         if v.verdict in ("stale-close", "duplicate-of"):
@@ -2115,8 +2244,12 @@ def apply_verdicts(
         elif action == "open-pull-request":
             if v.verdict == "fold-into-change":
                 log.append(_apply_fold_into_change(v, repos_root=repos_root))
-            elif _propose_change_over_cap(v):
-                log.append(_apply_propose_change_wip_cap_downgrade(v, run_date))
+            elif _propose_change_over_cap(v, repos_root):
+                log.append(
+                    _apply_propose_change_wip_cap_downgrade(
+                        v, run_date, repos_root=repos_root
+                    )
+                )
             else:
                 log.append(_apply_propose_change(v, agent=agent, repos_root=repos_root))
         else:
@@ -2298,15 +2431,19 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
                 os.environ["WORK_QUEUE_DIR"] = previous_queue_dir
 
     out_dir = Path(args.out_dir) if args.out_dir else _default_out_dir()
+    repos_root = args.repos_root or str(Path.home() / "projects")
 
     verdicts: list[Verdict] = []
     for repo, briefs in groups.items():
         cwd = repo if repo != NO_REPO_KEY else _worktrail_repo_root()
-        for result in evaluate_group(repo, briefs, agent=args.agent, cwd=cwd):
+        for result in evaluate_group(
+            repo, briefs, agent=args.agent, cwd=cwd, repos_root=repos_root
+        ):
             group_verdicts = parse_verdicts(
                 result["raw_text"],
                 result["brief_ids"],
                 candidates_by_brief=result["candidates_by_brief"],
+                known_repos_by_brief=result["known_repos_by_brief"],
             )
             verdicts.extend(apply_wip_cap_preview(repo, group_verdicts))
 
@@ -2444,6 +2581,13 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         dest="as_json",
         help="print the run summary as JSON on exit",
+    )
+    evaluate_parser.add_argument(
+        "--repos-root",
+        default=None,
+        dest="repos_root",
+        help="directory of sibling repo checkouts to list as known repos for a "
+        "repo-less group's propose-change (default ~/projects)",
     )
 
     apply_parser = subparsers.add_parser(
