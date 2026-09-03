@@ -6,9 +6,7 @@ Lets an author of an OpenSpec change declare per-task file scope inline in `task
 `worktrail-compile` can seed the RunPlan from the artifact alone — no model call — instead of
 inferring scope it may be unable to (provider-gated compile), and so its "add explicit
 `files:` scope to the artifact" remediation is actionable for this format.
-
 ## Requirements
-
 ### Requirement: Inline file-scope declaration parsing
 
 The OpenSpec checklist parser SHALL recognize an indented `files:` continuation line
@@ -96,3 +94,19 @@ behavior.
 - **THEN** it presents the indented `files:` continuation form with an example, states
   that a task may omit it, and states that a fully declared change compiles to its run
   plan without a model call
+
+### Requirement: Inline review declaration parsing
+An OpenSpec `tasks.md` task line MAY be followed, within the same continuation window as `files:`, by an indented `review:` line whose value is a single token. The parser SHALL surface that value on the task as its `review` field so the orchestrator's review-exempt fast path can honor `skip`. A task with more than one `review:` line SHALL keep the first and record a warning; a `review:` line with no value SHALL record a warning and leave the field unset. The compile step SHALL preserve an authored `review` value over one inferred by the model.
+
+#### Scenario: review skip is parsed
+- **WHEN** a task line is followed by `  review: skip`
+- **THEN** the parsed task's `review` field is `skip` and the orchestrator treats the task as review-exempt
+
+#### Scenario: files and review coexist
+- **WHEN** a task line is followed by `  files: .worktrail/policy.yaml` and `  review: skip` in either order
+- **THEN** the parsed task carries both the declared file and the review value
+
+#### Scenario: Missing review value warns
+- **WHEN** a task line is followed by `  review:` with nothing after the colon
+- **THEN** the parse result records a warning naming the task and the task's `review` field is empty
+
