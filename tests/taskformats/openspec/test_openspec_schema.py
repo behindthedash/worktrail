@@ -138,6 +138,105 @@ def test_duplicate_files_declaration_warns_and_uses_first():
     assert "more than one" in parsed.warnings[0]
 
 
+def test_review_declaration_parsed():
+    text = textwrap.dedent(
+        """\
+        ## 1. Setup
+
+        - [ ] 1.1 Add a config key
+          review: skip
+        """
+    )
+    parsed = parse_tasks_md(text)
+    task = parsed.by_id("1.1")
+    assert task.review == "skip"
+    assert parsed.warnings == []
+
+
+def test_files_and_review_coexist_files_then_review():
+    text = textwrap.dedent(
+        """\
+        ## 1. Setup
+
+        - [ ] 1.1 Add a config key
+          files: src/widget.py
+          review: skip
+        """
+    )
+    parsed = parse_tasks_md(text)
+    task = parsed.by_id("1.1")
+    assert task.files == ["src/widget.py"]
+    assert task.review == "skip"
+    assert parsed.warnings == []
+
+
+def test_files_and_review_coexist_review_then_files():
+    text = textwrap.dedent(
+        """\
+        ## 1. Setup
+
+        - [ ] 1.1 Add a config key
+          review: skip
+          files: src/widget.py
+        """
+    )
+    parsed = parse_tasks_md(text)
+    task = parsed.by_id("1.1")
+    assert task.files == ["src/widget.py"]
+    assert task.review == "skip"
+    assert parsed.warnings == []
+
+
+def test_duplicate_review_declaration_warns_and_uses_first():
+    text = textwrap.dedent(
+        """\
+        ## 1. Setup
+
+        - [ ] 1.1 Add a config key
+          review: skip
+          review: full
+        """
+    )
+    parsed = parse_tasks_md(text)
+    task = parsed.by_id("1.1")
+    assert task.review == "skip"
+    assert len(parsed.warnings) == 1
+    assert "1.1" in parsed.warnings[0]
+    assert "more than one" in parsed.warnings[0]
+
+
+def test_empty_review_declaration_warns_and_leaves_review_empty():
+    text = textwrap.dedent(
+        """\
+        ## 1. Setup
+
+        - [ ] 1.1 Add a config key
+          review:
+        """
+    )
+    parsed = parse_tasks_md(text)
+    task = parsed.by_id("1.1")
+    assert task.review == ""
+    assert len(parsed.warnings) == 1
+    assert "1.1" in parsed.warnings[0]
+    assert "names no value" in parsed.warnings[0]
+
+
+def test_top_level_review_line_is_not_a_declaration():
+    text = textwrap.dedent(
+        """\
+        ## 1. Setup
+
+        - [ ] 1.1 Add a config key
+        review: skip
+        """
+    )
+    parsed = parse_tasks_md(text)
+    task = parsed.by_id("1.1")
+    assert task.review == ""
+    assert parsed.warnings == []
+
+
 def test_set_task_checked_on_declared_task_changes_only_checkbox_byte(tmp_path: Path):
     text = textwrap.dedent(
         """\
