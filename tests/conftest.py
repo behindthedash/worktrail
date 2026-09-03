@@ -38,10 +38,39 @@ itself reads ambient depth by design and stays; tests that exercise depth
 semantics set the variable explicitly.
 """
 
+import os
 import tempfile
 from pathlib import Path
 
 import pytest
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _contain_bare_tempfile_calls(tmp_path_factory):
+    """Route every bare tempfile.mkdtemp()/TMPDIR use under pytest's basetemp.
+
+    The suite has well over a hundred bare `tempfile.mkdtemp()` calls with no
+    matching rmtree, so each run leaked its scratch dirs straight into /tmp.
+    Confirmed live 2026-09-02: ~367k leftover `tmp*`/`preflight-*`/`prepr-*`/
+    `spec-collision-*` entries stalled systemd-tmpfiles at boot and the WSL
+    user session failed to start. Pytest prunes its own basetemp (keeps the
+    last few runs), so pointing the process-wide default there -- and TMPDIR
+    for any subprocess the tests spawn -- makes the leak self-cleaning without
+    touching each call site.
+    """
+    scratch = tmp_path_factory.getbasetemp() / "tempfile"
+    scratch.mkdir(exist_ok=True)
+    prev_tempdir, prev_env = tempfile.tempdir, os.environ.get("TMPDIR")
+    tempfile.tempdir = str(scratch)
+    os.environ["TMPDIR"] = str(scratch)
+    try:
+        yield
+    finally:
+        tempfile.tempdir = prev_tempdir
+        if prev_env is None:
+            os.environ.pop("TMPDIR", None)
+        else:
+            os.environ["TMPDIR"] = prev_env
 
 
 @pytest.fixture(autouse=True)
