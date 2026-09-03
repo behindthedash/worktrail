@@ -178,6 +178,13 @@ def test_missing_test_scope_rule_exempt_for_non_src_paths_like_docs(tmp_path):
     assert parallelism.shape_problems(tasks, tmp_path, {}) == []
 
 
+def test_missing_test_scope_rule_exempt_for_docs_kind_task(tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_foo.py").write_text("")
+    tasks = [_task("a", files=["src/foo.py"], kind="docs")]
+    assert parallelism.shape_problems(tasks, tmp_path, {}) == []
+
+
 def test_missing_test_scope_rule_exempt_for_tail_kinds(tmp_path):
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_foo.py").write_text("")

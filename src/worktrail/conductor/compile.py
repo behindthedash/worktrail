@@ -556,6 +556,7 @@ def compile_run_plan(
                     "plan; a non-deterministic recompile could disagree with that "
                     "in-progress work. Pass allow_force_over_active_worktrees to override."
                 )
+                _check_shape(cached, tasks, repo)
                 return cached
 
     gaps = needs_compile(tasks)
@@ -569,6 +570,7 @@ def compile_run_plan(
     baseline = _plan_from_tasks(spec_id, fp, tasks, SOURCE_BASELINE)
     if not allow_llm:
         log(f"run plan: {len(gaps)} task(s) lack file scope and compiling is disabled")
+        _check_shape(baseline, tasks, repo)
         return baseline
 
     purpose_tiers = _resolve_purpose_tiers(repo)

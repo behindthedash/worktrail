@@ -1268,16 +1268,14 @@ def test_the_cli_auto_repairs_an_unordered_file_collision(tmp_path, capsys):
     d = repo / "openspec" / "changes" / "add-thing"
     d.mkdir(parents=True)
     (d / "proposal.md").write_text("## Why\nBecause.\n")
+    # 3.1/3.2 are independent of the 1.1 -> 2.1 -> 2.2 chain and unrelated to
+    # what this test is about (the same-file repair below); they exist only
+    # to widen the plan so its critical path does not itself trip the
+    # plan-shape gate's serial rule (D2).
     (d / "tasks.md").write_text(
         "## 1. Core\n\n- [ ] 1.1 Add the parser\n\n"
-        "## 2. Verify\n\n- [ ] 2.1 Check a\n- [ ] 2.2 Check b\n"
-    )
-    # The repair below makes this 3-task plan's critical path 3 with width 1,
-    # which would otherwise trip the plan-shape gate's serial rule (D2) --
-    # not what this test is about, so raise its threshold out of the way.
-    (repo / ".worktrail").mkdir()
-    (repo / ".worktrail" / "policy.yaml").write_text(
-        "compile_max_critical_path_over_width: 100\n"
+        "## 2. Verify\n\n- [ ] 2.1 Check a\n- [ ] 2.2 Check b\n\n"
+        "## 3. Unrelated\n\n- [ ] 3.1 Do a\n- [ ] 3.2 Do b\n"
     )
 
     reply = _reply(
@@ -1288,6 +1286,8 @@ def test_the_cli_auto_repairs_an_unordered_file_collision(tmp_path, capsys):
                 "files": ["tests/check.py"],
                 "deps": ["1.1"],
             },  # siblings, unordered
+            "3.1": {"files": ["src/other.py"], "deps": []},
+            "3.2": {"files": ["src/other2.py"], "deps": []},
         }
     )
     with patch("worktrail.conductor.compile._default_spawn", return_value=reply):
@@ -1310,13 +1310,12 @@ def test_the_cli_json_mode_auto_repairs_an_unordered_file_collision(tmp_path, ca
     d = repo / "openspec" / "changes" / "add-thing"
     d.mkdir(parents=True)
     (d / "proposal.md").write_text("## Why\nBecause.\n")
+    # 3.1/3.2 widen the plan so its critical path does not itself trip the
+    # plan-shape gate's serial rule (D2); see the sibling text-mode test.
     (d / "tasks.md").write_text(
         "## 1. Core\n\n- [ ] 1.1 Add the parser\n\n"
-        "## 2. Verify\n\n- [ ] 2.1 Check a\n- [ ] 2.2 Check b\n"
-    )
-    (repo / ".worktrail").mkdir()
-    (repo / ".worktrail" / "policy.yaml").write_text(
-        "compile_max_critical_path_over_width: 100\n"
+        "## 2. Verify\n\n- [ ] 2.1 Check a\n- [ ] 2.2 Check b\n\n"
+        "## 3. Unrelated\n\n- [ ] 3.1 Do a\n- [ ] 3.2 Do b\n"
     )
 
     reply = _reply(
@@ -1324,6 +1323,8 @@ def test_the_cli_json_mode_auto_repairs_an_unordered_file_collision(tmp_path, ca
             "1.1": {"files": ["src/parser.py"], "deps": []},
             "2.1": {"files": ["tests/check.py"], "deps": ["1.1"]},
             "2.2": {"files": ["tests/check.py"], "deps": ["1.1"]},
+            "3.1": {"files": ["src/other.py"], "deps": []},
+            "3.2": {"files": ["src/other2.py"], "deps": []},
         }
     )
     with patch("worktrail.conductor.compile._default_spawn", return_value=reply):
