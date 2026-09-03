@@ -58,7 +58,11 @@ require non-empty `evidence` text for every verdict. `fold-into-change` SHALL ad
 require a non-empty `target_change` (`<repo>:change:<id>` naming an active change presented
 as a candidate); `propose-change` SHALL additionally require a non-empty `target_repo` and a
 kebab-case `proposed_change_name`; `needs-decision` SHALL additionally require a non-empty
-`question`. A verdict that is missing, malformed, or missing required evidence or required
+`question`. For a brief evaluated in the repo-less (`__none__`) group, the evaluator prompt
+SHALL list the known workspace repos (the directory basenames under the configured repos
+root), `propose-change` SHALL be valid only when `target_repo` is one of those listed names,
+and `fold-into-change` SHALL remain invalid since no candidate changes are presented. A
+verdict that is missing, malformed, or missing required evidence or required
 target fields SHALL be recorded as `keep` with the evaluator's raw output retained as
 evidence text, never silently dropped from the output. Every recorded verdict SHALL carry
 the brief's `premise_check` results (empty for a no-repo brief). For a brief in the no-repo
@@ -94,6 +98,22 @@ never left idle.
   verdict object
 - **THEN** the verdict file records that brief as `keep` with the raw unparsed text retained
   as evidence, and the brief is never left out of the verdict file
+
+#### Scenario: Repo-less brief proposes into a known repo
+- **WHEN** the evaluator for the `__none__` group cites evidence identifying the owning repo
+  and returns `propose-change` with `target_repo` equal to one of the known repo names it was
+  shown and a kebab-case `proposed_change_name`
+- **THEN** the verdict is accepted as-is
+
+#### Scenario: Repo-less brief proposes into an unknown repo
+- **WHEN** the evaluator for the `__none__` group returns `propose-change` whose
+  `target_repo` is not one of the known repo names it was shown
+- **THEN** the verdict is downgraded to `keep` with the evaluator's output as evidence
+
+#### Scenario: Repo-less brief cannot fold
+- **WHEN** the evaluator for the `__none__` group returns `fold-into-change`
+- **THEN** the verdict is downgraded to `keep`, since no candidate changes were presented for
+  a repo-less brief
 
 #### Scenario: Keep for a no-repo brief becomes needs-decision
 - **WHEN** an evaluator returns `keep` (or an unparsable verdict) for a brief in the no-repo
@@ -172,6 +192,21 @@ attempt any worktree or git operation.
   configured repos root
 - **THEN** `openspec new change` and the subsequent worktree/PR flow run against that
   matching checkout
+
+#### Scenario: Repo-less propose-change stamps the brief's repo before proposing
+- **WHEN** `apply --confirm` runs against a verdict file containing a `propose-change`
+  verdict evaluated in the repo-less (`__none__`) group whose `target_repo` is a bare name
+  that resolves to a checkout under the configured repos root
+- **THEN** the brief's `repo:` frontmatter is set to that bare name before any worktree or
+  git operation runs, and the `openspec new change` / worktree / PR flow runs against the
+  resolved checkout; a later failure in that flow leaves the brief queued with `repo:` still
+  stamped
+
+#### Scenario: Repo-less propose-change with an unresolvable target stamps nothing
+- **WHEN** `apply --confirm` runs against a repo-less `propose-change` verdict whose
+  `target_repo` does not resolve under the configured repos root
+- **THEN** the action-log entry reports an error status naming the unresolvable repo, the
+  brief's frontmatter is unchanged, and no worktree, git, or `gh` command runs
 
 #### Scenario: Unresolvable repo value fails closed
 - **WHEN** `apply --confirm` runs against a verdict file containing a `fold-into-change` or

@@ -249,7 +249,7 @@
       deterministically from its focus; Requirement: Mechanical premise check precedes
       evaluation)
       files: tests/workqueue/test_intake_convergence_e2e.py
-- [ ] 6.2 [e2e] Run `PYTHONPATH=src pytest -q`, `PYTHONPATH=src python3 -m
+- [x] 6.2 [e2e] Run `PYTHONPATH=src pytest -q`, `PYTHONPATH=src python3 -m
       worktrail.orchestrator.orchestrate check`, and `openspec validate
       autonomous-intake-brief-convergence --strict`; confirm `tests/test_plugin_surface.py`
       still accepts every command SKILL.md names. Verification-only — no file changes
