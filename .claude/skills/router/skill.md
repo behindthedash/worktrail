@@ -19,6 +19,10 @@ triggers:
     - triage_keep_limit
     - triage_max_queue_age_days
     - max_parallel_workers
+    - compile_max_critical_path_over_width
+    - compile_max_same_file_chain
+    - review_skip_max_diff_lines
+    - pre_commit_cmd
 ---
 
 You are working on **worktrail's GO v2 front door**: loading repo policy, classifying free-text
@@ -84,6 +88,23 @@ agents or writes task files — that is `orchestrator/`'s job.
   can land in either order — as of 2026-09-02 the keys are in `DEFAULTS` but no consumer reads
   them yet in this checkout. Copy this loop when adding another bounded-int key rather than
   inventing a new validation shape.
+- **Plan-shape and review-skip keys use that same bounded-int loop.**
+  `compile_max_critical_path_over_width` (default 2, min 1) and `compile_max_same_file_chain`
+  (default 2, min 1) are the plan-shape gates `conductor/compile.py` consumes: a compiled plan is
+  rejected when its critical path exceeds `max(width, compile_max_critical_path_over_width)` or a
+  dependent chain all touching one file exceeds `compile_max_same_file_chain`.
+  `review_skip_max_diff_lines` (default 0 = disabled, min 0) is the fast path `orchestrator/live.py`'s
+  `drive()` consumes beside `_review_exempt`: when > 0, a task's first review is skipped once the
+  implement report is a verified success under that many added+removed diff lines (test files
+  excluded). Invalid values drop to the default with a `meta["warnings"]` entry.
+- **`pre_commit_cmd` (default `None`) is the one optional-string policy key.** A non-string,
+  non-`None` value is forced to `None` with a warning. Its consumers are `orchestrator/dispatch.py`
+  (a worker-prompt hard rule for implement/fix and the ci-fix group prompt) and
+  `orchestrator/live.py`/`verify.py` (post-commit amend backstop). `None` means repos without a
+  wired command see no behavior change. `onboarding/repo_init.py`'s `detect_pre_commit_cmd`
+  seeds it into a fresh `.worktrail/policy.yaml` by scanning `.github/workflows/*.yml|yaml`
+  `run:` step lines for `ruff`/`oxlint`/`prettier` (`PRE_COMMIT_CMD_BY_LINTER`, joined with `&&`
+  in that order); an existing policy file is never touched.
 - **`automerge.enabled: false` does not, by itself, block orchestrator-driven merges.** Only
   `automerge_eligible()` reads that key, and only when an agent follows sdd-workflow's Phase 8
   merge-gate instructions — `orchestrator`'s own `auto_merge()` is a separate code path that
@@ -133,4 +154,4 @@ agents or writes task files — that is `orchestrator/`'s job.
   and next-action detection
 
 ---
-**Last Updated:** 2026-09-02
+**Last Updated:** 2026-09-03
