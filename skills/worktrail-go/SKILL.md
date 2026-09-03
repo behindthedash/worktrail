@@ -277,15 +277,12 @@ repo token in the invocation itself) before doing anything else:
      VERDICT_JSON=$(worktrail-skill-dispatch \
        --evaluate-brief-triage "$BRIEF_PATH" \
        ${BRIEF_REPO:+--triage-repo "$BRIEF_REPO"} \
-       --triage-agent "$INVOCATION_CONTEXT_AGENT" \
-       --triage-repos-root "${REPOS_ROOT:-$HOME/projects}")
+       --triage-agent "$INVOCATION_CONTEXT_AGENT")
      ```
      A brief with no `repo:` frontmatter (`$BRIEF_REPO` empty) omits `--triage-repo`;
-     the evaluator infers the repo from the brief's focus under `--triage-repos-root`
-     and writes it back to the brief's `repo:` frontmatter before evaluating in that
-     group (same repo-inference rule a scheduled `evaluate` run applies). A due
-     null-repo brief the inference can't resolve is still verdicted by the matrix, not
-     skipped. Exit 1 with `VERDICT_JSON` printing `null` means the evaluator produced no
+     the evaluator then runs it in the repo-less (`__none__`) group, exactly as a
+     scheduled `evaluate` run does, and returns `needs-decision` asking which repo owns
+     it when the target cannot be told from the brief itself. Exit 1 with `VERDICT_JSON` printing `null` means the evaluator produced no
      identifiable verdict for this brief id at all — report that and stop rather than
      guessing one.
   2. Apply the verdict unconditionally via the same `queue_triage` apply path 3.x's
