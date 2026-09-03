@@ -2110,6 +2110,287 @@ class TestApplyProposeChange(QueueTriageTestBase):
         self.assertTrue((self.queue / "a.md").exists())
 
 
+class TestApplyRepoResolution(QueueTriageTestBase):
+    """1.1: `repo` must be resolved to an on-disk checkout (via
+    `_resolve_repo_dir()`, basename-under-`repos_root` for bare names) before
+    any worktree/git op, for both `fold-into-change` and `propose-change`.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.repos_root = self.base / "repos"
+        self.repos_root.mkdir(parents=True, exist_ok=True)
+        self.repo_dir = self.repos_root / "widgets"
+        self.repo_dir.mkdir(parents=True, exist_ok=True)
+        self.target_change = "widget-export-pipeline"
+        self.proposed_change_name = "widget-export-pipeline-v2"
+
+    @staticmethod
+    def _completed(returncode: int, stdout: str = "", stderr: str = "") -> Any:
+        return subprocess.CompletedProcess(
+            args=["fake"], returncode=returncode, stdout=stdout, stderr=stderr
+        )
+
+    def _fold_verdict(self, repo: str) -> qt.Verdict:
+        return qt.Verdict(
+            brief_id="a",
+            verdict="fold-into-change",
+            duplicate_of=None,
+            evidence="overlaps open tasks in widget-export-pipeline",
+            confidence="high",
+            target_change=self.target_change,
+            repo=repo,
+        )
+
+    def _propose_verdict(self, repo: str) -> qt.Verdict:
+        return qt.Verdict(
+            brief_id="a",
+            verdict="propose-change",
+            duplicate_of=None,
+            evidence="no good fold target, deserves its own change",
+            confidence="high",
+            target_repo=repo,
+            proposed_change_name=self.proposed_change_name,
+            repo=repo,
+        )
+
+    def _seed_fold_change(self, worktree_dir: Path) -> None:
+        change_dir = worktree_dir / "openspec" / "changes" / self.target_change
+        change_dir.mkdir(parents=True, exist_ok=True)
+        (change_dir / "proposal.md").write_text(
+            "# Widget export pipeline\n\n## Why\n\nExisting rationale.\n",
+            encoding="utf-8",
+        )
+        (change_dir / "tasks.md").write_text(
+            "## 1. Tasks\n\n- [ ] 1.1 Existing task\n",
+            encoding="utf-8",
+        )
+
+    def _fold_dispatcher(self, worktree_dir: Path):
+        pr_url = "https://github.com/acme/widgets/pull/42"
+
+        def _run(cmd, **kwargs):
+            if cmd[0] == "git" and "-C" in cmd:
+                if "symbolic-ref" in cmd:
+                    return self._completed(0, stdout="origin/main\n")
+                if "config" in cmd and "remote.pushDefault" in cmd:
+                    return self._completed(1)
+                if "remote" in cmd and "get-url" in cmd:
+                    return self._completed(
+                        0, stdout="git@github.com:acme-fork/widgets.git\n"
+                    )
+                if "worktree" in cmd and "add" in cmd:
+                    self._seed_fold_change(worktree_dir)
+                    return self._completed(0)
+                if "worktree" in cmd and "remove" in cmd:
+                    return self._completed(0)
+                if "branch" in cmd and "-D" in cmd:
+                    return self._completed(0)
+            if cmd[0] == "openspec" and cmd[1] == "validate":
+                return self._completed(0, stdout="valid\n")
+            if cmd[0] == "worktrail-compile":
+                (Path(cmd[1]) / ".compile-ok").write_text("fp\n", encoding="utf-8")
+                return self._completed(0)
+            if cmd[0] == "git" and cmd[1] in ("add", "commit"):
+                return self._completed(0)
+            if cmd[0] == "git" and cmd[1] == "push":
+                return self._completed(0)
+            if cmd[0] == "gh" and cmd[1:3] == ["pr", "create"]:
+                return self._completed(0, stdout=f"{pr_url}\n")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        return _run, pr_url
+
+    def test_bare_repo_name_resolves_under_repos_root_for_fold(self):
+        self.write("a.md", repo="widgets", body="## Focus\n\nfold this in\n")
+        verdict = self._fold_verdict("widgets")
+        branch = qt._planned_fold_propose_branch(verdict)
+        worktree_dir = qt._fold_propose_worktree_dir(self.repo_dir, branch)
+        run, pr_url = self._fold_dispatcher(worktree_dir)
+
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+            ),
+            mock.patch(
+                "worktrail.workqueue.queue_triage._refresh_pr_labels",
+                return_value=["go:risk-low"],
+            ),
+        ):
+            log = qt.apply_verdicts([verdict], confirm=True, repos_root=self.repos_root)
+
+        entry = log[0]
+        self.assertEqual(entry["status"], "executed")
+        self.assertIsNone(entry["error"])
+        self.assertEqual(entry["pr_url"], pr_url)
+
+    def _seed_propose_change(self, worktree_dir: Path) -> None:
+        change_dir = worktree_dir / "openspec" / "changes" / self.proposed_change_name
+        change_dir.mkdir(parents=True, exist_ok=True)
+        (change_dir / "proposal.md").write_text(
+            "# Widget export pipeline v2\n\n## Why\n\nAgent-authored rationale.\n",
+            encoding="utf-8",
+        )
+        (change_dir / "tasks.md").write_text(
+            "## 1. Tasks\n\n- [ ] 1.1 Agent-authored task\n",
+            encoding="utf-8",
+        )
+
+    def _propose_dispatcher(self, worktree_dir: Path):
+        pr_url = "https://github.com/acme/widgets/pull/43"
+
+        def _run(cmd, **kwargs):
+            if cmd[0] == "git" and "-C" in cmd:
+                if "symbolic-ref" in cmd:
+                    return self._completed(0, stdout="origin/main\n")
+                if "config" in cmd and "remote.pushDefault" in cmd:
+                    return self._completed(1)
+                if "remote" in cmd and "get-url" in cmd:
+                    return self._completed(
+                        0, stdout="git@github.com:acme-fork/widgets.git\n"
+                    )
+                if "worktree" in cmd and "add" in cmd:
+                    worktree_dir.mkdir(parents=True, exist_ok=True)
+                    return self._completed(0)
+                if "worktree" in cmd and "remove" in cmd:
+                    return self._completed(0)
+                if "branch" in cmd and "-D" in cmd:
+                    return self._completed(0)
+            if cmd[0] == "openspec" and cmd[1:3] == ["new", "change"]:
+                return self._completed(0)
+            if cmd[0] == "openspec" and cmd[1] == "validate":
+                return self._completed(0, stdout="valid\n")
+            if cmd[0] == "worktrail-compile":
+                Path(cmd[1]).mkdir(parents=True, exist_ok=True)
+                (Path(cmd[1]) / ".compile-ok").write_text("fp\n", encoding="utf-8")
+                return self._completed(0)
+            if cmd[0] == "git" and cmd[1] in ("add", "commit"):
+                return self._completed(0)
+            if cmd[0] == "git" and cmd[1] == "push":
+                return self._completed(0)
+            if cmd[0] == "gh" and cmd[1:3] == ["pr", "create"]:
+                return self._completed(0, stdout=f"{pr_url}\n")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        return _run, pr_url
+
+    def test_bare_repo_name_resolves_under_repos_root_for_propose(self):
+        self.write("a.md", repo="widgets", body="## Focus\n\npropose this\n")
+        verdict = self._propose_verdict("widgets")
+        branch = qt._planned_fold_propose_branch(verdict)
+        worktree_dir = qt._fold_propose_worktree_dir(self.repo_dir, branch)
+        run, pr_url = self._propose_dispatcher(worktree_dir)
+
+        def _spawn(prompt, cwd, **kwargs):
+            from worktrail.orchestrator.spawnlib import SpawnResult
+
+            self._seed_propose_change(worktree_dir)
+            return SpawnResult(text="done authoring the change", usage={})
+
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+            ),
+            mock.patch(
+                "worktrail.workqueue.queue_triage._refresh_pr_labels",
+                return_value=["go:risk-low"],
+            ),
+            mock.patch(
+                "worktrail.orchestrator.spawnlib.spawn_agent", side_effect=_spawn
+            ),
+        ):
+            log = qt.apply_verdicts([verdict], confirm=True, repos_root=self.repos_root)
+
+        entry = log[0]
+        self.assertEqual(entry["status"], "executed")
+        self.assertIsNone(entry["error"])
+        self.assertEqual(entry["pr_url"], pr_url)
+
+    def test_unresolvable_repo_is_an_error_and_never_shells_out(self):
+        verdict = self._fold_verdict("no-such-repo")
+
+        with mock.patch("worktrail.workqueue.queue_triage.subprocess.run") as run_mock:
+            log = qt.apply_verdicts([verdict], confirm=True, repos_root=self.repos_root)
+
+        run_mock.assert_not_called()
+        entry = log[0]
+        self.assertEqual(entry["status"], "error")
+        self.assertIn("no-such-repo", entry["error"])
+
+    def test_unresolvable_repo_is_an_error_for_propose_and_never_shells_out(self):
+        verdict = self._propose_verdict("no-such-repo")
+
+        with mock.patch("worktrail.workqueue.queue_triage.subprocess.run") as run_mock:
+            log = qt.apply_verdicts([verdict], confirm=True, repos_root=self.repos_root)
+
+        run_mock.assert_not_called()
+        entry = log[0]
+        self.assertEqual(entry["status"], "error")
+        self.assertIn("no-such-repo", entry["error"])
+
+    def test_absolute_repo_path_unaffected_with_no_repos_root(self):
+        self.write("a.md", repo=str(self.repo_dir), body="## Focus\n\nfold this in\n")
+        verdict = self._fold_verdict(str(self.repo_dir))
+        branch = qt._planned_fold_propose_branch(verdict)
+        worktree_dir = qt._fold_propose_worktree_dir(self.repo_dir, branch)
+        run, pr_url = self._fold_dispatcher(worktree_dir)
+
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+            ),
+            mock.patch(
+                "worktrail.workqueue.queue_triage._refresh_pr_labels",
+                return_value=["go:risk-low"],
+            ),
+        ):
+            log = qt.apply_verdicts([verdict], confirm=True)
+
+        entry = log[0]
+        self.assertEqual(entry["status"], "executed")
+        self.assertIsNone(entry["error"])
+        self.assertEqual(entry["pr_url"], pr_url)
+
+    def test_cmd_apply_forwards_explicit_repos_root(self):
+        self.write("a.md", body="## Focus\n\nsome brief\n")
+        verdicts = [self._fold_verdict("widgets")]
+        verdict_path = qt.write_verdict_file(verdicts, self.base / "out")
+
+        with mock.patch(
+            "worktrail.workqueue.queue_triage.apply_verdicts"
+        ) as apply_mock:
+            apply_mock.return_value = []
+            qt.main(
+                [
+                    "apply",
+                    "--verdict-file",
+                    str(verdict_path),
+                    "--repos-root",
+                    str(self.repos_root),
+                ]
+            )
+
+        self.assertEqual(
+            apply_mock.call_args.kwargs["repos_root"], str(self.repos_root)
+        )
+
+    def test_cmd_apply_defaults_repos_root_to_home_projects(self):
+        self.write("a.md", body="## Focus\n\nsome brief\n")
+        verdicts = [self._fold_verdict("widgets")]
+        verdict_path = qt.write_verdict_file(verdicts, self.base / "out")
+
+        with mock.patch(
+            "worktrail.workqueue.queue_triage.apply_verdicts"
+        ) as apply_mock:
+            apply_mock.return_value = []
+            qt.main(["apply", "--verdict-file", str(verdict_path)])
+
+        self.assertEqual(
+            apply_mock.call_args.kwargs["repos_root"],
+            str(Path.home() / "projects"),
+        )
+
+
 class TestApplyPropseChangeWipCapDowngrade(QueueTriageTestBase):
     """3.6: `apply_verdicts()` re-checks the target repo's active-change count
     against its `max_active_changes` policy cap at apply time (not just
