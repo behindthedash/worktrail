@@ -4242,7 +4242,9 @@ class TestEvaluateBriefs(QueueTriageTestBase):
                 today,
             )
 
-        def fake_evaluate_group(repo, briefs, *, agent="claude", cwd=None):
+        def fake_evaluate_group(
+            repo, briefs, *, agent="claude", cwd=None, repos_root=None
+        ):
             ids = [p.stem for p in briefs]
             raw = json.dumps(
                 {
