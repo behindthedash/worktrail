@@ -22,6 +22,7 @@ This suite must prove the orchestrator's side-effecting paths (git, `gh`, worker
 
 ## Business rules / invariants
 - **Never touch real machine-wide state.** `tests/conftest.py`'s autouse `_isolate_go_machine_wide_config` fixture redirects `WORKTRAIL_HOME`, `GO_ROUTING_FILE`, `GO_MODEL_DEFAULTS_FILE`, `GO_AGENT_CAPACITY_CACHE`, and `WORK_QUEUE_DIR` into `tmp_path` for every test. A real populated `~/.worktrail`/`~/.go`/`~/work-queue` broke `test_routing_e2e.py` in production once (2026-08-03) — do not add a new machine-wide config path without wiring it into this fixture.
+- **Bare `tempfile.mkdtemp()` never leaks into `/tmp`.** `tests/conftest.py`'s session-scoped autouse `_contain_bare_tempfile_calls` fixture points `tempfile.tempdir` and `TMPDIR` (for spawned subprocesses) at a `tempfile/` dir under pytest's basetemp, which pytest prunes itself. The suite has well over a hundred bare `mkdtemp()` calls with no matching `rmtree`; before this fixture (2026-09-02) ~367k leftover `tmp*`/`preflight-*`/`prepr-*`/`spec-collision-*` entries in `/tmp` stalled systemd-tmpfiles at boot and the WSL user session failed to start. Rely on this containment rather than hand-cleaning each call site, but do not bypass it by hardcoding `/tmp` paths.
 - **Hermetic by construction, not by discipline.** Orchestrator tests (`test_verify.py`, `test_integrate.py`, lifecycle harness) inject a fake `run`/`spawn` callable instead of mocking `subprocess` ad hoc — see `FakeRun`/`FakeSpawn` in `test_verify.py` and `tests/orchestrator/lifecycle/fake_gh.py` (a subprocess-level `gh` stand-in placed first on `PATH`, deliberately not a Python-level mock, so the real argument-building/JSON-parsing code paths that broke in prod, #163/#164/#207, actually run).
 - **Addon machine-local state is isolated the same way.** `tests/addons/test_aspens.py`'s `_MarkerIsolation` base patches `aspens_module.CACHE_DIR`/`LAST_CHECK_MARKER` to a per-test tempdir — never read/write the real `~/.cache/worktrail/addons/aspens/`. Follow this pattern for any new addon under `src/worktrail/addons/`.
 
@@ -32,7 +33,7 @@ This suite must prove the orchestrator's side-effecting paths (git, `gh`, worker
 - **Golden record/replay regression**: `python3 -m worktrail.orchestrator.orchestrate check` (see AGENTS.md Development section) is a separate check from `pytest` — run both before considering orchestrator changes verified.
 
 ## Critical files (purpose, not inventory)
-- `tests/conftest.py` — the one mandatory isolation fixture every test in the suite inherits; read it before writing any test that touches env-resolved paths.
+- `tests/conftest.py` — the mandatory isolation fixtures every test in the suite inherits (machine-wide config redirect plus session-wide tempfile containment); read it before writing any test that touches env-resolved paths or scratch dirs.
 - `tests/orchestrator/lifecycle/fake_gh.py` — canonical subprocess-level fake for anything that shells out to `gh`; extend its `$GH_FAKE_STATE` JSON schema rather than adding a second fake.
 - `tests/router/test_gate_enforcement_coverage.py` / `test_pr_creation_callsite_enforcement_coverage.py` — the reference implementations of the AST-walk + registered-consumer pattern; copy this shape for a new class of "silently unenforced" risk.
 
@@ -41,4 +42,4 @@ This suite must prove the orchestrator's side-effecting paths (git, `gh`, worker
 - A test that mocks `subprocess`/`gh` ad hoc instead of using `FakeRun`/`fake_gh.py` risks missing the exact argument-building bugs those fakes exist to catch — prefer the existing fake over a new mock.
 
 ---
-**Last Updated:** 2026-08-16
+**Last Updated:** 2026-09-03
