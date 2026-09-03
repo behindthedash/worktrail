@@ -32,7 +32,7 @@
 
 ## 3. Compile plan-shape gate
 
-- [ ] 3.1 In `src/worktrail/conductor/parallelism.py` add `shape_problems(merged, repo, policy)`
+- [x] 3.1 In `src/worktrail/conductor/parallelism.py` add `shape_problems(merged, repo, policy)`
       implementing design D2's three rules (serial: critical path > max(width, N) naming one
       longest chain; same-file chain longer than K naming ids and file; implementation task with
       a `src/` path, no `tests/` path, and an existing `tests/**/test_<stem>*.py`, naming that
@@ -60,7 +60,7 @@
 
 ## 4. Orchestrator review fast path, scope escalation, pre-commit backstop
 
-- [ ] 4.1 In `src/worktrail/orchestrator/live.py`: (a) small-diff skip per design D3 beside the
+- [x] 4.1 In `src/worktrail/orchestrator/live.py`: (a) small-diff skip per design D3 beside the
       `_review_exempt` fast path in both `drive()` bodies, gated on
       `review_skip_max_diff_lines` read via `load_policy(repo).get(..., 0)`, first review only,
       implement report `status: success` and `tests: passed`, non-test added+removed lines from
@@ -145,7 +145,7 @@
 
 ## 8. Verification
 
-- [ ] 8.1 [e2e] Run `PYTHONPATH=src pytest -q && PYTHONPATH=src python3 -m
+- [x] 8.1 [e2e] Run `PYTHONPATH=src pytest -q && PYTHONPATH=src python3 -m
       worktrail.orchestrator.orchestrate check`; run `worktrail-compile --no-llm` against a
       scratch OpenSpec change built from `tests/fixtures/plan_shape/serial-group4.tasks.md` and
       confirm exit 1 with the three problem lines and no marker, then against
