@@ -241,6 +241,24 @@ DEFAULTS: dict[str, Any] = {
     # regardless of keep count. Consumed the same way, via
     # `.get("triage_max_queue_age_days", 14)`. 14 = two weeks.
     "triage_max_queue_age_days": 14,
+    # Plan-shape gate consumed by `conductor/compile.py`: a compiled plan is
+    # rejected when its critical path exceeds `max(width,
+    # compile_max_critical_path_over_width)`. Default 2 — a chain up to two
+    # tasks longer than the widest parallel group is tolerated before the
+    # author is asked to consolidate or declare disjoint file scope.
+    "compile_max_critical_path_over_width": 2,
+    "compile_max_same_file_chain": 2,
+    # Optional fast path consumed by `orchestrator/verify.py`: when > 0, a
+    # task's first review is skipped once the implement report is a verified
+    # success under this many added+removed diff lines (test files excluded).
+    # 0 = disabled — every task's first review still spawns, unchanged.
+    "review_skip_max_diff_lines": 0,
+    # Optional shell command consumed by `orchestrator/dispatch.py` (worker
+    # prompt hard rule) and `orchestrator/live.py`/`verify.py` (post-commit
+    # amend backstop): run from the worktree root immediately before every
+    # implement/fix/ci-fix commit to format and lint the diff. None = skip,
+    # so repos without a wired command see no behavior change.
+    "pre_commit_cmd": None,
 }
 
 KNOWN_KEYS = set(DEFAULTS) | {"automerge"}
@@ -1279,6 +1297,22 @@ def load_policy(repo: Path) -> dict[str, Any]:
                 f"{key} must be an integer >= {minimum}; dropped ({value!r})"
             )
             policy[key] = DEFAULTS[key]
+    for key, minimum in (
+        ("compile_max_critical_path_over_width", 1),
+        ("compile_max_same_file_chain", 1),
+        ("review_skip_max_diff_lines", 0),
+    ):
+        value = policy.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
+            meta["warnings"].append(
+                f"{key} must be an integer >= {minimum}; dropped ({value!r})"
+            )
+            policy[key] = DEFAULTS[key]
+    if policy.get("pre_commit_cmd") is not None and not isinstance(
+        policy["pre_commit_cmd"], str
+    ):
+        meta["warnings"].append("pre_commit_cmd must be a string; dropped")
+        policy["pre_commit_cmd"] = None
     mac = policy.get("max_active_changes")
     if not isinstance(mac, int) or isinstance(mac, bool):
         meta["warnings"].append(

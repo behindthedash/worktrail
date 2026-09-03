@@ -2486,3 +2486,80 @@ class MaxParallelWorkersKeyTests(unittest.TestCase):
             self.assertTrue(
                 any("max_parallel_workers" in w for w in pol["_meta"]["warnings"]), bad
             )
+
+
+class CompilePlanShapeKeysTests(unittest.TestCase):
+    def test_defaults_are_two(self):
+        pol = load_policy(_repo_with(""))
+        self.assertEqual(pol["compile_max_critical_path_over_width"], 2)
+        self.assertEqual(pol["compile_max_same_file_chain"], 2)
+
+    def test_valid_values_kept(self):
+        pol = load_policy(
+            _repo_with(
+                "compile_max_critical_path_over_width: 4\n"
+                "compile_max_same_file_chain: 3\n"
+            )
+        )
+        self.assertEqual(pol["compile_max_critical_path_over_width"], 4)
+        self.assertEqual(pol["compile_max_same_file_chain"], 3)
+        self.assertFalse(
+            any(
+                "compile_max_critical_path_over_width" in w
+                or "compile_max_same_file_chain" in w
+                for w in pol["_meta"]["warnings"]
+            )
+        )
+
+    def test_invalid_values_fall_back_with_warning(self):
+        for key in ("compile_max_critical_path_over_width", "compile_max_same_file_chain"):
+            for bad in ("yes", "0", "many"):
+                pol = load_policy(_repo_with(f"{key}: {bad}\n"))
+                self.assertEqual(pol[key], 2, (key, bad))
+                self.assertTrue(
+                    any(key in w for w in pol["_meta"]["warnings"]), (key, bad)
+                )
+
+
+class ReviewSkipMaxDiffLinesKeyTests(unittest.TestCase):
+    def test_default_is_zero(self):
+        pol = load_policy(_repo_with(""))
+        self.assertEqual(pol["review_skip_max_diff_lines"], 0)
+
+    def test_valid_value_kept(self):
+        pol = load_policy(_repo_with("review_skip_max_diff_lines: 40\n"))
+        self.assertEqual(pol["review_skip_max_diff_lines"], 40)
+        self.assertFalse(
+            any("review_skip_max_diff_lines" in w for w in pol["_meta"]["warnings"])
+        )
+
+    def test_invalid_values_fall_back_with_warning(self):
+        for bad in ("forty", "-1", "true"):
+            pol = load_policy(_repo_with(f"review_skip_max_diff_lines: {bad}\n"))
+            self.assertEqual(pol["review_skip_max_diff_lines"], 0, bad)
+            self.assertTrue(
+                any("review_skip_max_diff_lines" in w for w in pol["_meta"]["warnings"]),
+                bad,
+            )
+
+
+class PreCommitCmdKeyTests(unittest.TestCase):
+    def test_default_is_none(self):
+        pol = load_policy(_repo_with(""))
+        self.assertIsNone(pol["pre_commit_cmd"])
+
+    def test_string_value_kept(self):
+        pol = load_policy(
+            _repo_with('pre_commit_cmd: "ruff check . --fix && ruff format ."\n')
+        )
+        self.assertEqual(pol["pre_commit_cmd"], "ruff check . --fix && ruff format .")
+        self.assertFalse(
+            any("pre_commit_cmd" in w for w in pol["_meta"]["warnings"])
+        )
+
+    def test_non_string_forced_to_none_with_warning(self):
+        pol = load_policy(_repo_with("pre_commit_cmd: true\n"))
+        self.assertIsNone(pol["pre_commit_cmd"])
+        self.assertTrue(
+            any("pre_commit_cmd" in w for w in pol["_meta"]["warnings"])
+        )
