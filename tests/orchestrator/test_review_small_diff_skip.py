@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Integration tests for the design-D3 small-diff review skip (live.py).
 
 A repo opts in via `.worktrail/policy.yaml`'s `review_skip_max_diff_lines`

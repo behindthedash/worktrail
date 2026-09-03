@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Unit + integration tests for the design-D6 pre-commit backstop (live.py).
 
 After an implement/fix report with a `head_sha`, `_apply_pre_commit_backstop`
