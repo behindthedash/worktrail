@@ -34,9 +34,13 @@ require non-empty `evidence` text for every verdict. `fold-into-change` SHALL ad
 require a non-empty `target_change` (`<repo>:change:<id>` naming an active change presented
 as a candidate); `propose-change` SHALL additionally require a non-empty `target_repo` and a
 kebab-case `proposed_change_name`; `needs-decision` SHALL additionally require a non-empty
-`question`. A verdict that is missing, malformed, or missing required evidence or required
-target fields SHALL be recorded as `keep` with the evaluator's raw output retained as
-evidence text, never silently dropped from the output.
+`question`. For a brief evaluated in the repo-less (`__none__`) group, the evaluator prompt
+SHALL list the known workspace repos (the directory basenames under the configured repos
+root), `propose-change` SHALL be valid only when `target_repo` is one of those listed names,
+and `fold-into-change` SHALL remain invalid since no candidate changes are presented. A
+verdict that is missing, malformed, or missing required evidence or required target fields
+SHALL be recorded as `keep` with the evaluator's raw output retained as evidence text, never
+silently dropped from the output.
 
 #### Scenario: Well-formed stale-close verdict
 - **WHEN** an evaluator returns `{"brief_id": "X", "verdict": "stale-close", "evidence":
@@ -64,6 +68,22 @@ evidence text, never silently dropped from the output.
 - **WHEN** an evaluator's output for a brief cannot be parsed as a valid verdict object
 - **THEN** the verdict file records that brief as `keep` with the raw unparsed text retained
   as evidence, and the brief is never left out of the verdict file
+
+#### Scenario: Repo-less brief proposes into a known repo
+- **WHEN** the evaluator for the `__none__` group cites evidence identifying the owning repo
+  and returns `propose-change` with `target_repo` equal to one of the known repo names it was
+  shown and a kebab-case `proposed_change_name`
+- **THEN** the verdict is accepted as-is
+
+#### Scenario: Repo-less brief proposes into an unknown repo
+- **WHEN** the evaluator for the `__none__` group returns `propose-change` whose
+  `target_repo` is not one of the known repo names it was shown
+- **THEN** the verdict is downgraded to `keep` with the evaluator's output as evidence
+
+#### Scenario: Repo-less brief cannot fold
+- **WHEN** the evaluator for the `__none__` group returns `fold-into-change`
+- **THEN** the verdict is downgraded to `keep`, since no candidate changes were presented for
+  a repo-less brief
 
 ### Requirement: Archived or renamed target repo short-circuits its group
 Before evaluating any brief in a repo group with a non-null `repo:` value, the evaluator SHALL
@@ -104,7 +124,13 @@ The `apply` step SHALL only ever act on verdicts present in a verdict file suppl
 without both an existing verdict file entry and the `--confirm` flag. Without `--confirm`,
 every planned action — including the branch, target change, and pull-request title a fold or
 propose would create — SHALL be printed and nothing SHALL be modified in the queue or in any
-target repo.
+target repo. For `fold-into-change` and `propose-change`, a verdict's `repo` value SHALL be
+resolved to an on-disk checkout directory the same way the router/dashboard resolve a brief's
+`repo:` frontmatter (an absolute or home-relative path resolves directly; a bare name or
+`owner/name`-style value resolves by basename under a configurable repos root, defaulting to
+`~/projects`) before any worktree or git operation runs against it. A `repo` value that cannot
+be resolved to an existing directory SHALL fail with an error action-log entry and SHALL NOT
+attempt any worktree or git operation.
 
 #### Scenario: Apply without --confirm is a dry run
 - **WHEN** `apply` is invoked with a verdict file but without `--confirm`
@@ -130,6 +156,43 @@ target repo.
   verdict for brief `Z`
 - **THEN** the fold is executed per the `intake-triage` capability's fail-closed
   pull-request semantics, and brief `Z` is closed only after the pull request exists
+
+#### Scenario: Fold-into-change resolves a bare repo name
+- **WHEN** `apply --confirm` runs against a verdict file containing a `fold-into-change`
+  verdict whose `repo` is a bare name (e.g. `devops`) that uniquely matches a sibling
+  checkout under the configured repos root
+- **THEN** the worktree, branch, and pull request are created against that matching
+  checkout, not against a path relative to the current working directory
+
+#### Scenario: Propose-change resolves a bare repo name
+- **WHEN** `apply --confirm` runs against a verdict file containing a `propose-change`
+  verdict whose `repo` is a bare name that uniquely matches a sibling checkout under the
+  configured repos root
+- **THEN** `openspec new change` and the subsequent worktree/PR flow run against that
+  matching checkout
+
+#### Scenario: Repo-less propose-change stamps the brief's repo before proposing
+- **WHEN** `apply --confirm` runs against a verdict file containing a `propose-change`
+  verdict evaluated in the repo-less (`__none__`) group whose `target_repo` is a bare name
+  that resolves to a checkout under the configured repos root
+- **THEN** the brief's `repo:` frontmatter is set to that bare name before any worktree or
+  git operation runs, and the `openspec new change` / worktree / PR flow runs against the
+  resolved checkout; a later failure in that flow leaves the brief queued with `repo:` still
+  stamped
+
+#### Scenario: Repo-less propose-change with an unresolvable target stamps nothing
+- **WHEN** `apply --confirm` runs against a repo-less `propose-change` verdict whose
+  `target_repo` does not resolve under the configured repos root
+- **THEN** the action-log entry reports an error status naming the unresolvable repo, the
+  brief's frontmatter is unchanged, and no worktree, git, or `gh` command runs
+
+#### Scenario: Unresolvable repo value fails closed
+- **WHEN** `apply --confirm` runs against a verdict file containing a `fold-into-change` or
+  `propose-change` verdict whose `repo` value does not resolve to an existing directory,
+  either directly or by basename under the configured repos root
+- **THEN** the action-log entry for that verdict reports an error status naming the
+  unresolvable repo, no worktree is created, and no git or `gh` command runs against a
+  guessed path
 
 ### Requirement: Duplicate-of verdicts resolve safely within a batch
 When applying a `duplicate-of` verdict whose target brief is itself verdicted anything other
