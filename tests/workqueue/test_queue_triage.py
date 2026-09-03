@@ -2618,6 +2618,63 @@ class TestApplyProposeChangeRepoLessStamp(QueueTriageTestBase):
         self.assertEqual(fm["repo"], "widgets")
         self.assertEqual(fm["status"], "queued")
 
+    def test_stamp_call_precedes_first_worktree_op(self):
+        # The tests above prove the stamp *value* survives a downstream
+        # failure or an unresolvable repo, but neither actually orders calls
+        # -- a stamp written after `git worktree add` would pass them just as
+        # well. Record call order directly across both patched seams and
+        # assert the stamp happens strictly before the first worktree op.
+        self.write("a.md", body="## Focus\n\npropose this\n")
+        verdict = self._verdict()
+        branch = qt._planned_fold_propose_branch(verdict)
+        worktree_dir = qt._fold_propose_worktree_dir(self.repo_dir, branch)
+        run, pr_url = self._dispatcher(worktree_dir)
+
+        call_order: list[str] = []
+
+        def _tracked_run(cmd, **kwargs):
+            if cmd[0] == "git" and "worktree" in cmd and "add" in cmd:
+                call_order.append("worktree_add")
+            return run(cmd, **kwargs)
+
+        real_set_fm_fields = qt._set_fm_fields
+
+        def _tracked_set_fm_fields(*args, **kwargs):
+            call_order.append("stamp")
+            return real_set_fm_fields(*args, **kwargs)
+
+        def _spawn(prompt, cwd, **kwargs):
+            from worktrail.orchestrator.spawnlib import SpawnResult
+
+            self._seed_change(worktree_dir)
+            return SpawnResult(text="done authoring the change", usage={})
+
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run",
+                side_effect=_tracked_run,
+            ),
+            mock.patch(
+                "worktrail.workqueue.queue_triage._set_fm_fields",
+                side_effect=_tracked_set_fm_fields,
+            ),
+            mock.patch(
+                "worktrail.orchestrator.spawnlib.spawn_agent", side_effect=_spawn
+            ),
+            mock.patch(
+                "worktrail.workqueue.queue_triage._refresh_pr_labels",
+                return_value=["go:risk-low"],
+            ),
+        ):
+            log = qt.apply_verdicts([verdict], confirm=True, repos_root=self.repos_root)
+
+        entry = log[0]
+        self.assertEqual(entry["status"], "executed")
+        self.assertEqual(entry["pr_url"], pr_url)
+        self.assertIn("stamp", call_order)
+        self.assertIn("worktree_add", call_order)
+        self.assertLess(call_order.index("stamp"), call_order.index("worktree_add"))
+
     def test_missing_brief_fails_closed_before_worktree_op(self):
         # No brief written to queue/ or picked/ for brief_id "a" -- the stamp
         # is required but there is nothing to stamp, so this must error out
