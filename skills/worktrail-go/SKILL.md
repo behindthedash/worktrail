@@ -300,14 +300,14 @@ repo token in the invocation itself) before doing anything else:
        --triage-agent "$INVOCATION_CONTEXT_AGENT" \
        --confirm)
      ```
-     Report the resulting action-log entry (`action`, `status`, `path`/`error`) to the
-     user. A `work-directly` verdict whose action-log entry lands with
-     `status: executed` continues straight into Phase 3's `claim` action for this same
-     `$BRIEF_ID`, in this same invocation — it is now an execution brief, and the
-     triage gate above no longer applies to it (its `kind` is `execution` on
-     re-inspection). Every other verdict (`keep`, `duplicate-of`, `needs-decision`, or a
-     `work-directly` action-log entry that did not land as `executed`) STOPS here; it is
-     never carried forward into Phase 3's claim+dispatch flow in the same invocation.
+     Run the apply with the Bash tool's `timeout` parameter set to 600000 (the apply can
+     itself drive a PR through `worktrail-land-pr`'s CI-watch to a terminal outcome).
+     Report the resulting `pr_url` and `landing.outcome` to the user. On a
+     `landing.outcome` of `code_defect` or `review_threads_blocking`, continue by
+     re-invoking `worktrail-land-pr` against `landing.run` (from `landing.worktree`)
+     until a terminal outcome is reached, then stop. Still no Phase 3 claim/dispatch —
+     a triage-gate pickup never carries into Phase 3's claim+dispatch flow in the same
+     invocation.
 
 Resolve the user's choice and dispatch by its `action`:
 
@@ -320,7 +320,7 @@ Resolve the user's choice and dispatch by its `action`:
 |---|---|
 | `resume` | stalled in-flight brief (claimed ≥48h ago with no completion — likely an abandoned session; freshly-claimed briefs are hidden as actively owned). Before continuing, verify what the prior session already landed (merged PRs / commits / spec status referencing the brief id) so you resume the remainder, not redo it → Phase 3 (no re-claim) |
 | `implement` | active spec → `Skill("worktrail-sdd-workflow", args="<path> route:E <spec_id>")`, where `<path>` is the item's `path` (multi-repo) or `$REPO` (in-repo) |
-| `close-stale` | stale-bookkeeping spec → **do NOT run the orchestrator** (files already merged on base). If the spec being closed is an epic doc under `docs/specs/epics/` (or is linked from one), first run the epic-closure PROVISIONAL check (`references/routes.md` §B "Closing an epic") before flipping any status to completed. Confirm the spec's pending impl tasks are truly shipped, then branch on the item's `format`: **devkit** (`files:` exist + are git-tracked on the base branch — `next_action` lists the task ids) — flip those `TASK-*.md` `status:` → `completed` and land a docs-only PR (the way the 068 stale-status case was closed). **openspec** — OpenSpec's `tasks.md` carries no per-task `files:` frontmatter, so confirming "truly shipped" stays a judgment call (re-run the referenced tests, check the citing PR — actually run them and cite the real output; "re-verified" without a pasted re-run is exactly the unverified-closure pattern `worktrail-work-queue done`'s evidence gate now rejects for handoff-brief closures, see `worktrail-handoff/SKILL.md`'s "Closing with a re-verification claim" note); once confirmed, create a fix-branch worktree (`references/subagent-prompts.md#fix-branch-worktree-setup`, slug e.g. `close-stale-<spec_id>`) and run `worktrail-close-stale-openspec --worktree "$WT" --change-id <spec_id> [--task-ids <comma-joined stale_task_ids>] --json` — it flips the checkboxes and runs `openspec archive -y --json` in one step (defaults to every pending task id when `--task-ids` is omitted). Land the same PR through the normal Phase 8 flow (pre-PR gate, `go:risk-*` labels, CI watch loop) — never a hand-rolled `gh pr create`, which would bypass the label-enforcement hook (mirrors PR #547/#548's shape, scripted instead of hand-rolled each time). Both branches: re-run the dashboard to confirm the spec drops to sync/complete. **After the docs-only PR lands**, this spec's task/verify worktrees are otherwise never revisited by anything (the orchestrator's own `cleanup_group()` only runs on the delivered-merge path, which this action deliberately skips) — run `references/worktree-cleanup.md`'s scoped invocation against `<spec_id>-*` to tear them down through its normal classify-then-confirm flow. Skip the teardown (report it, don't fail) when `<spec_id>-*` has no worktrees on disk. |
+| `close-stale` | stale-bookkeeping spec → **do NOT run the orchestrator** (files already merged on base). If the spec being closed is an epic doc under `docs/specs/epics/` (or is linked from one), first run the epic-closure PROVISIONAL check (`references/routes.md` §B "Closing an epic") before flipping any status to completed. Confirm the spec's pending impl tasks are truly shipped, then branch on the item's `format`: **devkit** (`files:` exist + are git-tracked on the base branch — `next_action` lists the task ids) — flip those `TASK-*.md` `status:` → `completed` and land a docs-only PR (the way the 068 stale-status case was closed). **openspec** — OpenSpec's `tasks.md` carries no per-task `files:` frontmatter, so confirming "truly shipped" stays a judgment call (re-run the referenced tests, check the citing PR — actually run them and cite the real output; "re-verified" without a pasted re-run is exactly the unverified-closure pattern `worktrail-work-queue done`'s evidence gate now rejects for handoff-brief closures, see `worktrail-handoff/SKILL.md`'s "Closing with a re-verification claim" note); once confirmed, create a fix-branch worktree (`references/subagent-prompts.md#fix-branch-worktree-setup`, slug e.g. `close-stale-<spec_id>`) and run `worktrail-close-stale-openspec --worktree "$WT" --change-id <spec_id> [--task-ids <comma-joined stale_task_ids>] --json` — it flips the checkboxes and runs `openspec archive -y --json` in one step (defaults to every pending task id when `--task-ids` is omitted). Land the PR via `worktrail-land-pr`, passing `--base "$BASE" --run "$RUN"`; it lands the PR through the shared pipeline — never a hand-rolled `gh pr create`, which would bypass the label-enforcement hook (mirrors PR #547/#548's shape, scripted instead of hand-rolled each time). Both branches: re-run the dashboard to confirm the spec drops to sync/complete. **After the docs-only PR lands**, this spec's task/verify worktrees are otherwise never revisited by anything (the orchestrator's own `cleanup_group()` only runs on the delivered-merge path, which this action deliberately skips) — run `references/worktree-cleanup.md`'s scoped invocation against `<spec_id>-*` to tear them down through its normal classify-then-confirm flow. Skip the teardown (report it, don't fail) when `<spec_id>-*` has no worktrees on disk. |
 | `claim` | queue item → batch-claim it plus any related queued briefs (see **Batch consumption** below), then Phase 3 |
 | `answer-decision` | open decision → present it interactively and record the answer — see `references/answer-decision.md` |
 | `consolidate-cluster` | detected brief cluster → run `consolidate_cluster.py preview <members...>` to re-validate + draft a consolidated brief, show the draft via `AskUserQuestion` requiring an explicit confirm (no default-yes), then run `consolidate_cluster.py execute <members...> --draft '<preview JSON>' --confirm` (or `--decline`, which performs zero writes) — for a cluster whose combined member bodies are large, write the preview JSON to a file first and pass `--draft-file <path>` instead of `--draft '<preview JSON>'`: the inline form fails with `OSError: Argument list too long` once the payload nears the kernel's ~128KB `MAX_ARG_STRLEN` argv limit |
@@ -919,13 +919,14 @@ validation alone is not a terminal state for those routes. Only routes whose doc
 completion does **not** require a PR (e.g. Route C `planned_ready_for_implementation`,
 Route I `investigation_complete`) may finish without commit/push/PR creation.
 
-**CI watch loop.** After opening a PR on any PR-owning route, run the loop in
-`references/ci-watch-loop.md` before closing the run record: wait with
-`gh pr checks --watch` (never a sleep loop, never an end-turn/resume poll —
-single-turn wait discipline, and pure wait-tails stay with the dispatcher:
-`references/ci-watch-loop.md` `{#ci-wait-discipline}`), then classify the settled checks — pass →
-finish; transient infra → rerun; code defect → minimal patch (≤5 iterations); product
-decision → `blocked_product_decision`; ceiling → `failed_recoverable`.
+**CI watch loop.** `worktrail-land-pr` is the command that performs commit → push → PR
+creation/update → CI watch → `finish` on any PR-owning route; it runs the loop in
+`references/ci-watch-loop.md` internally (never a sleep loop, never an end-turn/resume
+poll — single-turn wait discipline, and pure wait-tails stay with the dispatcher:
+`references/ci-watch-loop.md` `{#ci-wait-discipline}`), then classifies the settled
+checks — pass → finish; transient infra → rerun; code defect → minimal patch
+(≤5 iterations); product decision → `blocked_product_decision`; ceiling →
+`failed_recoverable`.
 
 ## Dispatch Contract (to worktrail-sdd-workflow)
 
