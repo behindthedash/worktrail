@@ -26,6 +26,7 @@ from worktrail.orchestrator.dispatch import (
     ReviewWorkerPromptCtx,
     WorkerPromptCtx,
     agent_for,
+    build_group_prompt,
     build_worker_prompt,
     transition,
     validate_resolved_decision_input,
@@ -230,7 +231,10 @@ class TestReviewChecksAcDodCheckboxes(unittest.TestCase):
     )
     _UNCHANGED_ROLE_FIX = (
         "Read `{spec_folder}reviews/{task_id}-review.md` and fix ONLY the listed findings. "
-        "Re-run the task's tests. Commit."
+        "Re-run the task's tests. Commit. "
+        "If a finding requires touching a file outside this task's scope, decline it: "
+        "report `status: failed` and list the untouchable file(s) as repo-relative paths "
+        "in the report-back's `missing_context` field — never only in `notes`."
     )
     _UNCHANGED_ROLE_CLEANUP = (
         "Run cleanup on ONLY the files this task changed: remove debug logs + "
@@ -453,6 +457,120 @@ class TestTransitionReviewRouting(unittest.TestCase):
                 "failed",
                 f"role={role} with status:failed should return 'failed'",
             )
+
+
+class TestTransitionSkippedSmallDiff(unittest.TestCase):
+    """review_status: SKIPPED-SMALL-DIFF is a passed review (task 5.1)."""
+
+    def test_skipped_small_diff_routes_to_cleaning_retry_unchanged(self):
+        report = {
+            "task": "TASK-001",
+            "step": "review",
+            "status": "success",
+            "review_status": "SKIPPED-SMALL-DIFF",
+        }
+        new_status, retry = transition(ROLE_REVIEW, report, retry_count=2)
+        self.assertEqual(new_status, "cleaning")
+        self.assertEqual(retry, 2)
+
+    def test_unknown_review_status_still_raises(self):
+        report = {
+            "task": "TASK-001",
+            "step": "review",
+            "status": "success",
+            "review_status": "BOGUS",
+        }
+        with self.assertRaises(ValueError):
+            transition(ROLE_REVIEW, report, retry_count=0)
+
+
+class TestMissingContextPathRule(unittest.TestCase):
+    """AC: review/fix action text carries the missing_context path rule (task 5.1)."""
+
+    def test_review_action_carries_missing_context_rule(self):
+        ctx = _make_ctx()
+        task = _make_task()
+        prompt = build_worker_prompt(ROLE_REVIEW, task, ctx)
+        self.assertIn("missing_context", prompt)
+        self.assertIn("repo-relative paths", prompt)
+        self.assertIn("never only in `notes`", prompt)
+
+    def test_fix_action_carries_missing_context_rule(self):
+        ctx = _make_ctx()
+        task = _make_task()
+        prompt = build_worker_prompt(ROLE_FIX, task, ctx)
+        self.assertIn("missing_context", prompt)
+        self.assertIn("status: failed", prompt)
+        self.assertIn("repo-relative paths", prompt)
+
+    def test_fix_action_text_in_role_action_table(self):
+        self.assertIn("missing_context", _ROLE_ACTION[ROLE_FIX])
+        self.assertIn("missing_context", _ROLE_ACTION[ROLE_REVIEW])
+
+
+class TestPreCommitCmdHardRule(unittest.TestCase):
+    """AC: implement/fix worker prompts and the ci-fix group prompt carry the
+    pre_commit_cmd hard rule when set, and omit it when unset (task 5.1)."""
+
+    def test_implement_prompt_carries_command_when_set(self):
+        ctx = _make_ctx()
+        ctx["pre_commit_cmd"] = "ruff check . --fix && ruff format ."
+        task = _make_task()
+        prompt = build_worker_prompt(ROLE_IMPLEMENT, task, ctx)
+        self.assertIn("ruff check . --fix && ruff format .", prompt)
+        self.assertIn("before every commit", prompt)
+
+    def test_fix_prompt_carries_command_when_set(self):
+        ctx = _make_ctx()
+        ctx["pre_commit_cmd"] = "ruff check . --fix && ruff format ."
+        task = _make_task()
+        prompt = build_worker_prompt(ROLE_FIX, task, ctx)
+        self.assertIn("ruff check . --fix && ruff format .", prompt)
+        self.assertIn("before every commit", prompt)
+
+    def test_implement_prompt_omits_line_when_unset(self):
+        ctx = _make_ctx()
+        task = _make_task()
+        prompt = build_worker_prompt(ROLE_IMPLEMENT, task, ctx)
+        self.assertNotIn("before every commit", prompt)
+
+    def test_fix_prompt_omits_line_when_unset(self):
+        ctx = _make_ctx()
+        task = _make_task()
+        prompt = build_worker_prompt(ROLE_FIX, task, ctx)
+        self.assertNotIn("before every commit", prompt)
+
+    def test_review_and_cleanup_prompts_unaffected_by_pre_commit_cmd(self):
+        ctx = _make_ctx()
+        ctx["pre_commit_cmd"] = "ruff check . --fix && ruff format ."
+        task = _make_task()
+        for role in (ROLE_REVIEW, ROLE_CLEANUP):
+            prompt = build_worker_prompt(role, task, ctx)
+            self.assertNotIn("before every commit", prompt)
+
+    def _group_ctx(self, **kw):
+        base = {
+            "spec_id": "004-test",
+            "worktree_path": "/tmp/wt/004-test",
+            "group_branch": "run-001/base",
+            "base_branch": "main",
+        }
+        base.update(kw)
+        return base
+
+    def _group(self):
+        return {"name": "base", "tasks": ["TASK-001"], "reqs": [], "depends_on": []}
+
+    def test_ci_fix_prompt_carries_command_when_set(self):
+        ctx = self._group_ctx(pre_commit_cmd="ruff check . --fix && ruff format .")
+        prompt = build_group_prompt(ROLE_CI_FIX, self._group(), ctx)
+        self.assertIn("ruff check . --fix && ruff format .", prompt)
+        self.assertIn("before every commit", prompt)
+
+    def test_ci_fix_prompt_omits_line_when_unset(self):
+        ctx = self._group_ctx()
+        prompt = build_group_prompt(ROLE_CI_FIX, self._group(), ctx)
+        self.assertNotIn("before every commit", prompt)
 
 
 class TestReviewWorkerBriefFieldGuide(unittest.TestCase):
