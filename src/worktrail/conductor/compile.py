@@ -484,9 +484,7 @@ def _parse_fallback_chain(value: str | None) -> list[str] | None:
 # --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
-def _check_shape(
-    plan: RunPlan, tasks: Sequence[dict[str, Any]], repo: Path
-) -> None:
+def _check_shape(plan: RunPlan, tasks: Sequence[dict[str, Any]], repo: Path) -> None:
     """Raise `PlanShapeError` if the settled *plan* fails D2's rules.
 
     Called on every settled plan -- seeded, cache-hit, and freshly compiled
