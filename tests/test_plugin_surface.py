@@ -875,9 +875,7 @@ def test_openspec_propose_tasks_artifact_documents_decomposition_rules():
     co-scoped with the tests they change — and let mechanical tasks opt out of
     review at authoring time. If this prose regresses, generated tasks.md files
     silently drift back to over-fine or test-split decomposition."""
-    text = (
-        REPO_ROOT / "skills" / "openspec-propose" / "SKILL.md"
-    ).read_text()
+    text = (REPO_ROOT / "skills" / "openspec-propose" / "SKILL.md").read_text()
 
     assert "20-60 minutes" in text
     assert "rather than a dependent" in text and "chain of tasks" in text
