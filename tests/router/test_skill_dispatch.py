@@ -1485,6 +1485,46 @@ class SingleBriefTriageTests(unittest.TestCase):
             read_frontmatter(self.brief).get("repo"), str(checkout.resolve())
         )
 
+    def test_explicit_bare_repo_name_resolves_cwd_against_repos_root(self):
+        """A brief carrying an explicit `repo:` frontmatter value that is a
+        bare name (the common case -- every brief written by hand or by
+        `create_handoff.py` carries the short name, not a path) must still
+        resolve to an on-disk checkout for `cwd` when no explicit `cwd` is
+        passed, the same as the D2-inference path already does. Regression
+        for the crash observed running `worktrail-go BRIEF-ID` from outside
+        the target repo (e.g. `$HOME`): `group_cwd` fell back to the bare
+        name itself, which subprocess.run then rejected as a nonexistent
+        relative `cwd` (`FileNotFoundError: PosixPath('fixture-repo')`)."""
+        from worktrail.workqueue.queue_triage import Verdict
+
+        repos_root = Path(self.tmp.name) / "repos"
+        checkout = repos_root / "fixture-repo"
+        (checkout / ".git").mkdir(parents=True)
+        verdict = Verdict(
+            brief_id=self.brief.stem,
+            verdict="keep",
+            duplicate_of=None,
+            evidence="still relevant",
+        )
+        captured = {}
+
+        def fake_evaluate_briefs(group_repo, briefs, *, agent, cwd, repos_root=None):
+            captured["repo"] = group_repo
+            captured["cwd"] = cwd
+            return [verdict]
+
+        with patch(
+            "worktrail.workqueue.queue_triage.evaluate_briefs",
+            side_effect=fake_evaluate_briefs,
+        ):
+            result = skill_dispatch.evaluate_single_brief(
+                self.brief, repo="fixture-repo", repos_root=str(repos_root)
+            )
+
+        self.assertIs(result, verdict)
+        self.assertEqual(captured["repo"], "fixture-repo")
+        self.assertEqual(captured["cwd"], str(checkout))
+
     def test_due_null_repo_brief_returns_needs_decision_and_never_spawns(self):
         """A repo-less brief that cannot be resolved by the D2 pre-pass and
         is due for escalation is verdicted directly by the escalation matrix
@@ -1548,6 +1588,36 @@ class SingleBriefTriageTests(unittest.TestCase):
         self.assertEqual(entry["status"], "planned")
         self.assertEqual(entry["action"], "claim+done")
         self.assertFalse(entry["confirm"])
+
+    def test_apply_single_brief_verdict_forwards_repos_root_to_apply_verdicts(self):
+        """Regression: `apply_verdicts()` resolves a `propose-change`/
+        `fold-into-change` verdict's bare `repo:` value via `repos_root`
+        (`_resolve_repo_dir()`); omitting it here left that resolution
+        unable to find the repo when applied from outside it, the same
+        class of bug as the `evaluate_single_brief()` cwd regression above."""
+        from worktrail.workqueue.queue_triage import Verdict
+
+        verdict = Verdict(
+            brief_id=self.brief.stem,
+            verdict="keep",
+            duplicate_of=None,
+            evidence="still relevant",
+        )
+        captured = {}
+
+        def fake_apply_verdicts(verdicts, *, confirm, agent="claude", repos_root=None):
+            captured["repos_root"] = repos_root
+            return [{"brief_id": v.brief_id, "status": "planned"} for v in verdicts]
+
+        with patch(
+            "worktrail.workqueue.queue_triage.apply_verdicts",
+            side_effect=fake_apply_verdicts,
+        ):
+            skill_dispatch.apply_single_brief_verdict(
+                verdict, confirm=False, repos_root="/repos"
+            )
+
+        self.assertEqual(captured["repos_root"], "/repos")
 
 
 class SingleBriefTriageCliTests(unittest.TestCase):

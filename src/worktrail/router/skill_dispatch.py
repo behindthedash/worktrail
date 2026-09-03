@@ -292,8 +292,16 @@ def evaluate_single_brief(
         [applied] = apply_wip_cap_preview(NO_REPO_KEY, [escalated])
         return applied
 
+    from .dashboard import _resolve_repo_dir
+
     group_repo = resolved_repo or NO_REPO_KEY
-    group_cwd = cwd or (resolved_repo if resolved_repo else str(_worktrail_repo_root()))
+    if cwd:
+        group_cwd = cwd
+    elif resolved_repo:
+        resolved_dir = _resolve_repo_dir(resolved_repo, repos_root)
+        group_cwd = str(resolved_dir) if resolved_dir else resolved_repo
+    else:
+        group_cwd = str(_worktrail_repo_root())
     verdicts = evaluate_briefs(
         group_repo, [path], agent=agent, cwd=group_cwd, repos_root=repos_root
     )
@@ -301,7 +309,11 @@ def evaluate_single_brief(
 
 
 def apply_single_brief_verdict(
-    verdict, *, confirm: bool, agent: str = "claude"
+    verdict,
+    *,
+    confirm: bool,
+    agent: str = "claude",
+    repos_root: str | Path | None = None,
 ) -> dict:
     """Apply (or, without `confirm`, only preview) one brief's triage verdict.
 
@@ -309,11 +321,18 @@ def apply_single_brief_verdict(
     `apply_verdicts()`, same as `cmd_apply()`'s whole-file path (3.5's "apply
     step never closes a brief without an approved verdict" holds per-verdict,
     not just per-file), then returns that single verdict's action-log entry.
+    `repos_root` is forwarded to `apply_verdicts()` so a `propose-change`/
+    `fold-into-change` verdict resolves its bare `repo:` value (e.g.
+    `"worktrail"`) to an on-disk checkout the same way `evaluate_single_brief()`
+    does -- omitting it leaves `_resolve_repo_dir()` unable to find the repo
+    when called from outside it (`worktrail-go`'s normal cwd).
     """
     from ..workqueue.queue_triage import apply_verdicts, resolve_duplicate_targets
 
     [resolved] = resolve_duplicate_targets([verdict])
-    [entry] = apply_verdicts([resolved], confirm=confirm, agent=agent)
+    [entry] = apply_verdicts(
+        [resolved], confirm=confirm, agent=agent, repos_root=repos_root
+    )
     return entry
 
 
@@ -956,7 +975,10 @@ def main(argv: list[str] | None = None) -> int:
 
         verdict = Verdict(**json.loads(parsed.apply_brief_triage))
         entry = apply_single_brief_verdict(
-            verdict, confirm=parsed.confirm, agent=parsed.triage_agent
+            verdict,
+            confirm=parsed.confirm,
+            agent=parsed.triage_agent,
+            repos_root=parsed.triage_repos_root,
         )
         print(json.dumps(entry))
         return 1 if entry.get("status") == "error" else 0
