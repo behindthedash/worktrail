@@ -2224,6 +2224,88 @@ class TestApplyRepoResolution(QueueTriageTestBase):
         self.assertIsNone(entry["error"])
         self.assertEqual(entry["pr_url"], pr_url)
 
+    def _seed_propose_change(self, worktree_dir: Path) -> None:
+        change_dir = worktree_dir / "openspec" / "changes" / self.proposed_change_name
+        change_dir.mkdir(parents=True, exist_ok=True)
+        (change_dir / "proposal.md").write_text(
+            "# Widget export pipeline v2\n\n## Why\n\nAgent-authored rationale.\n",
+            encoding="utf-8",
+        )
+        (change_dir / "tasks.md").write_text(
+            "## 1. Tasks\n\n- [ ] 1.1 Agent-authored task\n",
+            encoding="utf-8",
+        )
+
+    def _propose_dispatcher(self, worktree_dir: Path):
+        pr_url = "https://github.com/acme/widgets/pull/43"
+
+        def _run(cmd, **kwargs):
+            if cmd[0] == "git" and "-C" in cmd:
+                if "symbolic-ref" in cmd:
+                    return self._completed(0, stdout="origin/main\n")
+                if "config" in cmd and "remote.pushDefault" in cmd:
+                    return self._completed(1)
+                if "remote" in cmd and "get-url" in cmd:
+                    return self._completed(
+                        0, stdout="git@github.com:acme-fork/widgets.git\n"
+                    )
+                if "worktree" in cmd and "add" in cmd:
+                    worktree_dir.mkdir(parents=True, exist_ok=True)
+                    return self._completed(0)
+                if "worktree" in cmd and "remove" in cmd:
+                    return self._completed(0)
+                if "branch" in cmd and "-D" in cmd:
+                    return self._completed(0)
+            if cmd[0] == "openspec" and cmd[1:3] == ["new", "change"]:
+                return self._completed(0)
+            if cmd[0] == "openspec" and cmd[1] == "validate":
+                return self._completed(0, stdout="valid\n")
+            if cmd[0] == "worktrail-compile":
+                Path(cmd[1]).mkdir(parents=True, exist_ok=True)
+                (Path(cmd[1]) / ".compile-ok").write_text("fp\n", encoding="utf-8")
+                return self._completed(0)
+            if cmd[0] == "git" and cmd[1] in ("add", "commit"):
+                return self._completed(0)
+            if cmd[0] == "git" and cmd[1] == "push":
+                return self._completed(0)
+            if cmd[0] == "gh" and cmd[1:3] == ["pr", "create"]:
+                return self._completed(0, stdout=f"{pr_url}\n")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        return _run, pr_url
+
+    def test_bare_repo_name_resolves_under_repos_root_for_propose(self):
+        self.write("a.md", repo="widgets", body="## Focus\n\npropose this\n")
+        verdict = self._propose_verdict("widgets")
+        branch = qt._planned_fold_propose_branch(verdict)
+        worktree_dir = qt._fold_propose_worktree_dir(self.repo_dir, branch)
+        run, pr_url = self._propose_dispatcher(worktree_dir)
+
+        def _spawn(prompt, cwd, **kwargs):
+            from worktrail.orchestrator.spawnlib import SpawnResult
+
+            self._seed_propose_change(worktree_dir)
+            return SpawnResult(text="done authoring the change", usage={})
+
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+            ),
+            mock.patch(
+                "worktrail.workqueue.queue_triage._refresh_pr_labels",
+                return_value=["go:risk-low"],
+            ),
+            mock.patch(
+                "worktrail.orchestrator.spawnlib.spawn_agent", side_effect=_spawn
+            ),
+        ):
+            log = qt.apply_verdicts([verdict], confirm=True, repos_root=self.repos_root)
+
+        entry = log[0]
+        self.assertEqual(entry["status"], "executed")
+        self.assertIsNone(entry["error"])
+        self.assertEqual(entry["pr_url"], pr_url)
+
     def test_unresolvable_repo_is_an_error_and_never_shells_out(self):
         verdict = self._fold_verdict("no-such-repo")
 
