@@ -449,6 +449,33 @@ class Verifier:
         `self.repo` (the shared post-merge smoke worktree)."""
         return self.run(["git", "-C", str(path), *args])
 
+    def _salvage_uncommitted(self, role: str, wt: Path, gb: str) -> None:
+        """Commit and push whatever a timed-out worker left modified in `wt` so the
+        work survives the strike. On 2026-09-02 a ci-fix worker had already run
+        `ruff format` when its timeout hit; the fix sat uncommitted in the verify
+        worktree while the group headed to quarantine for that same formatting
+        failure. Tracked modifications only (`add -u`), so worker scratch such as
+        `.claude/tsc-cache/` is never swept in. Best-effort: a salvage failure
+        never masks the strike."""
+        try:
+            st = self._git_in(wt, "status", "--porcelain", "--untracked-files=no")
+            if not (getattr(st, "stdout", "") or "").strip():
+                return
+            self._git_in(wt, "add", "-u")
+            self._git_in(
+                wt,
+                "commit",
+                "-q",
+                "-m",
+                f"{role}: salvage partial work after worker timeout",
+            )
+            self._git_in(wt, "push", self.remote, f"HEAD:{gb}")
+            self.log(
+                f"    {role} worker left uncommitted changes -- salvaged as a commit on {gb}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"    {role} salvage of uncommitted work failed: {exc!r}")
+
     def _wm_runner(self, cmd: list[str]):
         return self.run(cmd)
 
@@ -781,6 +808,7 @@ class Verifier:
             raw = spawn_fn(prompt, wt)
         except subprocess.TimeoutExpired:
             self.log(f"    {role} worker timed out — treating as strike failure")
+            self._salvage_uncommitted(role, wt, gb)
             return False
         # Checked regardless of what the worker reports: a worker that merged the
         # PR itself is a violation even if it also reports status=success/failed.
@@ -989,7 +1017,16 @@ class Verifier:
                 {"failing_checks": names, "failure_log": log},
             )
             if not ok_fix:
-                return False, "ci-fix worker failed"
+                # A failed or timed-out ci-fix attempt is one strike, not the end
+                # of the loop: re-poll CI (a salvaged partial commit may already
+                # be green) and spend the remaining strikes before giving up.
+                # Returning here quarantined a group on its first ci-fix timeout
+                # with two strikes unused (2026-09-02, group feature-3).
+                self.log(
+                    f"    [{group['name']}] ci-fix attempt {strike + 1} failed -- "
+                    f"re-checking CI before the next strike"
+                )
+                continue
         return False, "CI fix loop exhausted"
 
     def _block_on_checks(

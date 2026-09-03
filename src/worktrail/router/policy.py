@@ -224,6 +224,12 @@ DEFAULTS: dict[str, Any] = {
     # repo that hasn't opted in sees no behavior change. `fold-into-change`,
     # `work-directly`, and `needs-decision` are never throttled by this key.
     "max_active_changes": 0,
+    # Ceiling on the orchestrator's fan-out width when neither `--max-workers`
+    # nor `max_workers` is set: `live.py full-real` then runs min(plan width,
+    # this cap) workers instead of a fixed 3, so a wide plan is not silently
+    # serialized (2026-09-02: width 7 ran as three ticks). 6 = a saturated
+    # 14-core host with other runs leaves headroom; raise per repo as needed.
+    "max_parallel_workers": 6,
     # Per-repo cap on consecutive `keep` verdicts before queue_triage.py's
     # escalation forces the next verdict to `needs-decision` instead of another
     # silent `keep`. Consumed by `workqueue/queue_triage.py`'s escalation via
@@ -1260,7 +1266,11 @@ def load_policy(repo: Path) -> dict[str, Any]:
     # Integer keys threaded verbatim into the orchestrator invocation — a bad
     # value would break the `live.py full-real` command line, so drop to the
     # default instead of passing it through.
-    for key, minimum in (("max_workers", 1), ("pr_pacing_wait_s", 0)):
+    for key, minimum in (
+        ("max_workers", 1),
+        ("pr_pacing_wait_s", 0),
+        ("max_parallel_workers", 1),
+    ):
         value = policy.get(key)
         if value is None:
             continue
