@@ -52,7 +52,7 @@ class TestGroupQueueByRepo(QueueTriageTestBase):
         self.write("b.md", repo="behindthedash/worktrail")
         self.write("c.md", repo="behindthedash/devops")
 
-        groups = qt.group_queue_by_repo()
+        groups, _inferred, _unresolvable = qt.group_queue_by_repo()
 
         self.assertEqual(
             {k: sorted(p.name for p in v) for k, v in groups.items()},
@@ -65,7 +65,7 @@ class TestGroupQueueByRepo(QueueTriageTestBase):
     def test_missing_repo_field_collapses_to_none_key(self):
         self.write("a.md")  # no repo: field at all
 
-        groups = qt.group_queue_by_repo()
+        groups, _inferred, _unresolvable = qt.group_queue_by_repo()
 
         self.assertEqual(list(groups), [qt.NO_REPO_KEY])
         self.assertEqual([p.name for p in groups[qt.NO_REPO_KEY]], ["a.md"])
@@ -74,7 +74,7 @@ class TestGroupQueueByRepo(QueueTriageTestBase):
         self.write("a.md", repo="null")
         self.write("b.md", repo='""')
 
-        groups = qt.group_queue_by_repo()
+        groups, _inferred, _unresolvable = qt.group_queue_by_repo()
 
         self.assertEqual(list(groups), [qt.NO_REPO_KEY])
         self.assertEqual(
@@ -86,7 +86,7 @@ class TestGroupQueueByRepo(QueueTriageTestBase):
         self.write("b.md", repo="null")
         self.write("c.md", repo="behindthedash/worktrail")
 
-        groups = qt.group_queue_by_repo()
+        groups, _inferred, _unresolvable = qt.group_queue_by_repo()
 
         self.assertEqual(
             sorted(p.name for p in groups[qt.NO_REPO_KEY]), ["a.md", "b.md"]
@@ -94,19 +94,19 @@ class TestGroupQueueByRepo(QueueTriageTestBase):
         self.assertEqual([p.name for p in groups["behindthedash/worktrail"]], ["c.md"])
 
     def test_empty_queue_dir_yields_no_groups(self):
-        self.assertEqual(qt.group_queue_by_repo(), {})
+        self.assertEqual(qt.group_queue_by_repo(), ({}, [], []))
 
     def test_missing_queue_dir_yields_no_groups(self):
         for f in self.queue.iterdir():
             f.unlink()
         self.queue.rmdir()
-        self.assertEqual(qt.group_queue_by_repo(), {})
+        self.assertEqual(qt.group_queue_by_repo(), ({}, [], []))
 
     def test_non_markdown_files_are_ignored(self):
         (self.queue / "notes.txt").write_text("not a brief", encoding="utf-8")
         self.write("a.md")
 
-        groups = qt.group_queue_by_repo()
+        groups, _inferred, _unresolvable = qt.group_queue_by_repo()
 
         self.assertEqual([p.name for p in groups[qt.NO_REPO_KEY]], ["a.md"])
 
@@ -2936,7 +2936,9 @@ class TestEvaluateSkipsUnresolvedDecision(QueueTriageTestBase):
         self.assertEqual(result["status"], "created")
         self.assertTrue(result["brief_stamped"])
 
-        groups, skipped = qt.inventory(within_days=25)
+        groups, skipped, _escalate_without_evaluator, _inferred, _unresolvable = (
+            qt.inventory(within_days=25)
+        )
 
         self.assertEqual(groups, {})
         self.assertNotIn(path, skipped)
@@ -2957,7 +2959,9 @@ class TestEvaluateSkipsUnresolvedDecision(QueueTriageTestBase):
         decisions.answer(result["id"], "Use repo A", queue_base=self.base)
         decisions.consume_answer(result["id"], queue_base=self.base)
 
-        groups, skipped = qt.inventory(within_days=25)
+        groups, skipped, _escalate_without_evaluator, _inferred, _unresolvable = (
+            qt.inventory(within_days=25)
+        )
 
         self.assertIn("behindthedash/worktrail", groups)
         self.assertEqual([p.name for p in groups["behindthedash/worktrail"]], ["a.md"])
@@ -2966,7 +2970,9 @@ class TestEvaluateSkipsUnresolvedDecision(QueueTriageTestBase):
     def test_brief_with_no_awaiting_decision_link_is_unaffected(self):
         path = self.write("a.md", repo="behindthedash/worktrail")
 
-        groups, skipped = qt.inventory(within_days=25)
+        groups, skipped, _escalate_without_evaluator, _inferred, _unresolvable = (
+            qt.inventory(within_days=25)
+        )
 
         self.assertIn("behindthedash/worktrail", groups)
         self.assertEqual(groups["behindthedash/worktrail"], [path])
@@ -3389,17 +3395,22 @@ class TestReportAndVerdictFileOutput(QueueTriageTestBase):
         }
         expected_counts.update(json_counts)
         self.assertEqual(report_counts, expected_counts)
+        # The `__none__` group's two `keep`-resolving verdicts (one clean, one
+        # a fallback from unparsable JSON) are both converted to
+        # `needs-decision` with `REPO_ASSIGNMENT_QUESTION` by `parse_verdicts(
+        # no_repo=True)` (4.1(d)) -- a repo-less brief must never be left as a
+        # plain `keep`.
         self.assertEqual(
             report_counts,
             {
-                "keep": 2,
+                "keep": 0,
                 "stale-close": 2,
                 "needs-update": 1,
                 "duplicate-of": 1,
                 "fold-into-change": 0,
                 "propose-change": 0,
                 "work-directly": 0,
-                "needs-decision": 0,
+                "needs-decision": 2,
             },
         )
 
@@ -3737,6 +3748,582 @@ class TestRankChangeCandidates(QueueTriageTestBase):
         results = qt.rank_change_candidates(brief_path, str(repo_root), top_k=2)
 
         self.assertEqual(len(results), 2)
+
+
+class TestEscalationLimitsAndDue(QueueTriageTestBase):
+    """4.1(b): `_escalation_limits()`/`escalation_due()`, design D5."""
+
+    def test_defaults_apply_for_null_repo(self):
+        self.assertEqual(qt._escalation_limits(None), (2, 14))
+        self.assertEqual(qt._escalation_limits(qt.NO_REPO_KEY), (2, 14))
+
+    def test_defaults_apply_when_repo_has_no_policy_file(self):
+        repo = self.base / "unconfigured-repo"
+        repo.mkdir()
+        self.assertEqual(qt._escalation_limits(str(repo)), (2, 14))
+
+    def test_policy_overrides_both_limits(self):
+        repo = self.base / "configured-repo"
+        (repo / ".worktrail").mkdir(parents=True)
+        (repo / ".worktrail" / "policy.yaml").write_text(
+            "triage_keep_limit: 5\ntriage_max_queue_age_days: 30\n", encoding="utf-8"
+        )
+        self.assertEqual(qt._escalation_limits(str(repo)), (5, 30))
+
+    def test_due_by_keep_limit(self):
+        path = self.write("a.md")
+        for _ in range(2):
+            qt._apply_keep(
+                qt.Verdict(
+                    brief_id="a", verdict="keep", duplicate_of=None, evidence="still ok"
+                ),
+                datetime.date.today().isoformat(),  # noqa: DTZ011
+            )
+        self.assertEqual(qt.consecutive_keep_count(path), 2)
+        self.assertEqual(qt.escalation_due(path, None), "keep-limit")
+
+    def test_due_by_queue_age(self):
+        path = self.write("a.md")
+        old = (datetime.date.today() - datetime.timedelta(days=30)).isoformat()  # noqa: DTZ011
+        qt._set_fm_fields(path, {"created": old})
+        self.assertEqual(qt.escalation_due(path, None), "queue-age")
+
+    def test_neither_condition_met_returns_none(self):
+        path = self.write("a.md")
+        today = datetime.date.today().isoformat()  # noqa: DTZ011
+        qt._set_fm_fields(path, {"created": today})
+        self.assertIsNone(qt.escalation_due(path, None))
+
+    def test_keep_limit_checked_before_queue_age(self):
+        repo = self.base / "repo-with-policy"
+        (repo / ".worktrail").mkdir(parents=True)
+        (repo / ".worktrail" / "policy.yaml").write_text(
+            "triage_keep_limit: 1\ntriage_max_queue_age_days: 9999\n", encoding="utf-8"
+        )
+        path = self.write("a.md", repo=str(repo))
+        qt._apply_keep(
+            qt.Verdict(
+                brief_id="a", verdict="keep", duplicate_of=None, evidence="still ok"
+            ),
+            datetime.date.today().isoformat(),  # noqa: DTZ011
+        )
+        self.assertEqual(qt.escalation_due(path, str(repo)), "keep-limit")
+
+
+class TestWorkDirectlyAccepted(unittest.TestCase):
+    """4.1(b): `_work_directly_accepted()`, design D6 -- either half alone accepts."""
+
+    def test_true_on_regex_alone(self):
+        v = qt.Verdict(
+            brief_id="a",
+            verdict="work-directly",
+            duplicate_of=None,
+            evidence="reproduces via pytest tests/foo.py -k bar",
+        )
+        self.assertTrue(qt._work_directly_accepted(v))
+
+    def test_true_on_confirmed_premise_alone(self):
+        v = qt.Verdict(
+            brief_id="a",
+            verdict="work-directly",
+            duplicate_of=None,
+            evidence="this brief describes a real problem",
+            premise_check=[
+                {"kind": "path", "needle": "src/x.py", "confirmed": True, "detail": ""}
+            ],
+        )
+        self.assertTrue(qt._work_directly_accepted(v))
+
+    def test_false_on_neither(self):
+        v = qt.Verdict(
+            brief_id="a",
+            verdict="work-directly",
+            duplicate_of=None,
+            evidence="this brief describes a real problem",
+            premise_check=[
+                {"kind": "path", "needle": "src/x.py", "confirmed": False, "detail": ""}
+            ],
+        )
+        self.assertFalse(qt._work_directly_accepted(v))
+
+
+class TestKebabFromBriefId(unittest.TestCase):
+    def test_strips_timestamp_prefix(self):
+        self.assertEqual(
+            qt._kebab_from_brief_id("20260901-120000-fix-the-widget-exporter"),
+            "fix-the-widget-exporter",
+        )
+
+    def test_falls_back_to_slugify_for_non_kebab_remainder(self):
+        result = qt._kebab_from_brief_id("not a valid brief id!!")
+        self.assertTrue(qt._KEBAB_CASE_RE.fullmatch(result))
+
+
+class TestEscalate(QueueTriageTestBase):
+    """4.1(b): `escalate()`'s design D5 matrix."""
+
+    def _keep(self, evidence="still relevant", premise_check=None):
+        return qt.Verdict(
+            brief_id="a",
+            verdict="keep",
+            duplicate_of=None,
+            evidence=evidence,
+            premise_check=premise_check or [],
+        )
+
+    def test_not_due_returns_verdict_unchanged(self):
+        path = self.write("a.md")
+        v = self._keep()
+        self.assertIs(qt.escalate(v, path, None, []), v)
+
+    def test_non_keep_verdict_never_rewritten_even_if_due(self):
+        path = self.write("a.md")
+        for _ in range(2):
+            qt._apply_keep(self._keep(), datetime.date.today().isoformat())  # noqa: DTZ011
+        v = qt.Verdict(
+            brief_id="a", verdict="stale-close", duplicate_of=None, evidence="gone"
+        )
+        self.assertIs(qt.escalate(v, path, None, []), v)
+
+    def test_null_repo_due_becomes_needs_decision(self):
+        path = self.write("a.md")
+        for _ in range(2):
+            qt._apply_keep(self._keep(), datetime.date.today().isoformat())  # noqa: DTZ011
+        result = qt.escalate(self._keep(), path, None, [])
+        self.assertEqual(result.verdict, "needs-decision")
+        self.assertEqual(result.question, qt.REPO_ASSIGNMENT_QUESTION)
+        self.assertEqual(result.escalation, "keep-limit")
+
+    def test_confirmed_premise_becomes_work_directly(self):
+        repo = self.base / "repo"
+        repo.mkdir()
+        path = self.write("a.md", repo=str(repo))
+        for _ in range(2):
+            qt._apply_keep(self._keep(), datetime.date.today().isoformat())  # noqa: DTZ011
+        v = self._keep(evidence="reproduces via pytest tests/foo.py -k bar")
+        result = qt.escalate(v, path, str(repo), [])
+        self.assertEqual(result.verdict, "work-directly")
+        self.assertEqual(result.escalation, "keep-limit")
+
+    def test_under_cap_becomes_propose_change_with_kebab_name(self):
+        repo = self.base / "repo"
+        repo.mkdir()
+        brief_id = "20260901-120000-fix-the-widget-exporter"
+        path = self.write(f"{brief_id}.md", repo=str(repo))
+        for _ in range(2):
+            qt._apply_keep(
+                qt.Verdict(
+                    brief_id=brief_id, verdict="keep", duplicate_of=None, evidence="ok"
+                ),
+                datetime.date.today().isoformat(),  # noqa: DTZ011
+            )
+        v = qt.Verdict(
+            brief_id=brief_id,
+            verdict="keep",
+            duplicate_of=None,
+            evidence="still relevant",
+        )
+        result = qt.escalate(v, path, str(repo), [])
+        self.assertEqual(result.verdict, "propose-change")
+        self.assertEqual(result.target_repo, str(repo))
+        self.assertEqual(result.proposed_change_name, "fix-the-widget-exporter")
+
+    def test_over_cap_with_candidates_folds_into_first_candidate(self):
+        repo = self.base / "repo"
+        (repo / ".worktrail").mkdir(parents=True)
+        (repo / ".worktrail" / "policy.yaml").write_text(
+            "max_active_changes: 1\n", encoding="utf-8"
+        )
+        change_dir = repo / "openspec" / "changes" / "existing-change"
+        change_dir.mkdir(parents=True)
+        (change_dir / "proposal.md").write_text("# existing-change\n", encoding="utf-8")
+        (change_dir / "tasks.md").write_text(
+            "## 1. Tasks\n\n- [ ] 1.1 x\n", encoding="utf-8"
+        )
+        path = self.write("a.md", repo=str(repo))
+        for _ in range(2):
+            qt._apply_keep(self._keep(), datetime.date.today().isoformat())  # noqa: DTZ011
+        result = qt.escalate(self._keep(), path, str(repo), ["widget-export-pipeline"])
+        self.assertEqual(result.verdict, "fold-into-change")
+        self.assertEqual(result.target_change, f"{repo}:change:widget-export-pipeline")
+
+    def test_over_cap_without_candidates_becomes_needs_decision(self):
+        repo = self.base / "repo"
+        (repo / ".worktrail").mkdir(parents=True)
+        (repo / ".worktrail" / "policy.yaml").write_text(
+            "max_active_changes: 1\n", encoding="utf-8"
+        )
+        change_dir = repo / "openspec" / "changes" / "existing-change"
+        change_dir.mkdir(parents=True)
+        (change_dir / "proposal.md").write_text("# existing-change\n", encoding="utf-8")
+        (change_dir / "tasks.md").write_text(
+            "## 1. Tasks\n\n- [ ] 1.1 x\n", encoding="utf-8"
+        )
+        path = self.write("a.md", repo=str(repo))
+        for _ in range(2):
+            qt._apply_keep(self._keep(), datetime.date.today().isoformat())  # noqa: DTZ011
+        result = qt.escalate(self._keep(), path, str(repo), [])
+        self.assertEqual(result.verdict, "needs-decision")
+        self.assertIsNotNone(result.question)
+        self.assertNotEqual(result.question, qt.REPO_ASSIGNMENT_QUESTION)
+
+
+class TestConsumeRepoDecision(QueueTriageTestBase):
+    """4.1(c): `consume_repo_decision()`, design D8."""
+
+    def test_no_awaiting_decision_link_returns_none(self):
+        path = self.write("a.md")
+        self.assertIsNone(qt.consume_repo_decision(path, str(self.base)))
+
+    def test_answered_non_repo_question_returns_none(self):
+        from worktrail.workqueue import decisions
+
+        path = self.write("a.md")
+        result = decisions.ask(
+            "Should we do this at all?",
+            background="unclear",
+            why="ambiguous scope",
+            context="checked and unsure",
+            options=["Yes", "No"],
+            brief="a",
+            queue_base=self.base,
+        )
+        decisions.answer(result["id"], "Yes", queue_base=self.base)
+
+        self.assertIsNone(qt.consume_repo_decision(path, str(self.base)))
+
+    def test_open_decision_returns_none(self):
+        from worktrail.workqueue import decisions
+
+        path = self.write("a.md")
+        decisions.ask(
+            qt.REPO_ASSIGNMENT_QUESTION,
+            background="ambiguous",
+            why="cannot infer",
+            context="checked, no clear match",
+            options=["Option A", "Option B"],
+            brief="a",
+            queue_base=self.base,
+        )
+
+        self.assertIsNone(qt.consume_repo_decision(path, str(self.base)))
+
+    def test_answered_repo_question_resolving_to_known_checkout_stamps_and_notes(self):
+        from worktrail.workqueue import decisions
+
+        target = self.base / "known-repo"
+        target.mkdir()
+        path = self.write("a.md")
+        result = decisions.ask(
+            qt.REPO_ASSIGNMENT_QUESTION,
+            background="ambiguous",
+            why="cannot infer",
+            context="checked, no clear match",
+            options=["Option A", "Option B"],
+            brief="a",
+            queue_base=self.base,
+        )
+        decisions.answer(result["id"], str(target), queue_base=self.base)
+
+        outcome = qt.consume_repo_decision(path, str(self.base))
+
+        self.assertIsNotNone(outcome)
+        self.assertTrue(outcome["resolved"])
+        self.assertEqual(outcome["repo"], str(target.resolve()))
+        fm = qt.read_frontmatter(path)
+        self.assertEqual(fm["repo"], str(target.resolve()))
+        history = qt.triage_history(path)
+        self.assertEqual(history[-1].verdict, "repo-inferred")
+        self.assertEqual(decisions.decision_status(result["id"], self.base), "resolved")
+
+    def test_unresolvable_answer_leaves_brief_and_decision_untouched(self):
+        from worktrail.workqueue import decisions
+
+        path = self.write("a.md")
+        result = decisions.ask(
+            qt.REPO_ASSIGNMENT_QUESTION,
+            background="ambiguous",
+            why="cannot infer",
+            context="checked, no clear match",
+            options=["Option A", "Option B"],
+            brief="a",
+            queue_base=self.base,
+        )
+        decisions.answer(result["id"], "no-such-repo-anywhere", queue_base=self.base)
+        before = path.read_text(encoding="utf-8")
+
+        outcome = qt.consume_repo_decision(path, str(self.base))
+
+        self.assertIsNotNone(outcome)
+        self.assertFalse(outcome["resolved"])
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+        self.assertEqual(decisions.decision_status(result["id"], self.base), "answered")
+
+
+class TestGroupQueueByRepoPrePass(QueueTriageTestBase):
+    """4.1(c): `group_queue_by_repo()`'s decision-consumption/inference pre-pass."""
+
+    def test_null_repo_brief_is_inferred_and_grouped_and_noted(self):
+        target = self.base / "worktrail"
+        (target / ".git").mkdir(parents=True)
+        path = self.write("a.md")
+        qt._set_fm_fields(path, {"focus": "Repo: worktrail -- fix this"})
+
+        groups, inferred, unresolvable = qt.group_queue_by_repo(str(self.base))
+
+        self.assertEqual(unresolvable, [])
+        self.assertEqual(len(inferred), 1)
+        self.assertNotIn(qt.NO_REPO_KEY, groups)
+        [(key, _paths)] = [(k, v) for k, v in groups.items() if path in v]
+        self.assertEqual(key, str(target.resolve()))
+        fm = qt.read_frontmatter(path)
+        self.assertEqual(fm["repo"], str(target.resolve()))
+
+    def test_already_inferred_brief_is_not_re_noted_on_second_call(self):
+        target = self.base / "worktrail"
+        (target / ".git").mkdir(parents=True)
+        path = self.write("a.md")
+        qt._set_fm_fields(path, {"focus": "Repo: worktrail -- fix this"})
+
+        _groups, first_inferred, _ = qt.group_queue_by_repo(str(self.base))
+        self.assertEqual(len(first_inferred), 1)
+
+        _groups2, second_inferred, _ = qt.group_queue_by_repo(str(self.base))
+        self.assertEqual(second_inferred, [])
+
+    def test_ambiguous_focus_stays_in_no_repo_key(self):
+        self.write("a.md", body="## Focus\n\nnothing repo-specific here\n")
+
+        groups, inferred, unresolvable = qt.group_queue_by_repo(str(self.base))
+
+        self.assertEqual(inferred, [])
+        self.assertEqual(unresolvable, [])
+        self.assertIn(qt.NO_REPO_KEY, groups)
+
+
+class TestInventoryEscalation(QueueTriageTestBase):
+    """4.1(c): `inventory()`'s escalation-due dedup bypass and `escalate_without_evaluator`."""
+
+    def test_due_brief_bypasses_dedup_window(self):
+        repo = self.base / "repo"
+        repo.mkdir()
+        path = self.write("a.md", repo=str(repo))
+        today = datetime.date.today().isoformat()  # noqa: DTZ011
+        for _ in range(2):
+            qt._apply_keep(
+                qt.Verdict(
+                    brief_id="a", verdict="keep", duplicate_of=None, evidence="ok"
+                ),
+                today,
+            )
+
+        groups, skipped, escalate_without_evaluator, _inferred, _unresolvable = (
+            qt.inventory(within_days=25, repos_root=str(self.base))
+        )
+
+        self.assertNotIn(path, skipped)
+        self.assertIn(str(repo), groups)
+        self.assertEqual(groups[str(repo)], [path])
+        self.assertEqual(escalate_without_evaluator, [])
+
+    def test_non_due_recently_triaged_brief_is_still_skipped(self):
+        repo = self.base / "repo"
+        repo.mkdir()
+        path = self.write("a.md", repo=str(repo))
+        today = datetime.date.today().isoformat()  # noqa: DTZ011
+        qt._apply_keep(
+            qt.Verdict(brief_id="a", verdict="keep", duplicate_of=None, evidence="ok"),
+            today,
+        )
+
+        groups, skipped, escalate_without_evaluator, _inferred, _unresolvable = (
+            qt.inventory(within_days=25, repos_root=str(self.base))
+        )
+
+        self.assertIn(path, skipped)
+        self.assertEqual(groups, {})
+        self.assertEqual(escalate_without_evaluator, [])
+
+    def test_due_null_repo_brief_lands_in_escalate_without_evaluator(self):
+        path = self.write("a.md")
+        today = datetime.date.today().isoformat()  # noqa: DTZ011
+        for _ in range(2):
+            qt._apply_keep(
+                qt.Verdict(
+                    brief_id="a", verdict="keep", duplicate_of=None, evidence="ok"
+                ),
+                today,
+            )
+
+        groups, _skipped, escalate_without_evaluator, _inferred, _unresolvable = (
+            qt.inventory(within_days=25, repos_root=str(self.base))
+        )
+
+        self.assertNotIn(qt.NO_REPO_KEY, groups)
+        self.assertEqual(escalate_without_evaluator, [path])
+
+
+class TestParseVerdictsPremiseAndNoRepo(unittest.TestCase):
+    """4.1(d): `parse_verdicts()`'s `premise_by_brief`/`no_repo` handling."""
+
+    def test_premise_check_lands_on_verdict(self):
+        raw = json.dumps(
+            {
+                "brief_id": "a",
+                "verdict": "stale-close",
+                "duplicate_of": None,
+                "evidence": "gone",
+            }
+        )
+        premise = [{"kind": "path", "needle": "x", "confirmed": True, "detail": "d"}]
+        [v] = qt.parse_verdicts(raw, ["a"], premise_by_brief={"a": premise})
+        self.assertEqual(v.premise_check, premise)
+
+    def test_no_repo_converts_clean_keep_to_needs_decision(self):
+        raw = json.dumps(
+            {
+                "brief_id": "a",
+                "verdict": "keep",
+                "duplicate_of": None,
+                "evidence": "still relevant",
+            }
+        )
+        [v] = qt.parse_verdicts(raw, ["a"], no_repo=True)
+        self.assertEqual(v.verdict, "needs-decision")
+        self.assertEqual(v.question, qt.REPO_ASSIGNMENT_QUESTION)
+
+    def test_no_repo_converts_fallback_keep_to_needs_decision(self):
+        [v] = qt.parse_verdicts(
+            "the evaluator rambled with no JSON", ["a"], no_repo=True
+        )
+        self.assertEqual(v.verdict, "needs-decision")
+        self.assertEqual(v.question, qt.REPO_ASSIGNMENT_QUESTION)
+
+    def test_no_repo_converts_malformed_verdict_fallback_to_needs_decision(self):
+        raw = json.dumps(
+            {
+                "brief_id": "a",
+                "verdict": "not-a-real-verdict-type",
+                "duplicate_of": None,
+                "evidence": "whatever",
+            }
+        )
+        [v] = qt.parse_verdicts(raw, ["a"], no_repo=True)
+        self.assertEqual(v.verdict, "needs-decision")
+        self.assertEqual(v.question, qt.REPO_ASSIGNMENT_QUESTION)
+
+    def test_no_repo_does_not_touch_stale_close(self):
+        raw = json.dumps(
+            {
+                "brief_id": "a",
+                "verdict": "stale-close",
+                "duplicate_of": None,
+                "evidence": "gone",
+            }
+        )
+        [v] = qt.parse_verdicts(raw, ["a"], no_repo=True)
+        self.assertEqual(v.verdict, "stale-close")
+
+
+class TestEvaluateBriefs(QueueTriageTestBase):
+    """4.1(d): `evaluate_briefs()` chains evaluate_group -> parse_verdicts ->
+    apply_wip_cap_preview -> escalate (design D9)."""
+
+    def test_chains_pipeline_and_applies_escalation(self):
+        repo = self.base / "repo"
+        repo.mkdir()
+        path = self.write("a.md", repo=str(repo))
+        today = datetime.date.today().isoformat()  # noqa: DTZ011
+        for _ in range(2):
+            qt._apply_keep(
+                qt.Verdict(
+                    brief_id="a", verdict="keep", duplicate_of=None, evidence="ok"
+                ),
+                today,
+            )
+
+        def fake_evaluate_group(
+            repo, briefs, *, agent="claude", cwd=None, repos_root=None
+        ):
+            ids = [p.stem for p in briefs]
+            raw = json.dumps(
+                {
+                    "brief_id": ids[0],
+                    "verdict": "keep",
+                    "duplicate_of": None,
+                    "evidence": "still relevant",
+                }
+            )
+            return [
+                {
+                    "repo": repo,
+                    "brief_ids": ids,
+                    "raw_text": raw,
+                    "candidates_by_brief": {bid: [] for bid in ids},
+                    "premise_by_brief": {bid: [] for bid in ids},
+                }
+            ]
+
+        with mock.patch(
+            "worktrail.workqueue.queue_triage.evaluate_group",
+            side_effect=fake_evaluate_group,
+        ):
+            [v] = qt.evaluate_briefs(str(repo), [path], cwd=str(repo))
+
+        self.assertEqual(v.verdict, "propose-change")
+        self.assertEqual(v.escalation, "keep-limit")
+        self.assertEqual(v.repo, str(repo))
+
+
+class TestComputeRunSummaryAndReportEscalations(unittest.TestCase):
+    """4.1(e): `compute_run_summary()`/`write_report()`'s escalation/repos-inferred fields."""
+
+    def _verdicts(self):
+        return [
+            qt.Verdict(
+                brief_id="a",
+                verdict="work-directly",
+                duplicate_of=None,
+                evidence="reproduces via pytest tests/foo -k bar",
+                escalation="keep-limit",
+            ),
+            qt.Verdict(
+                brief_id="b",
+                verdict="needs-decision",
+                duplicate_of=None,
+                evidence="due",
+                question="repo over cap",
+                escalation="queue-age",
+            ),
+            qt.Verdict(
+                brief_id="c",
+                verdict="stale-close",
+                duplicate_of=None,
+                evidence="gone",
+            ),
+        ]
+
+    def test_compute_run_summary_escalations_and_repos_inferred(self):
+        summary = qt.compute_run_summary(self._verdicts(), repos_inferred=3)
+        self.assertEqual(
+            summary["escalations"]["by_reason"],
+            {"keep-limit": 1, "queue-age": 1},
+        )
+        self.assertEqual(
+            summary["escalations"]["by_verdict"],
+            {"work-directly": 1, "needs-decision": 1},
+        )
+        self.assertEqual(summary["repos_inferred"], 3)
+
+    def test_write_report_includes_repos_inferred_and_escalations_sections(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = qt.write_report(self._verdicts(), [], tmp, repos_inferred=2)
+            text = report_path.read_text(encoding="utf-8")
+        self.assertIn("## Repos inferred", text)
+        self.assertIn("repos_inferred: 2", text)
+        self.assertIn("## Escalations", text)
+        self.assertIn("keep-limit: 1", text)
+        self.assertIn("queue-age: 1", text)
 
 
 if __name__ == "__main__":
