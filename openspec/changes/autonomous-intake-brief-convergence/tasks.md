@@ -136,7 +136,7 @@
       Evidence-required verdict per brief; Requirement: Verdict file and human-readable
       report)
       files: src/worktrail/workqueue/queue_triage.py, tests/workqueue/test_queue_triage.py
-- [ ] 4.2 Tests for 4.1, co-scoped with it (do not split impl from tests across separate
+- [x] 4.2 Tests for 4.1, co-scoped with it (do not split impl from tests across separate
       orchestrator tasks — that split is what caused the original quarantine). In
       `tests/workqueue/test_queue_triage_escalation.py` (new file, reusing
       `QueueTriageTestBase`'s temp-queue shape): `triage_history` parses typed, legacy, and
@@ -179,7 +179,7 @@
       Verdict file and human-readable report; Requirement: Needs-decision files a pending
       decision and keeps the brief queued)
       files: tests/workqueue/test_queue_triage_escalation.py, tests/workqueue/test_queue_triage_inventory.py
-- [ ] 4.3 In `src/worktrail/router/skill_dispatch.py` (depends on 4.1/4.2):
+- [x] 4.3 In `src/worktrail/router/skill_dispatch.py` (depends on 4.1/4.2):
       `evaluate_single_brief(brief_path, *, repo, agent, cwd=None, repos_root=None)` runs
       the D2 pre-pass on the one brief when `repo` is falsy (decision consumption, then
       inference with write-back) and uses the inferred repo as the group; then calls
