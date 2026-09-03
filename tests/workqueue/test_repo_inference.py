@@ -83,7 +83,9 @@ def test_two_repo_names_returns_none_with_candidates(repos_root: Path) -> None:
 
 
 def test_rule_a_beats_conflicting_rule_b_mention(repos_root: Path) -> None:
-    result = infer_repo("Repo: worktrail -- unrelated mention of datalena here", repos_root)
+    result = infer_repo(
+        "Repo: worktrail -- unrelated mention of datalena here", repos_root
+    )
     assert result.rule == "a"
     assert result.repo == str((repos_root / "worktrail").resolve())
 
