@@ -114,7 +114,7 @@
 
 ## 6. Policy keys and repo-init seeding
 
-- [ ] 6.1 In `src/worktrail/router/policy.py` add `compile_max_critical_path_over_width: 2`,
+- [x] 6.1 In `src/worktrail/router/policy.py` add `compile_max_critical_path_over_width: 2`,
       `compile_max_same_file_chain: 2`, `review_skip_max_diff_lines: 0`, and
       `pre_commit_cmd: None` to `DEFAULTS` with comment blocks naming their consumers, extend the
       integer-validation block (the two compile keys >= 1, the review key >= 0, non-bool, else
