@@ -105,22 +105,23 @@ class OpenSpecTaskSource:
                 non_tail_ids.append(t.id)
                 prev_non_tail_in_group[t.group] = t.id
             prev_in_group[t.group] = t.id
-            out.append(
-                {
-                    "id": t.id,
-                    "title": t.title,
-                    "status": t.status,
-                    "deps": deps,
-                    "external_deps": [],
-                    "files": list(t.files),
-                    "kind": t.kind,
-                    "tags": list(t.tags),
-                    "group": t.group,
-                    "group_title": t.group_title,
-                    "path": rel,
-                    "frontmatter_warnings": list(parsed.warnings),
-                }
-            )
+            task_dict = {
+                "id": t.id,
+                "title": t.title,
+                "status": t.status,
+                "deps": deps,
+                "external_deps": [],
+                "files": list(t.files),
+                "kind": t.kind,
+                "tags": list(t.tags),
+                "group": t.group,
+                "group_title": t.group_title,
+                "path": rel,
+                "frontmatter_warnings": list(parsed.warnings),
+            }
+            if t.review:
+                task_dict["review"] = t.review
+            out.append(task_dict)
         return spec_ref, out
 
     def validate_dependencies(
