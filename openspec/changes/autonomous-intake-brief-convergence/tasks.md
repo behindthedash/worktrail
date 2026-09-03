@@ -77,7 +77,7 @@
 
 ## 4. queue_triage.py convergence chain and the interactive path — dispatch this group after groups 1 and 2 have merged (OpenSpec carries no cross-group edge; 4.1's decision-consumption/evaluator work imports the modules those groups create). Re-authored 2026-09-03 into three coarser, file-co-scoped tasks after the original nine-task split quarantined 4.1 on an impl/test scope collision; see run go-20260902-095121's decisions for the incident this replaces.
 
-- [ ] 4.1 In `src/worktrail/workqueue/queue_triage.py`, build the full convergence chain in
+- [x] 4.1 In `src/worktrail/workqueue/queue_triage.py`, build the full convergence chain in
       one co-scoped task (impl and its own follow-on tests were split too finely before and
       collided in the orchestrator's per-task worktrees — keep this file's changes together):
       **(a) keep-streak core** (already implemented on this branch, land as-is, do not
