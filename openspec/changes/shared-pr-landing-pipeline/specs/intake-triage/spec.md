@@ -34,6 +34,17 @@ When a user runs `worktrail-go <brief-id>` and the brief is an intake brief, the
 - **WHEN** `worktrail-go <brief-id>` is invoked for a brief carrying `seeded-from:`
 - **THEN** the brief is claimed and dispatched exactly as before this change
 
+#### Scenario: Work-directly continues into dispatch
+- **WHEN** an interactive pickup's applied verdict is `work-directly` and the brief is now
+  stamped `seeded-from: triage:<run-date>:direct`
+- **THEN** the same invocation claims the brief and proceeds through classification and
+  dispatch as it would for an execution brief named directly
+
+#### Scenario: Keep is recorded interactively
+- **WHEN** an interactive pickup's verdict is `keep` for a brief not yet due for escalation
+- **THEN** the brief gains a `verdict: keep` triage note exactly as a scheduled run would
+  write, and the session reports the note and stops
+
 #### Scenario: Confirmed fold lands and is watched in the same invocation
 - **WHEN** the user confirms a `fold-into-change` verdict and the apply step returns a PR URL with a landed outcome
 - **THEN** the session reports the PR URL and the completion state the pipeline recorded, and stops
