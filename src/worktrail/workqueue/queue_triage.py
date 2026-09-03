@@ -79,7 +79,11 @@ _TRIAGE_HEADING_RE = re.compile(r"^##\s+Triage\s+(\d{4}-\d{2}-\d{2})\s*$", re.MU
 # match a file path or brief id with no command content at all) and never the
 # bare English words "command" or "check", since prose can use those words
 # while denying or merely discussing a reproduction reference (e.g. "no
-# command needed" or "we should check whether this is still relevant").
+# command needed" or "we should check whether this is still relevant"). `gh`/
+# `git` count only with a known read/verify subcommand ("gh repo view", "git
+# log") so prose like "git history" or "gh workflow" alone does not qualify;
+# `grep`/`rg` count only with a flag ("grep -rn foo") so the bare verb "grep
+# for it" does not.
 _REPRODUCTION_EVIDENCE_RE = re.compile(
     r"\bpytest\b"
     r"|\btests?/"
@@ -90,6 +94,9 @@ _REPRODUCTION_EVIDENCE_RE = re.compile(
     r"|\bcargo\s+test\b"
     r"|\bunittest\b"
     r"|\b(?:lint|mypy|ruff|tsc)\b"
+    r"|\bgh\s+(?:pr|repo|api|run|issue|release)\b"
+    r"|\bgit\s+(?:log|status|show|diff|grep|ls-files|rev-parse|branch|cherry|blame|worktree|fetch)\b"
+    r"|\b(?:grep|rg)\s+-"
     r"|\breproduces?\s+via\b"
     r"|\bconfirmed\s+via\b",
     re.IGNORECASE,
@@ -146,10 +153,12 @@ than guessing a target.
 Step 2b — work-directly requires reproduction evidence:
 Use `work-directly` only when your evidence cites a specific test, check, or \
 command that reproduces or confirms the brief's premise as directly \
-actionable right now (e.g. "reproduces via pytest tests/foo -k bar", "confirmed \
-via `make lint`"). Evidence that only restates the brief's description without \
-such a citation is not sufficient — apply will downgrade a `work-directly` \
-verdict lacking one to `keep`, so prefer `keep` yourself when you don't have it.
+actionable right now, naming the command itself (e.g. "reproduces via pytest \
+tests/foo -k bar", "confirmed via `make lint`", "confirmed via `gh repo view`", \
+"confirmed via `grep -rn foo src/`"). Evidence that only restates the brief's \
+description, or says you "read" or "inspected" a file or log without naming a \
+command, is not sufficient — apply will downgrade a `work-directly` verdict \
+lacking one to `keep`, so prefer `keep` yourself when you don't have it.
 
 Step 3 — memory check before raising an alarm:
 Before flagging anything you observe as a live operational concern, check \

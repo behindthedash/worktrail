@@ -1243,6 +1243,70 @@ class TestApplyWorkDirectly(QueueTriageTestBase):
             self.assertEqual(entry["status"], "downgraded-to-keep")
         self.assertEqual(path.read_text(encoding="utf-8"), before)
 
+    def test_evidence_citing_gh_git_or_grep_command_is_accepted(self):
+        """Live 2026-09-03 (brief 20260903-111047): the evaluator's own
+        high-confidence `work-directly` evidence cited `gh repo view` and
+        `grep -rn` and was still downgraded, because the regex only knew
+        test-runner and lint tools. A named `gh`/`git` read subcommand or a
+        flagged `grep`/`rg` invocation is a command citation too."""
+        for evidence in (
+            (
+                "Directly confirmed premise by reading all four cited logs; "
+                "`gh repo view` shows the repo is archived"
+            ),
+            (
+                "Confirmed via grep: `grep -rn triage-repos-root src/` returns "
+                "zero matches"
+            ),
+            (
+                "rg -n 'foo' src/ shows the symbol is unused; git log -1 -- "
+                "src/foo.py shows no change since"
+            ),
+        ):
+            with self.subTest(evidence=evidence):
+                path = self.write("a.md", body="## Focus\n\nsome brief\n")
+                verdicts = [
+                    qt.Verdict(
+                        brief_id="a",
+                        verdict="work-directly",
+                        duplicate_of=None,
+                        evidence=evidence,
+                        confidence="high",
+                    )
+                ]
+                log = qt.apply_verdicts(verdicts, confirm=True)
+                self.assertEqual(log[0]["action"], "stamp-frontmatter")
+                self.assertEqual(log[0]["status"], "executed")
+                fm, _ = qt.split_frontmatter(path.read_text(encoding="utf-8"))
+                self.assertEqual(fm["recommended-route"], "F")
+
+    def test_evidence_with_bare_gh_git_or_grep_prose_is_rejected(self):
+        """`git history`, `gh workflow`, or "grep for it" are prose, not a
+        command citation -- only a known subcommand or a flagged invocation
+        qualifies."""
+        path = self.write("a.md", body="## Focus\n\nsome brief\n")
+        before = path.read_text(encoding="utf-8")
+        verdicts = [
+            qt.Verdict(
+                brief_id="a",
+                verdict="work-directly",
+                duplicate_of=None,
+                evidence=evidence,
+                confidence="high",
+            )
+            for evidence in (
+                "the git history suggests this is still open",
+                "a gh workflow probably covers this; grep for it later",
+            )
+        ]
+
+        log = qt.apply_verdicts(verdicts, confirm=True)
+
+        for entry in log:
+            self.assertEqual(entry["action"], "noop")
+            self.assertEqual(entry["status"], "downgraded-to-keep")
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+
     def test_malformed_frontmatter_block_is_not_clobbered(self):
         # A tab-indented value inside the fence makes the block a
         # yaml.YAMLError -- split_frontmatter degrades that leniently to {}
