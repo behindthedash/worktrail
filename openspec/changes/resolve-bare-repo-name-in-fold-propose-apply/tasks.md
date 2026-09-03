@@ -1,6 +1,6 @@
 ## 1. Repo resolution in fold/propose apply
 
-- [ ] 1.1 Implement requirement: Resolve `repo` before any worktree/git op.
+- [x] 1.1 Implement requirement: Resolve `repo` before any worktree/git op.
       In `src/worktrail/workqueue/queue_triage.py`, import
       `_resolve_repo_dir` from `..router.dashboard` and, in both
       `_apply_fold_into_change()` and `_apply_propose_change()`, replace
