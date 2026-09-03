@@ -26,6 +26,7 @@ from typing import Any
 
 from ..orchestrator.integrate import _refresh_pr_labels
 from ..router import overlap_check
+from ..router.dashboard import _resolve_repo_dir
 from ..shared.brief_frontmatter import read_frontmatter, split_frontmatter
 from ..shared.homedir import worktrail_home
 from . import decisions
@@ -1632,7 +1633,9 @@ def _worktree_pr_close(
     }
 
 
-def _apply_fold_into_change(v: Verdict) -> dict:
+def _apply_fold_into_change(
+    v: Verdict, *, repos_root: str | Path | None = None
+) -> dict:
     """`fold-into-change`: worktree + proposal/tasks edit + validate + PR + close.
 
     Appends a `## Folded from <brief-id>` section to the target change's
@@ -1658,7 +1661,14 @@ def _apply_fold_into_change(v: Verdict) -> dict:
             "error": "verdict is missing repo or target_change to fold into",
         }
 
-    repo_path = Path(repo)
+    repo_path = _resolve_repo_dir(repo, repos_root)
+    if repo_path is None:
+        return {
+            **result,
+            "status": "error",
+            "path": None,
+            "error": f"could not resolve repo '{repo}' to a checkout on disk",
+        }
     branch = _planned_fold_propose_branch(v)
     base_branch = _repo_base_branch(repo_path)
     worktree_dir = _fold_propose_worktree_dir(repo_path, branch)
@@ -1705,7 +1715,9 @@ def _apply_fold_into_change(v: Verdict) -> dict:
     )
 
 
-def _apply_propose_change(v: Verdict, *, agent: str = "claude") -> dict:
+def _apply_propose_change(
+    v: Verdict, *, agent: str = "claude", repos_root: str | Path | None = None
+) -> dict:
     """`propose-change`: worktree + `openspec new change` + agent-authored change + validate + PR + close.
 
     Runs `openspec new change <proposed_change_name>` to scaffold the change
@@ -1734,7 +1746,14 @@ def _apply_propose_change(v: Verdict, *, agent: str = "claude") -> dict:
             "error": "verdict is missing repo or proposed_change_name to propose",
         }
 
-    repo_path = Path(repo)
+    repo_path = _resolve_repo_dir(repo, repos_root)
+    if repo_path is None:
+        return {
+            **result,
+            "status": "error",
+            "path": None,
+            "error": f"could not resolve repo '{repo}' to a checkout on disk",
+        }
     branch = _planned_fold_propose_branch(v)
     base_branch = _repo_base_branch(repo_path)
     worktree_dir = _fold_propose_worktree_dir(repo_path, branch)
@@ -1896,7 +1915,11 @@ def _preview_verdict(v: Verdict, run_date: str) -> dict:
 
 
 def apply_verdicts(
-    verdicts: list[Verdict], *, confirm: bool, agent: str = "claude"
+    verdicts: list[Verdict],
+    *,
+    confirm: bool,
+    agent: str = "claude",
+    repos_root: str | Path | None = None,
 ) -> list[dict]:
     """Execute (or, when `confirm` is false, only preview) each non-`keep` verdict.
 
@@ -1974,11 +1997,11 @@ def apply_verdicts(
             log.append(_apply_needs_decision(v))
         elif action == "open-pull-request":
             if v.verdict == "fold-into-change":
-                log.append(_apply_fold_into_change(v))
+                log.append(_apply_fold_into_change(v, repos_root=repos_root))
             elif _propose_change_over_cap(v):
                 log.append(_apply_propose_change_wip_cap_downgrade(v, run_date))
             else:
-                log.append(_apply_propose_change(v, agent=agent))
+                log.append(_apply_propose_change(v, agent=agent, repos_root=repos_root))
         else:
             log.append(_apply_needs_update(v, run_date))
     return log
@@ -2221,8 +2244,12 @@ def cmd_apply(args: argparse.Namespace) -> int:
     raw = Path(args.verdict_file).read_text(encoding="utf-8")
     verdicts = [Verdict(**entry) for entry in json.loads(raw)]
 
+    repos_root = args.repos_root or str(Path.home() / "projects")
+
     resolved = resolve_duplicate_targets(verdicts)
-    action_log = apply_verdicts(resolved, confirm=args.confirm, agent=args.agent)
+    action_log = apply_verdicts(
+        resolved, confirm=args.confirm, agent=args.agent, repos_root=repos_root
+    )
 
     if args.as_json:
         print(json.dumps(action_log, indent=2))
@@ -2328,6 +2355,13 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         dest="as_json",
         help="print the action log as JSON on exit",
+    )
+    apply_parser.add_argument(
+        "--repos-root",
+        default=None,
+        dest="repos_root",
+        help="directory of sibling repo checkouts to resolve a bare `repo` "
+        "name against (default ~/projects)",
     )
 
     args = parser.parse_args(argv)
