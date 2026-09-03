@@ -1,8 +1,7 @@
 # /go policy for Worktrail. The commands mirror the repository's offline CI
 # checks without installing dependencies or requiring network access.
 pre_pr_cmd: "PYTHONPATH=src pytest -q && PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check"
-# orchestrator-throughput 7.1: workers run this before every commit so formatting never
-# shows up as reviewable diff noise.
+# orchestrator-throughput 7.1: format before every commit so it never shows up as diff noise.
 pre_commit_cmd: "ruff check . --fix && ruff format ."
 # v1.0 release freeze (2026-08-08): unattended auto-pick schedules ONLY briefs
 # with `triage: blocker` for this repo; capture stays open, everything else
@@ -10,6 +9,7 @@ pre_commit_cmd: "ruff check . --fix && ruff format ."
 # (N consecutive clean runs, zero interventions). Remove this key to lift the
 # freeze after v1.0 ships.
 release_gate: v1.0
+# orchestrator-throughput 7.1: check lint/format at integrate so it can't slip past pre_commit_cmd.
 integrate_smoke_cmd: "PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check && ruff check . && ruff format --check ."
 base_branch: main
 # orchestrator-throughput 7.1: small diffs skip the full reviewer pass.
