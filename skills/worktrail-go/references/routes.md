@@ -97,27 +97,25 @@ pipeline). Spec header must cite owning epic (when one exists), business
 objective, non-goals, security/data/UX implications, and testable acceptance
 criteria.
 
-**After spec-to-tasks and its scope-check gate pass (always):** run
-`worktrail-land-pr --repo "$WT" --base "$BASE" --run "$RUN" --route C --risk
-low --checkpoint` so the spec artifact is durable across sessions. This pushes
-`spec/$SPEC_ID`, opens the docs-only PR (→ `$BASE`), and CI-watches it to a
-terminal outcome — merged, or `completed_pr_open` with auto-merge armed —
-before asking the implementation-intent question below. The scope-check
+**After spec-to-tasks and its scope-check gate pass (always):** push
+`spec/$SPEC_ID` and open a docs-only PR (→ `$BASE`) so the spec artifact is
+durable across sessions. The scope-check
 (`pipeline-details.md#new-pipeline` step 3, `worktrail-compile`) must pass
-first — never invoke `worktrail-land-pr` on a failing compile and rely on
-catching an under-scoped `tasks.md` once the orchestrator launches.
+first — never push the spec PR on a failing compile and rely on catching an
+under-scoped `tasks.md` once the orchestrator launches.
 
-**`--checkpoint` mode (mandatory here, not the terminal `finish()` mode):**
-internally this runs `ci-watch-loop.md`'s intermediate-checkpoint variant —
-this PR is not the run's terminal artifact, since an inline transition to
-Route D continues the *same* run record without ever calling `finish()` at
-this boundary. On an all-pass CI outcome, checkpoint mode appends the outcome
-as a decision (`run_record.py append "$RUN" decisions ...`) instead of
-finishing the run, then returns control to this route rather than stopping.
-A failing or slow-to-merge spec PR would otherwise go unobserved (confirmed
-2026-08-10 in a consuming repo: a Route-C spec PR merged unwatched via that
-repo's own auto-merge automation ~14 minutes after opening, discovered only
-when the user asked why it went unnoticed).
+**CI-watch the spec PR now (mandatory, before the question below):** run
+`ci-watch-loop.md`'s intermediate-checkpoint variant against this PR. This
+PR is not the run's terminal artifact — an inline transition to Route D
+continues the *same* run record without ever calling `finish()` at this
+boundary, so Phase 8's "CI watch loop before `finish`" trigger never fires
+for it, and a failing or slow-to-merge spec PR would otherwise go
+unobserved (confirmed 2026-08-10 in a consuming repo: a Route-C spec PR
+merged unwatched via that repo's own auto-merge automation ~14 minutes
+after opening, discovered only when the user asked why it went
+unnoticed). Reach a terminal
+outcome for *this* PR — merged, or `completed_pr_open` with auto-merge
+armed — before asking the implementation-intent question.
 
 **Inline D transition (MARKERS == 0 only):** inspect the brief's
 `implementation-intent:`. `requested` continues as Route D (orchestrator →
