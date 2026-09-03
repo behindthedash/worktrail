@@ -60,6 +60,15 @@ move-a-brief mechanism never diverges between callers.
   `done(..., triaged=True, duplicate_of=...)`; if `done()` still refuses (ownership mismatch, an
   unbacked re-verification claim, ...) it `release()`s the brief back to `queue/` rather than
   leaving it stranded in `picked/` under a `queue-triage` claim nobody will release.
+- **A `work-directly` verdict is downgraded to `keep` unless its evidence names a command.**
+  `queue_triage._REPRODUCTION_EVIDENCE_RE` gates the stamp: it accepts test runners and lint
+  tools (`pytest`, `tests/`, `make lint`, `mypy`, ...), `gh` with a known read subcommand
+  (`gh repo view`, `gh pr ...`), `git` with a known read/verify subcommand (`git log`,
+  `git status`, `git diff`, ...), a flagged `grep`/`rg` invocation (`grep -rn foo`), or
+  "reproduces via"/"confirmed via". Bare prose such as "git history", "gh workflow", "grep for
+  it", or "I read/inspected the file" does not qualify, nor do the bare words "command"/"check"
+  (live 2026-09-03, brief 20260903-111047: high-confidence evidence citing `gh repo view` and
+  `grep -rn` was downgraded because the regex only knew test-runner and lint tools).
 - **Worktree-PR closures (fold-into-change / propose-change) run `worktrail-compile` on the
   change before committing** so the `.compile-ok` marker matches the edited `tasks.md` — CI's
   Scope check (`check_compile_markers.py`) refuses a change PR without one (live 2026-09-02:
@@ -81,9 +90,11 @@ move-a-brief mechanism never diverges between callers.
   consulted to break the tie), zero falls through. A "known repo" is a direct subdirectory of
   `repos_root` (default `~/projects`) with a `.git` entry — file or directory, so a worktree
   checkout qualifies. This is separate from `create_handoff._infer_repo_from_focus`, the older
-  creation-time heuristic; the intake-triage evaluator's null-repo write-back
-  (`--triage-repos-root` in `worktrail-go`'s Phase 2 gate) is the intended consumer, and as of
-  2026-09-02 that wiring has not landed in this checkout.
+  creation-time heuristic; the intake-triage evaluator's null-repo write-back is the intended
+  consumer, and as of 2026-09-03 that wiring has not landed in this checkout — `worktrail-go`'s
+  Phase 2 gate no longer passes a `--triage-repos-root` flag (it never existed on
+  `worktrail-skill-dispatch`); a brief with no `repo:` frontmatter is evaluated in the repo-less
+  `__none__` group and comes back `needs-decision` when the target cannot be told from the brief.
 
 ## Critical files
 - `workqueue/work_queue.py` — the single implementation every consumer shares; do not reimplement
@@ -103,4 +114,4 @@ move-a-brief mechanism never diverges between callers.
   `--implementation-complete`.
 
 ---
-**Last Updated:** 2026-09-02
+**Last Updated:** 2026-09-03
