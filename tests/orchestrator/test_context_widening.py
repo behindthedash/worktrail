@@ -223,7 +223,6 @@ class FixerSuccessEscalationSpawn(_BaseRecordingSpawn):
         if role == "review" and self._review_count() == 1:
             return _report(task_id, role, sha, review_status="FAILED")
         if role == "fix":
-            rs = f'"{"success"}"'
             return spawnlib.SpawnResult(
                 text=(
                     f'```json\n{{"task":"{task_id}","step":"fix","status":"success",'
@@ -401,7 +400,7 @@ class TestContextWidening(unittest.TestCase):
     def test_fixer_success_report_with_paths_escalates_scope(self):
         """A fix report carrying missing_context escalates even when its own
         status is success -- design D5 drops the failed-fix precondition."""
-        spawn, task, _ = self._run_with_helper_file(FixerSuccessEscalationSpawn)
+        _spawn, task, _ = self._run_with_helper_file(FixerSuccessEscalationSpawn)
         self.assertIn("src/helper.py", task.get("files") or [])
         self.assertTrue(task.get("_scope_escalated"))
 
@@ -433,14 +432,14 @@ class TestContextWidening(unittest.TestCase):
     def test_review_escalation_strike_refunded(self):
         """A FAILED review that escalates must not cost a retry strike --
         `retry_count` is restored to its pre-transition value."""
-        spawn, task, _ = self._run_with_helper_file(ReviewFailedEscalationSpawn)
+        _spawn, task, _ = self._run_with_helper_file(ReviewFailedEscalationSpawn)
         self.assertEqual(task.get("retry_count"), 0)
 
     def test_third_strike_review_with_paths_returns_to_fixing_not_escalated(self):
         """A FAILED review that would trip the 3-strikes circuit breaker is
         rescued back to "fixing" instead of "escalated" when it names a valid
         missing-context path (design D5)."""
-        spawn, task, _ = self._run_with_helper_file(ThirdStrikeEscalationSpawn)
+        _spawn, task, _ = self._run_with_helper_file(ThirdStrikeEscalationSpawn)
         # escalated is terminal -- reaching "done" proves the would-be 3rd
         # strike was rescued back to "fixing" rather than tripping the breaker.
         self.assertEqual(task["status"], "done")
@@ -448,7 +447,7 @@ class TestContextWidening(unittest.TestCase):
     def test_scope_escalation_journal_entry_carries_scope_escalated_files(self):
         """The journal entry for a scope-escalating step names the new key
         `scope_escalated_files` (not the legacy `scope_added_files`)."""
-        spawn, task, journal = self._run_with_helper_file(ReviewFailedEscalationSpawn)
+        _spawn, _task, journal = self._run_with_helper_file(ReviewFailedEscalationSpawn)
         hit = next(
             e
             for e in journal["entries"]

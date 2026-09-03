@@ -204,10 +204,9 @@ class _ImplementOnlySpawn:
         sha = _head(Path(wt))
         return spawnlib.SpawnResult(
             text=(
-                '```json\n{"task":"%s","step":"implement","status":"success",'
-                '"head_sha":"%s","tests":"passed"}\n```'
-            )
-            % (task["id"], sha[:8]),
+                '```json\n{{"task":"{}","step":"implement","status":"success",'
+                '"head_sha":"{}","tests":"passed"}}\n```'
+            ).format(task["id"], sha[:8]),
             usage={},
         )
 

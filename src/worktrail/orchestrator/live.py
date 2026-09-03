@@ -3417,6 +3417,7 @@ def _apply_pre_commit_backstop(
             capture_output=True,
             text=True,
             timeout=300,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         task["_pre_commit_error"] = f"pre_commit_cmd timed out: {pre_commit_cmd}"

@@ -106,10 +106,9 @@ class _ImplementThenReviewSpawn:
                 )
             return spawnlib.SpawnResult(
                 text=(
-                    '```json\n{"task":"%s","step":"implement",'
-                    '"status":"%s","head_sha":"%s","tests":"%s"}\n```'
-                )
-                % (task["id"], self.impl_status, sha[:8], self.impl_tests),
+                    '```json\n{{"task":"{}","step":"implement",'
+                    '"status":"{}","head_sha":"{}","tests":"{}"}}\n```'
+                ).format(task["id"], self.impl_status, sha[:8], self.impl_tests),
                 usage={},
             )
         if role == dispatch.ROLE_REVIEW:
@@ -121,10 +120,9 @@ class _ImplementThenReviewSpawn:
             ).stdout.strip()
             return spawnlib.SpawnResult(
                 text=(
-                    '```json\n{"task":"%s","step":"review","status":"success",'
-                    '"head_sha":"%s","review_status":"PASSED"}\n```'
-                )
-                % (task["id"], sha[:8]),
+                    '```json\n{{"task":"{}","step":"review","status":"success",'
+                    '"head_sha":"{}","review_status":"PASSED"}}\n```'
+                ).format(task["id"], sha[:8]),
                 usage={},
             )
         raise AssertionError(f"unexpected role spawned: {role}")
@@ -147,20 +145,18 @@ class _FailOnceThenPassSpawn:
             sha = _commit(wt, "src/foo.py", "impl\n")
             return spawnlib.SpawnResult(
                 text=(
-                    '```json\n{"task":"%s","step":"implement","status":"success",'
-                    '"head_sha":"%s","tests":"failed"}\n```'
-                )
-                % (task["id"], sha[:8]),
+                    '```json\n{{"task":"{}","step":"implement","status":"success",'
+                    '"head_sha":"{}","tests":"failed"}}\n```'
+                ).format(task["id"], sha[:8]),
                 usage={},
             )
         if role == dispatch.ROLE_FIX:
             sha = _commit(wt, "src/foo.py", "fix\n")
             return spawnlib.SpawnResult(
                 text=(
-                    '```json\n{"task":"%s","step":"fix","status":"success",'
-                    '"head_sha":"%s","tests":"passed"}\n```'
-                )
-                % (task["id"], sha[:8]),
+                    '```json\n{{"task":"{}","step":"fix","status":"success",'
+                    '"head_sha":"{}","tests":"passed"}}\n```'
+                ).format(task["id"], sha[:8]),
                 usage={},
             )
         if role == dispatch.ROLE_REVIEW:
@@ -173,10 +169,9 @@ class _FailOnceThenPassSpawn:
             status = "FAILED" if self._review_count() == 1 else "PASSED"
             return spawnlib.SpawnResult(
                 text=(
-                    '```json\n{"task":"%s","step":"review","status":"success",'
-                    '"head_sha":"%s","review_status":"%s"}\n```'
-                )
-                % (task["id"], sha[:8], status),
+                    '```json\n{{"task":"{}","step":"review","status":"success",'
+                    '"head_sha":"{}","review_status":"{}"}}\n```'
+                ).format(task["id"], sha[:8], status),
                 usage={},
             )
         raise AssertionError(f"unexpected role spawned: {role}")
@@ -210,7 +205,7 @@ class TestReviewSmallDiffSkip(unittest.TestCase):
 
     def test_no_policy_file_never_skips(self):
         spawn = _ImplementThenReviewSpawn()
-        result, _ = self._run(spawn, threshold=None)
+        _result, _ = self._run(spawn, threshold=None)
         self.assertIn("review", spawn.calls)
 
     def test_small_passing_diff_skips_with_journal_verdict(self):
@@ -227,19 +222,19 @@ class TestReviewSmallDiffSkip(unittest.TestCase):
 
     def test_tests_none_never_skips(self):
         spawn = _ImplementThenReviewSpawn(impl_tests="none")
-        result, _ = self._run(spawn, threshold=40)
+        _result, _ = self._run(spawn, threshold=40)
         self.assertIn("review", spawn.calls)
 
     def test_large_diff_does_not_skip(self):
         spawn = _ImplementThenReviewSpawn(diff="large")
-        result, _ = self._run(spawn, threshold=40)
+        _result, _ = self._run(spawn, threshold=40)
         self.assertIn("review", spawn.calls)
 
     def test_test_file_lines_excluded_from_count(self):
         """A large test-file diff alongside a small src diff still skips --
         only non-test lines count toward the threshold."""
         spawn = _ImplementThenReviewSpawn(diff="test-heavy")
-        result, entries = self._run(spawn, threshold=40)
+        result, _entries = self._run(spawn, threshold=40)
         self.assertNotIn("review", spawn.calls)
         task = next(t for t in result["tasks"] if t["id"] == "TASK-001")
         self.assertEqual(task["status"], "done")
