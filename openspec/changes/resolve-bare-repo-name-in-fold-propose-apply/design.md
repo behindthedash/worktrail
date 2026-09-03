@@ -78,6 +78,35 @@ existing `{"status": "error", "path": None, "error": "..."}" shape already
 covers "this verdict can't be applied," and a resolution failure is exactly
 that.
 
+**Decision 4: a repo-less group may propose, but only into a repo the
+evaluator was shown.** `evaluate_group()` already refuses to let a
+`fold-into-change` name a change it never presented; the same closed-list
+rule applies to `target_repo` for a `__none__` group. `evaluate_group()`
+lists the basenames of the directories under `repos_root` (the same root
+`_resolve_repo_dir()` resolves against) in the prompt as `known_repos`, and
+`_has_valid_target()` accepts a repo-less `propose-change` only when
+`target_repo` is in that list. `fold-into-change` stays invalid for the
+group: no candidate changes are ranked without a repo, so there is nothing
+it could legally name. `needs-decision` remains the fail-open answer when the
+evidence cannot name a repo. For a repo-bearing group the existing behavior
+is unchanged: `target_repo` is informational and the group's `repo` wins.
+
+**Decision 5: apply stamps `repo:` on the brief before proposing, using the
+resolved bare name, and stamps it even if the PR later fails.** The
+evaluator's repo identification is durable evidence about the brief, not
+about this one apply run; recording it via `work_queue._set_fm_fields()`
+(the same helper `_apply_work_directly()` uses) means the next triage pass —
+scheduled or an interactive `worktrail-go BRIEF-ID` pickup — evaluates the
+brief in its real repo group with ranked candidates. The stamp happens after
+`_resolve_repo_dir()` succeeds and before `_worktree_pr_close()`, so an
+unresolvable `target_repo` never stamps anything (fail closed, Decision 3)
+while a proposal-PR failure downstream leaves the brief queued but now
+correctly attributed. The verdict's effective repo — the group `repo` when
+set, else the resolved `target_repo` — is a small local helper shared by
+`_apply_propose_change()`, `_propose_change_over_cap()`, and
+`_preview_verdict()`, so the WIP cap and the dry-run preview see the same
+repo the apply would act on.
+
 ## Risks / Trade-offs
 
 - A `repos_root` default of `~/projects` is this operator's/this
@@ -95,6 +124,14 @@ No data migration. Existing verdict files and briefs with an absolute-path
 `repo:` value are unaffected (that branch of `_resolve_repo_dir()` is
 identical to today's `Path(repo)` behavior). No `--repos-root` flag use
 required for the default-convention case.
+
+- Listing every directory under `repos_root` in the evaluator prompt costs
+  a few dozen tokens per repo-less group and exposes the evaluator to
+  non-repo directories (e.g. `*-worktrees` containers). The closed-list
+  check plus `_resolve_repo_dir()`'s `is_dir()` keep a wrong pick from
+  doing anything harmful; a wrong-but-existing pick lands as a proposal PR
+  in the wrong repo, which is reviewable and no worse than today's
+  `propose-change` for a mis-attributed repo-bearing brief.
 
 ## Open Questions
 
