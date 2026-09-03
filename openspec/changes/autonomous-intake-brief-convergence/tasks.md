@@ -221,7 +221,7 @@
 
 ## 6. End-to-end regression and verification (tail; runs after every group)
 
-- [ ] 6.1 [e2e] Add `tests/workqueue/test_intake_convergence_e2e.py`: build a `git init`'d
+- [x] 6.1 [e2e] Add `tests/workqueue/test_intake_convergence_e2e.py`: build a `git init`'d
       fixture checkout `<repos_root>/worktrail/` containing `src/worktrail/drain/drain.py`
       with the literal `no TASK-*.md found for` line and an empty `openspec/changes/`;
       write a queue brief reconstructing `20260902-080526-worktrail-drain-resume-pass-close`
