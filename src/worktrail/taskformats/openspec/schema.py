@@ -66,6 +66,13 @@ FILES_RE = re.compile(r"^[ \t]+files:\s*(.*?)\s*$", re.IGNORECASE)
 # separated, with any backtick-wrapping stripped per token.
 FILES_TOKEN_SPLIT_RE = re.compile(r"[,\s]+")
 
+# An indented `review:` continuation line, matched in the same window as
+# `FILES_RE` (between a task line and whatever ends it), e.g.
+#   - [ ] 1.1 Add a config key
+#     review: skip
+# Must be indented -- a top-level `review:` line is not a declaration.
+REVIEW_RE = re.compile(r"^[ \t]+review:\s*(.*?)\s*$", re.IGNORECASE)
+
 
 def split_tags(title: str) -> tuple[str, list[str]]:
     """Peel leading `[tag]` markers off a task title.
@@ -107,6 +114,7 @@ class ParsedTask:
     files: list[str] = field(
         default_factory=list
     )  # paths from an indented `files:` line, if any
+    review: str = ""  # value of an indented `review:` line, if any (e.g. "skip")
 
 
 @dataclass
@@ -162,6 +170,8 @@ def parse_tasks_md(text: str) -> ParsedTasks:
 
             files: list[str] = []
             files_declared = False
+            review = ""
+            review_declared = False
             for j, follow in enumerate(lines[i + 1 :], start=i + 1):
                 if not follow.strip():
                     break
@@ -181,6 +191,21 @@ def parse_tasks_md(text: str) -> ParsedTasks:
                         result.warnings.append(
                             f"line {j + 1}: task {tid}'s 'files:' line names no paths"
                         )
+                    continue
+                rm = REVIEW_RE.match(follow)
+                if rm:
+                    if review_declared:
+                        result.warnings.append(
+                            f"line {j + 1}: task {tid} has more than one 'review:' line; "
+                            "using the first declaration"
+                        )
+                        continue
+                    review_declared = True
+                    review = rm.group(1).strip()
+                    if not review:
+                        result.warnings.append(
+                            f"line {j + 1}: task {tid}'s 'review:' line names no value"
+                        )
 
             result.tasks.append(
                 ParsedTask(
@@ -193,6 +218,7 @@ def parse_tasks_md(text: str) -> ParsedTasks:
                     kind=kinds[0] if kinds else DEFAULT_KIND,
                     tags=tags,
                     files=files,
+                    review=review,
                 )
             )
             continue

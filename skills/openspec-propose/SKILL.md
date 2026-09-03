@@ -119,6 +119,19 @@ per the calling worktrail-sdd-workflow pipeline instead.
           the same lane) still applies unchanged and remains the backstop. This guidance is a
           decomposition-time reduction of how often that backstop has to fire, not a replacement
           for it.
+        - **Task sizing**: one implementation task per module per phase, sized for roughly
+          20-60 minutes of work — this is a coarser grain than the file-scope guidance above,
+          which governs how a task's *files* are chosen, not how many tasks a phase has. Fold
+          consecutive same-file steps into one task with sub-bullets rather than a dependent
+          chain of tasks.
+        - **Tests co-scoped with implementation**: an implementation task's `files:` MUST
+          include every existing test file asserting behavior the task changes, plus any new
+          test file it adds. Never split a task's implementation and its tests into separate
+          tasks.
+        - **`review: skip` for mechanical tasks**: a mechanical or docs-only task (a config key,
+          a prose edit, a single constant) carries an indented `review: skip` continuation line,
+          the same way `files:` is declared above. A task producing executable behavior never
+          carries `review: skip`.
       - Show brief progress: "Created <artifact-id>"
 
    b. **Continue until all `applyRequires` artifacts are complete**
@@ -162,6 +175,9 @@ After completing all artifacts, summarize:
 - If context is critically unclear, ask the user - but prefer making reasonable decisions to keep momentum
 - If a change with that name already exists, ask if user wants to continue it or create a new one
 - Verify each artifact file exists after writing before proceeding to next
-- Before showing final status, re-check `tasks.md` against the requirement-coverage and
-  file-less-task rules above — every declared requirement's exact name must appear somewhere in
-  the file, and every task with no file changes must carry `[e2e]` or `[cleanup]`
+- Before showing final status, re-check `tasks.md` against the requirement-coverage,
+  file-less-task, task-sizing, test-co-scoping, and `review: skip` rules above — every declared
+  requirement's exact name must appear somewhere in the file, every task with no file changes
+  must carry `[e2e]` or `[cleanup]`, every implementation task is sized per module per phase with
+  its changed tests co-scoped in `files:`, and every mechanical/docs-only task carries
+  `review: skip`
