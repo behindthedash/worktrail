@@ -1,7 +1,7 @@
 # CI Watch Loop (Phase 8, after a PR is opened)
 
-> This reference documents the classification the agent applies while watching a
-> PR's CI to completion: repairing a reported code defect and deciding case 4.
+> Implemented in code by `worktrail-land-pr`; the agent's remaining steps are
+> repairing a reported code defect and deciding case 4.
 
 > **⚠️ MANDATORY — DO NOT SKIP.** Every PR-owning route MUST complete this loop
 > and classify the outcome before calling `run_record.py finish`. The five cases
@@ -359,7 +359,7 @@ not the change under test, is why the loop stopped.
    repo's own auto-merge workflow re-arms on `pull_request: synchronize` (most do), it
    re-establishes itself on the new head automatically; no manual re-enable needed.
 
-4. **Product / design / test-logic decision** — when the failure classifies as a
+4. **Product / design / test-logic decision** — when `worktrail-land-pr` reports
    `code_defect` and the fix needs a product decision: a behaviour change, new
    acceptance criteria, or a test that needs product input to write.
    Surface a clear summary of what decision is needed. In auto mode, first file it as a
