@@ -169,43 +169,6 @@ def _add_label(
     return label
 
 
-def _remove_label(
-    repo: str, pr_url: str, label: str, runner: Runner | None = None
-) -> str | None:
-    """Remove `label` from the PR via the REST issues-labels endpoint (same
-    endpoint family as `_add_label`, for the same Projects-classic reason).
-    Returns `label` on success, None on any failure -- logging a warning to
-    stderr first so a swallowed failure is never silent."""
-    parsed = _owner_repo_number(repo, pr_url, runner)
-    if parsed is None:
-        print(
-            f"warning: pr_labels: could not resolve owner/repo/number for "
-            f"PR {pr_url!r}; skipping label remove",
-            file=sys.stderr,
-        )
-        return None
-    owner, repo_name, number = parsed
-    result = _run_gh_cmd(
-        [
-            "gh",
-            "api",
-            f"repos/{owner}/{repo_name}/issues/{number}/labels/{label}",
-            "-X",
-            "DELETE",
-        ],
-        repo,
-        runner,
-    )
-    if result.returncode != 0:
-        print(
-            f"warning: pr_labels: failed to remove label {label!r} from "
-            f"{pr_url}: {result.stderr.strip()}",
-            file=sys.stderr,
-        )
-        return None
-    return label
-
-
 def _current_pr_labels(
     repo: str, pr_url: str, runner: Runner | None = None
 ) -> list[str] | None:
@@ -248,40 +211,6 @@ def ensure_pr_risk_label(
     if labels is None or any(label.startswith("go:risk-") for label in labels):
         return None
     return _add_label(repo, pr_url, f"go:risk-{risk_level}")
-
-
-def correct_pr_risk_label(
-    repo: str | None,
-    pr_url: str | None,
-    risk_level: str | None,
-    runner: Runner | None = None,
-) -> str | None:
-    """Ensure the PR carries exactly `go:risk-<risk_level>`, removing any
-    OTHER `go:risk-*` label first.
-
-    Deliberately separate from `ensure_pr_risk_label()`, not a behavior
-    change to it: that function's "only add when none exists" posture is a
-    pinned contract for its post-hoc-correction callers (drain.py, poll_run.py,
-    reconcile_pr_labels.py, run_record.py's finish path) which run at a point
-    where any existing label is presumed already correct or human-set, so
-    changing it there risks silently removing a deliberately-set label for
-    callers that were never reviewed against that risk. `land_pr()`'s
-    existing-PR update path is different: it always has a freshly-computed,
-    authoritative `risk_level` from THIS invocation's own preflight run, so a
-    stale `go:risk-*` label there is provably wrong (a bug, not someone
-    else's deliberate override) and should be corrected, not preserved.
-    Never touches `go:no-automerge` -- same posture as `ensure_pr_risk_label`.
-    """
-    if not repo or not pr_url or not risk_level:
-        return None
-    target = f"go:risk-{risk_level}"
-    labels = _current_pr_labels(repo, pr_url, runner=runner)
-    if labels is None or target in labels:
-        return None
-    for stale in labels:
-        if stale.startswith("go:risk-") and stale != target:
-            _remove_label(repo, pr_url, stale, runner=runner)
-    return _add_label(repo, pr_url, target, runner=runner)
 
 
 def ensure_pr_no_automerge_label(

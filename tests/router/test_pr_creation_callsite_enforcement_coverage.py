@@ -321,28 +321,27 @@ def _proves_land_pr_py_uses_preflight_labels():
 
 
 def _proves_land_pr_py_applies_preflight_labels_on_update():
-    """land_pr.py's update path (an existing OPEN PR) must correct a STALE
-    preflight-computed risk label -- removing the wrong one and adding the
-    right one via `pr_labels`'s shared REST-based label helpers (never a
-    second, independent label-application implementation) -- apply the
-    no-automerge label via `pr_labels.ensure_pr_no_automerge_label()`, and
-    refresh the PR title/body via `gh pr edit` (not `gh pr create`, since the
-    PR already exists). Also proves `land_pr()` itself sources labels from
+    """land_pr.py's update path (an existing OPEN PR) must apply the
+    preflight-computed risk/no-automerge labels via the shared
+    `pr_labels.ensure_pr_risk_label()`/`ensure_pr_no_automerge_label()`
+    helpers -- literal reuse, never a second, independent label-application
+    implementation -- refresh the PR title/body via `gh pr edit` (not
+    `gh pr create`, since the PR already exists), and then VERIFY the
+    post-mutation label state (rather than trusting the shared helpers'
+    ambiguous `None`-on-success-or-failure return) before reporting success.
+    Also proves `land_pr()` itself sources labels from
     `_run_preflight_and_labels()` -> `preflight.read_marker()`, not an
-    independently hand-rolled list.
-
-    Uses the real `pr_labels._owner_repo_number`/`_add_label` (not
-    monkeypatched) so the injected runner is exercised end-to-end, per the
-    fix for the "injected runner bypassed on the existing-PR risk-label
-    operation" defect -- the OLD version of this test monkeypatched the
-    public `ensure_pr_risk_label()` wrapper, which enshrined that bug (it
-    silently no-ops whenever ANY go:risk-* label already exists, so a stale
-    `go:risk-low` was never corrected to `go:risk-high`)."""
+    independently hand-rolled list."""
     calls = []
+    ensure_risk_calls = []
     ensure_no_automerge_calls = []
 
     def fake_run(cmd, **kwargs):
         if cmd[:3] == ["gh", "pr", "view"]:
+            # Both the initial view (--json url,number,state,labels) and the
+            # post-mutation verify (--json labels) return the same shape --
+            # the applied labels are already reflected, proving the update
+            # actually landed.
             return subprocess.CompletedProcess(
                 cmd,
                 0,
@@ -351,7 +350,10 @@ def _proves_land_pr_py_applies_preflight_labels_on_update():
                         "url": "https://github.com/acme/widget/pull/9",
                         "number": 9,
                         "state": "OPEN",
-                        "labels": [{"name": "go:risk-low"}],
+                        "labels": [
+                            {"name": "go:risk-high"},
+                            {"name": "go:no-automerge"},
+                        ],
                     }
                 ),
                 stderr="",
@@ -359,15 +361,17 @@ def _proves_land_pr_py_applies_preflight_labels_on_update():
         calls.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
+    def fake_ensure_risk(repo, pr_url, risk_level):
+        ensure_risk_calls.append((repo, pr_url, risk_level))
+        return f"go:risk-{risk_level}"
+
     def fake_ensure_no_automerge(repo, pr_url, eligible, runner=None):
         ensure_no_automerge_calls.append((repo, pr_url, eligible, runner))
         return None if eligible else "go:no-automerge"
 
-    real_owner_repo_number = land_pr.pr_labels._owner_repo_number
+    real_ensure_risk = land_pr.pr_labels.ensure_pr_risk_label
     real_ensure_no_automerge = land_pr.pr_labels.ensure_pr_no_automerge_label
-    land_pr.pr_labels._owner_repo_number = (
-        lambda repo, pr_url, runner=None: ("acme", "widget", "9")
-    )
+    land_pr.pr_labels.ensure_pr_risk_label = fake_ensure_risk
     land_pr.pr_labels.ensure_pr_no_automerge_label = fake_ensure_no_automerge
     try:
         result = land_pr.open_or_update_pull_request(
@@ -382,34 +386,18 @@ def _proves_land_pr_py_applies_preflight_labels_on_update():
             fake_run,
         )
     finally:
-        land_pr.pr_labels._owner_repo_number = real_owner_repo_number
+        land_pr.pr_labels.ensure_pr_risk_label = real_ensure_risk
         land_pr.pr_labels.ensure_pr_no_automerge_label = real_ensure_no_automerge
 
     if result["refused_step"] is not None:
         raise AssertionError(f"update path unexpectedly refused: {result['detail']}")
     if any(cmd[:3] == ["gh", "pr", "create"] for cmd in calls):
         raise AssertionError("update path issued gh pr create for an already-OPEN PR")
-    delete_calls = [
-        cmd
-        for cmd in calls
-        if cmd[:2] == ["gh", "api"]
-        and cmd[2].endswith("/labels/go:risk-low")
-        and "DELETE" in cmd
-    ]
-    if not delete_calls:
+    if ensure_risk_calls != [
+        ("/fake/repo", "https://github.com/acme/widget/pull/9", "high")
+    ]:
         raise AssertionError(
-            f"update path did not remove the stale go:risk-low label: {calls!r}"
-        )
-    add_calls = [
-        cmd
-        for cmd in calls
-        if cmd[:2] == ["gh", "api"]
-        and cmd[2].endswith("/labels")
-        and "labels[]=go:risk-high" in cmd
-    ]
-    if not add_calls:
-        raise AssertionError(
-            f"update path did not add the corrected go:risk-high label: {calls!r}"
+            f"update path did not call ensure_pr_risk_label as expected: {ensure_risk_calls!r}"
         )
     if ensure_no_automerge_calls != [
         ("/fake/repo", "https://github.com/acme/widget/pull/9", False, fake_run)
@@ -434,6 +422,59 @@ def _proves_land_pr_py_applies_preflight_labels_on_update():
             "_run_preflight_and_labels no longer sources labels from "
             "preflight.read_marker() -- land_pr()'s update-path labels would "
             "no longer be preflight-computed"
+        )
+
+
+def _proves_land_pr_py_update_path_verifies_before_reporting_success():
+    """The update path must not report success when the post-mutation
+    verification shows the computed labels never actually landed (e.g. a
+    `gh` failure the shared label helpers' ambiguous `None` return can't
+    surface) -- Requirement: labels applied on create AND update."""
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout=json.dumps(
+                    {
+                        "url": "https://github.com/acme/widget/pull/9",
+                        "number": 9,
+                        "state": "OPEN",
+                        # Missing go:risk-high despite the (no-op, in this
+                        # test) label helpers below -- simulates a silently
+                        # failed application.
+                        "labels": [],
+                    }
+                ),
+                stderr="",
+            )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    real_ensure_risk = land_pr.pr_labels.ensure_pr_risk_label
+    real_ensure_no_automerge = land_pr.pr_labels.ensure_pr_no_automerge_label
+    land_pr.pr_labels.ensure_pr_risk_label = lambda *a, **k: None
+    land_pr.pr_labels.ensure_pr_no_automerge_label = lambda *a, **k: None
+    try:
+        result = land_pr.open_or_update_pull_request(
+            Path("/fake/repo"),
+            "main",
+            "feature",
+            "title",
+            "body",
+            "high",
+            ["go:risk-high"],
+            "route-a",
+            fake_run,
+        )
+    finally:
+        land_pr.pr_labels.ensure_pr_risk_label = real_ensure_risk
+        land_pr.pr_labels.ensure_pr_no_automerge_label = real_ensure_no_automerge
+
+    if result["refused_step"] is None:
+        raise AssertionError(
+            "update path reported success despite the computed label never "
+            "landing on the PR"
         )
 
 
@@ -483,6 +524,9 @@ class TestPrCreationCallsiteEnforcementCoverage(unittest.TestCase):
 
     def test_land_pr_update_path_applies_preflight_labels(self):
         _proves_land_pr_py_applies_preflight_labels_on_update()
+
+    def test_land_pr_update_path_verifies_before_reporting_success(self):
+        _proves_land_pr_py_update_path_verifies_before_reporting_success()
 
 
 if __name__ == "__main__":

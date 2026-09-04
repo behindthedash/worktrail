@@ -377,21 +377,17 @@ def open_or_update_pull_request(
             pr_number = data.get("number")
             # Ensure the preflight-computed risk/no-automerge labels land on
             # the existing PR via the shared helpers rather than a second
-            # label-application implementation. `correct_pr_risk_label()`
-            # (unlike the conservative `ensure_pr_risk_label()`, whose "only
-            # add when none exists" contract is pinned for its other,
-            # post-hoc-correction callers) corrects a STALE risk label to the
-            # freshly-computed value from this run's own preflight pass, and
-            # honors the injected runner throughout.
+            # label-application implementation -- literal reuse of
+            # `ensure_pr_risk_label()` as the AC names it, accepting its
+            # existing "only add when none exists" contract rather than
+            # introducing new label-removal behavior in a file outside this
+            # task's declared scope.
             risk_label = next(
                 (label for label in labels if label.startswith("go:risk-")), None
             )
             if risk_label is not None:
-                pr_labels.correct_pr_risk_label(
-                    str(repo),
-                    pr_url,
-                    risk_label.removeprefix("go:risk-"),
-                    runner=runner,
+                pr_labels.ensure_pr_risk_label(
+                    str(repo), pr_url, risk_label.removeprefix("go:risk-")
                 )
             pr_labels.ensure_pr_no_automerge_label(
                 str(repo),
@@ -402,7 +398,7 @@ def open_or_update_pull_request(
             # `gh pr edit --title/--body` (unlike `--add-label`) does not
             # touch classic-Projects fields, so the GraphQL-mutation failure
             # `_add_label()`/`pr_labels` avoid does not apply here.
-            _gh(
+            edit_result = _gh(
                 repo,
                 runner,
                 "pr",
@@ -413,6 +409,33 @@ def open_or_update_pull_request(
                 "--body",
                 body,
             )
+            # Every mutation above is fire-and-forget from a return-value
+            # standpoint (the shared label helpers can't distinguish
+            # "already correct" from "gh call failed" from their None
+            # return), so verify the actual post-mutation label state
+            # instead of trusting the calls succeeded (Requirement: labels
+            # applied on create AND update; Requirement: standard PR body).
+            verify = _gh(repo, runner, "pr", "view", pr_url, "--json", "labels")
+            verified_labels: list[str] = []
+            if verify.returncode == 0:
+                try:
+                    verified_labels = [
+                        entry.get("name", "")
+                        for entry in (json.loads(verify.stdout).get("labels") or [])
+                    ]
+                except json.JSONDecodeError:
+                    verified_labels = []
+            missing = [want for want in labels if want not in verified_labels]
+            if edit_result.returncode != 0 or missing:
+                return {
+                    "pr_url": pr_url,
+                    "pr_number": pr_number,
+                    "refused_step": "pr_update",
+                    "detail": (
+                        f"failed to update existing PR {pr_url}: gh pr edit "
+                        f"exit={edit_result.returncode}, missing labels={missing}"
+                    ),
+                }
             return {
                 "pr_url": pr_url,
                 "pr_number": pr_number,
