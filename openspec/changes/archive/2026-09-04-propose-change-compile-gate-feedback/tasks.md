@@ -1,6 +1,6 @@
 ## 1. Prompt names both gates (`Fold and propose are applied as a pull request, fail-closed`)
 
-- [ ] 1.1 Implement requirement: In `src/worktrail/workqueue/queue_triage.py`,
+- [x] 1.1 Implement requirement: In `src/worktrail/workqueue/queue_triage.py`,
       extend `PROPOSE_CHANGE_PROMPT_TEMPLATE`'s trailing "must pass" sentence
       (design.md Decision) to also instruct the agent to run `worktrail-compile
       openspec/changes/{proposed_change_name}` and fix any reported problem —
@@ -13,9 +13,9 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [cleanup] Run `PYTHONPATH=src pytest -q` and confirm it is green,
+- [x] 2.1 [cleanup] Run `PYTHONPATH=src pytest -q` and confirm it is green,
       including the new test from section 1. Verification-only — no file
       changes expected.
-- [ ] 2.2 [cleanup] Run `openspec validate propose-change-compile-gate-feedback
+- [x] 2.2 [cleanup] Run `openspec validate propose-change-compile-gate-feedback
       --strict` and confirm it passes. Verification-only — no file changes
       expected.
