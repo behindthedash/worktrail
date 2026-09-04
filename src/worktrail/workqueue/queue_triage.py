@@ -20,7 +20,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -179,6 +179,18 @@ CONFIRMED entry from a brief's mechanical premise check above counts as \
 reproduction evidence on its own — cite it directly rather than re-running \
 the same check yourself.
 
+Step 2c — needs-update requires a mechanical-vs-judgment classification:
+When your verdict is `needs-update`, say which kind of update it needs. If the \
+correction is mechanical — a specific, quotable claim the brief makes that your \
+cited code/paths refute, or a stale/archived target reference — set \
+`refuted_span` to that claim copied *verbatim* from the brief's own focus text \
+as shown above, plus an optional `corrected_span` with the text that should \
+replace it (omit it to simply drop the refuted claim). If instead resolving the \
+brief needs a genuine human call — an ambiguous claim priority, conflicting \
+requirements, a scope or policy decision — set `judgment_reason` explaining what \
+must be decided, and no `refuted_span`. Never set both, and never set a \
+`refuted_span` you cannot quote verbatim from the focus text above.
+
 Step 3 — memory check before raising an alarm:
 Before flagging anything you observe as a live operational concern, check \
 {memory_index} for whether it already documents the same state as expected or \
@@ -196,7 +208,11 @@ fold-into-change|propose-change|work-directly|needs-decision", "duplicate_of": \
 "<brief-id or null>", "target_change": "<one of the brief's listed candidate \
 ids, for fold-into-change only>", "target_repo": "<repo, for propose-change \
 only>", "proposed_change_name": "<kebab-case id, for propose-change only>", \
-"question": "<for needs-decision only>", "evidence": "<cited PR/commit/file/\
+"question": "<for needs-decision only>", "refuted_span": "<verbatim span of \
+the brief's focus text your evidence refutes, for a mechanical needs-update \
+only>", "corrected_span": "<optional replacement for refuted_span>", \
+"judgment_reason": "<what a human must decide, for a judgment needs-update \
+only>", "evidence": "<cited PR/commit/file/\
 test, or why inconclusive for a fail-open keep>", "confidence": \
 "high|medium|low"}}
 """
@@ -1229,6 +1245,15 @@ class Verdict:
     (4.1(b)) is the reason (`"keep-limit"`/`"queue-age"`) `escalate()` rewrote
     this verdict from a stalled `keep`, or `None` for every verdict escalation
     never touched.
+
+    `refuted_span`/`corrected_span`/`judgment_reason` are `needs-update`'s
+    mechanical-vs-judgment split: `refuted_span` is the span of the brief's own
+    focus text the evaluator refuted (quoted verbatim), optionally with the
+    `corrected_span` that should replace it, when the correction is mechanical;
+    `judgment_reason` is set instead when resolving the brief needs a genuine
+    human call. All three stay `None` for every other verdict type, and for a
+    `needs-update` verdict the evaluator left evidence-only -- validity still
+    requires only non-empty `evidence`, unaffected by these fields.
     """
 
     brief_id: str
@@ -1244,6 +1269,18 @@ class Verdict:
     held_by_wip_cap: bool = False
     premise_check: list[dict[str, Any]] = field(default_factory=list)
     escalation: str | None = None
+    refuted_span: str | None = None
+    corrected_span: str | None = None
+    judgment_reason: str | None = None
+
+
+# Shortest `refuted_span` a mechanical rewrite will act on. Mirrors
+# `premise_check.py`'s own `_MIN_QUOTED_LEN` floor -- an independent literal
+# rather than a cross-module import, matching how this file already keeps its
+# own constants (`_MIN_CANDIDATE_SCORE`, ...) beside the code that uses them.
+# A span this short is too generic to locate unambiguously in a brief's focus
+# text, so it is routed to a human decision instead of rewritten blind.
+_MIN_REFUTED_SPAN_LEN = 12
 
 
 def _extract_json_objects(text: str) -> list[str]:
@@ -1389,6 +1426,13 @@ def parse_verdicts(
     left as a plain `keep`: `evaluate_group()`'s own prompt already forbids
     `fold-into-change`/`propose-change` for these groups, so `keep` is the
     only outcome this needs to intercept.
+
+    `needs-update`'s `refuted_span`/`corrected_span`/`judgment_reason` are
+    copied straight through the same way `target_change`/`target_repo`/
+    `question` are (string-typed or `None`), with no validation here: a
+    `needs-update` verdict is still valid on non-empty `evidence` alone, and
+    the precedence between a refuted span and a judgment reason is apply's
+    concern, not parsing's.
     """
     candidates_by_brief = candidates_by_brief or {}
     premise_by_brief = premise_by_brief or {}
@@ -1442,6 +1486,9 @@ def parse_verdicts(
                 target_repo = obj.get("target_repo")
                 proposed_change_name = obj.get("proposed_change_name")
                 question = obj.get("question")
+                refuted_span = obj.get("refuted_span")
+                corrected_span = obj.get("corrected_span")
+                judgment_reason = obj.get("judgment_reason")
                 chosen = Verdict(
                     brief_id=bid,
                     verdict=verdict_type,
@@ -1456,6 +1503,15 @@ def parse_verdicts(
                     if isinstance(proposed_change_name, str)
                     else None,
                     question=question if isinstance(question, str) else None,
+                    refuted_span=refuted_span
+                    if isinstance(refuted_span, str)
+                    else None,
+                    corrected_span=corrected_span
+                    if isinstance(corrected_span, str)
+                    else None,
+                    judgment_reason=judgment_reason
+                    if isinstance(judgment_reason, str)
+                    else None,
                 )
                 break
 
@@ -1643,13 +1699,230 @@ def _apply_close(v: Verdict) -> dict:
     return {**base, "status": "executed", "path": done_res.get("path"), "error": None}
 
 
-def _apply_needs_update(v: Verdict, run_date: str) -> dict:
-    """`needs-update`: append an in-place `## Triage <run_date>` body section.
+def _needs_update_is_mechanical(v: Verdict, focus: str) -> bool:
+    """True when `v`'s refutation is safe to rewrite against `focus`, the
+    brief's *live* focus text: no `judgment_reason` overriding it, a
+    `refuted_span` long enough to locate unambiguously
+    (`_MIN_REFUTED_SPAN_LEN`), and still present verbatim in what the brief
+    says right now. Shared by `_apply_needs_update()` and `_preview_verdict()`
+    so the preview picks the same branch the apply would.
+    """
+    span = v.refuted_span
+    return bool(
+        not v.judgment_reason
+        and span
+        and len(span) >= _MIN_REFUTED_SPAN_LEN
+        and span in focus
+    )
 
-    Uses the same section shape `is_recently_triaged()` scans for, so a
-    subsequent triage run's dedup check sees this run's note without any
-    extra bookkeeping. The brief itself is left in place -- unlike
-    `_apply_close()`, `needs-update` never claims or closes it.
+
+def _needs_update_rewritten_focus(v: Verdict, focus: str) -> str:
+    """The focus text a mechanical rewrite would leave behind.
+
+    Only the approved span is touched -- surrounding text (including
+    whitespace) is preserved verbatim. Callers that need to know whether the
+    rewrite would erase the brief's focus entirely (a proposal to empty the
+    brief rather than a correction) check `.strip()` on the result rather
+    than relying on this function to have stripped it, so a stripped result
+    is never written to disk.
+    """
+    return focus.replace(v.refuted_span or "", v.corrected_span or "", 1)
+
+
+def _needs_update_empty_focus_question(v: Verdict) -> str:
+    """The question an all-of-the-focus refutation files a decision under.
+
+    Shared by `_apply_needs_update_mechanical()` and `_preview_verdict()` so
+    the preview quotes the same question the apply would file.
+    """
+    return (
+        f"Queue-triage refuted {v.refuted_span!r}, which is this brief's "
+        f"entire focus text -- removing this claim would leave no remaining "
+        f"focus text. Should the brief be closed, or rewritten around a "
+        f"different focus?"
+    )
+
+
+def _needs_update_judgment_question(v: Verdict) -> str:
+    """The question a `needs-update` verdict files a decision under.
+
+    `v.judgment_reason` when the evaluator classified the brief as needing a
+    genuine human call; otherwise the generated stale-span question for a
+    `refuted_span` that no longer matches the brief's live focus text (the
+    brief moved on between evaluate and apply, so there is nothing safe to
+    rewrite mechanically). Shared by `_apply_needs_update_judgment()` and
+    `_preview_verdict()` so the preview quotes the same question the apply
+    would file.
+    """
+    if v.judgment_reason:
+        return v.judgment_reason
+    return (
+        f"Queue-triage refuted {v.refuted_span!r}, but that text no longer "
+        f"matches this brief's current focus text -- how should the brief be "
+        f"resolved?"
+    )
+
+
+def _apply_needs_update_judgment(v: Verdict, path: Path) -> dict:
+    """`needs-update` that needs a human call: file it as a pending decision.
+
+    Reuses `_apply_needs_decision()` wholesale via a synthetic
+    `needs-decision` verdict carrying `_needs_update_judgment_question()` --
+    the situation is identical (an automated run could not resolve the brief
+    on its own), so it gets the identical deterministic-identity,
+    stamp-the-brief, leave-it-queued treatment. The returned entry's
+    `verdict` is overlaid back to `"needs-update"` so the action log still
+    reports the verdict that was actually confirmed, with `routed_to`
+    recording where it was sent. `path` is the already-resolved brief
+    (`_apply_needs_decision()` re-resolves it itself when stamping).
+    """
+    del path  # the decision path re-resolves the brief when it stamps it
+    synthetic = Verdict(
+        brief_id=v.brief_id,
+        verdict="needs-decision",
+        duplicate_of=None,
+        evidence=v.evidence,
+        confidence=v.confidence,
+        repo=v.repo,
+        question=_needs_update_judgment_question(v),
+    )
+    return {
+        **_apply_needs_decision(synthetic),
+        "verdict": "needs-update",
+        "routed_to": "needs-decision",
+    }
+
+
+def _apply_needs_update_mechanical(
+    v: Verdict,
+    path: Path,
+    run_date: str,
+    *,
+    agent: str = "claude",
+    repos_root: str | Path | None = None,
+) -> dict:
+    """`needs-update` with a quotable refutation: rewrite the focus, re-evaluate.
+
+    Replaces `v.refuted_span` (already confirmed present in the brief's live
+    focus text by `_apply_needs_update()`) with `v.corrected_span`, or drops
+    it when there is no correction, then appends the usual
+    `## Triage <run_date>` note recording what changed. A rewrite that would
+    leave no focus text at all is not a rewrite -- it is a proposal to empty
+    the brief, so it is routed to a human decision instead.
+
+    The rewritten brief is immediately re-evaluated (`evaluate_briefs()`) so
+    the run's output carries the verdict the *corrected* brief earns rather
+    than stopping at "the old one was wrong". That fresh verdict is reported
+    under `reevaluation`, never applied here: applying it would be closing a
+    brief on a verdict no human approved. A re-evaluation failure is
+    recorded, not raised -- the rewrite is already on disk and must not be
+    lost to a spawn error.
+    """
+    base = {
+        "brief_id": v.brief_id,
+        "verdict": v.verdict,
+        "duplicate_of": v.duplicate_of,
+        "action": "mechanical-rewrite",
+        "confirm": True,
+        "note": v.evidence,
+        "rewrite": {"removed": v.refuted_span, "replacement": v.corrected_span or ""},
+    }
+    replacement = v.corrected_span or ""
+    new_focus = _needs_update_rewritten_focus(v, _brief_focus(path))
+    if not new_focus.strip():
+        return _apply_needs_update_judgment(
+            replace(v, judgment_reason=_needs_update_empty_focus_question(v)),
+            path,
+        )
+
+    if replacement:
+        summary = f"Rewrote focus: replaced {v.refuted_span!r} with {replacement!r}."
+    else:
+        summary = f"Rewrote focus: removed {v.refuted_span!r}."
+    try:
+        _set_fm_fields(path, {"focus": new_focus})
+        content = path.read_text(encoding="utf-8")
+        path.write_text(
+            content.rstrip("\n")
+            + f"\n\n## Triage {run_date}\n\n{summary}\n\n{v.evidence}\n",
+            encoding="utf-8",
+        )
+    except (OSError, ValueError) as exc:
+        return {**base, "status": "error", "path": str(path), "error": str(exc)}
+
+    repo = _effective_repo(v)
+    if repo and repo != NO_REPO_KEY:
+        repo_dir = _resolve_repo_dir(repo, repos_root)
+        if repo_dir is None:
+            reevaluation = {
+                "status": "error",
+                "verdict": None,
+                "error": f"could not resolve repo {repo!r} to a directory under repos_root={repos_root!r}",
+            }
+            return {
+                **base,
+                "status": "executed",
+                "path": str(path),
+                "error": None,
+                "reevaluation": reevaluation,
+            }
+        cwd = repo_dir
+    else:
+        cwd = _worktrail_repo_root()
+    try:
+        fresh = evaluate_briefs(
+            repo or NO_REPO_KEY,
+            [path],
+            agent=agent,
+            cwd=cwd,
+            repos_root=repos_root,
+        )
+    except Exception as exc:  # noqa: BLE001
+        reevaluation = {"status": "error", "verdict": None, "error": str(exc)}
+    else:
+        reevaluation = {
+            "status": "produced",
+            "verdict": asdict(fresh[0]) if fresh else None,
+            "error": None,
+        }
+    return {
+        **base,
+        "status": "executed",
+        "path": str(path),
+        "error": None,
+        "reevaluation": reevaluation,
+    }
+
+
+def _apply_needs_update(
+    v: Verdict,
+    run_date: str,
+    *,
+    agent: str = "claude",
+    repos_root: str | Path | None = None,
+) -> dict:
+    """`needs-update`: rewrite mechanically, file a decision, or append a note.
+
+    Three branches, in order:
+
+    - `judgment_reason` set -> `_apply_needs_update_judgment()`: the evaluator
+      said resolving this brief needs a human call, so it files one.
+    - `refuted_span` set, at least `_MIN_REFUTED_SPAN_LEN` characters, and
+      present verbatim in the brief's *live* focus text ->
+      `_apply_needs_update_mechanical()`: the refutation is still quotable
+      against what the brief says right now, so it is safe to rewrite.
+    - `refuted_span` set but failing that check (too short to locate
+      unambiguously, or the brief drifted since evaluate ran) ->
+      `_apply_needs_update_judgment()`, which generates the stale-span
+      question. A blind rewrite here would edit text the evaluator never saw.
+
+    An evidence-only `needs-update` (neither field, the pre-split shape) falls
+    through to the original behaviour: append an in-place `## Triage
+    <run_date>` body section, in the same section shape
+    `is_recently_triaged()` scans for, so a subsequent triage run's dedup
+    check sees this run's note without any extra bookkeeping. The brief
+    itself is left in place -- unlike `_apply_close()`, no branch here claims
+    or closes it.
     """
     base = {
         "brief_id": v.brief_id,
@@ -1667,6 +1940,14 @@ def _apply_needs_update(v: Verdict, run_date: str) -> dict:
             "path": None,
             "error": "brief not found in queue/ or picked/",
         }
+    if v.judgment_reason:
+        return _apply_needs_update_judgment(v, path)
+    if v.refuted_span:
+        if _needs_update_is_mechanical(v, _brief_focus(path)):
+            return _apply_needs_update_mechanical(
+                v, path, run_date, agent=agent, repos_root=repos_root
+            )
+        return _apply_needs_update_judgment(v, path)
     try:
         content = path.read_text(encoding="utf-8")
         path.write_text(
@@ -2534,6 +2815,39 @@ def _apply_propose_change(
     return entry
 
 
+def _preview_file_decision(v: Verdict, base: dict, question: str) -> dict:
+    """The planned `file-decision` entry for `question`: the exact
+    `awaiting-decision` stamp and full `pending_decision_envelope()`
+    `_apply_needs_decision()` would file, without writing either. Shared by
+    the `needs-decision` preview and `needs-update`'s judgment branch, so the
+    two preview the same envelope the one apply path actually files.
+    """
+    repo = v.repo if v.repo and v.repo != NO_REPO_KEY else None
+    decision_id = decisions.decision_identity(
+        source="queue-triage",
+        repo=repo or NO_REPO_KEY,
+        subject=v.brief_id,
+        question=question,
+    )
+    envelope = decisions.pending_decision_envelope(
+        decision_id=decision_id,
+        question=question,
+        options=list(_NEEDS_DECISION_OPTIONS),
+        source="queue-triage",
+        repo=repo,
+        subject=v.brief_id,
+        brief=v.brief_id,
+    )
+    return {
+        **base,
+        "action": "file-decision",
+        "status": "planned",
+        "note": v.evidence,
+        "planned_stamp": {"awaiting-decision": decision_id},
+        "planned_envelope": envelope,
+    }
+
+
 def _preview_verdict(
     v: Verdict, run_date: str, repos_root: str | Path | None = None
 ) -> dict:
@@ -2553,7 +2867,14 @@ def _preview_verdict(
     previews its planned
     frontmatter stamp (or the same downgrade-to-keep `_apply_work_directly`
     would make); `needs-decision` previews the `awaiting-decision` stamp and
-    the full `pending_decision_envelope()` `decisions.ask()` would file.
+    the full `pending_decision_envelope()` `decisions.ask()` would file. A
+    `needs-update` carrying `refuted_span`/`judgment_reason` previews whichever
+    of `_apply_needs_update()`'s branches it would take -- the planned focus
+    rewrite, or the decision it would file instead -- reading the brief's live
+    focus text (the same check apply makes) but writing nothing; a brief that
+    is no longer in `queue/` or `picked/` previews the same not-found error
+    apply exits with, rather than a branch it could never take; the
+    evidence-only shape keeps the generic preview below.
     """
     base = {
         "brief_id": v.brief_id,
@@ -2618,29 +2939,37 @@ def _preview_verdict(
                 "note": v.evidence,
                 "error": "verdict has no question to file a decision for",
             }
-        repo = v.repo if v.repo and v.repo != NO_REPO_KEY else None
-        decision_id = decisions.decision_identity(
-            source="queue-triage",
-            repo=repo or NO_REPO_KEY,
-            subject=v.brief_id,
-            question=question,
-        )
-        envelope = decisions.pending_decision_envelope(
-            decision_id=decision_id,
-            question=question,
-            options=list(_NEEDS_DECISION_OPTIONS),
-            source="queue-triage",
-            repo=repo,
-            subject=v.brief_id,
-            brief=v.brief_id,
-        )
+        return _preview_file_decision(v, base, question)
+
+    if v.verdict == "needs-update" and (v.judgment_reason or v.refuted_span):
+        path = _resolve_brief_path(v.brief_id)
+        if path is None:
+            return {
+                **base,
+                "action": "append-triage-note",
+                "status": "error",
+                "note": v.evidence,
+                "error": "brief not found in queue/ or picked/",
+            }
+        focus = _brief_focus(path)
+        if _needs_update_is_mechanical(v, focus):
+            if _needs_update_rewritten_focus(v, focus).strip():
+                return {
+                    **base,
+                    "action": "mechanical-rewrite",
+                    "status": "planned",
+                    "note": v.evidence,
+                    "planned_rewrite": {
+                        "removed": v.refuted_span,
+                        "replacement": v.corrected_span or "",
+                    },
+                }
+            question = _needs_update_empty_focus_question(v)
+        else:
+            question = _needs_update_judgment_question(v)
         return {
-            **base,
-            "action": "file-decision",
-            "status": "planned",
-            "note": v.evidence,
-            "planned_stamp": {"awaiting-decision": decision_id},
-            "planned_envelope": envelope,
+            **_preview_file_decision(v, base, question),
+            "routed_to": "needs-decision",
         }
 
     action = (
@@ -2664,8 +2993,12 @@ def apply_verdicts(
     `resolve_duplicate_targets()` -- this function acts on whatever `verdict`
     each `Verdict` carries, it does not re-check dangling `duplicate-of`
     targets itself. Per spec: `stale-close` and `duplicate-of` close the
-    brief via `claim()` + `done(..., note=evidence)`; `needs-update` appends
-    an in-place `## Triage <run-date>` body section instead of closing it;
+    brief via `claim()` + `done(..., note=evidence)`; `needs-update` rewrites
+    the brief's `focus:` around the evaluator's refuted span and re-evaluates
+    the corrected brief, files a decision when the correction needs a human
+    call (or the span no longer matches the live brief), or -- carrying
+    neither field -- appends an in-place `## Triage <run-date>` body section,
+    never closing the brief in any of the three (`_apply_needs_update`);
     `work-directly` stamps `seeded-from`/`recommended-route` frontmatter in
     place, or downgrades to a no-op `keep` when the evidence lacks a
     reproduction reference (`_apply_work_directly`); `needs-decision` files a
@@ -2754,7 +3087,9 @@ def apply_verdicts(
             else:
                 log.append(_apply_propose_change(v, agent=agent, repos_root=repos_root))
         else:
-            log.append(_apply_needs_update(v, run_date))
+            log.append(
+                _apply_needs_update(v, run_date, agent=agent, repos_root=repos_root)
+            )
     return log
 
 

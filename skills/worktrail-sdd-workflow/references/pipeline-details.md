@@ -79,7 +79,8 @@ Route C (feature-planning), and Route D when no spec exists.
    deterministic rail on the class of failure a fingerprint can actually catch.
    It does **not** replace step 3 itself: CI cannot discover a fresh scope gap
    in content nobody has compiled yet, only detect that this step was skipped
-   or invalidated.
+   or invalidated. `worktrail-land-pr` also re-runs the compile and commits the
+   resulting `.compile-ok` at landing, so the spec PR can no longer ship without it.
 
 **GUARD: all change artifacts are authored inside `$WT/openspec/changes/$CHANGE_ID/`,
 never in `$REPO`, and the whole change directory is committed on `spec/$CHANGE_ID`
@@ -212,7 +213,9 @@ launching the orchestrator — never launch with uncommitted output sitting in `
    A passing compile writes `.compile-ok` into `$CHANGE_DIR`, uncommitted — the
    pre-launch uncommitted-output guard immediately below catches it as part of its
    normal `openspec/` diff check and requires it to be committed with the rest of the
-   change, closing the loop without any new guard logic.
+   change, closing the loop without any new guard logic. `worktrail-land-pr` also
+   re-runs the compile and commits the resulting `.compile-ok` at landing, so the
+   spec PR can no longer ship without it.
 
 4. **Pre-launch uncommitted-output guard (mandatory)** — mirrors the `new`
    pipeline's base-checkout diff detection (`#new-pipeline` step 5b), but checks

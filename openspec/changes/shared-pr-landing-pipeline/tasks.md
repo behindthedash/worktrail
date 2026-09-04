@@ -151,7 +151,7 @@
 
 ## 7. Prose: Route C spec-PR checkpoint
 
-- [ ] 7.1 In `skills/worktrail-go/references/routes.md` §C, replace "push `spec/$SPEC_ID`
+- [x] 7.1 In `skills/worktrail-go/references/routes.md` §C, replace "push `spec/$SPEC_ID`
       and open a docs-only PR … CI-watch the spec PR now" with `worktrail-land-pr --repo
       "$WT" --base "$BASE" --run "$RUN" --route C --risk low --checkpoint …`, stating
       that checkpoint mode appends the outcome as a decision and returns control; keep
@@ -161,7 +161,7 @@
 
 ## 8. Prose: worktrail-go intake gate, close-stale row, CI-watch paragraph
 
-- [ ] 8.1 In `skills/worktrail-go/SKILL.md`: (a) Phase 2 intake gate step 3 — replace
+- [x] 8.1 In `skills/worktrail-go/SKILL.md`: (a) Phase 2 intake gate step 3 — replace
       "Report the resulting action-log entry … and STOP" with: run the apply with the
       Bash `timeout` parameter at 600000; report `pr_url` and `landing.outcome`; on
       `code_defect`/`review_threads_blocking` continue with `worktrail-land-pr` against
@@ -187,7 +187,7 @@
 
 ## 10. Prose: pipeline-details marker note
 
-- [ ] 10.1 In `skills/worktrail-sdd-workflow/references/pipeline-details.md` step 3 marker
+- [x] 10.1 In `skills/worktrail-sdd-workflow/references/pipeline-details.md` step 3 marker
       notes (both pipelines), state that `worktrail-land-pr` re-runs the compile and
       commits `.compile-ok` at landing, so the spec PR can no longer ship without it;
       leave the pre-launch uncommitted-output guard text unchanged. (Requirement:
@@ -196,7 +196,7 @@
 
 ## 11. Prose: ci-watch-loop reference note
 
-- [ ] 11.1 In `skills/worktrail-go/references/ci-watch-loop.md`, add the top note from
+- [x] 11.1 In `skills/worktrail-go/references/ci-watch-loop.md`, add the top note from
       design.md D8 ("Implemented in code by `worktrail-land-pr` …; the agent's remaining
       steps are repairing a reported code defect and deciding case 4"); reframe case 4's
       opening sentence as "when `worktrail-land-pr` reports `code_defect` and the fix

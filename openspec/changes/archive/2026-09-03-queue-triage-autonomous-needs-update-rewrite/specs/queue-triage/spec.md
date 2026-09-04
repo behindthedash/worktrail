@@ -1,57 +1,4 @@
-# queue-triage Specification
-
-## Purpose
-TBD - created by archiving change queue-triager-automation. Update Purpose after archive.
-## Requirements
-### Requirement: Repo-grouped inventory with dedup skip
-The `evaluate` step SHALL inventory every brief in `$WORK_QUEUE_DIR/queue/`. Before grouping,
-it SHALL run repo inference (per the `intake-triage` capability's "Brief repo is inferred
-deterministically from its focus") on every brief whose `repo:` is missing, null, or empty,
-writing a resolved repo back to the brief; it SHALL also consume any answered
-repo-assignment decision linked to such a brief. It SHALL then group briefs by their
-`repo:` value (briefs sharing a `repo:` value form one group; briefs still without a
-`repo:` value form a single additional group). It SHALL exclude from evaluation any brief
-whose body contains a `## Triage <date>` section dated within the configured
-`--skip-if-triaged-within-days` window (default 25 days) of the run, except that a section
-whose first line is `verdict: repo-inferred` SHALL NOT count toward that window and a brief
-that is due for escalation (per "Keep verdicts are bounded and escalate deterministically")
-SHALL NOT be excluded by the window.
-
-#### Scenario: Two briefs share a repo
-- **WHEN** `evaluate` runs against a queue containing two briefs both with
-  `repo: /home/user/projects/example`
-- **THEN** both briefs are assigned to the same evaluator group and are evaluated by a single
-  spawned agent for that repo
-
-#### Scenario: Brief has no repo
-- **WHEN** `evaluate` runs against a queue containing a brief with `repo: null` whose focus
-  resolves to no repo
-- **THEN** that brief is assigned to the no-repo group and evaluated without a repo-fetch
-  step
-
-#### Scenario: Null-repo brief is inferred before grouping
-- **WHEN** `evaluate` runs against a queue containing a brief with `repo: null` whose focus
-  contains `Repo: worktrail` and the `worktrail` checkout exists under the repos root
-- **THEN** the brief's `repo:` is written back as that checkout path, a `verdict:
-  repo-inferred` triage note is appended, and the brief is evaluated in the `worktrail`
-  group of the same run rather than the no-repo group
-
-#### Scenario: Recently triaged brief is skipped
-- **WHEN** `evaluate` runs and a brief's body contains `## Triage 2026-08-01` (with a
-  verdict other than `repo-inferred`), the run date is within 25 days of 2026-08-01, and the
-  brief is not due for escalation
-- **THEN** that brief is excluded from every evaluator group and no evaluator agent is
-  spawned or spent on it
-
-#### Scenario: Repo-inferred note does not count as a triage
-- **WHEN** a brief's only `## Triage <date>` section begins `verdict: repo-inferred` and
-  was written today
-- **THEN** the brief is not treated as recently triaged and is evaluated in this run
-
-#### Scenario: Due-for-escalation brief bypasses the dedup window
-- **WHEN** a brief's most recent triage note is a `verdict: keep` note dated 3 days ago and
-  the brief's consecutive keep count is at the `triage_keep_limit`
-- **THEN** the brief is evaluated (or escalated directly) in this run rather than skipped
+## MODIFIED Requirements
 
 ### Requirement: Evidence-required verdict per brief
 For every brief passed to a group's evaluator agent, the `evaluate` step SHALL require a
@@ -64,13 +11,8 @@ kebab-case `proposed_change_name`; `needs-decision` SHALL additionally require a
 `question`. For a brief evaluated in the repo-less (`__none__`) group, the evaluator prompt
 SHALL list the known workspace repos (the directory basenames under the configured repos
 root), `propose-change` SHALL be valid only when `target_repo` is one of those listed names,
-and `fold-into-change` SHALL remain invalid since no candidate changes are presented. For a
-brief evaluated in a repo-bearing group, the evaluator prompt SHALL state `propose-change`'s
-`target_repo` as that group's own repo with no known-repos allowlist, rather than reusing the
-repo-less group's "valid only when `target_repo` is one of these known repos" wording with a
-placeholder value standing in for "no restriction" — since no such allowlist applies to a
-repo-bearing group, wording that implies one is misleading regardless of the placeholder used.
-A verdict that is missing, malformed, or missing required evidence or required
+and `fold-into-change` SHALL remain invalid since no candidate changes are presented. A
+verdict that is missing, malformed, or missing required evidence or required
 target fields SHALL be recorded as `keep` with the evaluator's raw output retained as
 evidence text, never silently dropped from the output. Every recorded verdict SHALL carry
 the brief's `premise_check` results (empty for a no-repo brief). For a brief in the no-repo
@@ -153,13 +95,6 @@ needed must never also silently auto-rewrite the brief.
 - **THEN** the verdict file's entry for that brief carries both entries under
   `premise_check`
 
-#### Scenario: Repo-bearing group's prompt states target_repo without an allowlist
-- **WHEN** `_evaluate_group()` formats `EVALUATOR_PROMPT_TEMPLATE` for a group whose `repo` is
-  not the no-repo key
-- **THEN** the formatted prompt's `propose-change` guidance states `target_repo` as that
-  group's own repo and does not contain the no-repo group's "valid only when ... one of these
-  known repos" restriction wording
-
 #### Scenario: needs-update with a mechanical refuted_span
 - **WHEN** an evaluator returns `{"brief_id": "X", "verdict": "needs-update", "evidence":
   "src/foo.py:12 shows this was fixed in PR #99", "refuted_span": "the bug reported in
@@ -178,45 +113,6 @@ needed must never also silently auto-rewrite the brief.
 - **WHEN** an evaluator returns `needs-update` with both `refuted_span` and
   `judgment_reason` set
 - **THEN** the verdict file records only `judgment_reason` for that brief
-
-### Requirement: Archived or renamed target repo short-circuits its group
-Before evaluating any brief in a repo group with a non-null `repo:` value, the evaluator SHALL
-check whether that repo is archived (via `gh repo view --json isArchived`). When the check
-confirms the repo is archived, every brief in that group SHALL be verdicted `stale-close` with
-the archival fact as evidence, without further per-brief evaluation. When the check fails
-(network error, `gh` unavailable, or unauthenticated) or returns an inconclusive result, the
-group SHALL proceed to per-brief evaluation as if the repo were not archived — archival is
-never inferred from a check failure.
-
-#### Scenario: Archived repo closes its whole group
-- **WHEN** `gh repo view --json isArchived` for a group's repo returns `{"isArchived": true}`
-- **THEN** every brief in that group is verdicted `stale-close` with the archival fact as
-  evidence, and no further per-brief tool calls are made for that group
-
-#### Scenario: gh check fails
-- **WHEN** the `gh repo view` check for a group's repo errors or times out
-- **THEN** the group proceeds to normal per-brief evaluation; archival is not assumed
-
-### Requirement: Verdict file and human-readable report
-The `evaluate` step SHALL write two outputs for every run: a machine-applyable JSON verdict
-file listing every evaluated brief's verdict, evidence, confidence, `premise_check`, and
-escalation (reason and matrix row, or none), and a human-readable Markdown report
-summarizing the run (briefs evaluated, briefs skipped via dedup, briefs whose repo was
-inferred, verdict counts by type, escalation counts by reason and by resulting verdict, and
-the full per-brief verdict list with evidence). Neither output SHALL be written to a location
-inside the target repos being evaluated. The `--json` run summary SHALL carry the same
-escalation counts as the report.
-
-#### Scenario: Successful evaluate run produces both outputs
-- **WHEN** `evaluate` completes a run over a non-empty queue
-- **THEN** a JSON verdict file and a Markdown report both exist at the run's output directory,
-  and the report's verdict counts match the JSON file's contents exactly
-
-#### Scenario: Escalations appear in every output
-- **WHEN** an evaluate run escalates one brief by `keep-limit` to `propose-change`
-- **THEN** the verdict file entry records `escalation.reason: keep-limit` and its matrix
-  row, the report's escalation section shows `keep-limit: 1` and `propose-change: 1`, and
-  the `--json` summary carries the same counts
 
 ### Requirement: Apply step never closes a brief without an approved verdict
 The `apply` step SHALL only ever act on verdicts present in a verdict file supplied via
@@ -361,16 +257,3 @@ unrelated text coincidentally:
 - **THEN** the action-log entry for that verdict reports an error status naming the
   unresolvable repo, no worktree is created, and no git or `gh` command runs against a
   guessed path
-
-### Requirement: Duplicate-of verdicts resolve safely within a batch
-When applying a `duplicate-of` verdict whose target brief is itself verdicted anything other
-than `keep` (or is not present) in the same verdict file, `apply` SHALL refuse to execute that
-specific verdict, SHALL log a warning identifying the dangling reference, and SHALL leave the
-referencing brief untouched (equivalent to `keep` for that brief in this run).
-
-#### Scenario: Duplicate target is also being closed in the same batch
-- **WHEN** `apply --confirm` runs against a verdict file where brief `A` is `duplicate-of: B`
-  and brief `B` is itself verdicted `stale-close` in the same file
-- **THEN** brief `A` is left untouched and a warning is logged; brief `B` is still closed per
-  its own verdict
-
