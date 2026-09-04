@@ -315,14 +315,25 @@ def _run_preflight_and_labels(
 
 def _push(repo: Path, branch: str, runner: Runner) -> str | None:
     """Push the branch -- see module docstring step 4. Returns a
-    refused-step name (`"push"`) on failure, else None."""
+    refused-step name on failure, else None.
+
+    A git process failure (auth rejected, non-fast-forward, etc -- git ran
+    and reported the push was rejected) is a genuine `"push"` refusal: the
+    remote is provably untouched. A timeout or OSError mid-push cannot be
+    classified the same way -- the server may have already accepted the ref
+    update before the client's connection dropped, so the remote's state is
+    unknown. That case returns `"push_ambiguous"` instead, so the caller can
+    route it to `ceiling` (needs reconciliation) rather than a `refused`
+    outcome that promises an untouched remote."""
     upstream = _git(
         repo, runner, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"
     )
-    if upstream.returncode == 0:
-        result = _git(repo, runner, "push")
-    else:
-        result = _git(repo, runner, "push", "-u", "origin", branch)
+    args = ["push"] if upstream.returncode == 0 else ["push", "-u", "origin", branch]
+    cmd = ["git", "-C", str(repo), *args]
+    try:
+        result = runner(cmd, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return "push_ambiguous"
     return None if result.returncode == 0 else "push"
 
 
@@ -362,21 +373,55 @@ def open_or_update_pull_request(
         if data.get("state") == "OPEN":
             pr_url = data.get("url")
             pr_number = data.get("number")
+            existing_labels = [
+                entry.get("name", "") for entry in (data.get("labels") or [])
+            ]
             # Ensure the preflight-computed risk/no-automerge labels land on
             # the existing PR via the shared helpers rather than a second
-            # label-application implementation.
+            # label-application implementation. Unlike the public
+            # `ensure_pr_risk_label()` wrapper (which only adds when NO
+            # go:risk-* label exists at all, and has no runner parameter),
+            # this corrects a STALE risk label to the current computed value
+            # and honors the injected runner throughout, using
+            # `pr_labels`'s own private helpers (explicitly named as reuse
+            # targets in this task's own spec, alongside `_run_gh_cmd`).
             risk_label = next(
                 (label for label in labels if label.startswith("go:risk-")), None
             )
-            if risk_label is not None:
-                pr_labels.ensure_pr_risk_label(
-                    str(repo), pr_url, risk_label.removeprefix("go:risk-")
-                )
+            if risk_label is not None and risk_label not in existing_labels:
+                parsed = pr_labels._owner_repo_number(str(repo), pr_url, runner)
+                if parsed is not None:
+                    owner, repo_name, number = parsed
+                    for stale in existing_labels:
+                        if stale.startswith("go:risk-") and stale != risk_label:
+                            _gh(
+                                repo,
+                                runner,
+                                "api",
+                                f"repos/{owner}/{repo_name}/issues/{number}/labels/{stale}",
+                                "-X",
+                                "DELETE",
+                            )
+                pr_labels._add_label(str(repo), pr_url, risk_label, runner=runner)
             pr_labels.ensure_pr_no_automerge_label(
                 str(repo),
                 pr_url,
                 "go:no-automerge" not in labels,
                 runner=runner,
+            )
+            # `gh pr edit --title/--body` (unlike `--add-label`) does not
+            # touch classic-Projects fields, so the GraphQL-mutation failure
+            # `_add_label()`/`pr_labels` avoid does not apply here.
+            _gh(
+                repo,
+                runner,
+                "pr",
+                "edit",
+                str(pr_number),
+                "--title",
+                title,
+                "--body",
+                body,
             )
             return {
                 "pr_url": pr_url,
@@ -430,10 +475,20 @@ def open_or_update_pull_request(
 
 
 def _run_record_main(argv: list[str]) -> tuple[int, str]:
-    """`run_record.main(argv)`, capturing whatever it printed to stdout."""
+    """`run_record.main(argv)`, capturing whatever it printed to stdout.
+
+    `run_record.main()` can raise `SystemExit` rather than returning a code
+    (e.g. via argparse, or an explicit `sys.exit`) -- caught here so a
+    run-record write failure always surfaces as a nonzero `exit_code` the
+    caller can act on, never an uncaught exception that skips the outcome
+    classification entirely (Requirement: run record is completed with a
+    real state)."""
     buf = io.StringIO()
-    with redirect_stdout(buf):
-        exit_code = run_record_module.main(argv)
+    try:
+        with redirect_stdout(buf):
+            exit_code = run_record_module.main(argv)
+    except SystemExit as exc:
+        exit_code = exc.code if isinstance(exc.code, int) else (1 if exc.code else 0)
     return exit_code, buf.getvalue()
 
 
@@ -637,11 +692,16 @@ def _finish_or_checkpoint(
     pr_url: str,
     merge_result: str,
     checkpoint: bool,
-) -> None:
+) -> bool:
     """Finish the run record, or (checkpoint mode, all-pass case only)
-    append a decision instead -- design.md D7's checkpoint substitution."""
+    append a decision instead -- design.md D7's checkpoint substitution.
+
+    Returns whether the write succeeded, so a caller reporting `outcome=
+    "landed"` can downgrade instead of reporting success on a run record
+    that was never actually completed (Requirement: run record is completed
+    with a real state)."""
     if checkpoint:
-        _run_record_main(
+        exit_code, _ = _run_record_main(
             [
                 "append",
                 run_path,
@@ -649,8 +709,8 @@ def _finish_or_checkpoint(
                 f"{status_value}: {merge_result}",
             ]
         )
-        return
-    _run_record_main(
+        return exit_code == 0
+    exit_code, _ = _run_record_main(
         [
             "finish",
             run_path,
@@ -662,6 +722,7 @@ def _finish_or_checkpoint(
             merge_result,
         ]
     )
+    return exit_code == 0
 
 
 def land_pr(request: LandRequest) -> LandOutcome:
@@ -695,6 +756,18 @@ def land_pr(request: LandRequest) -> LandOutcome:
             outcome="refused", refused_step="push", detail="no current branch"
         )
     refused = _push(repo, branch, runner)
+    if refused == "push_ambiguous":
+        # A timeout/OSError mid-push means the server may already have
+        # accepted the ref update -- the remote's state cannot be trusted as
+        # untouched, so this cannot be reported as `refused` (see `_push`
+        # docstring). Needs reconciliation, not a clean retry.
+        return LandOutcome(
+            outcome="ceiling",
+            refused_step=refused,
+            final_status="failed_recoverable",
+            merge_result="push timed out or errored; remote state unknown",
+            detail="push result ambiguous -- verify remote branch state before retrying",
+        )
     if refused:
         return LandOutcome(outcome="refused", refused_step=refused)
 
@@ -751,7 +824,18 @@ def land_pr(request: LandRequest) -> LandOutcome:
             merge_result="run record could not be started; PR is open but unrecorded",
             detail="run_record start failed",
         )
-    _run_record_main(["set", run_path, "pull_request", pr_url])
+    set_exit, _ = _run_record_main(["set", run_path, "pull_request", pr_url])
+    if set_exit != 0:
+        return LandOutcome(
+            outcome="ceiling",
+            pr_url=pr_url,
+            pr_number=pr_number,
+            labels=labels,
+            run=run_path,
+            final_status="failed_recoverable",
+            merge_result="run record failed to record the opened PR",
+            detail="run_record set pull_request failed",
+        )
 
     watch = (
         _watch_ci(repo, pr_number, request.watch_timeout_s, runner)
@@ -869,25 +953,11 @@ def land_pr(request: LandRequest) -> LandOutcome:
             merge_result=merge_result,
         )
 
-    if status.get("state") == "MERGED":
-        merge_result = "merged externally"
-        _finish_or_checkpoint(
-            run_path,
-            "completed_and_merged",
-            pr_url,
-            merge_result,
-            request.checkpoint,
-        )
-        return LandOutcome(
-            outcome="landed",
-            pr_url=pr_url,
-            pr_number=pr_number,
-            labels=labels,
-            run=run_path,
-            final_status="completed_and_merged",
-            merge_result=merge_result,
-        )
-
+    # The review-thread gate must run before ANY completion path, including
+    # an already-merged PR (design.md D7: "merge-state guard and
+    # review-thread gate before completion" is unconditional) -- checking
+    # `state == "MERGED"` first would let a merged PR with unaddressed
+    # review threads complete without ever calling this gate.
     threads = _review_thread_gate(repo, pr_number, run_path, runner)
     if threads.get("blocking"):
         return LandOutcome(
@@ -897,6 +967,35 @@ def land_pr(request: LandRequest) -> LandOutcome:
             labels=labels,
             run=run_path,
             detail=json.dumps(threads.get("unaddressed") or []),
+        )
+
+    if status.get("state") == "MERGED":
+        merge_result = "merged externally"
+        recorded = _finish_or_checkpoint(
+            run_path,
+            "completed_and_merged",
+            pr_url,
+            merge_result,
+            request.checkpoint,
+        )
+        if not recorded:
+            return LandOutcome(
+                outcome="ceiling",
+                pr_url=pr_url,
+                pr_number=pr_number,
+                labels=labels,
+                run=run_path,
+                final_status="failed_recoverable",
+                merge_result="PR merged but run record could not be completed",
+            )
+        return LandOutcome(
+            outcome="landed",
+            pr_url=pr_url,
+            pr_number=pr_number,
+            labels=labels,
+            run=run_path,
+            final_status="completed_and_merged",
+            merge_result=merge_result,
         )
 
     if not threads.get("checked"):
@@ -934,9 +1033,18 @@ def land_pr(request: LandRequest) -> LandOutcome:
 
     if status.get("mergeStateStatus") == "BLOCKED":
         merge_result = "blocked on branch protection after merge-state guard and review-thread gate"
-        if run_path:
-            _finish_or_checkpoint(
-                run_path, "blocked_product_decision", pr_url, merge_result, False
+        recorded = _finish_or_checkpoint(
+            run_path, "blocked_product_decision", pr_url, merge_result, False
+        )
+        if not recorded:
+            return LandOutcome(
+                outcome="ceiling",
+                pr_url=pr_url,
+                pr_number=pr_number,
+                labels=labels,
+                run=run_path,
+                final_status="failed_recoverable",
+                merge_result="PR blocked but run record could not be completed",
             )
         return LandOutcome(
             outcome="landed",
@@ -949,9 +1057,18 @@ def land_pr(request: LandRequest) -> LandOutcome:
         )
 
     merge_result = _automerge_mechanism(status)
-    if run_path:
-        _finish_or_checkpoint(
-            run_path, "completed_pr_open", pr_url, merge_result, request.checkpoint
+    recorded = _finish_or_checkpoint(
+        run_path, "completed_pr_open", pr_url, merge_result, request.checkpoint
+    )
+    if not recorded:
+        return LandOutcome(
+            outcome="ceiling",
+            pr_url=pr_url,
+            pr_number=pr_number,
+            labels=labels,
+            run=run_path,
+            final_status="failed_recoverable",
+            merge_result="PR open but run record could not be completed",
         )
     return LandOutcome(
         outcome="landed",
@@ -990,7 +1107,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--commit-message", default=None)
     ap.add_argument("--checkpoint", action="store_true")
     ap.add_argument("--watch-timeout", type=int, default=600, dest="watch_timeout_s")
-    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--json", action="store_true", required=True)
     args = ap.parse_args(argv)
 
     summary = args.summary

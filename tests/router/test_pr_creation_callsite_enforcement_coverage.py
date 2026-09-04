@@ -321,15 +321,24 @@ def _proves_land_pr_py_uses_preflight_labels():
 
 
 def _proves_land_pr_py_applies_preflight_labels_on_update():
-    """land_pr.py's update path (an existing OPEN PR) must apply the
-    preflight-computed risk/no-automerge labels via the shared
-    `pr_labels.ensure_pr_risk_label()`/`ensure_pr_no_automerge_label()`
-    helpers -- never `gh pr edit`/`gh pr create`, and never a second,
-    independent label-application implementation. Also proves `land_pr()`
-    itself sources those labels from `_run_preflight_and_labels()` ->
-    `preflight.read_marker()`, not an independently hand-rolled list."""
+    """land_pr.py's update path (an existing OPEN PR) must correct a STALE
+    preflight-computed risk label -- removing the wrong one and adding the
+    right one via `pr_labels`'s shared REST-based label helpers (never a
+    second, independent label-application implementation) -- apply the
+    no-automerge label via `pr_labels.ensure_pr_no_automerge_label()`, and
+    refresh the PR title/body via `gh pr edit` (not `gh pr create`, since the
+    PR already exists). Also proves `land_pr()` itself sources labels from
+    `_run_preflight_and_labels()` -> `preflight.read_marker()`, not an
+    independently hand-rolled list.
+
+    Uses the real `pr_labels._owner_repo_number`/`_add_label` (not
+    monkeypatched) so the injected runner is exercised end-to-end, per the
+    fix for the "injected runner bypassed on the existing-PR risk-label
+    operation" defect -- the OLD version of this test monkeypatched the
+    public `ensure_pr_risk_label()` wrapper, which enshrined that bug (it
+    silently no-ops whenever ANY go:risk-* label already exists, so a stale
+    `go:risk-low` was never corrected to `go:risk-high`)."""
     calls = []
-    ensure_risk_calls = []
     ensure_no_automerge_calls = []
 
     def fake_run(cmd, **kwargs):
@@ -350,17 +359,15 @@ def _proves_land_pr_py_applies_preflight_labels_on_update():
         calls.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    def fake_ensure_risk(repo, pr_url, risk_level):
-        ensure_risk_calls.append((repo, pr_url, risk_level))
-        return f"go:risk-{risk_level}"
-
     def fake_ensure_no_automerge(repo, pr_url, eligible, runner=None):
         ensure_no_automerge_calls.append((repo, pr_url, eligible, runner))
         return None if eligible else "go:no-automerge"
 
-    real_ensure_risk = land_pr.pr_labels.ensure_pr_risk_label
+    real_owner_repo_number = land_pr.pr_labels._owner_repo_number
     real_ensure_no_automerge = land_pr.pr_labels.ensure_pr_no_automerge_label
-    land_pr.pr_labels.ensure_pr_risk_label = fake_ensure_risk
+    land_pr.pr_labels._owner_repo_number = (
+        lambda repo, pr_url, runner=None: ("acme", "widget", "9")
+    )
     land_pr.pr_labels.ensure_pr_no_automerge_label = fake_ensure_no_automerge
     try:
         result = land_pr.open_or_update_pull_request(
@@ -375,18 +382,34 @@ def _proves_land_pr_py_applies_preflight_labels_on_update():
             fake_run,
         )
     finally:
-        land_pr.pr_labels.ensure_pr_risk_label = real_ensure_risk
+        land_pr.pr_labels._owner_repo_number = real_owner_repo_number
         land_pr.pr_labels.ensure_pr_no_automerge_label = real_ensure_no_automerge
 
     if result["refused_step"] is not None:
         raise AssertionError(f"update path unexpectedly refused: {result['detail']}")
     if any(cmd[:3] == ["gh", "pr", "create"] for cmd in calls):
         raise AssertionError("update path issued gh pr create for an already-OPEN PR")
-    if ensure_risk_calls != [
-        ("/fake/repo", "https://github.com/acme/widget/pull/9", "high")
-    ]:
+    delete_calls = [
+        cmd
+        for cmd in calls
+        if cmd[:2] == ["gh", "api"]
+        and cmd[2].endswith("/labels/go:risk-low")
+        and "DELETE" in cmd
+    ]
+    if not delete_calls:
         raise AssertionError(
-            f"update path did not call ensure_pr_risk_label as expected: {ensure_risk_calls!r}"
+            f"update path did not remove the stale go:risk-low label: {calls!r}"
+        )
+    add_calls = [
+        cmd
+        for cmd in calls
+        if cmd[:2] == ["gh", "api"]
+        and cmd[2].endswith("/labels")
+        and "labels[]=go:risk-high" in cmd
+    ]
+    if not add_calls:
+        raise AssertionError(
+            f"update path did not add the corrected go:risk-high label: {calls!r}"
         )
     if ensure_no_automerge_calls != [
         ("/fake/repo", "https://github.com/acme/widget/pull/9", False, fake_run)
@@ -394,6 +417,15 @@ def _proves_land_pr_py_applies_preflight_labels_on_update():
         raise AssertionError(
             "update path did not call ensure_pr_no_automerge_label as expected: "
             f"{ensure_no_automerge_calls!r}"
+        )
+    edit_calls = [
+        cmd
+        for cmd in calls
+        if cmd[:3] == ["gh", "pr", "edit"] and "--title" in cmd and "--body" in cmd
+    ]
+    if not edit_calls:
+        raise AssertionError(
+            f"update path did not refresh the PR title/body via gh pr edit: {calls!r}"
         )
 
     source = inspect.getsource(land_pr._run_preflight_and_labels)
