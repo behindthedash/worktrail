@@ -486,9 +486,8 @@ def _proves_land_pr_py_refuses_out_of_range_route_before_any_push():
     for bad_route in ("c", "Z", "route-a"):
         pushed = []
 
-        def fake_push(repo, branch, remote, runner):
+        def fake_push(repo, branch, remote, runner, pushed=pushed):
             pushed.append(True)
-            return None
 
         def fake_runner(cmd, **kw):
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
@@ -620,7 +619,9 @@ def _proves_land_pr_py_watch_ci_distinguishes_no_checks_from_pending():
             f"expected exactly one grace-period wait for the race case, got {slept2.call_count}"
         )
     if result2["settled"] is not True:
-        raise AssertionError(f"race case did not settle after checks registered: {result2!r}")
+        raise AssertionError(
+            f"race case did not settle after checks registered: {result2!r}"
+        )
 
 
 def _proves_land_pr_py_update_path_label_exception_does_not_escape():
@@ -687,10 +688,18 @@ def _proves_land_pr_py_refuses_stale_preflight_marker():
     calling `write_marker()`, so a marker left on disk from an earlier
     preflight run in the same worktree (the normal condition after any prior
     run) must not be adopted verbatim just because SOME marker exists."""
-    with patch.object(land_pr.preflight, "main", return_value=0), patch.object(
-        land_pr.preflight, "read_marker",
-        return_value={"state": "stale-sha", "labels": ["go:risk-critical", "go:no-automerge"]},
-    ), patch.object(land_pr.preflight, "tree_state", return_value="current-sha"):
+    with (
+        patch.object(land_pr.preflight, "main", return_value=0),
+        patch.object(
+            land_pr.preflight,
+            "read_marker",
+            return_value={
+                "state": "stale-sha",
+                "labels": ["go:risk-critical", "go:no-automerge"],
+            },
+        ),
+        patch.object(land_pr.preflight, "tree_state", return_value="current-sha"),
+    ):
         refused, labels = land_pr._run_preflight_and_labels(
             Path("/tmp"), "main", "low", [], "E", None
         )
@@ -701,10 +710,15 @@ def _proves_land_pr_py_refuses_stale_preflight_marker():
         )
 
     # A fresh marker (state matches) is still accepted normally.
-    with patch.object(land_pr.preflight, "main", return_value=0), patch.object(
-        land_pr.preflight, "read_marker",
-        return_value={"state": "current-sha", "labels": ["go:risk-low"]},
-    ), patch.object(land_pr.preflight, "tree_state", return_value="current-sha"):
+    with (
+        patch.object(land_pr.preflight, "main", return_value=0),
+        patch.object(
+            land_pr.preflight,
+            "read_marker",
+            return_value={"state": "current-sha", "labels": ["go:risk-low"]},
+        ),
+        patch.object(land_pr.preflight, "tree_state", return_value="current-sha"),
+    ):
         refused2, labels2 = land_pr._run_preflight_and_labels(
             Path("/tmp"), "main", "low", [], "E", None
         )

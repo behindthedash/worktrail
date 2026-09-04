@@ -805,7 +805,7 @@ def _watch_ci(
                 real.append((row, excerpt))
 
         if real:
-            name, excerpt = real[0][0].get("name", ""), real[0][1]
+            excerpt = real[0][1]
             return {
                 "settled": False,
                 "failing_checks": [r.get("name", "") for r, _ in real],
