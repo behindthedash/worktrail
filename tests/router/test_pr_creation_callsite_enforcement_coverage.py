@@ -477,6 +477,43 @@ def _proves_land_pr_py_mismatched_risk_label_is_not_permanently_stuck():
         )
 
 
+def _proves_land_pr_py_refuses_out_of_range_route_before_any_push():
+    """`route` must be validated against `run_record.py`'s own
+    `choices=list("ABCDEFGHIJ")` before step 1, mirroring the existing
+    pre-push `risk` validation. Without it, an out-of-range route (a case
+    typo, or free text) pushes the branch and opens a PR before failing late
+    at step 6 with no run record to track the now-orphaned PR."""
+    for bad_route in ("c", "Z", "route-a"):
+        pushed = []
+
+        def fake_push(repo, branch, runner):
+            pushed.append(True)
+            return None
+
+        def fake_runner(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with patch.object(land_pr, "_push", fake_push):
+            outcome = land_pr.land_pr(
+                land_pr.LandRequest(
+                    repo=".",
+                    base_branch="main",
+                    title="t",
+                    summary="s",
+                    route=bad_route,
+                    runner=fake_runner,
+                )
+            )
+        if outcome.outcome != "refused" or outcome.refused_step != "route":
+            raise AssertionError(
+                f"route={bad_route!r} did not refuse cleanly: {outcome!r}"
+            )
+        if pushed:
+            raise AssertionError(
+                f"route={bad_route!r} pushed the branch before refusing"
+            )
+
+
 def _proves_land_pr_py_update_path_verifies_before_reporting_success():
     """The update path must not report success when the post-mutation
     verification shows the computed labels never actually landed (e.g. a
@@ -582,6 +619,9 @@ class TestPrCreationCallsiteEnforcementCoverage(unittest.TestCase):
 
     def test_land_pr_mismatched_risk_label_is_not_permanently_stuck(self):
         _proves_land_pr_py_mismatched_risk_label_is_not_permanently_stuck()
+
+    def test_land_pr_refuses_out_of_range_route_before_any_push(self):
+        _proves_land_pr_py_refuses_out_of_range_route_before_any_push()
 
 
 if __name__ == "__main__":

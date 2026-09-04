@@ -94,6 +94,15 @@ _TRANSIENT_LOG_MARKERS = ("Error response from daemon",)
 
 _LOG_EXCERPT_LINES = 200
 
+# `run_record.py`'s own `start --route` choices (run_record.py:1999). Nothing
+# upstream of step 6 (`_ensure_run_record`) validates `route` -- unlike
+# `risk`, which `_run_preflight_and_labels` refuses on at step 3 -- so an
+# out-of-range route silently pushes and opens a PR before failing late with
+# no run record to track it. Validated first, before step 1, so this is a
+# clean, remote-untouched refusal like every other locally-checkable input
+# error.
+_VALID_ROUTES = frozenset("ABCDEFGHIJ")
+
 _EXIT_LANDED = 0
 _EXIT_REFUSED = 2
 _EXIT_CODE_DEFECT = 3
@@ -811,6 +820,13 @@ def land_pr(request: LandRequest) -> LandOutcome:
     ordered steps this composes."""
     repo = Path(request.repo).resolve()
     runner = request.runner
+
+    if request.route not in _VALID_ROUTES:
+        return LandOutcome(
+            outcome="refused",
+            refused_step="route",
+            detail=f"route {request.route!r} is not one of {sorted(_VALID_ROUTES)}",
+        )
 
     refused = _commit_pending(repo, request.commit_message, runner)
     if refused:
