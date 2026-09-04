@@ -743,6 +743,15 @@ def consume_repo_decision(
     }
 
 
+_MIN_CANDIDATE_SCORE = 0.45
+"""Focus-overlap floor a change must clear to be offered as a fold candidate.
+
+Below it the "candidate" is noise the evaluator still has to read past -- and a
+presented candidate is what a `fold-into-change` verdict is allowed to name, so
+an unrelated change in the list is a fold target waiting to be picked.
+"""
+
+
 def rank_change_candidates(
     brief: Path, repo: str | None, top_k: int = 5
 ) -> list[dict[str, Any]]:
@@ -759,10 +768,12 @@ def rank_change_candidates(
     `overlap_check._parse_openspec_tasks()`) -- so a change whose remaining
     work matches the brief ranks even when its proposal summary is sparse.
 
-    Returns the top `top_k` by score descending (ties keep `scan()`'s
+    Only changes scoring at least `_MIN_CANDIDATE_SCORE` are eligible;
+    returns the top `top_k` of those by score descending (ties keep `scan()`'s
     alphabetical order), each as `{"id", "feature_summary",
-    "open_task_count", "score"}`. `repo` falsy (`repo: null`) and a repo with
-    no active changes both return `[]` -- there is nothing to rank against.
+    "open_task_count", "score"}`. `repo` falsy (`repo: null`), a repo with
+    no active changes, and a repo whose every active change scores below the
+    floor all return `[]` -- there is nothing worth ranking against.
     """
     if not repo:
         return []
@@ -791,6 +802,8 @@ def rank_change_candidates(
                     open_task_count += 1
 
         score = _overlap_coefficient(brief_tokens, _tokenize(summary) | task_tokens)
+        if score < _MIN_CANDIDATE_SCORE:
+            continue
         scored.append(
             (
                 score,
@@ -2040,8 +2053,11 @@ def _worktree_pr_close(
     """Shared worktree + validate + commit/push/PR + claim/close sequence.
 
     Per the spec's "Fold and propose are applied as a pull request,
-    fail-closed" requirement: creates a fresh worktree on `branch` off
-    `base_branch`, calls `prepare(worktree_dir)` to let the caller author the
+    fail-closed" requirement: fetches `origin/<base_branch>` and creates a
+    fresh worktree on `branch` off *that* remote ref -- the local
+    `base_branch` in a long-lived checkout is routinely behind the remote, and
+    branching off it opens a PR carrying unrelated regressions of already-
+    merged work -- then calls `prepare(worktree_dir)` to let the caller author the
     change in place (returning an error string on failure, `None` on
     success), runs `openspec validate <validate_target> --strict`, runs
     `worktrail-compile` on the change so its `.compile-ok` marker matches the
@@ -2068,6 +2084,25 @@ def _worktree_pr_close(
         "note": v.evidence,
     }
 
+    fetch = subprocess.run(
+        ["git", "-C", str(repo_path), "fetch", "origin", base_branch],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if fetch.returncode != 0:
+        return {
+            **result,
+            "status": "error",
+            "path": None,
+            "error": (
+                f"git fetch origin {base_branch} failed: "
+                f"{(fetch.stderr or fetch.stdout).strip()}"
+            ),
+            "branch": branch,
+        }
+
     add = subprocess.run(
         [
             "git",
@@ -2078,7 +2113,7 @@ def _worktree_pr_close(
             "-b",
             branch,
             str(worktree_dir),
-            base_branch,
+            f"origin/{base_branch}",
         ],
         check=False,
         capture_output=True,
@@ -2344,10 +2379,13 @@ def _apply_fold_into_change(
             )
             tasks_text = tasks_path.read_text(encoding="utf-8")
             group_number = _next_task_group_number(tasks_text)
+            # A checklist item is one line: multi-line evidence would spill its
+            # tail out of the `- [ ]` item and stop parsing as a task at all.
+            task_evidence = " ".join(v.evidence.split())
             tasks_path.write_text(
                 tasks_text.rstrip("\n")
                 + f"\n\n## {group_number}. Folded from {v.brief_id}\n\n"
-                + f"- [ ] {group_number}.1 {v.evidence}\n",
+                + f"- [ ] {group_number}.1 {task_evidence}\n",
                 encoding="utf-8",
             )
         except OSError as exc:
