@@ -1166,9 +1166,7 @@ def evaluate_group(
         for path in briefs
     )
     known_repos = _known_repos(repos_root) if repo == NO_REPO_KEY else []
-    known_repos_str = (
-        ", ".join(known_repos) if known_repos else "(none found)"
-    )
+    known_repos_str = ", ".join(known_repos) if known_repos else "(none found)"
     propose_target_rule = (
         "`propose-change` is valid only when your evidence names one of "
         f"these known repos as the `target_repo`: {known_repos_str}."
