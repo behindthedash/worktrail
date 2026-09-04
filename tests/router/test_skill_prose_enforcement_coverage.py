@@ -226,8 +226,12 @@ def _phase_2_intake_gate_text() -> str:
 class TestPhase2IntakeGateNoConfirmationPrompt(unittest.TestCase):
     """Design D10: the Phase 2 intake-brief triage gate evaluates and applies
     a verdict with no human confirmation step in between, always passing
-    `--confirm`, and names the `work-directly` -> Phase 3 continuation.
-    (autonomous-intake-brief-convergence 5.2)"""
+    `--confirm` (autonomous-intake-brief-convergence 5.2). Superseded by
+    shared-pr-landing-pipeline task 8.1: a `work-directly` verdict now
+    re-invokes `worktrail-land-pr` until a terminal `landing.outcome`, then
+    stops -- it never continues into Phase 3's claim/dispatch flow (the
+    original `status: executed` -> Phase 3 claim design this class's own
+    docstring described was replaced, not merely extended)."""
 
     def test_no_ask_user_question_between_evaluate_and_apply(self):
         gate_text = _phase_2_intake_gate_text()
@@ -250,17 +254,29 @@ class TestPhase2IntakeGateNoConfirmationPrompt(unittest.TestCase):
             "longer passes --confirm",
         )
 
-    def test_names_work_directly_continues_to_phase_3_claim(self):
+    def test_names_work_directly_and_never_continues_to_phase_3_claim(self):
         gate_text = _phase_2_intake_gate_text()
-        self.assertIn("work-directly", gate_text)
+        self.assertIn(
+            "work-directly",
+            gate_text,
+            "Phase 2 intake-brief triage gate no longer names the "
+            "work-directly verdict",
+        )
+        self.assertIn(
+            "worktrail-land-pr",
+            gate_text,
+            "Phase 2 intake-brief triage gate no longer names the "
+            "worktrail-land-pr re-invocation a work-directly verdict drives "
+            "to a terminal outcome",
+        )
         self.assertIn("Phase 3", gate_text)
         self.assertIn("claim", gate_text)
         self.assertIn(
-            "executed",
+            "no Phase 3 claim",
             gate_text,
-            "Phase 2 intake-brief triage gate no longer names the "
-            "status: executed condition that continues a work-directly "
-            "verdict into Phase 3's claim action",
+            "Phase 2 intake-brief triage gate no longer states that a "
+            "work-directly verdict never continues into Phase 3's "
+            "claim/dispatch flow",
         )
 
 
