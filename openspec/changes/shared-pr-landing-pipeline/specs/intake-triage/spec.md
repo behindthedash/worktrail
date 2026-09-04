@@ -19,6 +19,18 @@ Applying a `fold-into-change` verdict SHALL, in a fresh worktree on a branch off
 - **WHEN** the generated change does not pass `openspec validate`
 - **THEN** no commit is made, the brief is unchanged, and the validation output is reported
 
+#### Scenario: Multi-line evidence is collapsed for the tasks.md checklist item
+- **WHEN** `apply --confirm` executes `fold-into-change` for a verdict whose `evidence` spans multiple lines
+- **THEN** the target change's `tasks.md` gets a single-line `- [ ] N.1 <collapsed evidence>` checklist item with no embedded newlines, while `proposal.md`'s `## Folded from <brief-id>` section carries the evidence verbatim
+
+#### Scenario: Fetch fails before the worktree is created
+- **WHEN** `apply --confirm` executes `fold-into-change` or `propose-change` and `git fetch origin <base branch>` fails
+- **THEN** no worktree is created, the brief remains in `queue/` unmodified, and the run reports the fetch failure with the branch name that would have been used
+
+#### Scenario: Target was archived upstream since the last local fetch
+- **WHEN** `apply --confirm` executes `fold-into-change` and the target change's directory was archived by a commit on `origin/<base branch>` that the local checkout had not yet fetched
+- **THEN** the freshly-fetched worktree no longer has that target's `proposal.md`/`tasks.md`, the fold fails closed with that reported as the error, and the brief remains in `queue/` unmodified
+
 #### Scenario: CI reports a code defect on the landed PR
 - **WHEN** the pipeline's CI watch classifies the opened PR's failure as a code defect
 - **THEN** the brief is closed against the existing PR URL as before, the apply result reports the code-defect outcome with the failing check names and the surviving worktree path, and the run record is left unfinished for repair
@@ -33,6 +45,17 @@ When a user runs `worktrail-go <brief-id>` and the brief is an intake brief, the
 #### Scenario: User names an execution brief
 - **WHEN** `worktrail-go <brief-id>` is invoked for a brief carrying `seeded-from:`
 - **THEN** the brief is claimed and dispatched exactly as before this change
+
+#### Scenario: Work-directly continues into dispatch
+- **WHEN** an interactive pickup's applied verdict is `work-directly` and the brief is now
+  stamped `seeded-from: triage:<run-date>:direct`
+- **THEN** the same invocation claims the brief and proceeds through classification and
+  dispatch as it would for an execution brief named directly
+
+#### Scenario: Keep is recorded interactively
+- **WHEN** an interactive pickup's verdict is `keep` for a brief not yet due for escalation
+- **THEN** the brief gains a `verdict: keep` triage note exactly as a scheduled run would
+  write, and the session reports the note and stops
 
 #### Scenario: Confirmed fold lands and is watched in the same invocation
 - **WHEN** the user confirms a `fold-into-change` verdict and the apply step returns a PR URL with a landed outcome

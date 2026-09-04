@@ -62,6 +62,12 @@ def _init_repo(root: Path) -> Path:
     for tid, fm in tasks_fm.items():
         (spec_dir / f"{tid}.md").write_text(fm)
     (repo / "README.md").write_text("x\n")
+    # The 3-task chain is the point of this reproducer; lift the D2 serial
+    # plan-shape gate's default (critical path > max(width, 2)) so it compiles.
+    (repo / ".worktrail").mkdir()
+    (repo / ".worktrail" / "policy.yaml").write_text(
+        "compile_max_critical_path_over_width: 3\n"
+    )
 
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t"], check=True)

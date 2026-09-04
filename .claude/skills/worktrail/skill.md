@@ -26,6 +26,13 @@ triggers:
     - FIRST_COMPLETED
     - QUARANTINED
     - _salvage_uncommitted
+    - pre_commit_cmd
+    - missing_context
+    - SKIPPED-SMALL-DIFF
+    - build_worker_prompt
+    - _unrelated_test_failure
+    - _rerun_failed_checks
+    - rerun_attempted
 ---
 
 You are working on **worktrail's task-orchestration core**: compiling specs/changes into a
@@ -92,6 +99,39 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
   strike. And in `wait_and_fix_ci`, a failed or timed-out ci-fix attempt is *one strike*, not the
   end of the loop — it re-polls CI (a salvaged commit may already be green) and spends the
   remaining strikes before returning "CI fix loop exhausted".
+- **A red check tries one free `gh run rerun --failed` before any ci-fix worker spawns**
+  (`verify.Verifier._unrelated_test_failure` / `_rerun_failed_checks`, gated by a per-call
+  `rerun_attempted` flag in `wait_and_fix_ci`): a failing test whose path never appears in
+  `gh pr diff --name-only` cannot be fixed by a ci-fix worker editing this PR's own diff no
+  matter how many strikes are spent on it. `_unrelated_test_failure` regex-matches `tests/...py`
+  paths out of the failed run's log and checks them against the diff's changed files
+  (disjoint-and-nonempty → True); a positive match issues `gh run rerun --failed` for every
+  failed workflow run at the branch's current head SHA (`_rerun_failed_checks`) and
+  `wait_and_fix_ci` re-polls once. The probe fires before the strike loop's first spawn and
+  costs it nothing — `rerun_attempted` ensures it tries at most once per `wait_and_fix_ci` call,
+  so a still-red rerun falls through to the unchanged spawn-and-strike path with the full
+  strike budget intact. Conservative by construction: no recognizable test path in the log, no
+  diff to compare, or any overlap between failing paths and changed files → False, leaving the
+  existing loop as the only path for a failure this heuristic cannot confidently classify.
+- **`review_status: SKIPPED-SMALL-DIFF` is a passed review** (`dispatch.transition`): it routes
+  to `cleaning` like `PASSED` but leaves `retry_count` untouched. Any other value outside
+  `PASSED|FAILED|SKIPPED-SMALL-DIFF` on a successful review report still raises `ValueError`
+  (malformed, re-dispatch review). This is the report shape `live.drive()` synthesizes when
+  policy `review_skip_max_diff_lines` > 0 skips a small verified implement diff's first review.
+- **Out-of-scope review findings travel in `missing_context`, never only in `notes`**
+  (`dispatch._ROLE_ACTION` review and fix text): a reviewer lists untouchable files as
+  repo-relative paths in the report-back's `missing_context` field; a fix worker declines such a
+  finding with `status: failed` plus the paths. Keep both action strings in sync — the
+  `_UNCHANGED_ROLE_FIX` pin in `tests/orchestrator/test_dispatch.py` fails on drift.
+- **`pre_commit_cmd` reaches workers as a hard rule, gated by role** (`WorkerPromptCtx.pre_commit_cmd`,
+  `build_worker_prompt`): only implement and fix prompts (and `build_group_prompt`'s ci-fix
+  prompt, via `ctx["pre_commit_cmd"]`) get `Run \`<cmd>\` before every commit.`; review and
+  cleanup prompts never carry it, and an unset/`None` command emits no line at all.
+- **`LiveSpawn.pre_commit_cmd` is a lazy property, not resolved in `__init__`**: the policy
+  file is read via `router/policy.load_policy(self.repo)` only on first access (first spawn),
+  and the setter marks it loaded so tests can inject a value without touching a policy file. A
+  fan-out that never spawns, or a test driving `live_run_real` with a stub repo, must never read
+  the policy — do not move the load back into the constructor.
 - **AddOns run after a task's own work, before commit** (`addons/runner.run_addons`,
   called from `orchestrator/integrate.py` and `router/preflight.py`). `install`/`configure`
   failures are swallowed (best-effort priming); `run()` failures propagate. An add-on config'd
@@ -137,15 +177,20 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
 - `taskformats/base.py` — `TaskSource` protocol; `orchestrator/` must never construct a
   format-specific task path itself, always go through the active `TaskSource`
 - `addons/runner.py` — the only caller of `AddOn.install`/`configure`/`run`
+- `orchestrator/dispatch.py` — `_ROLE_ACTION` per-role action text (review/fix `missing_context`
+  rule), `build_worker_prompt`/`build_group_prompt` hard rules (`pre_commit_cmd`), and
+  `transition`'s review-status routing (`PASSED|FAILED|SKIPPED-SMALL-DIFF`)
 - `orchestrator/live.py` — `_default_merge_method`/`_default_post_merge_smoke_cmd`/
   `_resolve_max_workers`: the code-level policy defaults `main()` applies to `full-real` when a
   flag is omitted; `_slot_refilling_fanout`: the one slot-refilling fan-out loop both
   `live_run_real` and `_pipeline_scheduler` drive, with its `on_completion` hand-off to
   `_dispatch_terminal_groups` and the integrate+verify pool; `precheck`: the OpenSpec-vs-devkit
-  "all files exist" INFO/WARN split
+  "all files exist" INFO/WARN split; `LiveSpawn.pre_commit_cmd`: the lazy policy-backed
+  property threaded into the worker ctx
 - `orchestrator/verify.py` — `auto_merge()` and `_retry_auto_merge_methods`; the only place a
   merge-method rejection is turned into a method retry; `_salvage_uncommitted` and the
-  per-strike `continue` in `wait_and_fix_ci`
+  per-strike `continue` in `wait_and_fix_ci`; `_unrelated_test_failure`/`_rerun_failed_checks`,
+  the free-rerun probe `wait_and_fix_ci` tries once before spawning a ci-fix worker
 
 ---
-**Last Updated:** 2026-09-02
+**Last Updated:** 2026-09-04

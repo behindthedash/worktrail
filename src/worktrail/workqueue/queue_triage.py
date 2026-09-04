@@ -20,16 +20,19 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 from ..orchestrator.integrate import _refresh_pr_labels
 from ..router import overlap_check
+from ..router.dashboard import _resolve_repo_dir
 from ..shared.brief_frontmatter import read_frontmatter, split_frontmatter
 from ..shared.homedir import worktrail_home
-from . import decisions
+from . import decisions, premise_check, repo_inference
+from .repo_inference import InferenceResult
 from .score_candidates import _overlap_coefficient, _tokenize
+from .slug import fallback_slugify
 from .work_queue import (
     _awaiting_decision_info,
     _set_fm_fields,
@@ -46,6 +49,13 @@ logger = logging.getLogger(__name__)
 _FOCUS_BODY_RE = re.compile(r"^##\s+Focus\s*$\r?\n(.+)$", re.MULTILINE)
 
 NO_REPO_KEY = "__none__"
+
+# The `question` a repo-less brief's `needs-decision` verdict files (both the
+# evaluator prompt's own instruction, per D2/D8, and this module's own
+# escalation matrix, per D5) -- a fixed string so `consume_repo_decision()`
+# can recognize which answered decisions it owns without inspecting anything
+# beyond the question text itself.
+REPO_ASSIGNMENT_QUESTION = "Which repo should this brief target?"
 
 # Tier the evaluator worker spawns under (design D3): routing, not this
 # caller, owns the harness/model choice for a given tier.
@@ -79,7 +89,11 @@ _TRIAGE_HEADING_RE = re.compile(r"^##\s+Triage\s+(\d{4}-\d{2}-\d{2})\s*$", re.MU
 # match a file path or brief id with no command content at all) and never the
 # bare English words "command" or "check", since prose can use those words
 # while denying or merely discussing a reproduction reference (e.g. "no
-# command needed" or "we should check whether this is still relevant").
+# command needed" or "we should check whether this is still relevant"). `gh`/
+# `git` count only with a known read/verify subcommand ("gh repo view", "git
+# log") so prose like "git history" or "gh workflow" alone does not qualify;
+# `grep`/`rg` count only with a flag ("grep -rn foo") so the bare verb "grep
+# for it" does not.
 _REPRODUCTION_EVIDENCE_RE = re.compile(
     r"\bpytest\b"
     r"|\btests?/"
@@ -90,6 +104,9 @@ _REPRODUCTION_EVIDENCE_RE = re.compile(
     r"|\bcargo\s+test\b"
     r"|\bunittest\b"
     r"|\b(?:lint|mypy|ruff|tsc)\b"
+    r"|\bgh\s+(?:pr|repo|api|run|issue|release)\b"
+    r"|\bgit\s+(?:log|status|show|diff|grep|ls-files|rev-parse|branch|cherry|blame|worktree|fetch)\b"
+    r"|\b(?:grep|rg)\s+-"
     r"|\breproduces?\s+via\b"
     r"|\bconfirmed\s+via\b",
     re.IGNORECASE,
@@ -112,6 +129,12 @@ You are triaging work-queue briefs for the repo group `{repo}` for staleness, \
 duplication, and whether they belong folded into or proposed as an OpenSpec \
 change. Evaluate ONLY the briefs listed below; do not scan the queue for \
 others.
+
+Mechanical premise check: each brief below also carries a deterministic \
+premise check run before you were spawned (a quoted claim/path/command from \
+its focus, confirmed or refuted against this repo's checkout). Treat a \
+CONFIRMED entry as already-cited evidence -- you do not need to re-derive it \
+yourself.
 
 Briefs in this group (each with its ranked candidate target changes, if any):
 {briefs}
@@ -138,18 +161,23 @@ change that wasn't presented to you, even a plausible-looking one. If none of \
 the listed candidates are a good fit but the brief still clearly belongs in \
 this repo, use `propose-change` with a `target_repo` and a kebab-case \
 `proposed_change_name` instead. If `{repo}` is `{no_repo_key}` (no target \
-repo), `fold-into-change` and `propose-change` are never valid for these \
-briefs — if the brief needs to land somewhere but you cannot tell where, use \
-`needs-decision` with a `question` asking which repo it belongs to, rather \
-than guessing a target.
+repo), `fold-into-change` is never valid for these briefs. {propose_target_rule} \
+If the brief needs to land somewhere but none of these repos fit, or you \
+cannot tell which one does, use `needs-decision` with a `question` asking \
+which repo it belongs to, rather than guessing a target.
 
 Step 2b — work-directly requires reproduction evidence:
 Use `work-directly` only when your evidence cites a specific test, check, or \
 command that reproduces or confirms the brief's premise as directly \
-actionable right now (e.g. "reproduces via pytest tests/foo -k bar", "confirmed \
-via `make lint`"). Evidence that only restates the brief's description without \
-such a citation is not sufficient — apply will downgrade a `work-directly` \
-verdict lacking one to `keep`, so prefer `keep` yourself when you don't have it.
+actionable right now, naming the command itself (e.g. "reproduces via pytest \
+tests/foo -k bar", "confirmed via `make lint`", "confirmed via `gh repo view`", \
+"confirmed via `grep -rn foo src/`"). Evidence that only restates the brief's \
+description, or says you "read" or "inspected" a file or log without naming a \
+command, is not sufficient — apply will downgrade a `work-directly` verdict \
+lacking one to `keep`, so prefer `keep` yourself when you don't have it. A \
+CONFIRMED entry from a brief's mechanical premise check above counts as \
+reproduction evidence on its own — cite it directly rather than re-running \
+the same check yourself.
 
 Step 3 — memory check before raising an alarm:
 Before flagging anything you observe as a live operational concern, check \
@@ -196,53 +224,162 @@ expected shape if unsure).
 Brief evidence (why this change is being proposed):
 {evidence}
 
-When you are done, the change must pass `openspec validate \
-{proposed_change_name} --strict` -- run it yourself and fix any errors \
-before finishing. Do not `git commit` or `git push`; that is handled by the \
-caller once you're done.
+When you are done, the change must pass BOTH of these before finishing --
+run each yourself and fix any reported problem:
+1. `openspec validate {proposed_change_name} --strict`
+2. `worktrail-compile openspec/changes/{proposed_change_name}` -- this \
+checks `tasks.md` for problems `openspec validate` does not catch, such as \
+a same-file task chain or a task touching `src/` with no corresponding \
+`tests/` task; fix `tasks.md` and re-run until it passes.
+Do not `git commit` or `git push`; that is handled by the caller once \
+you're done.
 """
 
 
-def group_queue_by_repo() -> dict[str, list[Path]]:
+def group_queue_by_repo(
+    repos_root: str | Path | None = None,
+) -> tuple[dict[str, list[Path]], list[dict[str, Any]], list[dict[str, Any]]]:
     """Group every brief in `queue_dir()` by its frontmatter `repo:` value.
 
-    A brief with no `repo` field, or a null/empty one, collapses into the
-    single `"__none__"` group so callers always have exactly one bucket for
-    repo-less briefs instead of needing to special-case `None`.
+    A brief with no `repo` field, or a null/empty one, first runs a pre-pass
+    (design D2/D8) before falling into the single `"__none__"` group: an
+    answered repo-assignment decision is consumed via
+    `consume_repo_decision()`, and failing that, `repo_inference.infer_repo()`
+    is tried against the brief's focus text. Either path that resolves a repo
+    stamps it onto the brief (`_write_repo_inference()`) and uses it as this
+    brief's group key instead of `"__none__"`; a brief already carrying a
+    `repo:` value skips this pre-pass entirely, so it is never re-inferred or
+    re-noted on a later call.
+
+    Returns `(groups, inferred, unresolvable)`: `inferred` is one entry per
+    brief the pre-pass resolved this call (decision or inference alike),
+    `unresolvable` is one entry per brief whose answered repo-assignment
+    decision's answer could not be resolved to a known checkout (left
+    completely untouched, for the caller to report).
     """
     groups: dict[str, list[Path]] = {}
+    inferred: list[dict[str, Any]] = []
+    unresolvable: list[dict[str, Any]] = []
     d = queue_dir()
     if not d.is_dir():
-        return groups
+        return groups, inferred, unresolvable
     for path in sorted(f for f in d.iterdir() if f.is_file() and f.suffix == ".md"):
         fm = read_frontmatter(path)
         repo = fm.get("repo")
         key = repo.strip() if isinstance(repo, str) and repo.strip() else NO_REPO_KEY
+        if key == NO_REPO_KEY:
+            decision_outcome = consume_repo_decision(path, repos_root)
+            if decision_outcome is not None:
+                if decision_outcome.get("resolved"):
+                    key = decision_outcome["repo"]
+                    inferred.append(decision_outcome)
+                else:
+                    unresolvable.append(decision_outcome)
+            else:
+                result = repo_inference.infer_repo(_brief_focus(path), repos_root)
+                if result.repo:
+                    _write_repo_inference(path, result)
+                    key = result.repo
+                    inferred.append(
+                        {"path": path, "repo": result.repo, "rule": result.rule}
+                    )
         groups.setdefault(key, []).append(path)
-    return groups
+    return groups, inferred, unresolvable
+
+
+@dataclass
+class TriageNote:
+    """One `## Triage <date>` section, as parsed by `triage_history()`.
+
+    `verdict` is the section's first non-blank line's `verdict: <x>` value, or
+    `"legacy"` when the section predates that convention (e.g. a plain-text
+    `_apply_needs_update()`/`_apply_work_directly()` note) or has no non-blank
+    line at all. `keep_count` is the section's `keep-count: <n>` line, parsed
+    as an int, or `None` when the section carries none (every verdict but
+    `keep`).
+    """
+
+    date: datetime.date
+    verdict: str
+    keep_count: int | None = None
+
+
+_TRIAGE_VERDICT_LINE_RE = re.compile(r"^verdict:\s*(\S.*?)\s*$")
+_TRIAGE_KEEP_COUNT_LINE_RE = re.compile(r"^keep-count:\s*(\d+)\s*$")
+
+
+def triage_history(path: Path) -> list[TriageNote]:
+    """Every `## Triage <date>` section in `path`'s body, oldest first.
+
+    Shares `is_recently_triaged()`'s lenient error handling: an unreadable
+    file or a body with no `## Triage` sections returns `[]` rather than
+    raising, and a section whose heading date fails to parse is skipped
+    rather than aborting the whole scan.
+    """
+    try:
+        content = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return []
+    _, body = split_frontmatter(content)
+
+    headings = list(_TRIAGE_HEADING_RE.finditer(body))
+    notes: list[TriageNote] = []
+    for i, m in enumerate(headings):
+        try:
+            date = datetime.date.fromisoformat(m.group(1))
+        except ValueError:
+            continue
+        start = m.end()
+        end = headings[i + 1].start() if i + 1 < len(headings) else len(body)
+        section = body[start:end]
+
+        verdict = "legacy"
+        for line in section.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            vm = _TRIAGE_VERDICT_LINE_RE.match(stripped)
+            if vm:
+                verdict = vm.group(1)
+            break
+
+        keep_count: int | None = None
+        for line in section.splitlines():
+            km = _TRIAGE_KEEP_COUNT_LINE_RE.match(line.strip())
+            if km:
+                keep_count = int(km.group(1))
+                break
+
+        notes.append(TriageNote(date=date, verdict=verdict, keep_count=keep_count))
+    return notes
+
+
+def consecutive_keep_count(path: Path) -> int:
+    """Length of the trailing run of `verdict: keep` notes in `path`'s `triage_history()`.
+
+    Reads back to back with `_apply_keep()`'s writes: each new `keep` note's
+    `keep-count:` is this count plus one, so a subsequent run's escalation
+    check (4.2) can read the streak straight off the file.
+    """
+    count = 0
+    for note in reversed(triage_history(path)):
+        if note.verdict != "keep":
+            break
+        count += 1
+    return count
 
 
 def is_recently_triaged(path: Path, within_days: int) -> bool:
-    """True if `path`'s most recent ``## Triage <ISO date>`` section is within `within_days`.
+    """True if `path`'s most recent non-`repo-inferred` ``## Triage`` section is within `within_days`.
 
     Lenient like the rest of this module's date handling (`work_queue._is_not_yet_due`,
     `_recently_released_info`): an unreadable file, a body with no `## Triage` section, or
     every such section carrying an unparsable date all fall through to False rather than
     raising, since a dedup check that can't confirm recency must not block a brief from
-    being evaluated.
+    being evaluated. Per design D2, a `verdict: repo-inferred` note (queue-time repo
+    inference, not a triage outcome) never counts toward this window on its own.
     """
-    try:
-        content = Path(path).read_text(encoding="utf-8")
-    except OSError:
-        return False
-    _, body = split_frontmatter(content)
-
-    dates: list[datetime.date] = []
-    for raw in _TRIAGE_HEADING_RE.findall(body):
-        try:
-            dates.append(datetime.date.fromisoformat(raw))
-        except ValueError:
-            continue
+    dates = [n.date for n in triage_history(path) if n.verdict != "repo-inferred"]
     if not dates:
         return False
 
@@ -264,32 +401,248 @@ def has_unresolved_decision(path: Path) -> bool:
     return _awaiting_decision_info(path)["decision_status"] in ("open", "answered")
 
 
-def inventory(within_days: int) -> tuple[dict[str, list[Path]], list[Path]]:
+_DEFAULT_TRIAGE_KEEP_LIMIT = 2
+_DEFAULT_TRIAGE_MAX_QUEUE_AGE_DAYS = 14
+
+
+def _escalation_limits(repo: str | None) -> tuple[int, int]:
+    """`(triage_keep_limit, triage_max_queue_age_days)` for `repo`, per design D5.
+
+    Read via `router.policy.load_policy(Path(repo))`, mirroring `_repo_wip_cap()`
+    (a plain `.get(..., default)` read works whether or not either key has a
+    formal schema entry). `repo` falsy/`NO_REPO_KEY` -- a repo-less brief has no
+    policy file to read -- and a non-int policy value both fall back to this
+    module's defaults (2 keeps, 14 days).
+    """
+    keep_limit, max_age = _DEFAULT_TRIAGE_KEEP_LIMIT, _DEFAULT_TRIAGE_MAX_QUEUE_AGE_DAYS
+    if not repo or repo == NO_REPO_KEY:
+        return keep_limit, max_age
+
+    from ..router import policy as policy_mod
+
+    policy = policy_mod.load_policy(Path(repo))
+    configured_keep_limit = policy.get("triage_keep_limit", keep_limit)
+    configured_max_age = policy.get("triage_max_queue_age_days", max_age)
+    if isinstance(configured_keep_limit, int) and not isinstance(
+        configured_keep_limit, bool
+    ):
+        keep_limit = configured_keep_limit
+    if isinstance(configured_max_age, int) and not isinstance(configured_max_age, bool):
+        max_age = configured_max_age
+    return keep_limit, max_age
+
+
+def escalation_due(path: Path, repo: str | None) -> str | None:
+    """`"keep-limit"`, `"queue-age"`, or `None` -- whether `path` is due for escalation.
+
+    Per design D5: a brief whose trailing `keep` streak
+    (`consecutive_keep_count()`) has reached `repo`'s `triage_keep_limit` is due
+    on `"keep-limit"`; otherwise a brief whose `created` frontmatter age has
+    reached `triage_max_queue_age_days` is due on `"queue-age"` -- checked in
+    that order, since a brief already at its keep limit is escalated for that
+    reason regardless of how old it also happens to be. Neither condition met
+    (or `created` missing/unparsable) returns `None`.
+    """
+    keep_limit, max_age = _escalation_limits(repo)
+    if consecutive_keep_count(path) >= keep_limit:
+        return "keep-limit"
+
+    created = read_frontmatter(path).get("created")
+    if created:
+        try:
+            created_date = datetime.date.fromisoformat(str(created)[:10])
+        except ValueError:
+            created_date = None
+        if created_date is not None:
+            age_days = (datetime.date.today() - created_date).days  # noqa: DTZ011
+            if age_days >= max_age:
+                return "queue-age"
+    return None
+
+
+def _work_directly_accepted(v: Verdict) -> bool:
+    """True if `v` has reproduction evidence for `work-directly`, per design D6.
+
+    Accepted on either half alone: the evidence text itself citing a specific
+    test/check/command (`_REPRODUCTION_EVIDENCE_RE`), or `v.premise_check`
+    carrying at least one `confirmed` entry (2.x's mechanical premise check --
+    a confirmed needle is itself a reproduced claim, even when the evaluator's
+    own prose evidence doesn't separately name a command). Used identically by
+    `_apply_work_directly()` (apply-time) and `_preview_verdict()` (preview), so
+    a `--confirm` run and its own preview never disagree about which
+    `work-directly` verdicts would be downgraded.
+    """
+    if _REPRODUCTION_EVIDENCE_RE.search(v.evidence or ""):
+        return True
+    return any(p.get("confirmed") for p in (v.premise_check or []))
+
+
+_BRIEF_ID_TIMESTAMP_RE = re.compile(r"^\d{8}-\d{6}-")
+
+
+def _kebab_from_brief_id(brief_id: str) -> str:
+    """A valid `_KEBAB_CASE_RE` change-name slug derived from `brief_id`.
+
+    Strips the `create_handoff.create()`-authored `YYYYMMDD-HHMMSS-` timestamp
+    prefix first; the remainder is already a kebab-case slug for a normally
+    authored brief id and is used as-is. Falls back to
+    `slug.fallback_slugify()` for anything else (a hand-authored or malformed
+    id) so `escalate()`'s `propose-change` verdict always carries a
+    `_KEBAB_CASE_RE`-valid `proposed_change_name`.
+    """
+    stripped = _BRIEF_ID_TIMESTAMP_RE.sub("", brief_id)
+    if _KEBAB_CASE_RE.fullmatch(stripped):
+        return stripped
+    return fallback_slugify(stripped, default="escalated-brief")
+
+
+def escalate(
+    v: Verdict, path: Path, repo: str | None, candidates: list[str]
+) -> Verdict:
+    """Apply the design D5 escalation matrix to `v`, if it is due.
+
+    Only rewrites a verdict that would otherwise resolve to `keep` at apply
+    time and whose brief is due (`escalation_due()` is not `None`) -- any
+    other verdict is returned unchanged, since escalation exists only to break
+    a brief out of an indefinite keep streak or queue-age staleness, never to
+    override an evaluator's own non-`keep` decision. On a due `keep`:
+
+    1. `repo` falsy/`NO_REPO_KEY`: `needs-decision` with `REPO_ASSIGNMENT_QUESTION`
+       -- there is no repo to propose/fold/work against.
+    2. `_work_directly_accepted(v)`: `work-directly` -- the brief's own evidence
+       or premise check already reproduces its premise, so escalation converts
+       the stalled keep straight into direct work rather than more process.
+    3. `repo`'s WIP cap (re-read via `_propose_change_wip_cap_status()`, an
+       apply-time-fresh check, matching `_propose_change_over_cap()`) is not at
+       or over: `propose-change`, with `proposed_change_name` derived from the
+       brief id (`_kebab_from_brief_id()`).
+    4. Over cap with `candidates`: `fold-into-change` into `candidates[0]`
+       (`target_change = "<repo>:change:<candidates[0]>"`, distinguishing an
+       escalation-driven fold from an evaluator-decided one).
+    5. Over cap with no `candidates`: `needs-decision` -- there is nothing
+       automatic left to try.
+
+    `duplicate_of`/`target_repo`/`question` etc. are set only for the rows that
+    need them; every other Verdict field (`evidence`, `confidence`, `repo`,
+    `premise_check`) is carried over from `v` unchanged, with `escalation` set
+    to the triggering reason (`"keep-limit"`/`"queue-age"`) for `write_report()`.
+    """
+    if v.verdict != "keep":
+        return v
+    reason = escalation_due(path, repo)
+    if reason is None:
+        return v
+
+    carried = {
+        "brief_id": v.brief_id,
+        "evidence": v.evidence,
+        "confidence": v.confidence,
+        "repo": v.repo,
+        "premise_check": v.premise_check,
+        "escalation": reason,
+    }
+
+    if not repo or repo == NO_REPO_KEY:
+        return Verdict(
+            **carried,
+            verdict="needs-decision",
+            duplicate_of=None,
+            question=REPO_ASSIGNMENT_QUESTION,
+        )
+
+    if _work_directly_accepted(v):
+        return Verdict(**carried, verdict="work-directly", duplicate_of=None)
+
+    cap_probe = Verdict(
+        brief_id=v.brief_id,
+        verdict="propose-change",
+        duplicate_of=None,
+        evidence=v.evidence,
+        repo=repo,
+    )
+    _repo, cap, count = _propose_change_wip_cap_status(cap_probe)
+    over_cap = cap > 0 and count >= cap
+    if not over_cap:
+        return Verdict(
+            **carried,
+            verdict="propose-change",
+            duplicate_of=None,
+            target_repo=repo,
+            proposed_change_name=_kebab_from_brief_id(v.brief_id),
+        )
+
+    if candidates:
+        return Verdict(
+            **carried,
+            verdict="fold-into-change",
+            duplicate_of=None,
+            target_change=f"{repo}:change:{candidates[0]}",
+        )
+
+    return Verdict(
+        **carried,
+        verdict="needs-decision",
+        duplicate_of=None,
+        question=(
+            f"Brief '{v.brief_id}' is escalation-due ({reason}) and repo "
+            f"'{repo}' is at its WIP cap with no fold candidates to offer -- "
+            "how should this proceed?"
+        ),
+    )
+
+
+def inventory(
+    within_days: int, repos_root: str | Path | None = None
+) -> tuple[
+    dict[str, list[Path]],
+    list[Path],
+    list[Path],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
     """Compose `group_queue_by_repo()` + `is_recently_triaged()` into an evaluation set.
 
     Briefs whose most recent `## Triage` section falls within `within_days` fail the
     dedup check and are excluded from the returned groups (so 2.x never re-evaluates
-    them) but collected into `skipped` for report visibility. A brief with an
-    unresolved pending decision (`has_unresolved_decision()`) is likewise excluded
-    from the groups, but -- unlike a dedup skip -- is not added to `skipped`: it isn't
-    a triage outcome to report on, it's simply not ready to be re-judged yet, and will
+    them) but collected into `skipped` for report visibility -- unless the brief is
+    escalation-due (`escalation_due()`, design D5): a due brief bypasses the dedup
+    window entirely, since a keep streak or queue-age past the escalation threshold
+    must not keep hiding behind a recent triage note. A brief with an unresolved
+    pending decision (`has_unresolved_decision()`) is likewise excluded from the
+    groups, but -- unlike a dedup skip -- is not added to `skipped`: it isn't a
+    triage outcome to report on, it's simply not ready to be re-judged yet, and will
     resurface on its own once a human answers. A group left empty by filtering is
     dropped entirely rather than kept as an empty bucket.
+
+    A due brief with no target repo (`NO_REPO_KEY`) has no evaluator group to be
+    spawned against in the first place -- it is pulled out into
+    `escalate_without_evaluator` instead of `groups[NO_REPO_KEY]`, for the caller
+    to verdict directly via the escalation matrix (`escalate()`) without spending
+    an evaluator spawn on a brief that can only ever resolve to `needs-decision`.
+
+    Returns `(groups, skipped, escalate_without_evaluator, inferred, unresolvable)`
+    -- the last two passed straight through from `group_queue_by_repo()`'s own
+    repo-inference/decision-consumption pre-pass.
     """
     skipped: list[Path] = []
     groups: dict[str, list[Path]] = {}
-    for key, paths in group_queue_by_repo().items():
+    escalate_without_evaluator: list[Path] = []
+    all_groups, inferred, unresolvable = group_queue_by_repo(repos_root)
+    for key, paths in all_groups.items():
         kept: list[Path] = []
         for path in paths:
-            if is_recently_triaged(path, within_days):
-                skipped.append(path)
-            elif has_unresolved_decision(path):
+            due = escalation_due(path, None if key == NO_REPO_KEY else key) is not None
+            if has_unresolved_decision(path):
                 continue
+            if is_recently_triaged(path, within_days) and not due:
+                skipped.append(path)
+            elif key == NO_REPO_KEY and due:
+                escalate_without_evaluator.append(path)
             else:
                 kept.append(path)
         if kept:
             groups[key] = kept
-    return groups, skipped
+    return groups, skipped, escalate_without_evaluator, inferred, unresolvable
 
 
 def _brief_focus(path: Path) -> str:
@@ -315,6 +668,88 @@ def _brief_created(path: Path) -> str:
     return str(created) if created else "unknown"
 
 
+def _write_repo_inference(path: Path, result: InferenceResult) -> None:
+    """Stamp `repo:` and append a `verdict: repo-inferred` note for `result`.
+
+    Shared by `group_queue_by_repo()`'s two pre-pass sources (`repo_inference`
+    rule-based inference and `consume_repo_decision()`'s decision-answer
+    resolution, `result.rule == "decision"`) -- both boil down to "a repo was
+    determined for this brief outside evaluation", recorded the same way.
+    Shares `_apply_keep()`'s in-place `## Triage <date>` append shape;
+    `is_recently_triaged()` already excludes `verdict: repo-inferred` notes
+    from its dedup window, per design D2.
+    """
+    _set_fm_fields(path, {"repo": result.repo})
+    run_date = datetime.date.today().isoformat()  # noqa: DTZ011
+    content = path.read_text(encoding="utf-8")
+    path.write_text(
+        content.rstrip("\n")
+        + f"\n\n## Triage {run_date}\n\nverdict: repo-inferred\nrule: {result.rule}"
+        f"\n\nrepo inferred as {result.repo} via rule {result.rule!r}\n",
+        encoding="utf-8",
+    )
+
+
+def consume_repo_decision(
+    path: Path, repos_root: str | Path | None = None
+) -> dict[str, Any] | None:
+    """Consume `path`'s answered repo-assignment decision, if it has one (design D8).
+
+    Returns `None` when `path` carries no `awaiting-decision` link, the linked
+    decision is not (yet) answered, or its question is not
+    `REPO_ASSIGNMENT_QUESTION` -- there is nothing for this function to do,
+    and the brief falls through to `repo_inference.infer_repo()` instead.
+
+    Otherwise resolves the answer text to an on-disk checkout via
+    `dashboard._resolve_repo_dir()`. On success, stamps `repo:` and appends the
+    `repo-inferred` note (`_write_repo_inference()`, `rule="decision"`),
+    archives the decision record (`decisions.resolve_decision()`), and
+    returns `{"resolved": True, "path", "repo", "rule", "decision_id"}`. An
+    unresolvable answer leaves both the brief and the decision record
+    completely untouched -- returning `{"resolved": False, "path",
+    "decision_id", "answer"}` for the caller to report -- since a later
+    human correction (a revised answer, or a re-filed decision) must still be
+    able to act on it.
+    """
+    info = _awaiting_decision_info(path)
+    decision_id = info["awaiting_decision"]
+    if not decision_id or info["decision_status"] != "answered":
+        return None
+    envelope = decisions.load_decision_envelope(decision_id)
+    if envelope is None or envelope.get("question") != REPO_ASSIGNMENT_QUESTION:
+        return None
+
+    answer = (envelope.get("answer") or "").strip()
+    repo_dir = _resolve_repo_dir(answer, repos_root)
+    if repo_dir is None:
+        return {
+            "resolved": False,
+            "path": path,
+            "decision_id": decision_id,
+            "answer": answer,
+        }
+
+    result = InferenceResult(repo=str(repo_dir), rule="decision", candidates=[])
+    _write_repo_inference(path, result)
+    decisions.resolve_decision(decision_id)
+    return {
+        "resolved": True,
+        "path": path,
+        "repo": result.repo,
+        "rule": result.rule,
+        "decision_id": decision_id,
+    }
+
+
+_MIN_CANDIDATE_SCORE = 0.45
+"""Focus-overlap floor a change must clear to be offered as a fold candidate.
+
+Below it the "candidate" is noise the evaluator still has to read past -- and a
+presented candidate is what a `fold-into-change` verdict is allowed to name, so
+an unrelated change in the list is a fold target waiting to be picked.
+"""
+
+
 def rank_change_candidates(
     brief: Path, repo: str | None, top_k: int = 5
 ) -> list[dict[str, Any]]:
@@ -331,10 +766,12 @@ def rank_change_candidates(
     `overlap_check._parse_openspec_tasks()`) -- so a change whose remaining
     work matches the brief ranks even when its proposal summary is sparse.
 
-    Returns the top `top_k` by score descending (ties keep `scan()`'s
+    Only changes scoring at least `_MIN_CANDIDATE_SCORE` are eligible;
+    returns the top `top_k` of those by score descending (ties keep `scan()`'s
     alphabetical order), each as `{"id", "feature_summary",
-    "open_task_count", "score"}`. `repo` falsy (`repo: null`) and a repo with
-    no active changes both return `[]` -- there is nothing to rank against.
+    "open_task_count", "score"}`. `repo` falsy (`repo: null`), a repo with
+    no active changes, and a repo whose every active change scores below the
+    floor all return `[]` -- there is nothing worth ranking against.
     """
     if not repo:
         return []
@@ -363,6 +800,8 @@ def rank_change_candidates(
                     open_task_count += 1
 
         score = _overlap_coefficient(brief_tokens, _tokenize(summary) | task_tokens)
+        if score < _MIN_CANDIDATE_SCORE:
+            continue
         scored.append(
             (
                 score,
@@ -439,41 +878,63 @@ def apply_wip_cap_preview(repo: str, verdicts: list[Verdict]) -> list[Verdict]:
     ]
 
 
-def _propose_change_wip_cap_status(v: Verdict) -> tuple[str | None, int, int]:
+def _effective_repo(v: Verdict) -> str | None:
+    """The repo `v` actually targets: the group's own `repo` when it is not
+    `NO_REPO_KEY`, else `v.target_repo` -- 2.5's rule letting a repo-less
+    (`NO_REPO_KEY`) group's `propose-change` verdict name its own target repo,
+    since its group has none. `None` when neither is set.
+    """
+    if v.repo and v.repo != NO_REPO_KEY:
+        return v.repo
+    return v.target_repo or None
+
+
+def _propose_change_wip_cap_status(
+    v: Verdict, repos_root: str | Path | None = None
+) -> tuple[str | None, int, int]:
     """`(repo, cap, count)` for `v`, a fresh apply-time re-check of the WIP cap.
 
     Recomputed here rather than trusting `v.held_by_wip_cap` (2.4's evaluate-time
     preview): `evaluate` and `apply` can run far enough apart that the repo's
     active-change count or its `max_active_changes` policy value has since
     changed, and 3.6's enforcement point is apply time, not evaluate time.
-    `repo` is `None` for a repo-less verdict (`NO_REPO_KEY`/falsy `v.repo`), in
-    which case `cap`/`count` are both `0` and the caller never treats it as
-    over cap.
+    `repo` (`_effective_repo(v)`) is `None` for a verdict with neither a group
+    repo nor a `target_repo`, in which case `cap`/`count` are both `0` and the
+    caller never treats it as over cap. `_effective_repo(v)` can be a bare
+    directory basename (2.5's `NO_REPO_KEY` propose-change flow shows the
+    evaluator only basenames) -- resolve it against `repos_root` via
+    `_resolve_repo_dir()` before reading its cap/count, falling back to the
+    raw value only when it doesn't resolve, so the reported `repo` still
+    reflects what was checked.
     """
-    repo = v.repo if v.repo and v.repo != NO_REPO_KEY else None
+    repo = _effective_repo(v)
     if not repo:
         return None, 0, 0
-    return repo, _repo_wip_cap(repo), _count_active_changes(repo)
+    repo_path = _resolve_repo_dir(repo, repos_root)
+    checked = str(repo_path) if repo_path is not None else repo
+    return repo, _repo_wip_cap(checked), _count_active_changes(checked)
 
 
-def _propose_change_over_cap(v: Verdict) -> bool:
+def _propose_change_over_cap(v: Verdict, repos_root: str | Path | None = None) -> bool:
     """True if `v` is a `propose-change` verdict whose repo is at or over a
     non-zero `max_active_changes` cap, re-checked fresh (see
     `_propose_change_wip_cap_status()`). A cap of `0` (unset/disabled) never
     holds anything."""
     if v.verdict != "propose-change":
         return False
-    _repo, cap, count = _propose_change_wip_cap_status(v)
+    _repo, cap, count = _propose_change_wip_cap_status(v, repos_root)
     return cap > 0 and count >= cap
 
 
-def _propose_change_wip_cap_note(v: Verdict) -> str:
+def _propose_change_wip_cap_note(
+    v: Verdict, repos_root: str | Path | None = None
+) -> str:
     """The `## Triage <date>` note body for a `propose-change` downgraded by
     the WIP cap: names the cap, the current active-change count, and the
     repo's top fold candidates (2.1's `rank_change_candidates()`, re-ranked
     against this brief) as an alternative for the operator to consider instead
     of a new change."""
-    repo, cap, count = _propose_change_wip_cap_status(v)
+    repo, cap, count = _propose_change_wip_cap_status(v, repos_root)
     path = _resolve_brief_path(v.brief_id)
     candidates = rank_change_candidates(path, repo) if path and repo else []
     return (
@@ -484,7 +945,9 @@ def _propose_change_wip_cap_note(v: Verdict) -> str:
     )
 
 
-def _apply_propose_change_wip_cap_downgrade(v: Verdict, run_date: str) -> dict:
+def _apply_propose_change_wip_cap_downgrade(
+    v: Verdict, run_date: str, repos_root: str | Path | None = None
+) -> dict:
     """Downgrade an over-cap `propose-change` verdict to a no-op `keep`.
 
     Mirrors `_apply_needs_update()`'s in-place `## Triage <run_date>` note
@@ -493,7 +956,7 @@ def _apply_propose_change_wip_cap_downgrade(v: Verdict, run_date: str) -> dict:
     like any other `keep`: it simply remains available for a later triage run
     once the repo's active-change count drops back under the cap.
     """
-    note = _propose_change_wip_cap_note(v)
+    note = _propose_change_wip_cap_note(v, repos_root)
     base = {
         "brief_id": v.brief_id,
         "verdict": v.verdict,
@@ -586,12 +1049,30 @@ def _check_repo_archived(repo: str, cwd: str | Path) -> bool | None:
     return data.get("isArchived") is True
 
 
+def _known_repos(repos_root: str | Path | None) -> list[str]:
+    """Sorted basenames of every directory under `repos_root`.
+
+    The set of repos a repo-less (`{no_repo_key}`) group's `propose-change` \
+    verdict may name as `target_repo` -- mirrors `_resolve_repo_dir()`'s own \
+    basename-under-`repos_root` resolution, so a name the evaluator is offered \
+    here is guaranteed to resolve later at apply time. `repos_root` falsy or \
+    not a directory returns `[]` -- there is nothing to offer.
+    """
+    if not repos_root:
+        return []
+    root = Path(repos_root)
+    if not root.is_dir():
+        return []
+    return sorted(p.name for p in root.iterdir() if p.is_dir())
+
+
 def evaluate_group(
     repo: str,
     briefs: list[Path],
     *,
     agent: str = "claude",
     cwd: str | Path,
+    repos_root: str | Path | None = None,
 ) -> list[dict]:
     """Spawn one evaluator agent over `repo`'s brief group, per the pilot's grouping.
 
@@ -612,17 +1093,28 @@ def evaluate_group(
     inconclusive) falls through to the normal spawn unchanged.
 
     Returns a single-element list -- `[{"repo", "brief_ids", "raw_text",
-    "candidates_by_brief"}]` -- rather than the raw string directly, so a
-    caller fanning out across multiple groups can `.extend()` every call's
-    result into one flat list, without a shape special-case for the archived
-    short-circuit. `raw_text` is untouched worker output (or, in the archived
-    case, the synthesized equivalent); parsing/validation is `parse_verdicts`'s
-    job, not this function's. `candidates_by_brief` maps each brief id to the
-    list of candidate change ids 2.1's `rank_change_candidates()` presented to
-    the evaluator for it (`[]` for the archived short-circuit and for
+    "candidates_by_brief", "premise_by_brief", "known_repos_by_brief"}]` --
+    rather than the raw string directly, so a caller fanning out across
+    multiple groups can `.extend()` every call's result into one flat list,
+    without a shape special-case for the archived short-circuit. `raw_text`
+    is untouched worker output (or, in the archived case, the synthesized
+    equivalent); parsing/validation is `parse_verdicts`'s job, not this
+    function's. `candidates_by_brief` maps each brief id to the list of
+    candidate change ids 2.1's `rank_change_candidates()` presented to the
+    evaluator for it (`[]` for the archived short-circuit and for
     `{no_repo_key}` groups, which have no target repo to rank against) -- a
     caller passes this straight through to `parse_verdicts()` so a
-    `fold-into-change` naming anything else is rejected.
+    `fold-into-change` naming anything else is rejected. `premise_by_brief`
+    (4.1(d)) maps each brief id to its mechanical premise-check results
+    (`premise_check.run_premise_check()`, run against `cwd` only when `repo`
+    is not `{no_repo_key}` -- a repo-less group has no checkout to check
+    claims against), embedded in the prompt text under each brief's own line
+    (`format_premise_block()`) and passed through unmodified for
+    `parse_verdicts()` to copy onto each `Verdict`. `known_repos_by_brief`
+    maps each brief id to `_known_repos(repos_root)` -- the repos a
+    `{no_repo_key}` group's `propose-change` may legally target -- when
+    `repo` is `{no_repo_key}`, else `{}` (a repo-bearing group's briefs carry
+    no such restriction).
     """
     brief_ids = [path.stem for path in briefs]
 
@@ -645,6 +1137,8 @@ def evaluate_group(
                 "brief_ids": brief_ids,
                 "raw_text": raw_text,
                 "candidates_by_brief": {bid: [] for bid in brief_ids},
+                "premise_by_brief": {bid: [] for bid in brief_ids},
+                "known_repos_by_brief": {},
             }
         ]
 
@@ -654,29 +1148,58 @@ def evaluate_group(
     candidates_by_path = {
         path: rank_change_candidates(path, rank_repo) for path in briefs
     }
+    premise_by_path: dict[Path, list[dict[str, Any]]] = {
+        path: (
+            premise_check.run_premise_check(_brief_focus(path), cwd)
+            if repo != NO_REPO_KEY
+            else []
+        )
+        for path in briefs
+    }
 
     brief_lines = "\n".join(
         f"- {path.stem}: {_brief_focus(path) or '(no focus recorded)'} "
         f"(created {_brief_created(path)})\n"
-        f"  Candidate targets: {_format_candidates(candidates_by_path[path])}"
+        f"  Candidate targets: {_format_candidates(candidates_by_path[path])}\n"
+        f"  Premise check: "
+        f"{premise_check.format_premise_block(premise_by_path[path])}"
         for path in briefs
+    )
+    known_repos = _known_repos(repos_root) if repo == NO_REPO_KEY else []
+    known_repos_str = ", ".join(known_repos) if known_repos else "(none found)"
+    propose_target_rule = (
+        "`propose-change` is valid only when your evidence names one of "
+        f"these known repos as the `target_repo`: {known_repos_str}."
+        if repo == NO_REPO_KEY
+        else (
+            "`propose-change`'s `target_repo` for this group is simply "
+            f"`{repo}` (this group's own repo) — there is no known-repos "
+            "allowlist to satisfy here."
+        )
     )
     prompt = EVALUATOR_PROMPT_TEMPLATE.format(
         repo=repo,
         briefs=brief_lines,
         no_repo_key=NO_REPO_KEY,
         memory_index=_memory_index_path(cwd),
+        propose_target_rule=propose_target_rule,
     )
     result = spawnlib.spawn_agent(prompt, cwd, tier=DEFAULT_TIER, prefer=agent)
     candidates_by_brief = {
         path.stem: [c["id"] for c in candidates_by_path[path]] for path in briefs
     }
+    premise_by_brief = {path.stem: premise_by_path[path] for path in briefs}
+    known_repos_by_brief = (
+        {bid: known_repos for bid in brief_ids} if repo == NO_REPO_KEY else {}
+    )
     return [
         {
             "repo": repo,
             "brief_ids": brief_ids,
             "raw_text": result.text,
             "candidates_by_brief": candidates_by_brief,
+            "premise_by_brief": premise_by_brief,
+            "known_repos_by_brief": known_repos_by_brief,
         }
     ]
 
@@ -698,6 +1221,14 @@ class Verdict:
     `repo` is at or over its `max_active_changes` policy cap (see
     `apply_wip_cap_preview()`), so `write_report()` can surface "held by cap"
     counts ahead of 3.6 landing.
+
+    `premise_check` (4.1(d)) is the mechanical premise-check results
+    (`premise_check.run_premise_check()`) for this verdict's brief, copied on
+    by `parse_verdicts()`; `[]` for a `NO_REPO_KEY` group (there is no repo
+    checkout to check against) or a verdict built directly. `escalation`
+    (4.1(b)) is the reason (`"keep-limit"`/`"queue-age"`) `escalate()` rewrote
+    this verdict from a stalled `keep`, or `None` for every verdict escalation
+    never touched.
     """
 
     brief_id: str
@@ -711,6 +1242,8 @@ class Verdict:
     question: str | None = None
     repo: str | None = None
     held_by_wip_cap: bool = False
+    premise_check: list[dict[str, Any]] = field(default_factory=list)
+    escalation: str | None = None
 
 
 def _extract_json_objects(text: str) -> list[str]:
@@ -765,6 +1298,7 @@ def _has_valid_target(
     obj: dict,
     duplicate_of: str | None,
     presented_candidates: list[str],
+    known_repos: list[str] | None = None,
 ) -> bool:
     """True if `verdict_type`'s required target field(s) are present and valid in `obj`.
 
@@ -774,7 +1308,12 @@ def _has_valid_target(
     change ids actually offered to the evaluator for this brief (per 2.1's
     `rank_change_candidates()`) -- a `fold-into-change` naming anything else,
     including a plausible-looking id, is invalid, since accepting it would let the
-    evaluator fold into a change it was never shown.
+    evaluator fold into a change it was never shown. `known_repos`, when not
+    `None`, is the set of repos offered to a `{no_repo_key}` group's brief (per
+    `evaluate_group()`'s `known_repos_by_brief`) -- a `propose-change` for such a
+    brief is only valid when its `target_repo` is one of those; `None` (a
+    repo-bearing brief, which carries no such restriction) leaves the existing
+    well-formedness check as the sole gate.
     """
     if verdict_type == "duplicate-of":
         return duplicate_of is not None
@@ -784,12 +1323,17 @@ def _has_valid_target(
     if verdict_type == "propose-change":
         target_repo = obj.get("target_repo")
         proposed_change_name = obj.get("proposed_change_name")
-        return (
+        well_formed = (
             isinstance(target_repo, str)
             and target_repo.strip() != ""
             and isinstance(proposed_change_name, str)
             and bool(_KEBAB_CASE_RE.fullmatch(proposed_change_name))
         )
+        if not well_formed:
+            return False
+        if known_repos is not None:
+            return target_repo.strip() in known_repos
+        return True
     if verdict_type == "needs-decision":
         question = obj.get("question")
         return isinstance(question, str) and question.strip() != ""
@@ -800,6 +1344,9 @@ def parse_verdicts(
     raw_text: str,
     expected_brief_ids: list[str],
     candidates_by_brief: dict[str, list[str]] | None = None,
+    premise_by_brief: dict[str, list[dict[str, Any]]] | None = None,
+    no_repo: bool = False,
+    known_repos_by_brief: dict[str, list[str]] | None = None,
 ) -> list[Verdict]:
     """Parse `evaluate_group()`'s raw evaluator text into one `Verdict` per expected brief.
 
@@ -808,27 +1355,44 @@ def parse_verdicts(
     `_has_valid_target()`) a well-formed target for verdict types that require one --
     `duplicate-of` needs `duplicate_of`, `fold-into-change` needs `target_change`
     naming one of `candidates_by_brief[brief_id]`'s presented candidates,
-    `propose-change` needs `target_repo` and a kebab-case `proposed_change_name`,
-    and `needs-decision` needs `question` -- to be accepted as-is. `work-directly`
-    and `keep` have no target field. Anything missing, unparsable, or failing that
-    check falls back to `keep` with the first JSON snippet the evaluator emitted
-    under this brief_id retained as evidence -- `raw_text` itself is never used
-    here when a group call batches multiple briefs, since it would otherwise bleed
-    every other brief's own verdict/evidence into this one's fallback. Only when
-    the evaluator emitted nothing identifiable for this brief_id at all does
-    `raw_text` remain the fallback, since there is no narrower snippet to prefer --
-    every id in `expected_brief_ids` always appears exactly once in the result, in
-    that order, never silently dropped.
+    `propose-change` needs `target_repo` and a kebab-case `proposed_change_name`
+    (and, for a brief in `known_repos_by_brief`, a `target_repo` in that brief's
+    list -- 2.5's rule letting a repo-less group's `propose-change` name a known
+    repo), and `needs-decision` needs `question` -- to be accepted as-is.
+    `work-directly` and `keep` have no target field. Anything missing, unparsable,
+    or failing that check falls back to `keep` with the first JSON snippet the
+    evaluator emitted under this brief_id retained as evidence -- `raw_text`
+    itself is never used here when a group call batches multiple briefs, since it
+    would otherwise bleed every other brief's own verdict/evidence into this
+    one's fallback. Only when the evaluator emitted nothing identifiable for this
+    brief_id at all does `raw_text` remain the fallback, since there is no
+    narrower snippet to prefer -- every id in `expected_brief_ids` always appears
+    exactly once in the result, in that order, never silently dropped.
 
     `candidates_by_brief` defaults to no candidates presented for any brief, so a
     caller that hasn't wired 2.1's ranking through yet still gets a safe,
     always-downgraded `fold-into-change` rather than an unchecked target.
+    `known_repos_by_brief` defaults to no restriction for any brief (a
+    repo-bearing brief is never in this map to begin with, per
+    `evaluate_group()`), so a caller that hasn't wired this through yet gets the
+    prior, unrestricted `propose-change` well-formedness check unchanged.
 
     `repo`/`held_by_wip_cap` (2.4's per-repo reporting fields) are left at their
     defaults here -- `apply_wip_cap_preview()` stamps them afterward, once per
     group, rather than this per-brief parser threading `repo` through itself.
+
+    `premise_by_brief` (4.1(d)) copies each brief's mechanical premise-check
+    results onto its `Verdict.premise_check`, defaulting to `[]` per brief
+    when not supplied. `no_repo` (4.1(d)) converts a would-be `keep` --
+    whether cleanly parsed or a fallback -- into `needs-decision` with
+    `REPO_ASSIGNMENT_QUESTION`, since a repo-less group's briefs must never be
+    left as a plain `keep`: `evaluate_group()`'s own prompt already forbids
+    `fold-into-change`/`propose-change` for these groups, so `keep` is the
+    only outcome this needs to intercept.
     """
     candidates_by_brief = candidates_by_brief or {}
+    premise_by_brief = premise_by_brief or {}
+    known_repos_by_brief = known_repos_by_brief or {}
     candidates_by_id: dict[str, list[tuple[str, dict]]] = {
         bid: [] for bid in expected_brief_ids
     }
@@ -847,6 +1411,7 @@ def parse_verdicts(
     for bid in expected_brief_ids:
         chosen: Verdict | None = None
         presented_candidates = candidates_by_brief.get(bid, [])
+        known_repos = known_repos_by_brief.get(bid)
         # This brief's own best-effort evidence when nothing valid is found: the
         # first JSON snippet the evaluator emitted under this brief_id, so a
         # downgrade never falls back past it to `raw_text` -- in a multi-brief
@@ -869,7 +1434,7 @@ def parse_verdicts(
             has_evidence = isinstance(evidence, str) and evidence.strip() != ""
             has_verdict = verdict_type in VALID_VERDICT_TYPES
             has_valid_target = has_verdict and _has_valid_target(
-                verdict_type, obj, duplicate_of, presented_candidates
+                verdict_type, obj, duplicate_of, presented_candidates, known_repos
             )
 
             if has_verdict and has_evidence and has_valid_target:
@@ -894,20 +1459,84 @@ def parse_verdicts(
                 )
                 break
 
-        if chosen is not None:
-            verdicts.append(chosen)
-        else:
-            verdicts.append(
-                Verdict(
-                    brief_id=bid,
-                    verdict="keep",
-                    duplicate_of=None,
-                    evidence=fallback_evidence
-                    if fallback_evidence is not None
-                    else raw_text,
-                    confidence=None,
-                )
+        resolved = (
+            chosen
+            if chosen is not None
+            else Verdict(
+                brief_id=bid,
+                verdict="keep",
+                duplicate_of=None,
+                evidence=fallback_evidence
+                if fallback_evidence is not None
+                else raw_text,
+                confidence=None,
             )
+        )
+        resolved = Verdict(
+            **{**asdict(resolved), "premise_check": premise_by_brief.get(bid, [])}
+        )
+        if no_repo and resolved.verdict == "keep":
+            resolved = Verdict(
+                brief_id=resolved.brief_id,
+                verdict="needs-decision",
+                duplicate_of=None,
+                evidence=resolved.evidence,
+                confidence=resolved.confidence,
+                question=REPO_ASSIGNMENT_QUESTION,
+                premise_check=resolved.premise_check,
+            )
+        verdicts.append(resolved)
+    return verdicts
+
+
+def evaluate_briefs(
+    repo: str,
+    briefs: list[Path],
+    *,
+    agent: str = "claude",
+    cwd: str | Path,
+    repos_root: str | Path | None = None,
+) -> list[Verdict]:
+    """The full per-group evaluation pipeline, per design D9.
+
+    Chains `evaluate_group()` (which itself runs the mechanical premise check
+    per brief, per 4.1(d)) -> `parse_verdicts()` (copying each brief's premise
+    results onto its `Verdict`, and converting a would-be `keep` to
+    `needs-decision` for a `{NO_REPO_KEY}` group) -> `apply_wip_cap_preview()`
+    -> `escalate()` (applied per brief, using that brief's own path and
+    ranked candidates, so a stalled `keep` past its repo's escalation
+    threshold is rewritten before this function returns). `repos_root` is
+    only consulted by `escalate()`'s cap re-check when it needs to resolve a
+    repo path indirectly -- most callers pass it straight from `cmd_evaluate`.
+
+    Replaces `cmd_evaluate()`'s previous hand-wiring of
+    `evaluate_group`/`parse_verdicts`/`apply_wip_cap_preview` (3.1-3.3) with
+    a single call, so `router.skill_dispatch.evaluate_single_brief()` (4.3)
+    gets the identical pipeline for a single ad hoc brief instead of
+    re-deriving it.
+    """
+    no_repo = repo == NO_REPO_KEY
+    by_id = {path.stem: path for path in briefs}
+
+    verdicts: list[Verdict] = []
+    for result in evaluate_group(
+        repo, briefs, agent=agent, cwd=cwd, repos_root=repos_root
+    ):
+        group_verdicts = parse_verdicts(
+            result["raw_text"],
+            result["brief_ids"],
+            candidates_by_brief=result["candidates_by_brief"],
+            premise_by_brief=result.get("premise_by_brief"),
+            no_repo=no_repo,
+            known_repos_by_brief=result.get("known_repos_by_brief"),
+        )
+        group_verdicts = apply_wip_cap_preview(repo, group_verdicts)
+        for v in group_verdicts:
+            path = by_id.get(v.brief_id)
+            candidates = result["candidates_by_brief"].get(v.brief_id, [])
+            if path is not None:
+                v = escalate(v, path, repo, candidates)
+            verdicts.append(v)
     return verdicts
 
 
@@ -1049,18 +1678,70 @@ def _apply_needs_update(v: Verdict, run_date: str) -> dict:
     return {**base, "status": "executed", "path": str(path), "error": None}
 
 
+def _apply_keep(v: Verdict, run_date: str) -> dict:
+    """`keep`: append an in-place `## Triage <run_date>` note recording the streak.
+
+    Mirrors `_apply_needs_update()`'s append shape but stamps `verdict: keep`
+    and `keep-count: <n+1>` ahead of the evidence -- `n` is `path`'s current
+    `consecutive_keep_count()`, read before this note is appended -- so a
+    later run's `consecutive_keep_count()`/`escalation_due()` (4.2) can read
+    the streak straight off the file without re-deriving it from evidence
+    text.
+    """
+    base = {
+        "brief_id": v.brief_id,
+        "verdict": v.verdict,
+        "duplicate_of": v.duplicate_of,
+        "action": "append-triage-note",
+        "confirm": True,
+        "note": v.evidence,
+    }
+    path = _resolve_brief_path(v.brief_id)
+    if path is None:
+        return {
+            **base,
+            "status": "error",
+            "path": None,
+            "error": "brief not found in queue/ or picked/",
+        }
+    next_count = consecutive_keep_count(path) + 1
+    try:
+        content = path.read_text(encoding="utf-8")
+        path.write_text(
+            content.rstrip("\n")
+            + f"\n\n## Triage {run_date}\n\nverdict: keep\nkeep-count: {next_count}"
+            f"\n\n{v.evidence}\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        return {**base, "status": "error", "path": str(path), "error": str(exc)}
+    return {**base, "status": "executed", "path": str(path), "error": None}
+
+
+def _work_directly_downgrade_note(v: Verdict) -> str:
+    """Downgrade-to-`keep` note for `work-directly`, naming which half of
+    `_work_directly_accepted()`'s check failed (design D6) -- both halves,
+    since only `v` failing *both* the evidence-text and premise-check
+    checks ever reaches this note (either alone is accepted)."""
+    return (
+        "evidence does not cite a test, check, or command, and no premise-"
+        "check entry was confirmed -- downgraded to keep"
+    )
+
+
 def _apply_work_directly(v: Verdict, run_date: str) -> dict:
     """`work-directly`: stamp `seeded-from`/`recommended-route` in place, or downgrade to `keep`.
 
-    Requires `v.evidence` to cite a specific test, check, or command
-    (`_REPRODUCTION_EVIDENCE_RE`, per the evaluator prompt's "work-directly
-    requires reproduction evidence" rule) -- evidence that only restates the
-    brief's description without one is not proof this is directly actionable
-    right now, so this downgrades to a no-op `keep` rather than stamping it.
-    When the citation is present, the brief's frontmatter is stamped
-    `seeded-from: triage:<run_date>:direct` and `recommended-route: F` and the
-    brief is left in `queue/` -- unlike `stale-close`, `work-directly` never
-    claims or closes it.
+    Requires `_work_directly_accepted(v)` (design D6): `v.evidence` citing a
+    specific test, check, or command (`_REPRODUCTION_EVIDENCE_RE`, per the
+    evaluator prompt's "work-directly requires reproduction evidence" rule),
+    or a confirmed entry in `v.premise_check` -- evidence that only restates
+    the brief's description, with no premise-check confirmation either, is not
+    proof this is directly actionable right now, so this downgrades to a
+    no-op `keep` rather than stamping it. When accepted, the brief's
+    frontmatter is stamped `seeded-from: triage:<run_date>:direct` and
+    `recommended-route: F` and the brief is left in `queue/` -- unlike
+    `stale-close`, `work-directly` never claims or closes it.
     """
     base = {
         "brief_id": v.brief_id,
@@ -1069,16 +1750,14 @@ def _apply_work_directly(v: Verdict, run_date: str) -> dict:
         "confirm": True,
         "note": v.evidence,
     }
-    if not _REPRODUCTION_EVIDENCE_RE.search(v.evidence or ""):
+    if not _work_directly_accepted(v):
         return {
             **base,
             "action": "noop",
             "status": "downgraded-to-keep",
             "path": None,
             "error": None,
-            "note": (
-                "evidence does not cite a test, check, or command -- downgraded to keep"
-            ),
+            "note": _work_directly_downgrade_note(v),
         }
 
     path = _resolve_brief_path(v.brief_id)
@@ -1378,8 +2057,11 @@ def _worktree_pr_close(
     """Shared worktree + validate + commit/push/PR + claim/close sequence.
 
     Per the spec's "Fold and propose are applied as a pull request,
-    fail-closed" requirement: creates a fresh worktree on `branch` off
-    `base_branch`, calls `prepare(worktree_dir)` to let the caller author the
+    fail-closed" requirement: fetches `origin/<base_branch>` and creates a
+    fresh worktree on `branch` off *that* remote ref -- the local
+    `base_branch` in a long-lived checkout is routinely behind the remote, and
+    branching off it opens a PR carrying unrelated regressions of already-
+    merged work -- then calls `prepare(worktree_dir)` to let the caller author the
     change in place (returning an error string on failure, `None` on
     success), runs `openspec validate <validate_target> --strict`, runs
     `worktrail-compile` on the change so its `.compile-ok` marker matches the
@@ -1406,6 +2088,25 @@ def _worktree_pr_close(
         "note": v.evidence,
     }
 
+    fetch = subprocess.run(
+        ["git", "-C", str(repo_path), "fetch", "origin", base_branch],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if fetch.returncode != 0:
+        return {
+            **result,
+            "status": "error",
+            "path": None,
+            "error": (
+                f"git fetch origin {base_branch} failed: "
+                f"{(fetch.stderr or fetch.stdout).strip()}"
+            ),
+            "branch": branch,
+        }
+
     add = subprocess.run(
         [
             "git",
@@ -1416,7 +2117,7 @@ def _worktree_pr_close(
             "-b",
             branch,
             str(worktree_dir),
-            base_branch,
+            f"origin/{base_branch}",
         ],
         check=False,
         capture_output=True,
@@ -1623,7 +2324,9 @@ def _worktree_pr_close(
     }
 
 
-def _apply_fold_into_change(v: Verdict) -> dict:
+def _apply_fold_into_change(
+    v: Verdict, *, repos_root: str | Path | None = None
+) -> dict:
     """`fold-into-change`: worktree + proposal/tasks edit + validate + PR + close.
 
     Appends a `## Folded from <brief-id>` section to the target change's
@@ -1649,7 +2352,14 @@ def _apply_fold_into_change(v: Verdict) -> dict:
             "error": "verdict is missing repo or target_change to fold into",
         }
 
-    repo_path = Path(repo)
+    repo_path = _resolve_repo_dir(repo, repos_root)
+    if repo_path is None:
+        return {
+            **result,
+            "status": "error",
+            "path": None,
+            "error": f"could not resolve repo '{repo}' to a checkout on disk",
+        }
     branch = _planned_fold_propose_branch(v)
     base_branch = _repo_base_branch(repo_path)
     worktree_dir = _fold_propose_worktree_dir(repo_path, branch)
@@ -1673,10 +2383,13 @@ def _apply_fold_into_change(v: Verdict) -> dict:
             )
             tasks_text = tasks_path.read_text(encoding="utf-8")
             group_number = _next_task_group_number(tasks_text)
+            # A checklist item is one line: multi-line evidence would spill its
+            # tail out of the `- [ ]` item and stop parsing as a task at all.
+            task_evidence = " ".join(v.evidence.split())
             tasks_path.write_text(
                 tasks_text.rstrip("\n")
                 + f"\n\n## {group_number}. Folded from {v.brief_id}\n\n"
-                + f"- [ ] {group_number}.1 {v.evidence}\n",
+                + f"- [ ] {group_number}.1 {task_evidence}\n",
                 encoding="utf-8",
             )
         except OSError as exc:
@@ -1696,7 +2409,9 @@ def _apply_fold_into_change(v: Verdict) -> dict:
     )
 
 
-def _apply_propose_change(v: Verdict, *, agent: str = "claude") -> dict:
+def _apply_propose_change(
+    v: Verdict, *, agent: str = "claude", repos_root: str | Path | None = None
+) -> dict:
     """`propose-change`: worktree + `openspec new change` + agent-authored change + validate + PR + close.
 
     Runs `openspec new change <proposed_change_name>` to scaffold the change
@@ -1707,6 +2422,15 @@ def _apply_propose_change(v: Verdict, *, agent: str = "claude") -> dict:
     sequence (mirroring `_apply_fold_into_change()`, per the spec's "Fold
     and propose are applied as a pull request, fail-closed" requirement,
     which covers both verdict types).
+
+    `repo` is `_effective_repo(v)` -- the group's own `repo` when it is not
+    `NO_REPO_KEY`, else `v.target_repo` (2.5). When the group repo *was*
+    `NO_REPO_KEY`, the queued brief itself carries no `repo:` yet, so once
+    `_resolve_repo_dir()` confirms `repo` resolves to a real checkout (and
+    before any worktree op), this stamps `repo: <repo>` onto the brief's
+    frontmatter -- the stamp is reported back in the action-log entry, and
+    survives even if the worktree/PR sequence that follows fails, since it
+    happens first.
     """
     result = {
         "brief_id": v.brief_id,
@@ -1716,7 +2440,7 @@ def _apply_propose_change(v: Verdict, *, agent: str = "claude") -> dict:
         "confirm": True,
         "note": v.evidence,
     }
-    repo = v.repo if v.repo and v.repo != NO_REPO_KEY else None
+    repo = _effective_repo(v)
     if not repo or not v.proposed_change_name:
         return {
             **result,
@@ -1725,7 +2449,36 @@ def _apply_propose_change(v: Verdict, *, agent: str = "claude") -> dict:
             "error": "verdict is missing repo or proposed_change_name to propose",
         }
 
-    repo_path = Path(repo)
+    repo_path = _resolve_repo_dir(repo, repos_root)
+    if repo_path is None:
+        return {
+            **result,
+            "status": "error",
+            "path": None,
+            "error": f"could not resolve repo '{repo}' to a checkout on disk",
+        }
+
+    stamped: dict[str, str] | None = None
+    if v.repo == NO_REPO_KEY:
+        brief_path = _resolve_brief_path(v.brief_id)
+        if brief_path is None:
+            return {
+                **result,
+                "status": "error",
+                "path": None,
+                "error": "brief not found in queue/ or picked/ to stamp repo",
+            }
+        try:
+            _set_fm_fields(brief_path, {"repo": repo})
+        except (OSError, ValueError) as exc:
+            return {
+                **result,
+                "status": "error",
+                "path": str(brief_path),
+                "error": str(exc),
+            }
+        stamped = {"repo": repo}
+
     branch = _planned_fold_propose_branch(v)
     base_branch = _repo_base_branch(repo_path)
     worktree_dir = _fold_propose_worktree_dir(repo_path, branch)
@@ -1765,7 +2518,7 @@ def _apply_propose_change(v: Verdict, *, agent: str = "claude") -> dict:
             )
         return None
 
-    return _worktree_pr_close(
+    entry = _worktree_pr_close(
         v,
         repo_path=repo_path,
         branch=branch,
@@ -1776,9 +2529,14 @@ def _apply_propose_change(v: Verdict, *, agent: str = "claude") -> dict:
         commit_message=f"Propose change: {v.proposed_change_name}",
         pr_body=f"{v.evidence}\n\nProposed via queue-triage from brief `{v.brief_id}`.",
     )
+    if stamped is not None:
+        entry = {**entry, "stamped": stamped}
+    return entry
 
 
-def _preview_verdict(v: Verdict, run_date: str) -> dict:
+def _preview_verdict(
+    v: Verdict, run_date: str, repos_root: str | Path | None = None
+) -> dict:
     """The no-`--confirm` preview of one non-`keep` verdict's apply action.
 
     Never claims, closes, stamps, or files anything -- every field here is
@@ -1788,7 +2546,10 @@ def _preview_verdict(v: Verdict, run_date: str) -> dict:
     "Apply step never closes a brief without an approved verdict"
     requirement. `fold-into-change`/`propose-change` preview their planned
     branch, target change, and PR title -- those fields are fully determined
-    by the verdict alone, without running either apply action. `work-directly`
+    by the verdict alone, without running either apply action. A repo-less
+    (`NO_REPO_KEY`) group's `propose-change` additionally previews the
+    `repo:` stamp `_apply_propose_change()` would make, as
+    `planned_stamp: {"repo": ...}`. `work-directly`
     previews its planned
     frontmatter stamp (or the same downgrade-to-keep `_apply_work_directly`
     would make); `needs-decision` previews the `awaiting-decision` stamp and
@@ -1804,14 +2565,14 @@ def _preview_verdict(v: Verdict, run_date: str) -> dict:
     }
 
     if v.verdict in ("fold-into-change", "propose-change"):
-        if v.verdict == "propose-change" and _propose_change_over_cap(v):
+        if v.verdict == "propose-change" and _propose_change_over_cap(v, repos_root):
             return {
                 **base,
                 "action": "append-triage-note",
                 "status": "planned-downgrade-to-keep",
-                "note": _propose_change_wip_cap_note(v),
+                "note": _propose_change_wip_cap_note(v, repos_root),
             }
-        return {
+        entry = {
             **base,
             "action": "open-pull-request",
             "status": "planned",
@@ -1820,16 +2581,20 @@ def _preview_verdict(v: Verdict, run_date: str) -> dict:
             "planned_target_change": _planned_fold_propose_target(v),
             "planned_pr_title": _planned_fold_propose_pr_title(v),
         }
+        if v.verdict == "propose-change" and v.repo == NO_REPO_KEY:
+            repo = _effective_repo(v)
+            if repo:
+                entry["planned_stamp"] = {"repo": repo}
+        return entry
 
     if v.verdict == "work-directly":
-        if not _REPRODUCTION_EVIDENCE_RE.search(v.evidence or ""):
+        if not _work_directly_accepted(v):
             return {
                 **base,
                 "action": "noop",
                 "status": "planned-downgrade-to-keep",
-                "note": (
-                    "evidence does not cite a test, check, or command -- "
-                    "will be downgraded to keep"
+                "note": _work_directly_downgrade_note(v).replace(
+                    "downgraded to keep", "will be downgraded to keep"
                 ),
             }
         return {
@@ -1887,7 +2652,11 @@ def _preview_verdict(v: Verdict, run_date: str) -> dict:
 
 
 def apply_verdicts(
-    verdicts: list[Verdict], *, confirm: bool, agent: str = "claude"
+    verdicts: list[Verdict],
+    *,
+    confirm: bool,
+    agent: str = "claude",
+    repos_root: str | Path | None = None,
 ) -> list[dict]:
     """Execute (or, when `confirm` is false, only preview) each non-`keep` verdict.
 
@@ -1908,8 +2677,10 @@ def apply_verdicts(
     an agent to author the new change's `proposal.md`/`design.md`/`specs/`/
     `tasks.md`, validates, and opens a pull request before closing the brief
     (`_apply_propose_change`, using `agent` as the evaluator harness/model
-    hint per `spawnlib.spawn_agent()`'s `prefer` parameter). `keep` is always
-    a no-op.
+    hint per `spawnlib.spawn_agent()`'s `prefer` parameter). `keep` appends
+    an in-place `## Triage <run-date>` note recording the streak
+    (`_apply_keep`) rather than being a no-op -- it never claims or closes
+    the brief.
 
     When `confirm` is false, nothing is executed and nothing is written to
     the queue or any repo -- every other non-`keep` verdict is instead
@@ -1927,23 +2698,31 @@ def apply_verdicts(
     log: list[dict] = []
     for v in verdicts:
         if v.verdict == "keep":
-            log.append(
-                {
-                    "brief_id": v.brief_id,
-                    "verdict": v.verdict,
-                    "duplicate_of": v.duplicate_of,
-                    "action": "noop",
-                    "confirm": confirm,
-                    "status": "noop",
-                    "path": None,
-                    "note": None,
-                    "error": None,
-                }
-            )
+            if confirm:
+                log.append(_apply_keep(v, run_date))
+            else:
+                log.append(
+                    {
+                        "brief_id": v.brief_id,
+                        "verdict": v.verdict,
+                        "duplicate_of": v.duplicate_of,
+                        "action": "append-triage-note",
+                        "confirm": confirm,
+                        "status": "planned",
+                        "path": None,
+                        "note": v.evidence,
+                        "error": None,
+                    }
+                )
             continue
 
         if not confirm:
-            log.append({**_preview_verdict(v, run_date), "confirm": confirm})
+            log.append(
+                {
+                    **_preview_verdict(v, run_date, repos_root=repos_root),
+                    "confirm": confirm,
+                }
+            )
             continue
 
         if v.verdict in ("stale-close", "duplicate-of"):
@@ -1965,11 +2744,15 @@ def apply_verdicts(
             log.append(_apply_needs_decision(v))
         elif action == "open-pull-request":
             if v.verdict == "fold-into-change":
-                log.append(_apply_fold_into_change(v))
-            elif _propose_change_over_cap(v):
-                log.append(_apply_propose_change_wip_cap_downgrade(v, run_date))
+                log.append(_apply_fold_into_change(v, repos_root=repos_root))
+            elif _propose_change_over_cap(v, repos_root):
+                log.append(
+                    _apply_propose_change_wip_cap_downgrade(
+                        v, run_date, repos_root=repos_root
+                    )
+                )
             else:
-                log.append(_apply_propose_change(v, agent=agent))
+                log.append(_apply_propose_change(v, agent=agent, repos_root=repos_root))
         else:
             log.append(_apply_needs_update(v, run_date))
     return log
@@ -1994,14 +2777,16 @@ def write_verdict_file(verdicts: list[Verdict], out_dir: str | Path) -> Path:
     return path
 
 
-def compute_run_summary(verdicts: list[Verdict]) -> dict[str, Any]:
-    """Verdict-type counts plus 2.4's two derived counts, computed once for reuse.
+def compute_run_summary(
+    verdicts: list[Verdict], *, repos_inferred: int = 0
+) -> dict[str, Any]:
+    """Verdict-type counts plus 2.4's/4.1's derived counts, computed once for reuse.
 
     `write_report()` and `cmd_evaluate()`'s `--json`/human summary line both call
     this on the same `verdicts` list, so the Markdown report and the JSON-facing
     output can never drift apart for a given run -- matching the spec's existing
     "report counts match the JSON file's contents exactly" scenario, extended to
-    these two new counts.
+    these new counts.
 
     `pull_requests_opened` counts `fold-into-change`/`propose-change` verdicts --
     the two verdict types whose apply actions (3.1, 3.2) open a pull request --
@@ -2015,9 +2800,18 @@ def compute_run_summary(verdicts: list[Verdict]) -> dict[str, Any]:
     `held_by_wip_cap` field `apply_wip_cap_preview()` set true, per repo --
     repos with a zero count are omitted rather than zero-filled, since the set
     of repos in a run is dynamic (unlike the fixed `VALID_VERDICT_TYPES` set).
+
+    `escalations.by_reason`/`by_verdict` (4.1(e)) count only verdicts
+    `escalate()` actually rewrote (`v.escalation` is not `None`): `by_reason` by
+    the triggering reason (`"keep-limit"`/`"queue-age"`), `by_verdict` by the
+    verdict the matrix rewrote it to. `repos_inferred` (4.1(e)) is passed
+    through as-is from the caller's `inventory()` pre-pass count -- it has no
+    verdict-level signal of its own to derive from here.
     """
     counts: dict[str, int] = {}
     held_by_wip_cap: dict[str, int] = {}
+    escalations_by_reason: dict[str, int] = {}
+    escalations_by_verdict: dict[str, int] = {}
     pull_requests_opened = 0
     for v in verdicts:
         counts[v.verdict] = counts.get(v.verdict, 0) + 1
@@ -2027,15 +2821,31 @@ def compute_run_summary(verdicts: list[Verdict]) -> dict[str, Any]:
             v.verdict == "propose-change" and v.held_by_wip_cap
         ):
             pull_requests_opened += 1
+        if v.escalation:
+            escalations_by_reason[v.escalation] = (
+                escalations_by_reason.get(v.escalation, 0) + 1
+            )
+            escalations_by_verdict[v.verdict] = (
+                escalations_by_verdict.get(v.verdict, 0) + 1
+            )
     return {
         "verdict_counts": counts,
         "pull_requests_opened": pull_requests_opened,
         "held_by_wip_cap": held_by_wip_cap,
+        "escalations": {
+            "by_reason": escalations_by_reason,
+            "by_verdict": escalations_by_verdict,
+        },
+        "repos_inferred": repos_inferred,
     }
 
 
 def write_report(
-    verdicts: list[Verdict], skipped: list[Path], out_dir: str | Path
+    verdicts: list[Verdict],
+    skipped: list[Path],
+    out_dir: str | Path,
+    *,
+    repos_inferred: int = 0,
 ) -> Path:
     """Render a human-readable Markdown summary of the run to `<out_dir>/report.md`.
 
@@ -2045,14 +2855,17 @@ def write_report(
     so they can never drift from `write_verdict_file()`'s JSON contents for the same run, per
     the spec scenario that the report's verdict counts must match the JSON file's contents
     exactly -- 2.4 extends this to the four new verdict types (zero-filled the same as every
-    other type) plus `pull_requests_opened` and per-repo `held_by_wip_cap` counts.
+    other type) plus `pull_requests_opened` and per-repo `held_by_wip_cap` counts; 4.1(e)
+    further adds `## Repos inferred`/`## Escalations` sections and an escalation column
+    on the per-brief table.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / "report.md"
 
-    summary = compute_run_summary(verdicts)
+    summary = compute_run_summary(verdicts, repos_inferred=repos_inferred)
     counts = summary["verdict_counts"]
+    escalations = summary["escalations"]
 
     lines: list[str] = [
         "# Queue triage report",
@@ -2089,16 +2902,38 @@ def write_report(
 
     lines += [
         "",
+        "## Repos inferred",
+        "",
+        f"- repos_inferred: {summary['repos_inferred']}",
+        "",
+        "## Escalations",
+        "",
+        "By reason:",
+    ]
+    if escalations["by_reason"]:
+        for reason in sorted(escalations["by_reason"]):
+            lines.append(f"- {reason}: {escalations['by_reason'][reason]}")
+    else:
+        lines.append("(none)")
+    lines += ["", "By verdict:"]
+    if escalations["by_verdict"]:
+        for verdict_type in sorted(escalations["by_verdict"]):
+            lines.append(f"- {verdict_type}: {escalations['by_verdict'][verdict_type]}")
+    else:
+        lines.append("(none)")
+
+    lines += [
+        "",
         "## Per-brief verdicts",
         "",
-        "| Brief | Verdict | Duplicate of | Confidence | Evidence |",
-        "|---|---|---|---|---|",
+        "| Brief | Verdict | Duplicate of | Confidence | Escalation | Evidence |",
+        "|---|---|---|---|---|---|",
     ]
     for v in verdicts:
         evidence = v.evidence.replace("|", "\\|").replace("\n", " ")
         lines.append(
             f"| {v.brief_id} | {v.verdict} | {v.duplicate_of or ''} | "
-            f"{v.confidence or ''} | {evidence} |"
+            f"{v.confidence or ''} | {v.escalation or ''} | {evidence} |"
         )
     lines.append("")
 
@@ -2130,17 +2965,29 @@ def _default_out_dir() -> Path:
 
 
 def cmd_evaluate(args: argparse.Namespace) -> int:
-    """`evaluate` subcommand: wires 1.3 `inventory()` -> 2.x per group -> 3.1 write.
+    """`evaluate` subcommand: wires `inventory()` -> `evaluate_briefs()` per group -> write.
 
     `--queue-dir` is applied as a temporary `WORK_QUEUE_DIR` override (restored in
     a `finally`, matching `create_handoff.create()`'s pattern) since `inventory()`
-    reaches `queue_dir()` with no override parameter of its own.
+    reaches `queue_dir()` with no override parameter of its own. `--repos-root`
+    (default `~/projects`) is threaded to `inventory()`'s repo-inference/decision
+    pre-pass and to `evaluate_briefs()`'s escalation matrix alike.
+
+    Per 4.1(d), each group is evaluated via `evaluate_briefs()` (design D9)
+    rather than this function hand-wiring `evaluate_group`/`parse_verdicts`/
+    `apply_wip_cap_preview` itself. `inventory()`'s `escalate_without_evaluator`
+    briefs (due, `NO_REPO_KEY` briefs with no evaluator group to spawn) are
+    verdicted directly via the escalation matrix (`escalate()`), never spawning
+    an evaluator for a brief that can only ever resolve to `needs-decision`.
     """
+    repos_root = args.repos_root or str(Path.home() / "projects")
     previous_queue_dir = os.environ.get("WORK_QUEUE_DIR")
     if args.queue_dir:
         os.environ["WORK_QUEUE_DIR"] = str(args.queue_dir)
     try:
-        groups, skipped = inventory(args.skip_if_triaged_within_days)
+        groups, skipped, escalate_without_evaluator, inferred, _unresolvable = (
+            inventory(args.skip_if_triaged_within_days, repos_root)
+        )
     finally:
         if args.queue_dir:
             if previous_queue_dir is None:
@@ -2149,22 +2996,38 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
                 os.environ["WORK_QUEUE_DIR"] = previous_queue_dir
 
     out_dir = Path(args.out_dir) if args.out_dir else _default_out_dir()
+    repos_root = args.repos_root or str(Path.home() / "projects")
 
     verdicts: list[Verdict] = []
     for repo, briefs in groups.items():
         cwd = repo if repo != NO_REPO_KEY else _worktrail_repo_root()
-        for result in evaluate_group(repo, briefs, agent=args.agent, cwd=cwd):
-            group_verdicts = parse_verdicts(
-                result["raw_text"],
-                result["brief_ids"],
-                candidates_by_brief=result["candidates_by_brief"],
+        verdicts.extend(
+            evaluate_briefs(
+                repo,
+                briefs,
+                agent=args.agent,
+                cwd=cwd,
+                repos_root=repos_root,
             )
-            verdicts.extend(apply_wip_cap_preview(repo, group_verdicts))
+        )
+
+    for path in escalate_without_evaluator:
+        seed = Verdict(
+            brief_id=path.stem,
+            verdict="keep",
+            duplicate_of=None,
+            evidence=(
+                "brief is due for escalation with no target repo -- verdicted "
+                "via the escalation matrix without spawning an evaluator"
+            ),
+        )
+        escalated = escalate(seed, path, NO_REPO_KEY, [])
+        verdicts.extend(apply_wip_cap_preview(NO_REPO_KEY, [escalated]))
 
     verdict_path = write_verdict_file(verdicts, out_dir)
-    report_path = write_report(verdicts, skipped, out_dir)
+    report_path = write_report(verdicts, skipped, out_dir, repos_inferred=len(inferred))
 
-    summary = compute_run_summary(verdicts)
+    summary = compute_run_summary(verdicts, repos_inferred=len(inferred))
     counts = summary["verdict_counts"]
 
     if args.as_json:
@@ -2176,6 +3039,8 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
                     "verdict_counts": counts,
                     "pull_requests_opened": summary["pull_requests_opened"],
                     "held_by_wip_cap": summary["held_by_wip_cap"],
+                    "escalations": summary["escalations"],
+                    "repos_inferred": summary["repos_inferred"],
                     "verdict_file": str(verdict_path),
                     "report_file": str(report_path),
                 },
@@ -2195,6 +3060,10 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
             f"pull requests opened: {summary['pull_requests_opened']}, "
             f"held by WIP cap: {summary['held_by_wip_cap']}"
         )
+        print(
+            f"repos inferred: {summary['repos_inferred']}, "
+            f"escalations: {summary['escalations']}"
+        )
     return 0
 
 
@@ -2212,8 +3081,12 @@ def cmd_apply(args: argparse.Namespace) -> int:
     raw = Path(args.verdict_file).read_text(encoding="utf-8")
     verdicts = [Verdict(**entry) for entry in json.loads(raw)]
 
+    repos_root = args.repos_root or str(Path.home() / "projects")
+
     resolved = resolve_duplicate_targets(verdicts)
-    action_log = apply_verdicts(resolved, confirm=args.confirm, agent=args.agent)
+    action_log = apply_verdicts(
+        resolved, confirm=args.confirm, agent=args.agent, repos_root=repos_root
+    )
 
     if args.as_json:
         print(json.dumps(action_log, indent=2))
@@ -2292,6 +3165,14 @@ def main(argv: list[str] | None = None) -> int:
         dest="as_json",
         help="print the run summary as JSON on exit",
     )
+    evaluate_parser.add_argument(
+        "--repos-root",
+        default=None,
+        dest="repos_root",
+        help="directory of sibling repo checkouts consulted by repo inference, "
+        "decision consumption, the escalation matrix, and a repo-less group's "
+        "known-repo list for propose-change (default ~/projects)",
+    )
 
     apply_parser = subparsers.add_parser(
         "apply",
@@ -2319,6 +3200,13 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         dest="as_json",
         help="print the action log as JSON on exit",
+    )
+    apply_parser.add_argument(
+        "--repos-root",
+        default=None,
+        dest="repos_root",
+        help="directory of sibling repo checkouts to resolve a bare `repo` "
+        "name against (default ~/projects)",
     )
 
     args = parser.parse_args(argv)

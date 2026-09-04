@@ -127,6 +127,48 @@ def discover_ci_checks(repo: Path) -> list[str]:
     return checks
 
 
+PRE_COMMIT_CMD_BY_LINTER = {
+    "ruff": "ruff check . --fix && ruff format .",
+    "oxlint": "npx oxlint --fix .",
+    "prettier": "npx prettier --write .",
+}
+
+
+def detect_pre_commit_cmd(repo: Path) -> str | None:
+    """Scan `.github/workflows/*.yml|yaml` `run:` step lines for a known lint
+    tool invocation (design D7) and return the `pre_commit_cmd` policy value
+    that formats/lints the same way locally. Detected tools are joined with
+    `&&` in `PRE_COMMIT_CMD_BY_LINTER` order (ruff, oxlint, prettier); `None`
+    when no `run:` line mentions any of them."""
+    workflows_dir = repo / ".github" / "workflows"
+    if not workflows_dir.is_dir():
+        return None
+    text = ""
+    for wf in sorted(workflows_dir.glob("*.yml")) + sorted(
+        workflows_dir.glob("*.yaml")
+    ):
+        try:
+            doc = yaml.safe_load(wf.read_text(encoding="utf-8"))
+        except yaml.YAMLError:
+            continue
+        if not isinstance(doc, dict):
+            continue
+        jobs = doc.get("jobs")
+        if not isinstance(jobs, dict):
+            continue
+        for job in jobs.values():
+            if not isinstance(job, dict):
+                continue
+            steps = job.get("steps")
+            if not isinstance(steps, list):
+                continue
+            for step in steps:
+                if isinstance(step, dict) and isinstance(step.get("run"), str):
+                    text += step["run"] + "\n"
+    detected = [cmd for tool, cmd in PRE_COMMIT_CMD_BY_LINTER.items() if tool in text]
+    return " && ".join(detected) if detected else None
+
+
 # --------------------------------------------------------------------------
 # Ruleset generation
 # --------------------------------------------------------------------------
@@ -626,7 +668,9 @@ def build_openspec_validate_workflow() -> str:
 # --------------------------------------------------------------------------
 
 
-def default_policy_yaml(repo_name: str, *, enable_aspens: bool = False) -> str:
+def default_policy_yaml(
+    repo_name: str, *, enable_aspens: bool = False, pre_commit_cmd: str | None = None
+) -> str:
     header = (
         f"# {repo_name} -- worktrail-go policy.\n"
         "# See worktrail's src/worktrail/router/policy.py DEFAULTS for the full\n"
@@ -634,6 +678,8 @@ def default_policy_yaml(repo_name: str, *, enable_aspens: bool = False) -> str:
         "# until this repo opts in explicitly (e.g. pre_pr_cmd for the pre-PR test\n"
         "# gate, automerge for GitHub-native auto-merge eligibility).\n"
     )
+    if pre_commit_cmd:
+        header += f'pre_commit_cmd: "{pre_commit_cmd}"\n'
     if not enable_aspens:
         return header
     return header + "add_ons:\n  aspens: {}\n"
@@ -1227,7 +1273,9 @@ def cmd_propose(args: argparse.Namespace) -> int:
         policy_path.parent.mkdir(parents=True, exist_ok=True)
         policy_path.write_text(
             default_policy_yaml(
-                resolve_repo_display_name(repo), enable_aspens=args.with_aspens
+                resolve_repo_display_name(repo),
+                enable_aspens=args.with_aspens,
+                pre_commit_cmd=detect_pre_commit_cmd(repo),
             ),
             encoding="utf-8",
         )

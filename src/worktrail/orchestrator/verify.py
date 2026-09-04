@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -127,6 +128,12 @@ _FAIL_CONCLUSIONS = {
 }
 _PENDING_CONTEXT_STATE = {"PENDING", "EXPECTED"}
 _FAIL_CONTEXT_STATE = {"FAILURE", "ERROR"}
+
+# A pytest failure log line names the failing test file as a `tests/...py`
+# path (traceback frames, "FAILED tests/...", collection errors). Used by
+# `_unrelated_test_failure` to tell "this diff could plausibly have caused
+# it" apart from "this test file isn't part of the diff at all".
+_TEST_FAILURE_PATH_RE = re.compile(r"\btests/[\w./-]+\.py\b")
 
 DEFAULT_MODEL = "sonnet"
 # ci-fix workers cap at 900s: if the root cause isn't found in 15 min, a 3rd
@@ -331,6 +338,11 @@ class Verifier:
         self.remote = remote
         self.base = base
         self.spec_id = spec_id
+        # Threaded into the ci-fix group ctx (see `_spawn_group_worker`) so
+        # `build_group_prompt` can add the pre_commit_cmd hard rule (design D6).
+        from ..router.policy import load_policy
+
+        self.pre_commit_cmd = load_policy(self.repo).get("pre_commit_cmd")
         # Repo-relative path of the spec/change this run drives. Optional so
         # existing callers are unaffected; when absent the deny-list falls back
         # to the devkit prefix, which is today's behavior.
@@ -654,6 +666,64 @@ class Verifier:
             log = getattr(lp, "stdout", "") or ""
         return names, log
 
+    def _unrelated_test_failure(self, gb: str, log: str) -> bool:
+        """Best-effort: does *log* name only failing test file(s) this PR's
+        diff never touches?
+
+        A ci-fix worker can only fix a failure by editing this PR's own
+        changes -- a red check whose failing test lives outside the diff
+        entirely (a pre-existing/flaky test elsewhere in the suite) cannot be
+        fixed that way no matter how many strikes are spent on it. A positive
+        answer here is the signal `wait_and_fix_ci` uses to try a free
+        `gh run rerun --failed` before spawning any ci-fix worker at all.
+        Conservative by construction: no recognizable test path in the log,
+        no diff to compare against, or any overlap between the two -> False,
+        leaving the existing strike loop as the only path (unchanged
+        behavior for a failure this heuristic cannot confidently classify).
+        """
+        failing_paths = set(_TEST_FAILURE_PATH_RE.findall(log))
+        if not failing_paths:
+            return False
+        p = self._gh("pr", "diff", gb, "--name-only")
+        changed = set((getattr(p, "stdout", "") or "").split())
+        if not changed:
+            return False
+        return failing_paths.isdisjoint(changed)
+
+    def _rerun_failed_checks(self, gb: str) -> bool:
+        """Best-effort `gh run rerun --failed` for every failed workflow run
+        at *gb*'s current head. Returns True if at least one rerun was
+        issued (worth a re-poll), False if none could be found or issued."""
+        st = self.pr_status(gb) or {}
+        head_sha = st.get("headRefOid", "")
+        p = self._gh(
+            "run",
+            "list",
+            "--branch",
+            gb,
+            "--limit",
+            "20",
+            "--json",
+            "databaseId,conclusion,headSha",
+        )
+        try:
+            runs = json.loads(getattr(p, "stdout", "") or "[]")
+        except json.JSONDecodeError:
+            runs = []
+        failed_ids = [
+            r["databaseId"]
+            for r in runs
+            if (r.get("conclusion") or "").upper() in _FAIL_CONCLUSIONS
+            and (not head_sha or r.get("headSha") == head_sha)
+            and r.get("databaseId") is not None
+        ]
+        issued = False
+        for run_id in failed_ids:
+            rp = self._gh("run", "rerun", str(run_id), "--failed")
+            if getattr(rp, "returncode", 1) == 0:
+                issued = True
+        return issued
+
     # -- worker dispatch --------------------------------------------------- #
     def _group_worktree(self, group: dict[str, Any], gb: str) -> Path | None:
         """Lazily create a worktree checked out on the group branch."""
@@ -974,6 +1044,7 @@ class Verifier:
 
     def wait_and_fix_ci(self, group: dict[str, Any], gb: str) -> tuple[bool, str]:
         """Block on CI; on red, run the ci-fix loop (bounded by strikes)."""
+        rerun_attempted = False
         for strike in range(self.max_strikes + 1):
             ok, failing = self._block_on_checks(group, gb)
             if ok:
@@ -1003,18 +1074,39 @@ class Verifier:
                         f"attempts: {', '.join(failing)}"
                     ),
                 )
+            st = self.pr_status(gb) or {}
+            names, log = self.failed_logs(gb, st.get("headRefOid", ""))
+            if not rerun_attempted:
+                rerun_attempted = True
+                if self._unrelated_test_failure(gb, log) and self._rerun_failed_checks(
+                    gb
+                ):
+                    self.log(
+                        f"    [{group['name']}] CI red ({', '.join(failing)}) -- "
+                        "failing test(s) are outside this PR's diff; rerunning "
+                        "once before spawning a ci-fix worker"
+                    )
+                    ok2, failing2 = self._block_on_checks(group, gb)
+                    if ok2:
+                        return True, ""
+                    if failing2 is not None:
+                        failing = failing2
+                        st = self.pr_status(gb) or {}
+                        names, log = self.failed_logs(gb, st.get("headRefOid", ""))
             self.log(
                 f"    [{group['name']}] CI red ({', '.join(failing)}) "
                 f"-- spawning ci-fix worker (strike {strike + 1}/"
                 f"{self.max_strikes})"
             )
-            st = self.pr_status(gb) or {}
-            names, log = self.failed_logs(gb, st.get("headRefOid", ""))
             ok_fix = self._spawn_group_worker(
                 dispatch.ROLE_CI_FIX,
                 group,
                 gb,
-                {"failing_checks": names, "failure_log": log},
+                {
+                    "failing_checks": names,
+                    "failure_log": log,
+                    "pre_commit_cmd": self.pre_commit_cmd,
+                },
             )
             if not ok_fix:
                 # A failed or timed-out ci-fix attempt is one strike, not the end

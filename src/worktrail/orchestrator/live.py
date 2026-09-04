@@ -440,6 +440,10 @@ def apply_run_plan(
                 f"{_ts()} run plan: cache unreadable ({exc}); using the spec's own deps"
             )
             return tasks
+        except conductor_compile.PlanShapeError as exc:
+            raise RuntimeError(
+                "run plan rejected (plan shape): " + "; ".join(exc.problems)
+            ) from exc
 
     merged, notes = _runplan.apply_to_tasks(tasks, plan)
     for n in notes:
@@ -451,20 +455,12 @@ def apply_run_plan(
 
 
 def _parallelism_lines(repo: Path, merged: list[dict]) -> list[str]:
-    """Advisory DAG-shape lines for a merged task list: the parallelism
-    summary always, plus `parallelism.format_warning`'s serialised-chain
-    warning when it applies (see that module's docstring for the incident)."""
+    """Advisory DAG-shape line for a merged task list: the parallelism
+    summary. Serial and same-file-chain plans are rejected at compile by
+    `conductor.parallelism.shape_problems` (D2), not warned about here."""
     from ..conductor import parallelism
 
-    prof = parallelism.profile(merged)
-    minutes, basis = parallelism.estimate_minutes(
-        prof, parallelism.journals_beside(repo)
-    )
-    lines = [parallelism.summary_line(prof)]
-    warning = parallelism.format_warning(prof, minutes, basis)
-    if warning:
-        lines.append(warning)
-    return lines
+    return [parallelism.summary_line(parallelism.profile(merged))]
 
 
 def _pinned_plan_fingerprint(repo: Path, spec_rel: str) -> str | None:
@@ -891,8 +887,22 @@ def reconcile_from_journal(tasks: list, journal: dict) -> list:
             continue
         report = dict(e.get("report") or {})
         report["task"] = task_id
+        if (
+            task
+            and e.get("role") == dispatch.ROLE_REVIEW
+            and str(report.get("review_status", "")).lower() == "skipped-small-diff"
+        ):
+            # Design D3: a deterministic skip never went through
+            # dispatch.transition (which only understands PASSED/FAILED), so
+            # it isn't replayed through apply_report either -- resume must
+            # land the task exactly where the skip left it: past review,
+            # about to clean up, no worker re-dispatched.
+            task["status"] = "cleaning"
+            continue
         if task and e.get("scope_escalated"):
-            added = list(e.get("scope_added_files") or [])
+            added = list(
+                e.get("scope_escalated_files") or e.get("scope_added_files") or []
+            )
             task["_scope_escalated"] = True
             task["_scope_escalation_files"] = added
             task["files"] = list(dict.fromkeys(list(task.get("files") or []) + added))
@@ -1198,16 +1208,23 @@ def precheck(repo: Path, spec_rel: str) -> int:
     spec_id, tasks = taskformats.load_spec(str(repo / spec_rel))
     warn_count = 0
 
-    # DAG-shape check against the plan `full-real` would actually schedule
-    # (cached/seeded only -- precheck never spends a model call). A fully
-    # serialised chain is a WARN so the operator can re-scope tasks.md before
-    # launch instead of discovering the projected wall-clock hours in.
-    for line in _parallelism_lines(
-        repo, _planned_tasks_without_llm(repo, spec_rel, spec_id, tasks)
-    ):
-        if line.startswith("WARN:"):
-            print(line)
+    # Plan-shape check against the plan `full-real` would actually schedule
+    # (cached/seeded only -- precheck never spends a model call). A plan
+    # `compile_run_plan` rejects (D2: serial, same-file chain, missing test
+    # scope) is a WARN so the operator re-scopes tasks.md before launch.
+    from ..conductor import compile as conductor_compile
+
+    try:
+        planned = _planned_tasks_without_llm(repo, spec_rel, spec_id, tasks)
+    except conductor_compile.PlanShapeError as exc:
+        for problem in exc.problems:
+            print(f"WARN: plan shape: {problem}")
             warn_count += 1
+    else:
+        for line in _parallelism_lines(repo, planned):
+            if line.startswith("WARN:"):
+                print(line)
+                warn_count += 1
 
     validate_dependencies = getattr(
         taskformats.task_source_for(repo / spec_rel), "validate_dependencies", None
@@ -1337,7 +1354,7 @@ def _planned_tasks_without_llm(
 ) -> list[dict]:
     """Tasks merged with the cached or seeded RunPlan, never a fresh compile.
     Falls back to the raw tasks when no plan can be read, so precheck stays a
-    read-only, no-spawn step."""
+    read-only, no-spawn step. A `PlanShapeError` propagates to the caller."""
     from ..conductor import compile as conductor_compile
     from ..conductor import runplan as _runplan
 
@@ -2644,6 +2661,14 @@ class LiveSpawn:
         # (see __call__'s base_commit resolution). None is safe: base_commit falls
         # back to the literal "HEAD" sentinel, matching pre-fix behavior.
         self.repo = repo
+        # Threaded into the worker ctx (see __call__) so `build_worker_prompt`
+        # can add the pre-every-commit hard rule (design D6). Resolved lazily
+        # by the `pre_commit_cmd` property on first spawn -- not here -- so a
+        # fan-out that never spawns (or a test driving live_run_real with a
+        # stub repo) never reads the policy file. None when no canonical repo
+        # was given, matching base_commit's own fallback.
+        self._pre_commit_cmd: str | None = None
+        self._pre_commit_cmd_loaded = False
         self.timeout = timeout
         # Accepted for CLI/caller backward compatibility only -- __call__'s
         # tier-based dispatch (task 4.2) never reads self.model; a spawn's
@@ -2714,6 +2739,23 @@ class LiveSpawn:
         # the caller (drive()/_commit_step) right after the call returns.
         self.last_agent: str | None = None
 
+    @property
+    def pre_commit_cmd(self) -> str | None:
+        """The repo policy's `pre_commit_cmd`, read once on first access."""
+        if not self._pre_commit_cmd_loaded:
+            from ..router.policy import load_policy as _load_policy
+
+            self._pre_commit_cmd = (
+                _load_policy(self.repo).get("pre_commit_cmd") if self.repo else None
+            )
+            self._pre_commit_cmd_loaded = True
+        return self._pre_commit_cmd
+
+    @pre_commit_cmd.setter
+    def pre_commit_cmd(self, value: str | None) -> None:
+        self._pre_commit_cmd = value
+        self._pre_commit_cmd_loaded = True
+
     def _task_brief_ctx(self) -> dict:
         """Format templates for where a worker reads its brief.
 
@@ -2763,6 +2805,7 @@ class LiveSpawn:
             "default_agent": self.agent,
             "spec_root_prefix": taskformats.spec_root_prefix_for(self.spec_folder_rel),
             "task_brief": self._task_brief_ctx(),
+            "pre_commit_cmd": self.pre_commit_cmd,
         }
         prompt = dispatch.build_worker_prompt(
             role,
@@ -3269,18 +3312,19 @@ def _review_exempt(task: dict) -> bool:
 
 
 def _scope_escalation_files(
-    task: dict, report: dict, wt: Path, by_id: dict
+    task: dict, report: dict, wt: Path, by_id: dict, *, failed: bool
 ) -> list[str]:
     """Validate one bounded fix-scope escalation from concrete `missing_context` paths.
 
-    Only an actually failed fix qualifies. Paths must be existing repo-relative
-    files and must not collide with another in-flight task's declared files.
+    `failed` is the caller's own failure signal (a fix report's `status: failed`,
+    or a review report's `review_status: FAILED`) -- this function no longer
+    infers it from `report["status"]` so a FAILED review (whose `status` field
+    is normally "success", per `dispatch.transition`'s review-routes-on-
+    review_status rule) can also trigger escalation (design D5). Paths must be
+    existing repo-relative files and must not collide with another in-flight
+    task's declared files.
     """
-    if (
-        report.get("status") != "failed"
-        or task.get("_scope_escalated")
-        or not report.get("missing_context")
-    ):
+    if not failed or task.get("_scope_escalated") or not report.get("missing_context"):
         return []
     root = wt.resolve()
     candidates: list[str] = []
@@ -3308,6 +3352,123 @@ def _scope_escalation_files(
     if locked & {os.path.normpath(path) for path in candidates}:
         return []
     return candidates
+
+
+def _is_test_path(path: str) -> bool:
+    """Heuristic used only by the small-diff skip's line count (design D3):
+    a test file's own diff doesn't count toward "small", since a worker that
+    pads a one-line fix with a large new test file shouldn't lose the skip."""
+    p = Path(path)
+    if "tests" in p.parts or "test" in p.parts:
+        return True
+    return p.name.startswith("test_") or p.name.endswith("_test.py")
+
+
+def _diff_non_test_lines(wt: Path, base_sha: str, head_sha: str) -> int:
+    """Total added+removed lines between two commits, excluding test files."""
+    if not base_sha or not head_sha or base_sha == head_sha:
+        return 0
+    proc = _git(wt, "diff", "--numstat", base_sha, head_sha, check=False)
+    total = 0
+    for line in proc.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        added, removed, path = parts[0], parts[1], parts[2]
+        if added == "-" or removed == "-":
+            continue  # binary file, numstat can't count lines
+        if _is_test_path(path):
+            continue
+        try:
+            total += int(added) + int(removed)
+        except ValueError:
+            continue
+    return total
+
+
+def _small_diff_review_skip(
+    repo: Path,
+    wt: Path,
+    task: dict,
+    prev_role: str | None,
+    prev_rep: dict | None,
+    prev_pre_sha: str | None,
+) -> bool:
+    """Design D3: a review-exempt fast path is opt-in per task; this one is
+    opt-in per REPO (`review_skip_max_diff_lines`, default 0 -- off) and
+    applies to every task's FIRST review of an implement report that itself
+    reported success with tests passing, when the resulting diff (excluding
+    test files) is small. Never fires on a post-fix re-review (retry_count
+    != 0) or on a fix's own diff -- only implement's."""
+    if task.get("retry_count", 0) != 0:
+        return False
+    if prev_role != dispatch.ROLE_IMPLEMENT or not prev_rep:
+        return False
+    if prev_rep.get("status") != "success" or prev_rep.get("tests") != "passed":
+        return False
+    from ..router.policy import load_policy
+
+    threshold = load_policy(repo).get("review_skip_max_diff_lines", 0) or 0
+    if not isinstance(threshold, int) or threshold <= 0:
+        return False
+    head_sha = prev_rep.get("head_sha")
+    if not head_sha or not prev_pre_sha:
+        return False
+    return _diff_non_test_lines(wt, prev_pre_sha, head_sha) < threshold
+
+
+def _apply_pre_commit_backstop(
+    wt: Path, task: dict, rep: dict, pre_commit_cmd: str | None
+) -> None:
+    """Design D6: after an implement/fix commit, run the repo's own lint/format
+    backstop so a worker's forgotten formatter run doesn't reach review as
+    noise. In-scope changes it makes are folded into the just-made commit
+    (`--amend`, refreshing `rep["head_sha"]`); changes it makes outside the
+    task's declared file scope are discarded (a whole-tree formatter must
+    never silently widen scope) and noted on `task["_pre_commit_restored"]`.
+    A non-zero exit or timeout is noted on `task["_pre_commit_error"]` but
+    never fails the task -- the backstop is a courtesy, not a gate.
+    """
+    if not pre_commit_cmd or not rep.get("head_sha"):
+        return
+    try:
+        proc = subprocess.run(
+            pre_commit_cmd,
+            shell=True,
+            cwd=wt,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        task["_pre_commit_error"] = f"pre_commit_cmd timed out: {pre_commit_cmd}"
+        return
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()[:500]
+        task["_pre_commit_error"] = f"pre_commit_cmd exited {proc.returncode}: {detail}"
+        return
+    status = _git(wt, "status", "--porcelain", check=False).stdout
+    in_scope = {os.path.normpath(p) for p in (task.get("files") or [])}
+    restored: list[str] = []
+    amended = False
+    for line in status.splitlines():
+        if not line.strip():
+            continue
+        code, path = line[:2], line[3:].strip()
+        if os.path.normpath(path) in in_scope:
+            _git(wt, "add", path, check=False)
+            amended = True
+        elif code != "??":
+            _git(wt, "checkout", "--", path, check=False)
+            restored.append(path)
+    if restored:
+        task["_pre_commit_restored"] = restored
+    if amended:
+        _git(wt, "commit", "--amend", "--no-edit", check=False)
+        new_sha = _git(wt, "rev-parse", "HEAD", check=False).stdout.strip()
+        if new_sha:
+            rep["head_sha"] = new_sha[:8]
 
 
 def salvage_report(role: str, task: dict, wt: Path, pre_sha: str) -> dict | None:
@@ -3622,7 +3783,20 @@ def _apply_step_commit(
 ) -> tuple:
     """Append the journal entry, persist, drop the heartbeat, apply the state
     transition. Caller must hold state_lock for the duration."""
+    # Design D5: the caller (drive()) already validated a scope escalation for
+    # THIS report and set `_scope_pending` before invoking us. A pending
+    # escalation must never be journaled as the 3-strikes "escalated" circuit
+    # breaker or a fix's terminal "failed" -- the strike this report would
+    # otherwise cost is refunded (retry_count restored to its pre-transition
+    # value) and the task is forced back to "fixing" so the widened dispatch
+    # actually runs, on a fresh run and identically on journal replay.
+    scope_pending = task.pop("_scope_pending", False)
+    pre_retry = task.get("retry_count", 0)
     old, new = dispatch.apply_report(tasks, rep, role)
+    if scope_pending:
+        new = "fixing"
+        task["status"] = "fixing"
+        task["retry_count"] = pre_retry
     report_fields = {k: rep.get(k) for k in orchestrate._REPORT_FIELDS}
     if new in ("escalated", "failed"):
         # dispatch.transition computes this status in-memory only -- stamp it onto
@@ -3652,7 +3826,11 @@ def _apply_step_commit(
         entry["skills_used"] = skills_used
     if task.get("_scope_added_files"):
         entry["scope_escalated"] = True
-        entry["scope_added_files"] = list(task["_scope_added_files"])
+        entry["scope_escalated_files"] = list(task["_scope_added_files"])
+    if task.get("_pre_commit_restored"):
+        entry["pre_commit_restored"] = list(task["_pre_commit_restored"])
+    if task.get("_pre_commit_error"):
+        entry["pre_commit_error"] = task["_pre_commit_error"]
     # TASK-007 (REQ-027, AC-026): best-effort agent label -- a lookup
     # problem here must never fail the run, only omit the key.
     try:
@@ -3662,9 +3840,49 @@ def _apply_step_commit(
         pass
     entries.append(entry)
     task.pop("_scope_added_files", None)
+    task.pop("_pre_commit_restored", None)
+    task.pop("_pre_commit_error", None)
     record_fn()
     actives.pop(task["id"], None)
     return old, new
+
+
+def _apply_skip_review_commit(
+    *,
+    tasks: list,
+    entries: list,
+    actives: dict,
+    record_fn,
+    task: dict,
+    review_status: str,
+    t0: float,
+    t1: float,
+) -> tuple:
+    """Journal + apply a deterministic review skip (design D3's small-diff
+    skip today) that never spawned a worker. Bypasses `dispatch.apply_report`/
+    `transition` entirely -- they only understand PASSED/FAILED review
+    verdicts -- so `reconcile_from_journal` mirrors this with its own direct
+    status write rather than replaying through them. Caller must hold
+    state_lock for the duration."""
+    old = task.get("status", "reviewing")
+    task["status"] = "cleaning"
+    entry: dict = {
+        "task": task["id"],
+        "role": dispatch.ROLE_REVIEW,
+        "report": {
+            "status": "success",
+            "tests": "passed",
+            "review_status": review_status,
+            "notes": f"review skipped ({review_status})",
+        },
+        "started_at": round(t0, 3),
+        "ended_at": round(t1, 3),
+        "duration_s": round(t1 - t0, 1),
+    }
+    entries.append(entry)
+    record_fn()
+    actives.pop(task["id"], None)
+    return old, "cleaning"
 
 
 def _resolve_max_workers(repo: Path, tasks: list, requested: int | None) -> int:
@@ -4112,6 +4330,23 @@ def live_run_real(
                 )
             return old, new
 
+    def _commit_skip_review(
+        task: dict, review_status: str, t0: float, t1: float
+    ) -> tuple:
+        with state_lock:
+            old, new = _apply_skip_review_commit(
+                tasks=tasks,
+                entries=entries,
+                actives=actives,
+                record_fn=record,
+                task=task,
+                review_status=review_status,
+                t0=t0,
+                t1=t1,
+            )
+            _publish_actives()
+            return old, new
+
     def drive(task: dict) -> None:
         wt = ensure_wt(task)
         # Only claim a fresh task. A RESUMED task carries its replayed mid-flight
@@ -4119,6 +4354,12 @@ def live_run_real(
         # reset to "claimed" (which would re-run implement and clobber progress).
         if task["status"] == "pending":
             task["status"] = "claimed"
+        # Tracks the immediately-preceding spawned step -- used only to decide
+        # whether THIS review is a small-diff-skip candidate (design D3: first
+        # review of an implement, never a post-fix re-review).
+        last_role: str | None = None
+        last_rep: dict | None = None
+        last_pre_sha: str | None = None
         while task["status"] not in orchestrate.TERMINAL:
             role = orchestrate.ROLE_BY_STATUS[task["status"]]
 
@@ -4136,6 +4377,21 @@ def live_run_real(
                 }
                 _, new = _commit_step(task, role, rep, t0, t0)
                 print(f"{_ts()}   ⏭ {task['id']} review    skipped (exempt) -> {new}")
+                last_role, last_rep, last_pre_sha = None, None, None
+                continue
+
+            # Design D3: opt-in per repo (review_skip_max_diff_lines), a small
+            # non-test diff off a successful, test-passing implement skips the
+            # review SPAWN too -- recorded so resume sees it as skipped, not re-run.
+            if role == dispatch.ROLE_REVIEW and _small_diff_review_skip(
+                repo, wt, task, last_role, last_rep, last_pre_sha
+            ):
+                t0 = time.time()
+                _, new = _commit_skip_review(task, "skipped-small-diff", t0, t0)
+                print(
+                    f"{_ts()}   ⏭ {task['id']} review    skipped (small diff) -> {new}"
+                )
+                last_role, last_rep, last_pre_sha = None, None, None
                 continue
 
             # Deterministic cleanup (#14): status write-back + commit, no spawn.
@@ -4233,6 +4489,12 @@ def live_run_real(
                 print(
                     f"{_ts()}   ~ {task['id']}/{role} report unparseable -- salvaged from git commit"
                 )
+            # Design D6: run the repo's pre-commit backstop on the just-made
+            # commit before anything else consumes rep["head_sha"].
+            if role in (dispatch.ROLE_IMPLEMENT, dispatch.ROLE_FIX):
+                _apply_pre_commit_backstop(
+                    wt, task, rep, getattr(spawn, "pre_commit_cmd", None)
+                )
             # Adaptive read-widening: when review reports insufficient context, stage
             # the missing items so the next fix dispatch gets them in its prompt.
             # Never widen on sufficient/too_much — too_much means trim, not add.
@@ -4243,12 +4505,17 @@ def live_run_real(
                 mr = rep.get("missing_context") or []
                 if mr:
                     task["_extra_reads"] = [str(p) for p in mr]
-            scope_files = (
-                _scope_escalation_files(task, rep, wt, by_id)
-                if role == dispatch.ROLE_FIX
-                else []
-            )
+            # Design D5: scope escalation (missing_context widening a fix's
+            # scope) fires for a FAILED review verdict, not only a failed fix.
+            if role == dispatch.ROLE_FIX or (
+                role == dispatch.ROLE_REVIEW
+                and (rep.get("review_status") or "").upper() == "FAILED"
+            ):
+                scope_files = _scope_escalation_files(task, rep, wt, by_id, failed=True)
+            else:
+                scope_files = []
             if scope_files:
+                task["_scope_pending"] = True
                 task["_scope_escalated"] = True
                 task["_scope_added_files"] = scope_files
                 task["_scope_escalation_files"] = scope_files
@@ -4267,7 +4534,6 @@ def live_run_real(
                 agent=getattr(spawn, "last_agent", None),
             )
             if scope_files:
-                task["status"] = new = "fixing"
                 print(
                     f"{_ts()}   ↻ {task['id']} fix scope widened once: "
                     f"{', '.join(scope_files)}"
@@ -4279,6 +4545,10 @@ def live_run_real(
                 f"{_ts()}   ✓ {task['id']} {role:9} {old:12} -> {new}{extra}  "
                 f"{progress._fmt_dur(t1 - t0)}  (sha {str(rep.get('head_sha', ''))[:8]})"
             )
+            if role == dispatch.ROLE_IMPLEMENT:
+                last_role, last_rep, last_pre_sha = role, rep, pre_sha
+            else:
+                last_role, last_rep, last_pre_sha = None, None, None
 
     def _safe_drive(task: dict) -> None:
         """drive() wrapper for the thread pool: a single task crashing must not
@@ -5362,10 +5632,28 @@ def _pipeline_scheduler(
                 agent=agent,
             )
 
+    def _commit_skip_review(
+        task: dict, review_status: str, t0: float, t1: float
+    ) -> tuple:
+        with state_lock:
+            return _apply_skip_review_commit(
+                tasks=tasks,
+                entries=entries,
+                actives=actives,
+                record_fn=_record,
+                task=task,
+                review_status=review_status,
+                t0=t0,
+                t1=t1,
+            )
+
     def _drive(task: dict) -> None:
         wt = _ensure_wt(task)
         if task["status"] == "pending":
             task["status"] = "claimed"
+        last_role: str | None = None
+        last_rep: dict | None = None
+        last_pre_sha: str | None = None
         while task["status"] not in orchestrate.TERMINAL:
             role = orchestrate.ROLE_BY_STATUS[task["status"]]
             if role == dispatch.ROLE_REVIEW and _review_exempt(task):
@@ -5378,6 +5666,14 @@ def _pipeline_scheduler(
                     "notes": "review skipped (exempt)",
                 }
                 _commit_step(task, role, rep, t0, t0)
+                last_role, last_rep, last_pre_sha = None, None, None
+                continue
+            if role == dispatch.ROLE_REVIEW and _small_diff_review_skip(
+                repo, wt, task, last_role, last_rep, last_pre_sha
+            ):
+                t0 = time.time()
+                _commit_skip_review(task, "skipped-small-diff", t0, t0)
+                last_role, last_rep, last_pre_sha = None, None, None
                 continue
             if role == dispatch.ROLE_CLEANUP:
                 t0 = time.time()
@@ -5443,6 +5739,10 @@ def _pipeline_scheduler(
                         f"{_ts()}   !! {task['id']}/{role} report parse FAILED: {exc}"
                     )
                     break
+            if role in (dispatch.ROLE_IMPLEMENT, dispatch.ROLE_FIX):
+                _apply_pre_commit_backstop(
+                    wt, task, rep, getattr(spawn_fn, "pre_commit_cmd", None)
+                )
             # Adaptive read-widening: when review reports insufficient context, stage
             # the missing items so the next fix dispatch gets them in its prompt.
             if (
@@ -5452,12 +5752,17 @@ def _pipeline_scheduler(
                 mr = rep.get("missing_context") or []
                 if mr:
                     task["_extra_reads"] = [str(p) for p in mr]
-            scope_files = (
-                _scope_escalation_files(task, rep, wt, by_id)
-                if role == dispatch.ROLE_FIX
-                else []
-            )
+            # Design D5: scope escalation fires for a FAILED review verdict too,
+            # not only a failed fix.
+            if role == dispatch.ROLE_FIX or (
+                role == dispatch.ROLE_REVIEW
+                and (rep.get("review_status") or "").upper() == "FAILED"
+            ):
+                scope_files = _scope_escalation_files(task, rep, wt, by_id, failed=True)
+            else:
+                scope_files = []
             if scope_files:
+                task["_scope_pending"] = True
                 task["_scope_escalated"] = True
                 task["_scope_added_files"] = scope_files
                 task["_scope_escalation_files"] = scope_files
@@ -5475,11 +5780,14 @@ def _pipeline_scheduler(
                 agent=getattr(spawn_fn, "last_agent", None),
             )
             if scope_files:
-                task["status"] = "fixing"
                 print(
                     f"{_ts()}   ↻ {task['id']} fix scope widened once: "
                     f"{', '.join(scope_files)}"
                 )
+            if role == dispatch.ROLE_IMPLEMENT:
+                last_role, last_rep, last_pre_sha = role, rep, pre_sha
+            else:
+                last_role, last_rep, last_pre_sha = None, None, None
 
     def _safe_drive(task: dict) -> None:
         try:

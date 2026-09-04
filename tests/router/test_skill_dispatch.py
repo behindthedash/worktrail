@@ -1391,9 +1391,12 @@ class BriefDispatchModeTests(unittest.TestCase):
 
 
 class SingleBriefTriageTests(unittest.TestCase):
-    """1.3: single-brief intake triage reuses `queue_triage`'s own per-repo
-    evaluator (2.x) and apply pipeline (3.x) scoped to exactly one brief,
-    rather than reimplementing triage in the adapter boundary."""
+    """4.3: single-brief intake triage runs the D2 repo-assignment pre-pass
+    (decision consumption, then inference with write-back) on the one brief
+    when `repo` is falsy, then reuses `queue_triage.evaluate_briefs()`
+    (design D9) for the actual evaluation, rather than hand-wiring
+    `evaluate_group`/`parse_verdicts`/`apply_wip_cap_preview` in the adapter
+    boundary."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -1405,81 +1408,158 @@ class SingleBriefTriageTests(unittest.TestCase):
         )
 
     def test_evaluate_single_brief_returns_the_parsed_verdict(self):
-        from worktrail.orchestrator.spawnlib import SpawnResult
         from worktrail.workqueue.queue_triage import Verdict
 
-        evaluator_text = (
-            f'{{"brief_id": "{self.brief.stem}", "verdict": "keep", '
-            '"duplicate_of": null, "evidence": "still relevant", '
-            '"confidence": "medium"}'
+        verdict = Verdict(
+            brief_id=self.brief.stem,
+            verdict="keep",
+            duplicate_of=None,
+            evidence="still relevant",
         )
         with patch(
-            "worktrail.orchestrator.spawnlib.spawn_agent",
-            return_value=SpawnResult(text=evaluator_text, usage={}),
-        ) as mock_spawn:
-            verdict = skill_dispatch.evaluate_single_brief(
-                self.brief, repo=None, cwd=self.tmp.name
+            "worktrail.workqueue.queue_triage.evaluate_briefs",
+            return_value=[verdict],
+        ) as mock_evaluate_briefs:
+            result = skill_dispatch.evaluate_single_brief(
+                self.brief, repo="behindthedash/worktrail", cwd=self.tmp.name
             )
 
-        mock_spawn.assert_called_once()
-        self.assertIsInstance(verdict, Verdict)
-        self.assertEqual(verdict.brief_id, self.brief.stem)
-        self.assertEqual(verdict.verdict, "keep")
+        mock_evaluate_briefs.assert_called_once()
+        self.assertIs(result, verdict)
 
     def test_evaluate_single_brief_returns_none_when_evaluator_yields_nothing_for_id(
         self,
     ):
-        from worktrail.workqueue.queue_triage import NO_REPO_KEY
-
         with patch(
-            "worktrail.workqueue.queue_triage.evaluate_group",
-            return_value=[
-                {
-                    "repo": NO_REPO_KEY,
-                    "brief_ids": [],
-                    "raw_text": "",
-                    "candidates_by_brief": {},
-                }
-            ],
+            "worktrail.workqueue.queue_triage.evaluate_briefs",
+            return_value=[],
         ):
             verdict = skill_dispatch.evaluate_single_brief(
-                self.brief, repo=None, cwd=self.tmp.name
+                self.brief, repo="behindthedash/worktrail", cwd=self.tmp.name
             )
         self.assertIsNone(verdict)
 
-    def test_evaluate_single_brief_repo_less_cwd_fallback_matches_cmd_evaluate(self):
-        """No `cwd` and no `repo` must fall back to `_worktrail_repo_root()`,
-        matching `cmd_evaluate()`'s own per-group `cwd` choice -- not the
-        process's current directory, which would diverge from a scheduled
-        `evaluate` run when `/go` is invoked from outside the checkout."""
+    def test_null_repo_brief_with_inferable_focus_writes_repo_back_and_evaluates_in_that_group(
+        self,
+    ):
+        """A repo-less brief whose focus names a known checkout is resolved
+        by the D2 pre-pass's `repo_inference` fallback: `repo:` is stamped
+        onto the brief file, and `evaluate_briefs()` (patched here to avoid
+        actually spawning) is called with that resolved repo as its group,
+        not `NO_REPO_KEY`."""
+        from worktrail.workqueue.queue_triage import Verdict
+
+        repos_root = Path(self.tmp.name) / "repos"
+        checkout = repos_root / "fixture-repo"
+        (checkout / ".git").mkdir(parents=True)
+        self.brief.write_text(
+            '---\nfocus: "Repo: fixture-repo needs a fix"\nstatus: queued\n'
+            "---\n\nBody.\n",
+            encoding="utf-8",
+        )
+        verdict = Verdict(
+            brief_id=self.brief.stem,
+            verdict="keep",
+            duplicate_of=None,
+            evidence="still relevant",
+        )
         captured = {}
 
-        def fake_evaluate_group(group_repo, briefs, *, agent, cwd):
-            captured["cwd"] = cwd
-            return [
-                {
-                    "repo": group_repo,
-                    "brief_ids": [],
-                    "raw_text": "",
-                    "candidates_by_brief": {},
-                }
-            ]
+        def fake_evaluate_briefs(group_repo, briefs, *, agent, cwd, repos_root=None):
+            captured["repo"] = group_repo
+            return [verdict]
 
-        with (
-            patch(
-                "worktrail.workqueue.queue_triage.evaluate_group",
-                side_effect=fake_evaluate_group,
-            ),
-            patch(
-                "worktrail.workqueue.queue_triage._worktrail_repo_root",
-                return_value=Path("/fake/repo/root"),
-            ),
+        with patch(
+            "worktrail.workqueue.queue_triage.evaluate_briefs",
+            side_effect=fake_evaluate_briefs,
         ):
-            skill_dispatch.evaluate_single_brief(self.brief, repo=None)
+            result = skill_dispatch.evaluate_single_brief(
+                self.brief, repo=None, repos_root=str(repos_root)
+            )
 
-        self.assertEqual(captured["cwd"], "/fake/repo/root")
+        self.assertIs(result, verdict)
+        self.assertEqual(captured["repo"], str(checkout.resolve()))
+        from worktrail.shared.brief_frontmatter import read_frontmatter
 
-    def test_apply_single_brief_verdict_keep_is_a_noop_even_without_confirm(self):
+        self.assertEqual(
+            read_frontmatter(self.brief).get("repo"), str(checkout.resolve())
+        )
+
+    def test_explicit_bare_repo_name_resolves_cwd_against_repos_root(self):
+        """A brief carrying an explicit `repo:` frontmatter value that is a
+        bare name (the common case -- every brief written by hand or by
+        `create_handoff.py` carries the short name, not a path) must still
+        resolve to an on-disk checkout for `cwd` when no explicit `cwd` is
+        passed, the same as the D2-inference path already does. Regression
+        for the crash observed running `worktrail-go BRIEF-ID` from outside
+        the target repo (e.g. `$HOME`): `group_cwd` fell back to the bare
+        name itself, which subprocess.run then rejected as a nonexistent
+        relative `cwd` (`FileNotFoundError: PosixPath('fixture-repo')`)."""
+        from worktrail.workqueue.queue_triage import Verdict
+
+        repos_root = Path(self.tmp.name) / "repos"
+        checkout = repos_root / "fixture-repo"
+        (checkout / ".git").mkdir(parents=True)
+        verdict = Verdict(
+            brief_id=self.brief.stem,
+            verdict="keep",
+            duplicate_of=None,
+            evidence="still relevant",
+        )
+        captured = {}
+
+        def fake_evaluate_briefs(group_repo, briefs, *, agent, cwd, repos_root=None):
+            captured["repo"] = group_repo
+            captured["cwd"] = cwd
+            return [verdict]
+
+        with patch(
+            "worktrail.workqueue.queue_triage.evaluate_briefs",
+            side_effect=fake_evaluate_briefs,
+        ):
+            result = skill_dispatch.evaluate_single_brief(
+                self.brief, repo="fixture-repo", repos_root=str(repos_root)
+            )
+
+        self.assertIs(result, verdict)
+        self.assertEqual(captured["repo"], "fixture-repo")
+        self.assertEqual(captured["cwd"], str(checkout))
+
+    def test_due_null_repo_brief_returns_needs_decision_and_never_spawns(self):
+        """A repo-less brief that cannot be resolved by the D2 pre-pass and
+        is due for escalation is verdicted directly by the escalation matrix
+        (`escalate()`) -- there is no evaluator group to spawn against, so
+        `spawn_agent` must never be called."""
+        import datetime
+
+        from worktrail.workqueue.queue_triage import REPO_ASSIGNMENT_QUESTION
+
+        old_created = (
+            datetime.date.today() - timedelta(days=30)  # noqa: DTZ011
+        ).isoformat()
+        self.brief.write_text(
+            "---\nfocus: example brief\nstatus: queued\n"
+            f"created: {old_created}\n---\n\nBody.\n",
+            encoding="utf-8",
+        )
+        empty_repos_root = Path(self.tmp.name) / "empty-repos"
+        empty_repos_root.mkdir()
+
+        with patch("worktrail.orchestrator.spawnlib.spawn_agent") as mock_spawn:
+            verdict = skill_dispatch.evaluate_single_brief(
+                self.brief, repo=None, repos_root=str(empty_repos_root)
+            )
+
+        mock_spawn.assert_not_called()
+        self.assertIsNotNone(verdict)
+        self.assertEqual(verdict.verdict, "needs-decision")
+        self.assertEqual(verdict.question, REPO_ASSIGNMENT_QUESTION)
+
+    def test_apply_single_brief_verdict_keep_previews_a_triage_note_without_confirm(
+        self,
+    ):
+        """`keep` is never a stable verdict (design D2): it previews an
+        appended `## Triage <date>` note, not a pure no-op."""
         from worktrail.workqueue.queue_triage import Verdict
 
         verdict = Verdict(
@@ -1489,7 +1569,8 @@ class SingleBriefTriageTests(unittest.TestCase):
             evidence="still relevant",
         )
         entry = skill_dispatch.apply_single_brief_verdict(verdict, confirm=False)
-        self.assertEqual(entry["status"], "noop")
+        self.assertEqual(entry["status"], "planned")
+        self.assertEqual(entry["action"], "append-triage-note")
         self.assertEqual(entry["brief_id"], self.brief.stem)
 
     def test_apply_single_brief_verdict_previews_a_non_keep_verdict_without_confirm(
@@ -1507,6 +1588,36 @@ class SingleBriefTriageTests(unittest.TestCase):
         self.assertEqual(entry["status"], "planned")
         self.assertEqual(entry["action"], "claim+done")
         self.assertFalse(entry["confirm"])
+
+    def test_apply_single_brief_verdict_forwards_repos_root_to_apply_verdicts(self):
+        """Regression: `apply_verdicts()` resolves a `propose-change`/
+        `fold-into-change` verdict's bare `repo:` value via `repos_root`
+        (`_resolve_repo_dir()`); omitting it here left that resolution
+        unable to find the repo when applied from outside it, the same
+        class of bug as the `evaluate_single_brief()` cwd regression above."""
+        from worktrail.workqueue.queue_triage import Verdict
+
+        verdict = Verdict(
+            brief_id=self.brief.stem,
+            verdict="keep",
+            duplicate_of=None,
+            evidence="still relevant",
+        )
+        captured = {}
+
+        def fake_apply_verdicts(verdicts, *, confirm, agent="claude", repos_root=None):
+            captured["repos_root"] = repos_root
+            return [{"brief_id": v.brief_id, "status": "planned"} for v in verdicts]
+
+        with patch(
+            "worktrail.workqueue.queue_triage.apply_verdicts",
+            side_effect=fake_apply_verdicts,
+        ):
+            skill_dispatch.apply_single_brief_verdict(
+                verdict, confirm=False, repos_root="/repos"
+            )
+
+        self.assertEqual(captured["repos_root"], "/repos")
 
 
 class SingleBriefTriageCliTests(unittest.TestCase):
@@ -1577,6 +1688,45 @@ class SingleBriefTriageCliTests(unittest.TestCase):
         _args, kwargs = mock_apply.call_args
         self.assertFalse(kwargs.get("confirm"))
         self.assertEqual(json.loads(stdout.getvalue())["status"], "noop")
+
+    def test_apply_brief_triage_confirm_writes_the_keep_verdict_note(self):
+        """A `keep` verdict applied via `--apply-brief-triage --confirm`
+        (unmocked `apply_single_brief_verdict`) appends the real
+        `verdict: keep` note to the brief on disk."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        queue = Path(tmp.name) / "queue"
+        queue.mkdir(parents=True)
+        brief = queue / "20260101-000000-example.md"
+        brief.write_text(
+            "---\nfocus: example brief\nstatus: queued\n---\n\nBody.\n",
+            encoding="utf-8",
+        )
+        verdict_json = json.dumps(
+            {
+                "brief_id": "20260101-000000-example",
+                "verdict": "keep",
+                "duplicate_of": None,
+                "evidence": "still relevant",
+            }
+        )
+        previous_queue_dir = os.environ.get("WORK_QUEUE_DIR")
+        os.environ["WORK_QUEUE_DIR"] = tmp.name
+        try:
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                rc = skill_dispatch.main(
+                    ["--apply-brief-triage", verdict_json, "--confirm"]
+                )
+        finally:
+            if previous_queue_dir is None:
+                os.environ.pop("WORK_QUEUE_DIR", None)
+            else:
+                os.environ["WORK_QUEUE_DIR"] = previous_queue_dir
+        self.assertEqual(rc, 0)
+        entry = json.loads(stdout.getvalue())
+        self.assertEqual(entry["status"], "executed")
+        self.assertIn("verdict: keep", brief.read_text(encoding="utf-8"))
 
     def test_apply_brief_triage_confirm_executes_and_reports_error_status(self):
         verdict_json = json.dumps(

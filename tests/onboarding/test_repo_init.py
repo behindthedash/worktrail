@@ -87,6 +87,59 @@ class DiscoverCiChecksTests(unittest.TestCase):
         self.assertEqual(repo_init.discover_ci_checks(repo), [])
 
 
+class DetectPreCommitCmdTests(unittest.TestCase):
+    def test_no_workflows_dir_returns_none(self):
+        self.assertIsNone(repo_init.detect_pre_commit_cmd(_tmp_repo()))
+
+    def test_ruff_only_workflow_seeds_ruff_command(self):
+        repo = _tmp_repo()
+        wf_dir = repo / ".github" / "workflows"
+        wf_dir.mkdir(parents=True)
+        (wf_dir / "ci.yml").write_text(
+            "on: pull_request\n"
+            "jobs:\n"
+            "  lint:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - run: ruff check .\n"
+        )
+        self.assertEqual(
+            repo_init.detect_pre_commit_cmd(repo), "ruff check . --fix && ruff format ."
+        )
+
+    def test_ruff_plus_prettier_joins_with_and(self):
+        repo = _tmp_repo()
+        wf_dir = repo / ".github" / "workflows"
+        wf_dir.mkdir(parents=True)
+        (wf_dir / "ci.yml").write_text(
+            "on: pull_request\n"
+            "jobs:\n"
+            "  lint:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - run: ruff check .\n"
+            "      - run: npx prettier --check .\n"
+        )
+        self.assertEqual(
+            repo_init.detect_pre_commit_cmd(repo),
+            "ruff check . --fix && ruff format . && npx prettier --write .",
+        )
+
+    def test_no_lint_step_returns_none(self):
+        repo = _tmp_repo()
+        wf_dir = repo / ".github" / "workflows"
+        wf_dir.mkdir(parents=True)
+        (wf_dir / "ci.yml").write_text(
+            "on: pull_request\n"
+            "jobs:\n"
+            "  test:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - run: pytest\n"
+        )
+        self.assertIsNone(repo_init.detect_pre_commit_cmd(repo))
+
+
 class BuildRulesetTests(unittest.TestCase):
     def test_two_branch_dev_has_no_linear_history_and_squash(self):
         rs = repo_init.build_ruleset_for_branch("dev", "2")
@@ -999,6 +1052,50 @@ class ProposeTests(unittest.TestCase):
         _rc, _result = self._run_propose(repo)
         policy_text = (repo / ".worktrail" / "policy.yaml").read_text()
         self.assertNotIn("add_ons:", policy_text)
+
+    def test_seeds_pre_commit_cmd_from_detected_lint_workflow(self):
+        repo = _tmp_repo()
+        wf_dir = repo / ".github" / "workflows"
+        wf_dir.mkdir(parents=True)
+        (wf_dir / "ci.yml").write_text(
+            "on: pull_request\n"
+            "jobs:\n"
+            "  lint:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - run: ruff check .\n"
+        )
+        _rc, _result = self._run_propose(repo)
+        policy_text = (repo / ".worktrail" / "policy.yaml").read_text()
+        self.assertIn(
+            'pre_commit_cmd: "ruff check . --fix && ruff format ."', policy_text
+        )
+
+    def test_no_lint_workflow_omits_pre_commit_cmd_key(self):
+        repo = _tmp_repo()
+        _rc, _result = self._run_propose(repo)
+        policy_text = (repo / ".worktrail" / "policy.yaml").read_text()
+        self.assertNotIn("pre_commit_cmd", policy_text)
+
+    def test_existing_policy_file_untouched_even_with_lint_workflow(self):
+        repo = _tmp_repo()
+        wf_dir = repo / ".github" / "workflows"
+        wf_dir.mkdir(parents=True)
+        (wf_dir / "ci.yml").write_text(
+            "on: pull_request\n"
+            "jobs:\n"
+            "  lint:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - run: ruff check .\n"
+        )
+        policy_dir = repo / ".worktrail"
+        policy_dir.mkdir(parents=True)
+        (policy_dir / "policy.yaml").write_text("pre_pr_cmd: pytest -q\n")
+        _rc, result = self._run_propose(repo)
+        self.assertNotIn(".worktrail/policy.yaml", result["written"])
+        policy_text = (policy_dir / "policy.yaml").read_text()
+        self.assertEqual(policy_text, "pre_pr_cmd: pytest -q\n")
 
     def test_aspens_warning_surfaces_without_failing_propose(self):
         repo = _tmp_repo()

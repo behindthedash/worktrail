@@ -52,6 +52,18 @@ from worktrail.orchestrator.coordinator import TAIL_KINDS
 COMPILE_TIMEOUT_DEFAULT = 900
 
 
+class PlanShapeError(RuntimeError):
+    """A settled plan fails one of `parallelism.shape_problems`'s D2 rules.
+
+    Carries the problem lines rather than a single message, since `main()`
+    prints each one as its own stderr line and a caller may want the same.
+    """
+
+    def __init__(self, problems: Sequence[str]) -> None:
+        self.problems = list(problems)
+        super().__init__("; ".join(self.problems))
+
+
 def marker_path(spec_dir: str | Path) -> Path:
     """Where a passing compile records its validated content fingerprint."""
     return Path(spec_dir) / COMPILE_MARKER_NAME
@@ -472,6 +484,21 @@ def _parse_fallback_chain(value: str | None) -> list[str] | None:
 # --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
+def _check_shape(plan: RunPlan, tasks: Sequence[dict[str, Any]], repo: Path) -> None:
+    """Raise `PlanShapeError` if the settled *plan* fails D2's rules.
+
+    Called on every settled plan -- seeded, cache-hit, and freshly compiled
+    alike -- so a rejected shape is caught the moment it is trusted, not
+    only when a caller happens to print it.
+    """
+    from worktrail.router.policy import load_policy
+
+    merged, _ = runplan.apply_to_tasks(tasks, plan)
+    problems = parallelism.shape_problems(merged, repo, load_policy(repo))
+    if problems:
+        raise PlanShapeError(problems)
+
+
 def compile_run_plan(
     spec_dir: str | Path,
     tasks: Sequence[dict[str, Any]],
@@ -513,6 +540,7 @@ def compile_run_plan(
         cached = runplan.load_cached(cache_dir, spec_id, fp)
         if cached is not None:
             log(f"run plan: cache hit {fp[:12]} ({cached.source})")
+            _check_shape(cached, tasks, repo)
             return cached
     else:
         cached = runplan.load_cached(cache_dir, spec_id, fp)
@@ -526,6 +554,7 @@ def compile_run_plan(
                     "plan; a non-deterministic recompile could disagree with that "
                     "in-progress work. Pass allow_force_over_active_worktrees to override."
                 )
+                _check_shape(cached, tasks, repo)
                 return cached
 
     gaps = needs_compile(tasks)
@@ -533,11 +562,13 @@ def compile_run_plan(
         plan = _plan_from_tasks(spec_id, fp, tasks, SOURCE_SEED)
         runplan.store(cache_dir, plan)
         log(f"run plan: seeded from the artifact, no model needed ({fp[:12]})")
+        _check_shape(plan, tasks, repo)
         return plan
 
     baseline = _plan_from_tasks(spec_id, fp, tasks, SOURCE_BASELINE)
     if not allow_llm:
         log(f"run plan: {len(gaps)} task(s) lack file scope and compiling is disabled")
+        _check_shape(baseline, tasks, repo)
         return baseline
 
     purpose_tiers = _resolve_purpose_tiers(repo)
@@ -618,6 +649,7 @@ def compile_run_plan(
     )
     runplan.store(cache_dir, plan)
     log(f"run plan: compiled and cached {fp[:12]}")
+    _check_shape(plan, tasks, repo)
     return plan
 
 
@@ -672,27 +704,35 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     fallback_chain = _parse_fallback_chain(a.fallback_chain)
 
-    plan = compile_run_plan(
-        spec_dir,
-        tasks,
-        spec_id=spec_id,
-        repo=repo,
-        cache_dir=a.cache_dir,
-        allow_llm=not a.no_llm,
-        force=a.force,
-        allow_force_over_active_worktrees=a.allow_force_over_active_worktrees,
-        timeout=a.timeout,
-        spawn=lambda prompt, cwd, timeout, log: _default_spawn(
-            prompt,
-            cwd,
-            timeout,
-            log,
-            agent=a.agent,
-            model=a.model,
-            fallback_agent=fallback_chain,
-        ),
-        log=lambda m: print(m, file=sys.stderr),
-    )
+    try:
+        plan = compile_run_plan(
+            spec_dir,
+            tasks,
+            spec_id=spec_id,
+            repo=repo,
+            cache_dir=a.cache_dir,
+            allow_llm=not a.no_llm,
+            force=a.force,
+            allow_force_over_active_worktrees=a.allow_force_over_active_worktrees,
+            timeout=a.timeout,
+            spawn=lambda prompt, cwd, timeout, log: _default_spawn(
+                prompt,
+                cwd,
+                timeout,
+                log,
+                agent=a.agent,
+                model=a.model,
+                fallback_agent=fallback_chain,
+            ),
+            log=lambda m: print(m, file=sys.stderr),
+        )
+    except PlanShapeError as exc:
+        # No marker either mode: the plan-shape check runs before `main()`
+        # ever sees a plan, same as the `--json` gap errors below never
+        # writing one.
+        for line in exc.problems:
+            print(line, file=sys.stderr)
+        return 1
 
     merged, notes = runplan.apply_to_tasks(tasks, plan)
     gaps = needs_compile(merged)
@@ -702,13 +742,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not (gaps or collisions or uncovered):
         write_marker(spec_dir, plan.fingerprint)
 
-    # Advisory shape/wall-clock signal (parallelism.py): a plan can be correct
-    # and still fully serialised, which no gap check above can see.
+    # Advisory wall-clock signal (parallelism.py): shape is already enforced
+    # by `compile_run_plan` above, but a passing plan's projected duration is
+    # still worth printing.
     prof = parallelism.profile(merged)
     est_min, est_basis = parallelism.estimate_minutes(
         prof, parallelism.journals_beside(repo)
     )
-    serial_warning = parallelism.format_warning(prof, est_min, est_basis)
 
     if a.json:
         payload = plan.to_dict()
@@ -718,8 +758,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             "estimate_basis": est_basis,
         }
         print(json.dumps(payload, indent=2, sort_keys=True))
-        if serial_warning:
-            print(serial_warning, file=sys.stderr)
         if gaps:
             _print_scope_gap_error(gaps)
         if collisions:
@@ -739,8 +777,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"  {t['id']:<10} deps={','.join(t.get('deps') or []) or '-':<24} files={len(t.get('files') or [])}"
         )
     print(f"  {parallelism.summary_line(prof)}")
-    if serial_warning:
-        print(serial_warning, file=sys.stderr)
 
     if gaps:
         _print_scope_gap_error(gaps)
