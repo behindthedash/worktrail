@@ -161,7 +161,7 @@
 
 ## 8. Prose: worktrail-go intake gate, close-stale row, CI-watch paragraph
 
-- [ ] 8.1 In `skills/worktrail-go/SKILL.md`: (a) Phase 2 intake gate step 3 — replace
+- [x] 8.1 In `skills/worktrail-go/SKILL.md`: (a) Phase 2 intake gate step 3 — replace
       "Report the resulting action-log entry … and STOP" with: run the apply with the
       Bash `timeout` parameter at 600000; report `pr_url` and `landing.outcome`; on
       `code_defect`/`review_threads_blocking` continue with `worktrail-land-pr` against
