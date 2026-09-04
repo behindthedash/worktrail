@@ -1288,6 +1288,18 @@ class Verifier:
             if (st.get("state") or "").upper() == "MERGED":
                 self.log(f"    [{group['name']}] {gb} merged externally")
                 return True, ""
+            pending, failing = classify_checks(
+                st.get("statusCheckRollup"), required=self._required_check_names()
+            )
+            if not pending and failing:
+                return (
+                    False,
+                    "required check(s) failed while awaiting external auto-merge: "
+                    + ", ".join(failing),
+                )
+            self.log(
+                f"    [{group['name']}] waiting on external auto-merge (poll {poll + 1})"
+            )
             self.sleep(min(self.poll_interval_max, self.poll_interval * (1.4**poll)))
         return False, "external auto-merge did not complete within poll budget"
 
