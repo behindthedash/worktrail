@@ -36,7 +36,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [cleanup] Run `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m
+- [x] 2.1 [cleanup] Run `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m
       worktrail.orchestrator.orchestrate check`; confirm both are green including the new
       `LiveMergeRecheckUnit` tests, and run `openspec validate
       quarantine-live-merge-recheck-terminal-check-failure-bailout --strict`.
