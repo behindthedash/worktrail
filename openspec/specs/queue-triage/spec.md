@@ -74,6 +74,23 @@ SHALL instead be recorded as `needs-decision` with the question "which repo does
 belong to?" and the would-be `keep` evidence retained as evidence, so a brief with no repo is
 never left idle.
 
+`needs-update` MAY additionally carry `refuted_span` (the exact verbatim substring of the
+brief's `focus:` text that the evidence refutes) and, only alongside `refuted_span`, an
+optional `corrected_span` (replacement text; empty or absent means the span is removed
+outright rather than replaced) — signaling that the correction is mechanical: a specific,
+quotable claim refuted by cited code/paths, or a specific target reference that is
+stale/archived. `needs-update` MAY instead carry `judgment_reason` (a non-empty explanation
+of why resolving the brief requires a human decision rather than a quotable correction —
+e.g. an ambiguous choice between conflicting claims, or a scope/policy call). These two
+fields are mutually exclusive signals consumed by `apply` (see "Apply step never closes a
+brief without an approved verdict"); neither is required for a `needs-update` verdict to be
+valid — validity for `needs-update` still requires only non-empty `evidence`, as before this
+change. `evaluate` SHALL NOT reject, downgrade, or otherwise alter a `needs-update` verdict
+for carrying, omitting, or malforming either field. When an evaluator's output for a brief
+sets both `refuted_span` and `judgment_reason`, `judgment_reason` SHALL take precedence at
+apply time and `refuted_span` SHALL be ignored, since a verdict declaring a human decision is
+needed must never also silently auto-rewrite the brief.
+
 #### Scenario: Well-formed stale-close verdict
 - **WHEN** an evaluator returns `{"brief_id": "X", "verdict": "stale-close", "evidence":
   "PR #42 merged 2026-07-01 delivers this", "confidence": "high"}`
@@ -130,6 +147,25 @@ never left idle.
   returns any valid verdict for it
 - **THEN** the verdict file's entry for that brief carries both entries under
   `premise_check`
+
+#### Scenario: needs-update with a mechanical refuted_span
+- **WHEN** an evaluator returns `{"brief_id": "X", "verdict": "needs-update", "evidence":
+  "src/foo.py:12 shows this was fixed in PR #99", "refuted_span": "the bug reported in
+  #foo is still open"}`
+- **THEN** the verdict file records brief `X` as `needs-update` carrying
+  `refuted_span: "the bug reported in #foo is still open"`
+
+#### Scenario: needs-update with a judgment_reason
+- **WHEN** an evaluator returns `{"brief_id": "X", "verdict": "needs-update", "evidence":
+  "...", "judgment_reason": "the brief cites two conflicting target repos and neither is
+  clearly current"}`
+- **THEN** the verdict file records brief `X` as `needs-update` carrying that
+  `judgment_reason`
+
+#### Scenario: needs-update with both fields set
+- **WHEN** an evaluator returns `needs-update` with both `refuted_span` and
+  `judgment_reason` set
+- **THEN** the verdict file records only `judgment_reason` for that brief
 
 ### Requirement: Archived or renamed target repo short-circuits its group
 Before evaluating any brief in a repo group with a non-null `repo:` value, the evaluator SHALL
@@ -189,6 +225,41 @@ resolved to an on-disk checkout directory the same way the router/dashboard reso
 be resolved to an existing directory SHALL fail with an error action-log entry and SHALL NOT
 attempt any worktree or git operation.
 
+For a `needs-update` verdict, `--confirm` execution branches deterministically on which of
+`refuted_span`/`judgment_reason` (per "Evidence-required verdict per brief") is present,
+each re-checked against the brief's current on-disk state rather than trusted from
+evaluation time. A `refuted_span` shorter than 12 characters (the same minimum-length floor
+`premise_check`'s own quoted-needle extraction already uses) SHALL be treated as not found,
+regardless of whether it appears verbatim, since a short span is too likely to match
+unrelated text coincidentally:
+- When `judgment_reason` is present (or `refuted_span` is present but does not — re-checked
+  at apply time, including the length floor above — appear verbatim in the brief's current
+  `focus:` text), `apply` SHALL file a
+  decision through the same path a `needs-decision` verdict already uses (`decisions.ask()`),
+  using `judgment_reason` when present, or otherwise an apply-generated question stating that
+  the verdict's `refuted_span` no longer matches the brief's current focus text, as the
+  decision's question, and the verdict's `evidence` as its background/context. The brief
+  SHALL be left queued, blocked pending a human answer, exactly as an ordinary
+  `needs-decision` verdict already behaves; its `focus:` text SHALL NOT be modified.
+- Otherwise, when `refuted_span` is present and does appear verbatim in the brief's current
+  `focus:` text, `apply` SHALL rewrite `focus:` by removing that substring (or replacing it
+  with `corrected_span`, when given), SHALL append a `## Triage <run-date>` note recording
+  what was removed or replaced and the verdict's evidence, and SHALL then re-run evaluation
+  once, immediately, against the corrected brief using the same evaluator pipeline `evaluate`
+  uses. The freshly produced verdict (or an error, if re-evaluation itself fails) SHALL be
+  included in the action-log entry for the caller to review. `apply` SHALL NOT execute,
+  claim, close, or otherwise act on that freshly produced verdict as part of this action — a
+  human or a subsequent `apply` invocation supplying it via a new verdict file and its own
+  `--confirm` remains required, exactly as for any other verdict, so a mechanical rewrite can
+  never itself cascade into closing a brief, folding it, or opening a pull request.
+- When a rewrite (per the previous bullet) would leave the brief's `focus:` text empty after
+  removing `refuted_span`, `apply` SHALL instead file a decision (per the first bullet) with
+  a question stating that removing the refuted claim would leave the brief with no remaining
+  focus text, rather than writing an empty `focus:`.
+- When neither field is present, `apply` SHALL fall back to appending the `## Triage
+  <run-date>` note containing the verdict's evidence and leaving the brief otherwise
+  untouched, unchanged from this requirement's behavior before this capability existed.
+
 #### Scenario: Apply without --confirm is a dry run
 - **WHEN** `apply` is invoked with a verdict file but without `--confirm`
 - **THEN** every planned action (claim+done for stale-close/duplicate-of, in-place edit for
@@ -204,15 +275,36 @@ attempt any worktree or git operation.
 
 #### Scenario: Apply with --confirm executes needs-update
 - **WHEN** `apply --confirm` runs against a verdict file containing a `needs-update` verdict
-  for brief `Y`
+  for brief `Y` carrying neither `refuted_span` nor `judgment_reason`
 - **THEN** a `## Triage <run-date>` section containing the verdict's evidence is appended to
   brief `Y`'s body in place, and brief `Y` remains in `queue/` with `status: queued`
+
+#### Scenario: Apply with --confirm executes a mechanical needs-update rewrite
+- **WHEN** `apply --confirm` runs against a verdict file containing a `needs-update` verdict
+  for brief `Y` whose `refuted_span` is found verbatim in `Y`'s current `focus:` text
+- **THEN** that span is removed (or replaced with `corrected_span`, if given) from `Y`'s
+  `focus:` text, a `## Triage <run-date>` note records the rewrite, evaluation is re-run
+  immediately against the corrected brief, and the action-log entry for `Y` carries the
+  freshly produced verdict without that verdict having been executed
 
 #### Scenario: Apply with --confirm executes fold-into-change
 - **WHEN** `apply --confirm` runs against a verdict file containing a `fold-into-change`
   verdict for brief `Z`
 - **THEN** the fold is executed per the `intake-triage` capability's fail-closed
   pull-request semantics, and brief `Z` is closed only after the pull request exists
+
+#### Scenario: A stale refuted_span falls back to filing a decision
+- **WHEN** `apply --confirm` runs against a `needs-update` verdict whose `refuted_span` is
+  not found verbatim in the brief's current `focus:` text
+- **THEN** `apply` files a decision as if `judgment_reason` had been set, the brief's
+  `focus:` text is left unchanged, and the brief remains queued pending that decision
+
+#### Scenario: Apply with --confirm files a decision for a judgment needs-update
+- **WHEN** `apply --confirm` runs against a verdict file containing a `needs-update` verdict
+  for brief `Z` with `judgment_reason` set
+- **THEN** a pending decision is filed with that reason as its question and the verdict's
+  evidence as its background, brief `Z` is stamped `awaiting-decision` and remains queued,
+  and `Z`'s `focus:` text is not modified
 
 #### Scenario: Apply with --confirm records keep
 - **WHEN** `apply --confirm` runs against a verdict file containing a `keep` verdict for
