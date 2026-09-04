@@ -1712,6 +1712,32 @@ def _needs_update_is_mechanical(v: Verdict, focus: str) -> bool:
     )
 
 
+def _needs_update_rewritten_focus(v: Verdict, focus: str) -> str:
+    """The focus text a mechanical rewrite would leave behind, stripped.
+
+    Empty means the rewrite would erase the brief's focus entirely, which is
+    a proposal to empty the brief rather than a correction -- both
+    `_apply_needs_update_mechanical()` and `_preview_verdict()` read it to
+    route that case to a human decision, so the preview reaches the same
+    branch the apply would.
+    """
+    return focus.replace(v.refuted_span or "", v.corrected_span or "", 1).strip()
+
+
+def _needs_update_empty_focus_question(v: Verdict) -> str:
+    """The question an all-of-the-focus refutation files a decision under.
+
+    Shared by `_apply_needs_update_mechanical()` and `_preview_verdict()` so
+    the preview quotes the same question the apply would file.
+    """
+    return (
+        f"Queue-triage refuted {v.refuted_span!r}, which is this brief's "
+        f"entire focus text -- removing this claim would leave no remaining "
+        f"focus text. Should the brief be closed, or rewritten around a "
+        f"different focus?"
+    )
+
+
 def _needs_update_judgment_question(v: Verdict) -> str:
     """The question a `needs-update` verdict files a decision under.
 
@@ -1746,10 +1772,13 @@ def _apply_needs_update_judgment(v: Verdict, path: Path) -> dict:
     (`_apply_needs_decision()` re-resolves it itself when stamping).
     """
     del path  # the decision path re-resolves the brief when it stamps it
-    synthetic = replace(
-        v,
+    synthetic = Verdict(
+        brief_id=v.brief_id,
         verdict="needs-decision",
         duplicate_of=None,
+        evidence=v.evidence,
+        confidence=v.confidence,
+        repo=v.repo,
         question=_needs_update_judgment_question(v),
     )
     return {
@@ -1794,19 +1823,10 @@ def _apply_needs_update_mechanical(
         "rewrite": {"removed": v.refuted_span, "replacement": v.corrected_span or ""},
     }
     replacement = v.corrected_span or ""
-    focus = _brief_focus(path)
-    new_focus = focus.replace(v.refuted_span or "", replacement, 1).strip()
+    new_focus = _needs_update_rewritten_focus(v, _brief_focus(path))
     if not new_focus:
         return _apply_needs_update_judgment(
-            replace(
-                v,
-                judgment_reason=(
-                    f"Queue-triage refuted {v.refuted_span!r}, which is this "
-                    f"brief's entire focus text -- removing this claim would "
-                    f"leave no remaining focus text. Should the brief be "
-                    f"closed, or rewritten around a different focus?"
-                ),
-            ),
+            replace(v, judgment_reason=_needs_update_empty_focus_question(v)),
             path,
         )
 
@@ -2902,18 +2922,22 @@ def _preview_verdict(
         path = _resolve_brief_path(v.brief_id)
         focus = _brief_focus(path) if path is not None else ""
         if _needs_update_is_mechanical(v, focus):
-            return {
-                **base,
-                "action": "mechanical-rewrite",
-                "status": "planned",
-                "note": v.evidence,
-                "planned_rewrite": {
-                    "removed": v.refuted_span,
-                    "replacement": v.corrected_span or "",
-                },
-            }
+            if _needs_update_rewritten_focus(v, focus):
+                return {
+                    **base,
+                    "action": "mechanical-rewrite",
+                    "status": "planned",
+                    "note": v.evidence,
+                    "planned_rewrite": {
+                        "removed": v.refuted_span,
+                        "replacement": v.corrected_span or "",
+                    },
+                }
+            question = _needs_update_empty_focus_question(v)
+        else:
+            question = _needs_update_judgment_question(v)
         return {
-            **_preview_file_decision(v, base, _needs_update_judgment_question(v)),
+            **_preview_file_decision(v, base, question),
             "routed_to": "needs-decision",
         }
 

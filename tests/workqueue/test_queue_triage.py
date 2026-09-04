@@ -4867,9 +4867,9 @@ class TestApplyNeedsUpdateRewrite(QueueTriageTestBase):
         self.assertEqual(entry["verdict"], "needs-update")
         self.assertEqual(qt.read_frontmatter(path)["focus"], focus)
 
-    def test_rewrite_that_would_empty_the_focus_files_a_decision(self):
-        path = self.write("b.md", focus=self.FOCUS)
-        verdict = qt.Verdict(
+    def _empties_focus(self) -> qt.Verdict:
+        """A verdict whose `refuted_span` is the brief's entire focus text."""
+        return qt.Verdict(
             brief_id="b",
             verdict="needs-update",
             duplicate_of=None,
@@ -4878,7 +4878,10 @@ class TestApplyNeedsUpdateRewrite(QueueTriageTestBase):
             refuted_span=self.FOCUS,  # the entire focus text
         )
 
-        log = qt.apply_verdicts([verdict], confirm=True)
+    def test_rewrite_that_would_empty_the_focus_files_a_decision(self):
+        path = self.write("b.md", focus=self.FOCUS)
+
+        log = qt.apply_verdicts([self._empties_focus()], confirm=True)
 
         entry = log[0]
         self.assertEqual(entry["action"], "file-decision")
@@ -5044,6 +5047,34 @@ class TestApplyNeedsUpdateRewrite(QueueTriageTestBase):
         self.assertFalse((self.base / "decisions").exists())
         self.assertEqual(
             qt.read_frontmatter(path)["focus"], "the CLI reads config from the env"
+        )
+
+    def test_preview_of_a_focus_emptying_rewrite_plans_the_decision(self):
+        """A rewrite that would empty the focus previews as the decision the
+        confirmed apply files, not as a planned mechanical rewrite."""
+        path = self.write("b.md", focus=self.FOCUS)
+        before = path.read_text(encoding="utf-8")
+        verdict = self._empties_focus()
+
+        preview = qt.apply_verdicts([verdict], confirm=False)[0]
+
+        self.assertEqual(preview["verdict"], "needs-update")
+        self.assertEqual(preview["action"], "file-decision")
+        self.assertEqual(preview["routed_to"], "needs-decision")
+        self.assertEqual(preview["status"], "planned")
+        self.assertNotIn("planned_rewrite", preview)
+        self.assertIn(
+            "no remaining focus text", preview["planned_envelope"]["question"]
+        )
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+        self.assertFalse((self.base / "decisions").exists())
+
+        # the preview named the same decision the confirmed apply files
+        executed = qt.apply_verdicts([verdict], confirm=True)[0]
+        self.assertEqual(executed["action"], preview["action"])
+        self.assertEqual(executed["routed_to"], preview["routed_to"])
+        self.assertEqual(
+            executed["decision_id"], preview["planned_stamp"]["awaiting-decision"]
         )
 
     def test_preview_of_evidence_only_verdict_is_the_generic_plan(self):
