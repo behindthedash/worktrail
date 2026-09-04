@@ -151,7 +151,7 @@
 
 ## 7. Prose: Route C spec-PR checkpoint
 
-- [ ] 7.1 In `skills/worktrail-go/references/routes.md` §C, replace "push `spec/$SPEC_ID`
+- [x] 7.1 In `skills/worktrail-go/references/routes.md` §C, replace "push `spec/$SPEC_ID`
       and open a docs-only PR … CI-watch the spec PR now" with `worktrail-land-pr --repo
       "$WT" --base "$BASE" --run "$RUN" --route C --risk low --checkpoint …`, stating
       that checkpoint mode appends the outcome as a decision and returns control; keep
