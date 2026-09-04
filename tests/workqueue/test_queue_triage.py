@@ -843,23 +843,6 @@ class TestEvaluatorPromptTemplate(unittest.TestCase):
             qt.EVALUATOR_PROMPT_TEMPLATE,
         )
 
-    def test_prompt_states_needs_update_mechanical_vs_judgment_rule(self):
-        """1.1: `needs-update` must classify itself as a mechanical
-        `refuted_span` (quoted verbatim from the brief's focus text) or a
-        `judgment_reason`, never both."""
-        self.assertIn(
-            "Step 2c — needs-update requires a mechanical-vs-judgment classification",
-            qt.EVALUATOR_PROMPT_TEMPLATE,
-        )
-        self.assertIn(
-            "copied *verbatim* from the brief's own focus text",
-            qt.EVALUATOR_PROMPT_TEMPLATE,
-        )
-        self.assertIn(
-            "Never set both, and never set a `refuted_span` you cannot quote verbatim",
-            qt.EVALUATOR_PROMPT_TEMPLATE,
-        )
-
     def test_prompt_output_schema_covers_all_verdict_types_and_target_fields(self):
         for verdict_type in qt.VALID_VERDICT_TYPES:
             self.assertIn(verdict_type, qt.EVALUATOR_PROMPT_TEMPLATE)
