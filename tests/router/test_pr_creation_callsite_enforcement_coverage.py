@@ -679,6 +679,41 @@ def _proves_land_pr_py_update_path_label_exception_does_not_escape():
         raise AssertionError(f"pr_url was lost on the exception path: {result!r}")
 
 
+def _proves_land_pr_py_refuses_stale_preflight_marker():
+    """A pass marker's `state` must match the CURRENT `preflight.tree_state()`
+    before its labels are trusted -- mirrors `preflight.check()`'s own
+    marker-freshness comparison (the same one the PreToolUse hook applies).
+    `preflight._run()` has a real success path that returns 0 without ever
+    calling `write_marker()`, so a marker left on disk from an earlier
+    preflight run in the same worktree (the normal condition after any prior
+    run) must not be adopted verbatim just because SOME marker exists."""
+    with patch.object(land_pr.preflight, "main", return_value=0), patch.object(
+        land_pr.preflight, "read_marker",
+        return_value={"state": "stale-sha", "labels": ["go:risk-critical", "go:no-automerge"]},
+    ), patch.object(land_pr.preflight, "tree_state", return_value="current-sha"):
+        refused, labels = land_pr._run_preflight_and_labels(
+            Path("/tmp"), "main", "low", [], "E", None
+        )
+    if refused != "preflight":
+        raise AssertionError(
+            f"a marker whose state doesn't match tree_state() was trusted: "
+            f"refused={refused!r} labels={labels!r}"
+        )
+
+    # A fresh marker (state matches) is still accepted normally.
+    with patch.object(land_pr.preflight, "main", return_value=0), patch.object(
+        land_pr.preflight, "read_marker",
+        return_value={"state": "current-sha", "labels": ["go:risk-low"]},
+    ), patch.object(land_pr.preflight, "tree_state", return_value="current-sha"):
+        refused2, labels2 = land_pr._run_preflight_and_labels(
+            Path("/tmp"), "main", "low", [], "E", None
+        )
+    if refused2 is not None or labels2 != ["go:risk-low"]:
+        raise AssertionError(
+            f"a fresh marker (state matches) was not accepted: {(refused2, labels2)!r}"
+        )
+
+
 def _proves_land_pr_py_update_path_verifies_before_reporting_success():
     """The update path must not report success when the post-mutation
     verification shows the computed labels never actually landed (e.g. a
@@ -796,6 +831,9 @@ class TestPrCreationCallsiteEnforcementCoverage(unittest.TestCase):
 
     def test_land_pr_update_path_label_exception_does_not_escape(self):
         _proves_land_pr_py_update_path_label_exception_does_not_escape()
+
+    def test_land_pr_refuses_stale_preflight_marker(self):
+        _proves_land_pr_py_refuses_stale_preflight_marker()
 
 
 if __name__ == "__main__":

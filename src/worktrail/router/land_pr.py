@@ -331,6 +331,16 @@ def _run_preflight_and_labels(
     marker is therefore refused (`"preflight"`), not read back as an empty,
     genuinely-no-labels-required pass.
 
+    A marker's `state` must also match the CURRENT `preflight.tree_state()`
+    before its labels are trusted -- mirrors `preflight.check()`'s own
+    marker-freshness comparison (`if state is not None and marker is not
+    None and marker.get("state") == state`), the same check the PreToolUse
+    hook applies before honoring a marker's labels. Without it, a stale
+    marker left on disk from an earlier preflight run in the same worktree
+    (the normal condition after any prior run) is adopted verbatim -- the
+    same stale-artifact shape step 2 already refuses for a stale *compile*
+    marker, left open here for the *preflight* one.
+
     `preflight.main()`'s own argparse constrains `--risk` to a fixed choice
     set and raises `SystemExit` on an invalid value -- caught here (mirroring
     `_run_record_main`'s identical guard) so an out-of-range `risk` refuses
@@ -352,6 +362,9 @@ def _run_preflight_and_labels(
         return "preflight", []
     marker = preflight.read_marker(repo)
     if marker is None:
+        return "preflight", []
+    state = preflight.tree_state(repo)
+    if state is None or marker.get("state") != state:
         return "preflight", []
     labels = list(marker.get("labels") or [])
     return None, labels
