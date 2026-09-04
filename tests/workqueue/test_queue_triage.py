@@ -5077,6 +5077,46 @@ class TestApplyNeedsUpdateRewrite(QueueTriageTestBase):
             executed["decision_id"], preview["planned_stamp"]["awaiting-decision"]
         )
 
+    def test_preview_of_a_missing_brief_reports_apply_s_not_found_error(self):
+        """A brief that vanished between evaluate and apply previews the
+        not-found error the confirmed apply exits with, not a branch it could
+        never reach."""
+        self.assertIsNone(qt._resolve_brief_path("b"))
+        verdict = self._mechanical()
+
+        with mock.patch(
+            "worktrail.workqueue.queue_triage.evaluate_briefs"
+        ) as mock_eval:
+            preview = qt.apply_verdicts([verdict], confirm=False)[0]
+            executed = qt.apply_verdicts([verdict], confirm=True)[0]
+
+        mock_eval.assert_not_called()
+        self.assertEqual(preview["verdict"], "needs-update")
+        self.assertEqual(preview["action"], executed["action"])
+        self.assertEqual(preview["status"], executed["status"])
+        self.assertEqual(preview["error"], executed["error"])
+        self.assertEqual(preview["status"], "error")
+        self.assertEqual(preview["action"], "append-triage-note")
+        self.assertEqual(preview["error"], "brief not found in queue/ or picked/")
+        self.assertIsNone(preview["path"])
+        self.assertNotIn("planned_rewrite", preview)
+        self.assertNotIn("routed_to", preview)
+        self.assertFalse((self.base / "decisions").exists())
+
+    def test_preview_of_a_missing_brief_on_the_judgment_branch_matches_apply(self):
+        self.assertIsNone(qt._resolve_brief_path("b"))
+        verdict = self._judgment()
+
+        preview = qt.apply_verdicts([verdict], confirm=False)[0]
+        executed = qt.apply_verdicts([verdict], confirm=True)[0]
+
+        self.assertEqual(preview["action"], executed["action"])
+        self.assertEqual(preview["status"], executed["status"])
+        self.assertEqual(preview["error"], executed["error"])
+        self.assertEqual(preview["status"], "error")
+        self.assertNotIn("planned_envelope", preview)
+        self.assertFalse((self.base / "decisions").exists())
+
     def test_preview_of_evidence_only_verdict_is_the_generic_plan(self):
         self.write("b.md", focus=self.FOCUS)
         verdict = qt.Verdict(

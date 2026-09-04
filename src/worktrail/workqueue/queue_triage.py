@@ -2850,7 +2850,9 @@ def _preview_verdict(
     `needs-update` carrying `refuted_span`/`judgment_reason` previews whichever
     of `_apply_needs_update()`'s branches it would take -- the planned focus
     rewrite, or the decision it would file instead -- reading the brief's live
-    focus text (the same check apply makes) but writing nothing; the
+    focus text (the same check apply makes) but writing nothing; a brief that
+    is no longer in `queue/` or `picked/` previews the same not-found error
+    apply exits with, rather than a branch it could never take; the
     evidence-only shape keeps the generic preview below.
     """
     base = {
@@ -2920,7 +2922,15 @@ def _preview_verdict(
 
     if v.verdict == "needs-update" and (v.judgment_reason or v.refuted_span):
         path = _resolve_brief_path(v.brief_id)
-        focus = _brief_focus(path) if path is not None else ""
+        if path is None:
+            return {
+                **base,
+                "action": "append-triage-note",
+                "status": "error",
+                "note": v.evidence,
+                "error": "brief not found in queue/ or picked/",
+            }
+        focus = _brief_focus(path)
         if _needs_update_is_mechanical(v, focus):
             if _needs_update_rewritten_focus(v, focus):
                 return {
