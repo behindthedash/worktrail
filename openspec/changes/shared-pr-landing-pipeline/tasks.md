@@ -187,7 +187,7 @@
 
 ## 10. Prose: pipeline-details marker note
 
-- [ ] 10.1 In `skills/worktrail-sdd-workflow/references/pipeline-details.md` step 3 marker
+- [x] 10.1 In `skills/worktrail-sdd-workflow/references/pipeline-details.md` step 3 marker
       notes (both pipelines), state that `worktrail-land-pr` re-runs the compile and
       commits `.compile-ok` at landing, so the spec PR can no longer ship without it;
       leave the pre-launch uncommitted-output guard text unchanged. (Requirement:
