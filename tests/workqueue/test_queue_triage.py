@@ -290,6 +290,79 @@ class TestParseVerdicts(unittest.TestCase):
         b_verdict = next(v for v in verdicts if v.brief_id == "b")
         self.assertEqual(b_verdict.verdict, "stale-close")
 
+    def test_needs_update_refuted_span_round_trips_onto_verdict(self):
+        """1.1: `needs-update`'s mechanical fields are copied through parsing
+        the same way `target_change`/`target_repo`/`question` already are."""
+        raw = (
+            '{"brief_id": "a", "verdict": "needs-update", "duplicate_of": null, '
+            '"refuted_span": "the hook lives in hooks/legacy.py", '
+            '"evidence": "hooks/legacy.py was deleted in PR #12", '
+            '"confidence": "high"}'
+        )
+        v = qt.parse_verdicts(raw, ["a"])[0]
+
+        self.assertEqual(v.verdict, "needs-update")
+        self.assertEqual(v.refuted_span, "the hook lives in hooks/legacy.py")
+        self.assertIsNone(v.corrected_span)
+        self.assertIsNone(v.judgment_reason)
+
+    def test_needs_update_refuted_and_corrected_span_round_trip(self):
+        raw = (
+            '{"brief_id": "a", "verdict": "needs-update", "duplicate_of": null, '
+            '"refuted_span": "the hook lives in hooks/legacy.py", '
+            '"corrected_span": "the hook lives in hooks/task_lifecycle.py", '
+            '"evidence": "renamed in PR #12", "confidence": "high"}'
+        )
+        v = qt.parse_verdicts(raw, ["a"])[0]
+
+        self.assertEqual(v.refuted_span, "the hook lives in hooks/legacy.py")
+        self.assertEqual(v.corrected_span, "the hook lives in hooks/task_lifecycle.py")
+        self.assertIsNone(v.judgment_reason)
+
+    def test_needs_update_judgment_reason_round_trips(self):
+        raw = (
+            '{"brief_id": "a", "verdict": "needs-update", "duplicate_of": null, '
+            '"judgment_reason": "brief asks for both A and B, which conflict", '
+            '"evidence": "see openspec/specs/foo/spec.md", "confidence": "medium"}'
+        )
+        v = qt.parse_verdicts(raw, ["a"])[0]
+
+        self.assertEqual(
+            v.judgment_reason, "brief asks for both A and B, which conflict"
+        )
+        self.assertIsNone(v.refuted_span)
+        self.assertIsNone(v.corrected_span)
+
+    def test_needs_update_carrying_both_fields_round_trips_both_unchanged(self):
+        """Precedence between a refuted span and a judgment reason is apply's
+        concern (2.1), not parsing's -- both are copied through as given."""
+        raw = (
+            '{"brief_id": "a", "verdict": "needs-update", "duplicate_of": null, '
+            '"refuted_span": "the hook lives in hooks/legacy.py", '
+            '"corrected_span": "the hook lives in hooks/task_lifecycle.py", '
+            '"judgment_reason": "unclear which rename the brief meant", '
+            '"evidence": "renamed in PR #12", "confidence": "low"}'
+        )
+        v = qt.parse_verdicts(raw, ["a"])[0]
+
+        self.assertEqual(v.refuted_span, "the hook lives in hooks/legacy.py")
+        self.assertEqual(v.corrected_span, "the hook lives in hooks/task_lifecycle.py")
+        self.assertEqual(v.judgment_reason, "unclear which rename the brief meant")
+
+    def test_needs_update_without_new_fields_still_parses_as_valid(self):
+        """Evidence-only `needs-update` is unchanged from today's behavior:
+        valid on non-empty `evidence` alone, all three new fields `None`."""
+        raw = (
+            '{"brief_id": "a", "verdict": "needs-update", "duplicate_of": null, '
+            '"evidence": "target file renamed", "confidence": "high"}'
+        )
+        v = qt.parse_verdicts(raw, ["a"])[0]
+
+        self.assertEqual(v.verdict, "needs-update")
+        self.assertIsNone(v.refuted_span)
+        self.assertIsNone(v.corrected_span)
+        self.assertIsNone(v.judgment_reason)
+
     def test_duplicate_of_without_target_falls_back_to_keep(self):
         snippet = (
             '{"brief_id": "a", "verdict": "duplicate-of", "duplicate_of": null, '
@@ -757,6 +830,23 @@ class TestEvaluatorPromptTemplate(unittest.TestCase):
         )
         self.assertIn("use `needs-decision`", qt.EVALUATOR_PROMPT_TEMPLATE)
 
+    def test_prompt_states_needs_update_mechanical_vs_judgment_rule(self):
+        """1.1: `needs-update` must classify itself as a mechanical
+        `refuted_span` (quoted verbatim from the brief's focus text) or a
+        `judgment_reason`, never both."""
+        self.assertIn(
+            "Step 2c — needs-update requires a mechanical-vs-judgment classification",
+            qt.EVALUATOR_PROMPT_TEMPLATE,
+        )
+        self.assertIn(
+            "copied *verbatim* from the brief's own focus text",
+            qt.EVALUATOR_PROMPT_TEMPLATE,
+        )
+        self.assertIn(
+            "Never set both, and never set a `refuted_span` you cannot quote verbatim",
+            qt.EVALUATOR_PROMPT_TEMPLATE,
+        )
+
     def test_prompt_output_schema_covers_all_verdict_types_and_target_fields(self):
         for verdict_type in qt.VALID_VERDICT_TYPES:
             self.assertIn(verdict_type, qt.EVALUATOR_PROMPT_TEMPLATE)
@@ -765,6 +855,9 @@ class TestEvaluatorPromptTemplate(unittest.TestCase):
             "target_repo",
             "proposed_change_name",
             "question",
+            "refuted_span",
+            "corrected_span",
+            "judgment_reason",
         ):
             self.assertIn(field, qt.EVALUATOR_PROMPT_TEMPLATE)
 

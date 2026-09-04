@@ -181,6 +181,18 @@ CONFIRMED entry from a brief's mechanical premise check above counts as \
 reproduction evidence on its own — cite it directly rather than re-running \
 the same check yourself.
 
+Step 2c — needs-update requires a mechanical-vs-judgment classification:
+When your verdict is `needs-update`, say which kind of update it needs. If the \
+correction is mechanical — a specific, quotable claim the brief makes that your \
+cited code/paths refute, or a stale/archived target reference — set \
+`refuted_span` to that claim copied *verbatim* from the brief's own focus text \
+as shown above, plus an optional `corrected_span` with the text that should \
+replace it (omit it to simply drop the refuted claim). If instead resolving the \
+brief needs a genuine human call — an ambiguous claim priority, conflicting \
+requirements, a scope or policy decision — set `judgment_reason` explaining what \
+must be decided, and no `refuted_span`. Never set both, and never set a \
+`refuted_span` you cannot quote verbatim from the focus text above.
+
 Step 3 — memory check before raising an alarm:
 Before flagging anything you observe as a live operational concern, check \
 {memory_index} for whether it already documents the same state as expected or \
@@ -198,7 +210,11 @@ fold-into-change|propose-change|work-directly|needs-decision", "duplicate_of": \
 "<brief-id or null>", "target_change": "<one of the brief's listed candidate \
 ids, for fold-into-change only>", "target_repo": "<repo, for propose-change \
 only>", "proposed_change_name": "<kebab-case id, for propose-change only>", \
-"question": "<for needs-decision only>", "evidence": "<cited PR/commit/file/\
+"question": "<for needs-decision only>", "refuted_span": "<verbatim span of \
+the brief's focus text your evidence refutes, for a mechanical needs-update \
+only>", "corrected_span": "<optional replacement for refuted_span>", \
+"judgment_reason": "<what a human must decide, for a judgment needs-update \
+only>", "evidence": "<cited PR/commit/file/\
 test, or why inconclusive for a fail-open keep>", "confidence": \
 "high|medium|low"}}
 """
@@ -1225,6 +1241,15 @@ class Verdict:
     (4.1(b)) is the reason (`"keep-limit"`/`"queue-age"`) `escalate()` rewrote
     this verdict from a stalled `keep`, or `None` for every verdict escalation
     never touched.
+
+    `refuted_span`/`corrected_span`/`judgment_reason` are `needs-update`'s
+    mechanical-vs-judgment split: `refuted_span` is the span of the brief's own
+    focus text the evaluator refuted (quoted verbatim), optionally with the
+    `corrected_span` that should replace it, when the correction is mechanical;
+    `judgment_reason` is set instead when resolving the brief needs a genuine
+    human call. All three stay `None` for every other verdict type, and for a
+    `needs-update` verdict the evaluator left evidence-only -- validity still
+    requires only non-empty `evidence`, unaffected by these fields.
     """
 
     brief_id: str
@@ -1240,6 +1265,9 @@ class Verdict:
     held_by_wip_cap: bool = False
     premise_check: list[dict[str, Any]] = field(default_factory=list)
     escalation: str | None = None
+    refuted_span: str | None = None
+    corrected_span: str | None = None
+    judgment_reason: str | None = None
 
 
 def _extract_json_objects(text: str) -> list[str]:
@@ -1385,6 +1413,13 @@ def parse_verdicts(
     left as a plain `keep`: `evaluate_group()`'s own prompt already forbids
     `fold-into-change`/`propose-change` for these groups, so `keep` is the
     only outcome this needs to intercept.
+
+    `needs-update`'s `refuted_span`/`corrected_span`/`judgment_reason` are
+    copied straight through the same way `target_change`/`target_repo`/
+    `question` are (string-typed or `None`), with no validation here: a
+    `needs-update` verdict is still valid on non-empty `evidence` alone, and
+    the precedence between a refuted span and a judgment reason is apply's
+    concern, not parsing's.
     """
     candidates_by_brief = candidates_by_brief or {}
     premise_by_brief = premise_by_brief or {}
@@ -1438,6 +1473,9 @@ def parse_verdicts(
                 target_repo = obj.get("target_repo")
                 proposed_change_name = obj.get("proposed_change_name")
                 question = obj.get("question")
+                refuted_span = obj.get("refuted_span")
+                corrected_span = obj.get("corrected_span")
+                judgment_reason = obj.get("judgment_reason")
                 chosen = Verdict(
                     brief_id=bid,
                     verdict=verdict_type,
@@ -1452,6 +1490,15 @@ def parse_verdicts(
                     if isinstance(proposed_change_name, str)
                     else None,
                     question=question if isinstance(question, str) else None,
+                    refuted_span=refuted_span
+                    if isinstance(refuted_span, str)
+                    else None,
+                    corrected_span=corrected_span
+                    if isinstance(corrected_span, str)
+                    else None,
+                    judgment_reason=judgment_reason
+                    if isinstance(judgment_reason, str)
+                    else None,
                 )
                 break
 
