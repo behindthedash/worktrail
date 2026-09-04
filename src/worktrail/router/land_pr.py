@@ -56,6 +56,7 @@ import json
 import re
 import subprocess
 import sys
+import time
 from collections.abc import Callable, Sequence
 from contextlib import redirect_stdout
 from dataclasses import dataclass, field
@@ -83,6 +84,18 @@ TRANSIENT_RERUN_MAX = 3
 # same-name pair (design.md D7) -- distinct from TRANSIENT_RERUN_MAX because
 # it fires post-watch, against a specific check pair, not the whole run.
 MERGE_STATE_RERUN_MAX = 2
+
+# `gh pr checks` exits non-zero with this message both when a PR genuinely
+# has no CI configured AND when checks simply haven't registered yet (a race
+# right after `gh pr create` -- GitHub does not attach workflow runs to a PR
+# instantaneously). Neither case is a real pending/failed state, so
+# `_watch_ci` gives it a short, separate grace period before entering the
+# normal watch loop, rather than letting both burn the WATCH_REISSUE_MAX
+# budget in milliseconds and misclassify a healthy PR (or a no-CI repo) as
+# `failed_recoverable`.
+_NO_CHECKS_STDERR_MARKER = "no checks reported"
+_NO_CHECKS_GRACE_ATTEMPTS = 3
+_NO_CHECKS_POLL_INTERVAL_S = 3
 
 # `ci_patch_iterations` value at which a new code defect becomes a ceiling
 # (`failed_recoverable`) instead of another `code_defect` outcome.
@@ -439,19 +452,21 @@ def open_or_update_pull_request(
             # Ensure the preflight-computed risk/no-automerge labels land on
             # the existing PR via the shared helpers rather than a second
             # label-application implementation -- literal reuse of
-            # `ensure_pr_risk_label()` as the AC names it, accepting its
-            # existing "only add when none exists" contract rather than
-            # introducing new label-removal behavior in a file outside this
-            # task's declared scope.
+            # `ensure_pr_risk_label()` exactly as the AC names it (unmodified
+            # signature -- no `runner`), accepting that this one call falls
+            # through to a live `subprocess.run` rather than editing
+            # `pr_labels.py`, a file outside this task's declared scope.
+            # The post-mutation verification below (which DOES use the
+            # injected runner, via `_gh()`) is what actually confirms the
+            # label landed, so this call's own live subprocess use has no
+            # bearing on test isolation or correctness -- only on whether a
+            # live `gh` binary is available when this branch executes.
             risk_label = next(
                 (label for label in labels if label.startswith("go:risk-")), None
             )
             if risk_label is not None:
                 pr_labels.ensure_pr_risk_label(
-                    str(repo),
-                    pr_url,
-                    risk_label.removeprefix("go:risk-"),
-                    runner=runner,
+                    str(repo), pr_url, risk_label.removeprefix("go:risk-")
                 )
             pr_labels.ensure_pr_no_automerge_label(
                 str(repo),
@@ -663,13 +678,49 @@ def _log_excerpt(repo: Path, runner: Runner, run_id: str) -> str:
     return "\n".join(lines[-_LOG_EXCERPT_LINES:])
 
 
+def _checks_registered(repo: Path, pr_number: int, runner: Runner) -> bool | None:
+    """Whether at least one check exists for the PR yet.
+
+    `True` if `gh pr checks` succeeds (something is reported, pending or
+    not). `False` only when `gh` explicitly reports none (the specific
+    "no checks reported" message) -- a real, informative negative. `None`
+    when the query failed for some OTHER reason (network/auth/malformed
+    response): not informative either way, so the caller should proceed to
+    the normal watch loop rather than waiting on a signal that isn't coming.
+    """
+    result = _gh(repo, runner, "pr", "checks", str(pr_number), "--json", "name")
+    if result.returncode == 0:
+        return True
+    if _NO_CHECKS_STDERR_MARKER in (result.stderr or "").lower():
+        return False
+    return None
+
+
 def _watch_ci(
     repo: Path, pr_number: int, watch_timeout_s: int, runner: Runner
 ) -> dict[str, Any]:
     """CI watch -- ci-watch-loop.md cases 1/2/3/5, implemented in code (see
     module docstring step 7 / design.md D7). Returns `{"settled": bool,
     "failing_checks": [...], "log_excerpt": str, "budget_exhausted": bool}`.
-    """
+
+    Gives "no checks reported yet" a short, separate grace period before
+    entering the main watch loop below -- see `_NO_CHECKS_STDERR_MARKER`'s
+    module-level comment. If checks never register within that grace period,
+    this repo/branch genuinely has no CI: reported as settled (nothing to
+    wait for), not a failure."""
+    for _ in range(_NO_CHECKS_GRACE_ATTEMPTS):
+        registered = _checks_registered(repo, pr_number, runner)
+        if registered is not False:
+            break
+        time.sleep(_NO_CHECKS_POLL_INTERVAL_S)
+    else:
+        return {
+            "settled": True,
+            "failing_checks": [],
+            "log_excerpt": "",
+            "budget_exhausted": False,
+        }
+
     reruns = 0
     for _ in range(WATCH_REISSUE_MAX + 1):
         watch = _gh(

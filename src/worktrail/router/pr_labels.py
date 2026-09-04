@@ -194,10 +194,7 @@ def _current_pr_labels(
 
 
 def ensure_pr_risk_label(
-    repo: str | None,
-    pr_url: str | None,
-    risk_level: str | None,
-    runner: Runner | None = None,
+    repo: str | None, pr_url: str | None, risk_level: str | None
 ) -> str | None:
     """Add a go:risk-<level> label to a PR that carries none.
 
@@ -207,19 +204,13 @@ def ensure_pr_risk_label(
     carries NO go:risk-* label at all, using the risk already recorded at
     Phase 6 start; it never touches go:no-automerge, which an agent may have
     legitimately added itself and must never be silently removed.
-
-    `runner` is purely additive (default `None`, identical to the previous
-    behavior for every existing caller that doesn't pass one) -- it only
-    threads through to `_current_pr_labels()`/`_add_label()` so a caller with
-    an injected test/fake runner (e.g. `land_pr.py`) doesn't fall through to
-    a live `subprocess.run` for this one call.
     """
     if not repo or not pr_url or not risk_level:
         return None
-    labels = _current_pr_labels(repo, pr_url, runner=runner)
+    labels = _current_pr_labels(repo, pr_url)
     if labels is None or any(label.startswith("go:risk-") for label in labels):
         return None
-    return _add_label(repo, pr_url, f"go:risk-{risk_level}", runner=runner)
+    return _add_label(repo, pr_url, f"go:risk-{risk_level}")
 
 
 def ensure_pr_no_automerge_label(

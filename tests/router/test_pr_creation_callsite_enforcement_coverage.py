@@ -361,8 +361,8 @@ def _proves_land_pr_py_applies_preflight_labels_on_update():
         calls.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    def fake_ensure_risk(repo, pr_url, risk_level, runner=None):
-        ensure_risk_calls.append((repo, pr_url, risk_level, runner))
+    def fake_ensure_risk(repo, pr_url, risk_level):
+        ensure_risk_calls.append((repo, pr_url, risk_level))
         return f"go:risk-{risk_level}"
 
     def fake_ensure_no_automerge(repo, pr_url, eligible, runner=None):
@@ -394,7 +394,7 @@ def _proves_land_pr_py_applies_preflight_labels_on_update():
     if any(cmd[:3] == ["gh", "pr", "create"] for cmd in calls):
         raise AssertionError("update path issued gh pr create for an already-OPEN PR")
     if ensure_risk_calls != [
-        ("/fake/repo", "https://github.com/acme/widget/pull/9", "high", fake_run)
+        ("/fake/repo", "https://github.com/acme/widget/pull/9", "high")
     ]:
         raise AssertionError(
             f"update path did not call ensure_pr_risk_label as expected: {ensure_risk_calls!r}"
@@ -564,6 +564,55 @@ def _proves_land_pr_py_push_honors_remote_pushdefault():
         raise AssertionError(f"_push did not use the resolved remote: {push_cmds!r}")
 
 
+def _proves_land_pr_py_watch_ci_distinguishes_no_checks_from_pending():
+    """`gh pr checks` exits non-zero with the same "no checks reported"
+    message both when a repo genuinely has no CI and when checks simply
+    haven't registered yet (a race right after `gh pr create`). `_watch_ci`
+    must give that case a short, separate grace period rather than burning
+    the normal WATCH_REISSUE_MAX budget in milliseconds and misclassifying a
+    healthy PR (or a no-CI repo) as `failed_recoverable`."""
+    no_checks_stderr = "no checks reported on the 'feature' branch"
+
+    # Checks never register at all: settles as landed (nothing to wait for),
+    # not budget_exhausted -- a repo with no CI is not a failure.
+    def runner_no_checks(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr=no_checks_stderr)
+
+    with patch("time.sleep") as slept:
+        result = land_pr._watch_ci(Path("/tmp"), 9, 600, runner_no_checks)
+    if not (result["settled"] is True and result["budget_exhausted"] is False):
+        raise AssertionError(f"no-CI repo was not treated as a clean settle: {result!r}")
+    if not slept.called:
+        raise AssertionError("no-CI repo did not go through the grace-period wait")
+
+    # Checks register on the second attempt (the race case): proceeds
+    # normally after exactly one grace-period wait.
+    attempt = {"n": 0}
+
+    def runner_race(cmd, **kwargs):
+        if len(cmd) >= 2 and cmd[-2:] == ["--json", "name"]:
+            attempt["n"] += 1
+            if attempt["n"] == 1:
+                return subprocess.CompletedProcess(
+                    cmd, 1, stdout="", stderr=no_checks_stderr
+                )
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout='[{"name":"CI"}]', stderr=""
+            )
+        if "--watch" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with patch("time.sleep") as slept2:
+        result2 = land_pr._watch_ci(Path("/tmp"), 9, 600, runner_race)
+    if slept2.call_count != 1:
+        raise AssertionError(
+            f"expected exactly one grace-period wait for the race case, got {slept2.call_count}"
+        )
+    if result2["settled"] is not True:
+        raise AssertionError(f"race case did not settle after checks registered: {result2!r}")
+
+
 def _proves_land_pr_py_update_path_verifies_before_reporting_success():
     """The update path must not report success when the post-mutation
     verification shows the computed labels never actually landed (e.g. a
@@ -675,6 +724,9 @@ class TestPrCreationCallsiteEnforcementCoverage(unittest.TestCase):
 
     def test_land_pr_push_honors_remote_pushdefault(self):
         _proves_land_pr_py_push_honors_remote_pushdefault()
+
+    def test_land_pr_watch_ci_distinguishes_no_checks_from_pending(self):
+        _proves_land_pr_py_watch_ci_distinguishes_no_checks_from_pending()
 
 
 if __name__ == "__main__":
