@@ -26,7 +26,7 @@
       Merge-state guard and review-thread gate before completion; Requirement: Run
       record is completed with a real state; Requirement: Refusal leaves the remote
       untouched)
-      files: src/worktrail/router/land_pr.py, pyproject.toml
+      files: src/worktrail/router/land_pr.py, pyproject.toml, tests/router/test_land_pr.py
 - [x] 1.2 Tests for the pipeline. `tests/router/test_land_pr.py` (injected `FakeRun`-style
       runner scripting every `git`/`gh` reply): dirty tree without `commit_message` →
       `refused`/`dirty_tree`, no push recorded; compile gaps → `refused`/`compile_marker`,
