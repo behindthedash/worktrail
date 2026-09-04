@@ -196,7 +196,7 @@
 
 ## 11. Prose: ci-watch-loop reference note
 
-- [ ] 11.1 In `skills/worktrail-go/references/ci-watch-loop.md`, add the top note from
+- [x] 11.1 In `skills/worktrail-go/references/ci-watch-loop.md`, add the top note from
       design.md D8 ("Implemented in code by `worktrail-land-pr` …; the agent's remaining
       steps are repairing a reported code defect and deciding case 4"); reframe case 4's
       opening sentence as "when `worktrail-land-pr` reports `code_defect` and the fix
