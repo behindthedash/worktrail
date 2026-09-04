@@ -64,8 +64,13 @@ kebab-case `proposed_change_name`; `needs-decision` SHALL additionally require a
 `question`. For a brief evaluated in the repo-less (`__none__`) group, the evaluator prompt
 SHALL list the known workspace repos (the directory basenames under the configured repos
 root), `propose-change` SHALL be valid only when `target_repo` is one of those listed names,
-and `fold-into-change` SHALL remain invalid since no candidate changes are presented. A
-verdict that is missing, malformed, or missing required evidence or required
+and `fold-into-change` SHALL remain invalid since no candidate changes are presented. For a
+brief evaluated in a repo-bearing group, the evaluator prompt SHALL state `propose-change`'s
+`target_repo` as that group's own repo with no known-repos allowlist, rather than reusing the
+repo-less group's "valid only when `target_repo` is one of these known repos" wording with a
+placeholder value standing in for "no restriction" — since no such allowlist applies to a
+repo-bearing group, wording that implies one is misleading regardless of the placeholder used.
+A verdict that is missing, malformed, or missing required evidence or required
 target fields SHALL be recorded as `keep` with the evaluator's raw output retained as
 evidence text, never silently dropped from the output. Every recorded verdict SHALL carry
 the brief's `premise_check` results (empty for a no-repo brief). For a brief in the no-repo
@@ -147,6 +152,13 @@ needed must never also silently auto-rewrite the brief.
   returns any valid verdict for it
 - **THEN** the verdict file's entry for that brief carries both entries under
   `premise_check`
+
+#### Scenario: Repo-bearing group's prompt states target_repo without an allowlist
+- **WHEN** `_evaluate_group()` formats `EVALUATOR_PROMPT_TEMPLATE` for a group whose `repo` is
+  not the no-repo key
+- **THEN** the formatted prompt's `propose-change` guidance states `target_repo` as that
+  group's own repo and does not contain the no-repo group's "valid only when ... one of these
+  known repos" restriction wording
 
 #### Scenario: needs-update with a mechanical refuted_span
 - **WHEN** an evaluator returns `{"brief_id": "X", "verdict": "needs-update", "evidence":
