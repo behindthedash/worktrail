@@ -47,6 +47,7 @@ covers call sites Worktrail's own Python code constructs.
 
 import ast
 import inspect
+import json
 import shutil
 import subprocess
 import tempfile
@@ -319,6 +320,74 @@ def _proves_land_pr_py_uses_preflight_labels():
         )
 
 
+def _proves_land_pr_py_applies_preflight_labels_on_update():
+    """land_pr.py's update path (an existing OPEN PR) must guarantee the
+    preflight-computed label set actually lands, not merely best-effort:
+    `open_or_update_pull_request` applies every label in the caller-supplied
+    `labels` argument the PR doesn't already carry, via the injected runner
+    and the REST label-add endpoint (never `gh pr edit`/`gh pr create`, and
+    never `ensure_pr_risk_label()`, which deliberately no-ops whenever ANY
+    go:risk-* label is already present). Also proves `land_pr()` itself
+    sources those labels from `_run_preflight_and_labels()` ->
+    `preflight.read_marker()`, not an independently hand-rolled list."""
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout=json.dumps(
+                    {
+                        "url": "https://github.com/acme/widget/pull/9",
+                        "number": 9,
+                        "state": "OPEN",
+                        "labels": [{"name": "go:risk-low"}],
+                    }
+                ),
+                stderr="",
+            )
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    result = land_pr.open_or_update_pull_request(
+        Path("/fake/repo"),
+        "main",
+        "feature",
+        "title",
+        "body",
+        "high",
+        ["go:risk-low", "go:risk-high", "go:no-automerge"],
+        "route-a",
+        fake_run,
+    )
+
+    if result["refused_step"] is not None:
+        raise AssertionError(f"update path unexpectedly refused: {result['detail']}")
+    if any(cmd[:3] == ["gh", "pr", "create"] for cmd in calls):
+        raise AssertionError("update path issued gh pr create for an already-OPEN PR")
+    added = {
+        part.split("=", 1)[1]
+        for cmd in calls
+        for part in cmd
+        if part.startswith("labels[]=")
+    }
+    if added != {"go:risk-high", "go:no-automerge"}:
+        raise AssertionError(
+            "update path did not apply exactly the missing preflight-computed "
+            f"labels: applied {added!r}, expected {{'go:risk-high', "
+            "'go:no-automerge'}} (go:risk-low was already present)"
+        )
+
+    source = inspect.getsource(land_pr._run_preflight_and_labels)
+    if "preflight.read_marker" not in source:
+        raise AssertionError(
+            "_run_preflight_and_labels no longer sources labels from "
+            "preflight.read_marker() -- land_pr()'s update-path labels would "
+            "no longer be preflight-computed"
+        )
+
+
 # relative-to-src/worktrail path -> callable proving its gh pr create call
 # either routes through the enforced label path, or is a reviewed,
 # policy-exempt sandbox/dev-tooling path. Every file
@@ -362,6 +431,9 @@ class TestPrCreationCallsiteEnforcementCoverage(unittest.TestCase):
         for callsite, proof in CALLSITE_CONSUMERS.items():
             with self.subTest(callsite=callsite):
                 proof()
+
+    def test_land_pr_update_path_applies_preflight_labels(self):
+        _proves_land_pr_py_applies_preflight_labels_on_update()
 
 
 if __name__ == "__main__":

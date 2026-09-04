@@ -37,10 +37,15 @@ itself is an uncommitted file until step 1 commits it):
    merge state and review threads, then finish the run record (or, in
    checkpoint mode, append a decision instead of finishing).
 
-Refusal (steps 1-3) never touches the remote: no commit beyond the local
-tree, no push, no PR. A code defect or blocked review-thread gate (step 7)
-leaves the PR open and the run record unfinished -- the caller's turn to
-repair and re-invoke with the same `run` path.
+Refusal (steps 1-4) never touches the remote: no commit beyond the local
+tree, no push, no PR -- a failed push attempt (step 4) is included because a
+failed push, by definition, put nothing new on the remote. A step 5 PR-create
+failure is different: it always follows a successful push, so the remote is
+already mutated and a plain `refused` would misrepresent that; it is reported
+as `ceiling` instead (needs reconciliation, not a clean retry). A code defect
+or blocked review-thread gate (step 7) leaves the PR open and the run record
+unfinished -- the caller's turn to repair and re-invoke with the same `run`
+path.
 """
 
 from __future__ import annotations
@@ -218,8 +223,20 @@ def _ensure_compile_markers(
 ) -> tuple[str | None, Any]:
     """Compile-marker gate -- see module docstring step 2. Returns
     `(refused_step, detail)`; `(None, None)` when nothing needed checking or
-    every touched change carries a fresh marker."""
-    _git(repo, runner, "fetch", "origin", base_branch)
+    every touched change carries a fresh marker.
+
+    Fails closed on every git failure along the way: a failed `fetch` means
+    `changed_change_dirs()`'s empty-list result (its documented behavior when
+    the base ref can't be resolved) cannot be trusted as "nothing changed",
+    and a failed `add`/`commit` of a freshly-written marker must not let the
+    branch be pushed as if that marker were tracked."""
+    fetch = _git(repo, runner, "fetch", "origin", base_branch)
+    if fetch.returncode != 0:
+        return "compile_marker", (
+            f"git fetch origin {base_branch} failed: "
+            f"{(fetch.stderr or fetch.stdout).strip()}"
+        )
+
     dirs = check_compile_markers.changed_change_dirs(repo, f"origin/{base_branch}")
     if not dirs:
         return None, None
@@ -235,17 +252,26 @@ def _ensure_compile_markers(
     marker_paths = [
         str(conductor_compile.marker_path(d).relative_to(repo)) for d in dirs
     ]
-    _git(repo, runner, "add", "--", *marker_paths)
+    add = _git(repo, runner, "add", "--", *marker_paths)
+    if add.returncode != 0:
+        return "compile_marker", (
+            f"git add of compile marker(s) failed: {(add.stderr or add.stdout).strip()}"
+        )
     staged = _git(repo, runner, "diff", "--cached", "--name-only", "--", *marker_paths)
     if staged.returncode == 0 and staged.stdout.strip():
         change_names = ", ".join(d.name for d in dirs)
-        _git(
+        commit = _git(
             repo,
             runner,
             "commit",
             "-m",
             f"chore({change_names}): record compile marker",
         )
+        if commit.returncode != 0:
+            return "compile_marker", (
+                f"commit of compile marker(s) failed: "
+                f"{(commit.stderr or commit.stdout).strip()}"
+            )
     return None, None
 
 
@@ -325,12 +351,22 @@ def open_or_update_pull_request(
             pr_url = data.get("url")
             pr_number = data.get("number")
             current_labels = {entry.get("name") for entry in data.get("labels", [])}
-            eligible = "go:no-automerge" not in labels
-            pr_labels.ensure_pr_risk_label(str(repo), pr_url, risk)
-            if not eligible and "go:no-automerge" not in current_labels:
-                pr_labels.ensure_pr_no_automerge_label(
-                    str(repo), pr_url, eligible=False, runner=runner
-                )
+            # Apply every preflight-computed label the PR doesn't already
+            # carry -- not `ensure_pr_risk_label()`, which deliberately no-ops
+            # whenever ANY go:risk-* label is already present (see its own
+            # docstring), so it can't be trusted to guarantee the exact
+            # preflight-computed label set lands on an update.
+            for label in labels:
+                if label in current_labels:
+                    continue
+                applied = pr_labels._add_label(str(repo), pr_url, label, runner=runner)
+                if applied is None:
+                    return {
+                        "pr_url": None,
+                        "pr_number": None,
+                        "refused_step": "pr_labels",
+                        "detail": f"failed to apply label {label!r} to {pr_url}",
+                    }
             return {
                 "pr_url": pr_url,
                 "pr_number": pr_number,
@@ -674,9 +710,14 @@ def land_pr(request: LandRequest) -> LandOutcome:
         runner,
     )
     if pr_result["refused_step"]:
+        # Not `refused`: the branch is already pushed at this point, so the
+        # remote is already mutated and a plain `refused` (which promises an
+        # untouched remote) would misrepresent that -- see module docstring.
         return LandOutcome(
-            outcome="refused",
+            outcome="ceiling",
             refused_step=pr_result["refused_step"],
+            final_status="failed_recoverable",
+            merge_result=pr_result["detail"],
             detail=pr_result["detail"],
         )
     pr_url = pr_result["pr_url"]
@@ -685,8 +726,21 @@ def land_pr(request: LandRequest) -> LandOutcome:
     run_path = _ensure_run_record(
         repo, request.route, request.risk, request.request_summary, request.run
     )
-    if run_path:
-        _run_record_main(["set", run_path, "pull_request", pr_url])
+    if run_path is None:
+        # The branch is pushed and the PR is open, but no run record exists
+        # to track it -- can't complete a run record that was never created
+        # (Requirement: run record is completed with a real state), so this
+        # can't be reported as `landed`.
+        return LandOutcome(
+            outcome="ceiling",
+            pr_url=pr_url,
+            pr_number=pr_number,
+            labels=labels,
+            final_status="failed_recoverable",
+            merge_result="run record could not be started; PR is open but unrecorded",
+            detail="run_record start failed",
+        )
+    _run_record_main(["set", run_path, "pull_request", pr_url])
 
     watch = (
         _watch_ci(repo, pr_number, request.watch_timeout_s, runner)
@@ -776,16 +830,43 @@ def land_pr(request: LandRequest) -> LandOutcome:
 
     status = _merge_state_guard(repo, pr_number, runner)
 
+    if not status:
+        # `_merge_state_guard()` returns `{}` when `gh pr view` failed or
+        # returned unparseable data -- an unavailable guard is not a passed
+        # guard (Requirement: merge-state guard before completion), so this
+        # cannot fall through to `landed`.
+        merge_result = "merge-state guard unavailable (gh pr view failed or returned malformed data)"
+        _run_record_main(
+            [
+                "finish",
+                run_path,
+                "--status",
+                "failed_recoverable",
+                "--pr",
+                pr_url or "",
+                "--merge-result",
+                merge_result,
+            ]
+        )
+        return LandOutcome(
+            outcome="ceiling",
+            pr_url=pr_url,
+            pr_number=pr_number,
+            labels=labels,
+            run=run_path,
+            final_status="failed_recoverable",
+            merge_result=merge_result,
+        )
+
     if status.get("state") == "MERGED":
         merge_result = "merged externally"
-        if run_path:
-            _finish_or_checkpoint(
-                run_path,
-                "completed_and_merged",
-                pr_url,
-                merge_result,
-                request.checkpoint,
-            )
+        _finish_or_checkpoint(
+            run_path,
+            "completed_and_merged",
+            pr_url,
+            merge_result,
+            request.checkpoint,
+        )
         return LandOutcome(
             outcome="landed",
             pr_url=pr_url,
@@ -807,7 +888,40 @@ def land_pr(request: LandRequest) -> LandOutcome:
             detail=json.dumps(threads.get("unaddressed") or []),
         )
 
-    if status.get("mergeStateStatus") == "BLOCKED" and threads.get("checked"):
+    if not threads.get("checked"):
+        # `check_review_threads.check()` documents `checked: false` as "no
+        # signal" for its prose-driven caller (ci-watch-loop.md), which
+        # proceeds rather than blocking every PR-owning route forever. This
+        # code-enforced pipeline holds itself to a stricter bar: an
+        # unavailable review-thread gate is not a passed gate (Requirement:
+        # review-thread gate before completion), so it cannot complete here.
+        merge_result = (
+            "review-thread gate unavailable (gh unauthenticated/missing or "
+            "malformed response)"
+        )
+        _run_record_main(
+            [
+                "finish",
+                run_path,
+                "--status",
+                "failed_recoverable",
+                "--pr",
+                pr_url or "",
+                "--merge-result",
+                merge_result,
+            ]
+        )
+        return LandOutcome(
+            outcome="ceiling",
+            pr_url=pr_url,
+            pr_number=pr_number,
+            labels=labels,
+            run=run_path,
+            final_status="failed_recoverable",
+            merge_result=merge_result,
+        )
+
+    if status.get("mergeStateStatus") == "BLOCKED":
         merge_result = "blocked on branch protection after merge-state guard and review-thread gate"
         if run_path:
             _finish_or_checkpoint(
