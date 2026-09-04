@@ -4809,6 +4809,55 @@ class TestApplyNeedsUpdateRewrite(QueueTriageTestBase):
         self.assertIn("agent spawn failed", entry["reevaluation"]["error"])
         self.assertNotIn(self.SPAN, qt.read_frontmatter(path)["focus"])
 
+    def test_rewritten_focus_preserves_surrounding_whitespace(self):
+        """Only the approved span is touched -- surrounding whitespace, even
+        at the edges of the focus text, must survive verbatim. A `.strip()`
+        on the replacement result (rather than only on the emptiness check)
+        would silently drop it."""
+        verdict = qt.Verdict(
+            brief_id="b",
+            verdict="needs-update",
+            duplicate_of=None,
+            evidence="stale",
+            confidence="high",
+            refuted_span="obsolete span",
+        )
+        focus = "  before obsolete span after  "
+
+        self.assertEqual(
+            qt._needs_update_rewritten_focus(verdict, focus),
+            "  before  after  ",
+        )
+
+    def test_unresolvable_named_repo_errors_instead_of_falling_back_to_worktrail_repo(
+        self,
+    ):
+        """The `_worktrail_repo_root()` fallback is for `NO_REPO_KEY` only --
+        a named repo that fails to resolve must not silently re-evaluate in
+        this checkout instead."""
+        path = self.write("b.md", focus=self.FOCUS, repo="missing-repo")
+        verdict = qt.Verdict(
+            brief_id="b",
+            verdict="needs-update",
+            duplicate_of=None,
+            evidence="src/cli.py reads config.yaml, not settings.json",
+            confidence="high",
+            refuted_span=self.SPAN,
+            repo="missing-repo",
+        )
+
+        with mock.patch(
+            "worktrail.workqueue.queue_triage.evaluate_briefs"
+        ) as mock_eval:
+            log = qt.apply_verdicts([verdict], confirm=True, repos_root=str(self.base))
+
+        entry = log[0]
+        self.assertEqual(entry["status"], "executed")
+        self.assertNotIn(self.SPAN, qt.read_frontmatter(path)["focus"])
+        self.assertEqual(entry["reevaluation"]["status"], "error")
+        self.assertIn("missing-repo", entry["reevaluation"]["error"])
+        mock_eval.assert_not_called()
+
     # -- drift / too-short span -> judgment --------------------------------
 
     def test_span_no_longer_in_live_focus_files_a_decision_instead(self):

@@ -1713,15 +1713,16 @@ def _needs_update_is_mechanical(v: Verdict, focus: str) -> bool:
 
 
 def _needs_update_rewritten_focus(v: Verdict, focus: str) -> str:
-    """The focus text a mechanical rewrite would leave behind, stripped.
+    """The focus text a mechanical rewrite would leave behind.
 
-    Empty means the rewrite would erase the brief's focus entirely, which is
-    a proposal to empty the brief rather than a correction -- both
-    `_apply_needs_update_mechanical()` and `_preview_verdict()` read it to
-    route that case to a human decision, so the preview reaches the same
-    branch the apply would.
+    Only the approved span is touched -- surrounding text (including
+    whitespace) is preserved verbatim. Callers that need to know whether the
+    rewrite would erase the brief's focus entirely (a proposal to empty the
+    brief rather than a correction) check `.strip()` on the result rather
+    than relying on this function to have stripped it, so a stripped result
+    is never written to disk.
     """
-    return focus.replace(v.refuted_span or "", v.corrected_span or "", 1).strip()
+    return focus.replace(v.refuted_span or "", v.corrected_span or "", 1)
 
 
 def _needs_update_empty_focus_question(v: Verdict) -> str:
@@ -1824,7 +1825,7 @@ def _apply_needs_update_mechanical(
     }
     replacement = v.corrected_span or ""
     new_focus = _needs_update_rewritten_focus(v, _brief_focus(path))
-    if not new_focus:
+    if not new_focus.strip():
         return _apply_needs_update_judgment(
             replace(v, judgment_reason=_needs_update_empty_focus_question(v)),
             path,
@@ -1846,8 +1847,24 @@ def _apply_needs_update_mechanical(
         return {**base, "status": "error", "path": str(path), "error": str(exc)}
 
     repo = _effective_repo(v)
-    repo_dir = _resolve_repo_dir(repo, repos_root) if repo else None
-    cwd = repo_dir if repo_dir is not None else _worktrail_repo_root()
+    if repo and repo != NO_REPO_KEY:
+        repo_dir = _resolve_repo_dir(repo, repos_root)
+        if repo_dir is None:
+            reevaluation = {
+                "status": "error",
+                "verdict": None,
+                "error": f"could not resolve repo {repo!r} to a directory under repos_root={repos_root!r}",
+            }
+            return {
+                **base,
+                "status": "executed",
+                "path": str(path),
+                "error": None,
+                "reevaluation": reevaluation,
+            }
+        cwd = repo_dir
+    else:
+        cwd = _worktrail_repo_root()
     try:
         fresh = evaluate_briefs(
             repo or NO_REPO_KEY,
@@ -2932,7 +2949,7 @@ def _preview_verdict(
             }
         focus = _brief_focus(path)
         if _needs_update_is_mechanical(v, focus):
-            if _needs_update_rewritten_focus(v, focus):
+            if _needs_update_rewritten_focus(v, focus).strip():
                 return {
                     **base,
                     "action": "mechanical-rewrite",
