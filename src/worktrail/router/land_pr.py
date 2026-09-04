@@ -297,7 +297,14 @@ def _run_preflight_and_labels(
     `preflight._run()` has a real success path where tree state can't be
     recorded and it returns 0 without calling `write_marker()`. An unreadable
     marker is therefore refused (`"preflight"`), not read back as an empty,
-    genuinely-no-labels-required pass."""
+    genuinely-no-labels-required pass.
+
+    `preflight.main()`'s own argparse constrains `--risk` to a fixed choice
+    set and raises `SystemExit` on an invalid value -- caught here (mirroring
+    `_run_record_main`'s identical guard) so an out-of-range `risk` refuses
+    cleanly instead of escaping as an uncaught `SystemExit` into
+    `land_pr(LandRequest(...))`'s caller or `main()`'s exit-code/JSON
+    contract."""
     argv = ["run", "--repo", str(repo), "--risk", risk, "--target-branch", base_branch]
     if gates:
         argv += ["--gates", ",".join(gates)]
@@ -305,7 +312,10 @@ def _run_preflight_and_labels(
         argv += ["--route", route]
     if run_path:
         argv += ["--run", run_path]
-    exit_code = preflight.main(argv)
+    try:
+        exit_code = preflight.main(argv)
+    except SystemExit:
+        return "preflight", []
     if exit_code != 0:
         return "preflight", []
     marker = preflight.read_marker(repo)
@@ -387,7 +397,10 @@ def open_or_update_pull_request(
             )
             if risk_label is not None:
                 pr_labels.ensure_pr_risk_label(
-                    str(repo), pr_url, risk_label.removeprefix("go:risk-")
+                    str(repo),
+                    pr_url,
+                    risk_label.removeprefix("go:risk-"),
+                    runner=runner,
                 )
             pr_labels.ensure_pr_no_automerge_label(
                 str(repo),
@@ -425,7 +438,25 @@ def open_or_update_pull_request(
                     ]
                 except json.JSONDecodeError:
                     verified_labels = []
-            missing = [want for want in labels if want not in verified_labels]
+            # `ensure_pr_risk_label()` is deliberately add-only: it leaves a
+            # PRE-EXISTING, DIFFERENT go:risk-* label in place rather than
+            # correcting it. Requiring the exact computed risk label here
+            # would contradict that documented contract and make any PR
+            # whose risk label needs correcting permanently unlandable
+            # (stuck `ceiling` forever, since re-invoking never changes the
+            # outcome) -- so a risk label only needs SOME go:risk-* present
+            # (proof `ensure_pr_risk_label()` did its job), while every
+            # other computed label (e.g. go:no-automerge, which its ensure_*
+            # helper does guarantee when required) needs an exact match.
+            has_any_risk_label = any(
+                label.startswith("go:risk-") for label in verified_labels
+            )
+            missing = [
+                want
+                for want in labels
+                if want not in verified_labels
+                and not (want.startswith("go:risk-") and has_any_risk_label)
+            ]
             if edit_result.returncode != 0 or missing:
                 return {
                     "pr_url": pr_url,

@@ -361,8 +361,8 @@ def _proves_land_pr_py_applies_preflight_labels_on_update():
         calls.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    def fake_ensure_risk(repo, pr_url, risk_level):
-        ensure_risk_calls.append((repo, pr_url, risk_level))
+    def fake_ensure_risk(repo, pr_url, risk_level, runner=None):
+        ensure_risk_calls.append((repo, pr_url, risk_level, runner))
         return f"go:risk-{risk_level}"
 
     def fake_ensure_no_automerge(repo, pr_url, eligible, runner=None):
@@ -394,7 +394,7 @@ def _proves_land_pr_py_applies_preflight_labels_on_update():
     if any(cmd[:3] == ["gh", "pr", "create"] for cmd in calls):
         raise AssertionError("update path issued gh pr create for an already-OPEN PR")
     if ensure_risk_calls != [
-        ("/fake/repo", "https://github.com/acme/widget/pull/9", "high")
+        ("/fake/repo", "https://github.com/acme/widget/pull/9", "high", fake_run)
     ]:
         raise AssertionError(
             f"update path did not call ensure_pr_risk_label as expected: {ensure_risk_calls!r}"
@@ -422,6 +422,57 @@ def _proves_land_pr_py_applies_preflight_labels_on_update():
             "_run_preflight_and_labels no longer sources labels from "
             "preflight.read_marker() -- land_pr()'s update-path labels would "
             "no longer be preflight-computed"
+        )
+
+
+def _proves_land_pr_py_mismatched_risk_label_is_not_permanently_stuck():
+    """`ensure_pr_risk_label()` is documented add-only: it leaves a
+    pre-existing, DIFFERENT go:risk-* label in place. The update path's
+    post-mutation verification must accept that (any go:risk-* label proves
+    the ensure_* call ran) rather than requiring an exact match -- requiring
+    an exact match would make a PR whose risk label needs correcting
+    permanently unlandable, since re-invoking never changes the outcome."""
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout=json.dumps(
+                    {
+                        "url": "https://github.com/acme/widget/pull/9",
+                        "number": 9,
+                        "state": "OPEN",
+                        # Pre-existing, mismatched risk label --
+                        # ensure_pr_risk_label() leaves it alone by design.
+                        "labels": [{"name": "go:risk-high"}],
+                    }
+                ),
+                stderr="",
+            )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    real_ensure_risk = land_pr.pr_labels.ensure_pr_risk_label
+    land_pr.pr_labels.ensure_pr_risk_label = lambda *a, **k: None
+    try:
+        result = land_pr.open_or_update_pull_request(
+            Path("/fake/repo"),
+            "main",
+            "feature",
+            "title",
+            "body",
+            "low",
+            ["go:risk-low"],
+            "route-a",
+            fake_run,
+        )
+    finally:
+        land_pr.pr_labels.ensure_pr_risk_label = real_ensure_risk
+
+    if result["refused_step"] is not None:
+        raise AssertionError(
+            "update path treated a legitimately-preserved, mismatched "
+            f"go:risk-* label as a failure: {result!r}"
         )
 
 
@@ -527,6 +578,9 @@ class TestPrCreationCallsiteEnforcementCoverage(unittest.TestCase):
 
     def test_land_pr_update_path_verifies_before_reporting_success(self):
         _proves_land_pr_py_update_path_verifies_before_reporting_success()
+
+    def test_land_pr_mismatched_risk_label_is_not_permanently_stuck(self):
+        _proves_land_pr_py_mismatched_risk_label_is_not_permanently_stuck()
 
 
 if __name__ == "__main__":
