@@ -111,7 +111,8 @@ convergence_summary = [
         "notes": e["report"].get("notes"),
     }
     for i, e in enumerate(
-        e for e in entries
+        e
+        for e in entries
         if e.get("task") == task["id"] and e.get("role") == dispatch.ROLE_REVIEW
     )
 ]
