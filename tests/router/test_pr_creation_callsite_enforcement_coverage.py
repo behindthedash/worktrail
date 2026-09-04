@@ -570,18 +570,28 @@ def _proves_land_pr_py_watch_ci_distinguishes_no_checks_from_pending():
     haven't registered yet (a race right after `gh pr create`). `_watch_ci`
     must give that case a short, separate grace period rather than burning
     the normal WATCH_REISSUE_MAX budget in milliseconds and misclassifying a
-    healthy PR (or a no-CI repo) as `failed_recoverable`."""
+    healthy PR as `failed_recoverable`. But it must NOT guess "no CI" and
+    report a clean pass either -- checks that are merely slow to register
+    are indistinguishable from a genuinely CI-less repo from inside this
+    function, so an exhausted grace period with checks still unregistered
+    must come back as `budget_exhausted` (-> `ceiling`, needs
+    reconciliation), never `settled: True` -- a PR must not be reported
+    landed on CI that was never actually observed."""
     no_checks_stderr = "no checks reported on the 'feature' branch"
 
-    # Checks never register at all: settles as landed (nothing to wait for),
-    # not budget_exhausted -- a repo with no CI is not a failure.
+    # Checks never register within the grace period: budget_exhausted, NOT a
+    # settled pass -- reporting this as landed would mean CI was never
+    # actually watched.
     def runner_no_checks(cmd, **kwargs):
         return subprocess.CompletedProcess(cmd, 1, stdout="", stderr=no_checks_stderr)
 
     with patch("time.sleep") as slept:
         result = land_pr._watch_ci(Path("/tmp"), 9, 600, runner_no_checks)
-    if not (result["settled"] is True and result["budget_exhausted"] is False):
-        raise AssertionError(f"no-CI repo was not treated as a clean settle: {result!r}")
+    if not (result["settled"] is False and result["budget_exhausted"] is True):
+        raise AssertionError(
+            f"unregistered checks after the grace period were not treated as "
+            f"budget_exhausted: {result!r}"
+        )
     if not slept.called:
         raise AssertionError("no-CI repo did not go through the grace-period wait")
 
@@ -611,6 +621,62 @@ def _proves_land_pr_py_watch_ci_distinguishes_no_checks_from_pending():
         )
     if result2["settled"] is not True:
         raise AssertionError(f"race case did not settle after checks registered: {result2!r}")
+
+
+def _proves_land_pr_py_update_path_label_exception_does_not_escape():
+    """`ensure_pr_risk_label()`/`ensure_pr_no_automerge_label()` are not
+    wrapped in the injected runner's error handling the way every other `gh`
+    call in the module is (`_gh()`'s `except (OSError,
+    subprocess.TimeoutExpired)`, and the adjacent `gh pr create` guard). A
+    missing `gh` binary or a network hang must not escape
+    `open_or_update_pull_request()` uncaught -- this fires after `_push()`
+    already succeeded, at exactly the point the module docstring promises is
+    reported as `ceiling`, not raised."""
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout=json.dumps(
+                    {
+                        "url": "https://github.com/acme/widget/pull/9",
+                        "number": 9,
+                        "state": "OPEN",
+                        "labels": [],
+                    }
+                ),
+                stderr="",
+            )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    def raising_ensure_risk(repo, pr_url, risk_level):
+        raise FileNotFoundError(2, "No such file or directory", "gh")
+
+    real_ensure_risk = land_pr.pr_labels.ensure_pr_risk_label
+    land_pr.pr_labels.ensure_pr_risk_label = raising_ensure_risk
+    try:
+        result = land_pr.open_or_update_pull_request(
+            Path("/fake/repo"),
+            "main",
+            "feature",
+            "title",
+            "body",
+            "high",
+            ["go:risk-high"],
+            "route-a",
+            fake_run,
+        )
+    finally:
+        land_pr.pr_labels.ensure_pr_risk_label = real_ensure_risk
+
+    if result["refused_step"] != "pr_update":
+        raise AssertionError(
+            f"an OSError from ensure_pr_risk_label escaped instead of being "
+            f"reported as refused_step=pr_update: {result!r}"
+        )
+    if result["pr_url"] != "https://github.com/acme/widget/pull/9":
+        raise AssertionError(f"pr_url was lost on the exception path: {result!r}")
 
 
 def _proves_land_pr_py_update_path_verifies_before_reporting_success():
@@ -727,6 +793,9 @@ class TestPrCreationCallsiteEnforcementCoverage(unittest.TestCase):
 
     def test_land_pr_watch_ci_distinguishes_no_checks_from_pending(self):
         _proves_land_pr_py_watch_ci_distinguishes_no_checks_from_pending()
+
+    def test_land_pr_update_path_label_exception_does_not_escape(self):
+        _proves_land_pr_py_update_path_label_exception_does_not_escape()
 
 
 if __name__ == "__main__":

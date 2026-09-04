@@ -464,16 +464,29 @@ def open_or_update_pull_request(
             risk_label = next(
                 (label for label in labels if label.startswith("go:risk-")), None
             )
-            if risk_label is not None:
-                pr_labels.ensure_pr_risk_label(
-                    str(repo), pr_url, risk_label.removeprefix("go:risk-")
+            try:
+                if risk_label is not None:
+                    pr_labels.ensure_pr_risk_label(
+                        str(repo), pr_url, risk_label.removeprefix("go:risk-")
+                    )
+                pr_labels.ensure_pr_no_automerge_label(
+                    str(repo),
+                    pr_url,
+                    "go:no-automerge" not in labels,
+                    runner=runner,
                 )
-            pr_labels.ensure_pr_no_automerge_label(
-                str(repo),
-                pr_url,
-                "go:no-automerge" not in labels,
-                runner=runner,
-            )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                # `pr_labels._run_gh_cmd()` does not catch these itself --
+                # same reasoning as the `gh pr create` guard below: this
+                # fires after `_push()` already succeeded, at exactly the
+                # point the module docstring promises is reported as
+                # `ceiling`, not raised out of `land_pr()` uncaught.
+                return {
+                    "pr_url": pr_url,
+                    "pr_number": pr_number,
+                    "refused_step": "pr_update",
+                    "detail": f"label application failed for PR {pr_url}: {exc}",
+                }
             # `gh pr edit --title/--body` (unlike `--add-label`) does not
             # touch classic-Projects fields, so the GraphQL-mutation failure
             # `_add_label()`/`pr_labels` avoid does not apply here.
@@ -705,9 +718,17 @@ def _watch_ci(
 
     Gives "no checks reported yet" a short, separate grace period before
     entering the main watch loop below -- see `_NO_CHECKS_STDERR_MARKER`'s
-    module-level comment. If checks never register within that grace period,
-    this repo/branch genuinely has no CI: reported as settled (nothing to
-    wait for), not a failure."""
+    module-level comment. If checks still haven't registered once that grace
+    period is spent, this is reported as `budget_exhausted` (-> `ceiling`,
+    needs reconciliation), exactly like the main watch loop's own budget
+    exhaustion below -- NOT `settled: True`. Checks that are merely slow to
+    register (a real, common race right after `gh pr create`) are
+    indistinguishable from a genuinely CI-less repo/branch from inside this
+    function; reporting the former as a clean pass would land a PR whose CI
+    was never actually observed (Requirement: CI watch runs to a classified
+    terminal outcome) -- the exact PR #902 shape this module exists to
+    close. A human/retry (ceiling), not a guessed pass, is the safe default
+    here."""
     for _ in range(_NO_CHECKS_GRACE_ATTEMPTS):
         registered = _checks_registered(repo, pr_number, runner)
         if registered is not False:
@@ -715,10 +736,10 @@ def _watch_ci(
         time.sleep(_NO_CHECKS_POLL_INTERVAL_S)
     else:
         return {
-            "settled": True,
+            "settled": False,
             "failing_checks": [],
             "log_excerpt": "",
-            "budget_exhausted": False,
+            "budget_exhausted": True,
         }
 
     reruns = 0
