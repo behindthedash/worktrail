@@ -1,6 +1,6 @@
 ## 1. Prompt states target_repo correctly per group (`Evidence-required verdict per brief`)
 
-- [ ] 1.1 Implement requirement: In `src/worktrail/workqueue/queue_triage.py`, replace
+- [x] 1.1 Implement requirement: In `src/worktrail/workqueue/queue_triage.py`, replace
       `EVALUATOR_PROMPT_TEMPLATE`'s single Step 2a `propose-change`/`target_repo` sentence
       (design.md Decision) with a `{propose_target_rule}` placeholder, and have
       `_evaluate_group()` compute its value using the same `repo == NO_REPO_KEY` branch
@@ -15,7 +15,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [cleanup] Run `PYTHONPATH=src pytest -q` and confirm it is green, including the new
+- [x] 2.1 [cleanup] Run `PYTHONPATH=src pytest -q` and confirm it is green, including the new
       test from section 1. Verification-only — no file changes expected.
-- [ ] 2.2 [cleanup] Run `openspec validate fix-evaluator-prompt-propose-change-wording --strict`
+- [x] 2.2 [cleanup] Run `openspec validate fix-evaluator-prompt-propose-change-wording --strict`
       and confirm it passes. Verification-only — no file changes expected.
