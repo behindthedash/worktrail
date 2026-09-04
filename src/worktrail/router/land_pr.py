@@ -842,11 +842,30 @@ def land_pr(request: LandRequest) -> LandOutcome:
         # accepted the ref update -- the remote's state cannot be trusted as
         # untouched, so this cannot be reported as `refused` (see `_push`
         # docstring). Needs reconciliation, not a clean retry.
+        #
+        # This fires before step 6 (`_ensure_run_record`), so only a
+        # CALLER-supplied `request.run` names an existing record to finish
+        # here -- `run=None` genuinely has nothing to finish yet (starting a
+        # fresh one here just to immediately fail it would misrepresent a
+        # run that never got past step 4).
+        merge_result = "push timed out or errored; remote state unknown"
+        if request.run:
+            _run_record_main(
+                [
+                    "finish",
+                    request.run,
+                    "--status",
+                    "failed_recoverable",
+                    "--merge-result",
+                    merge_result,
+                ]
+            )
         return LandOutcome(
             outcome="ceiling",
+            run=request.run,
             refused_step=refused,
             final_status="failed_recoverable",
-            merge_result="push timed out or errored; remote state unknown",
+            merge_result=merge_result,
             detail="push result ambiguous -- verify remote branch state before retrying",
         )
     if refused:
@@ -878,8 +897,32 @@ def land_pr(request: LandRequest) -> LandOutcome:
         # Not `refused`: the branch is already pushed at this point, so the
         # remote is already mutated and a plain `refused` (which promises an
         # untouched remote) would misrepresent that -- see module docstring.
+        #
+        # `pr_url`/`pr_number` ARE populated on both failure modes here
+        # (`pr_update`, `risk_label_mismatch`) -- the PR was found OPEN (or
+        # just created) on the remote, so a caller (e.g. task 2.1's
+        # claim+close-on-any-outcome-with-a-pr_url path) must not lose track
+        # of it. Same caller-supplied-run-only finishing rule as
+        # `push_ambiguous` above -- this also fires before step 6.
+        if request.run:
+            _run_record_main(
+                [
+                    "finish",
+                    request.run,
+                    "--status",
+                    "failed_recoverable",
+                    "--pr",
+                    pr_result["pr_url"] or "",
+                    "--merge-result",
+                    pr_result["detail"] or "",
+                ]
+            )
         return LandOutcome(
             outcome="ceiling",
+            pr_url=pr_result["pr_url"],
+            pr_number=pr_result["pr_number"],
+            labels=labels,
+            run=request.run,
             refused_step=pr_result["refused_step"],
             final_status="failed_recoverable",
             merge_result=pr_result["detail"],
