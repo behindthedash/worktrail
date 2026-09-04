@@ -242,7 +242,11 @@ def _ensure_compile_markers(
         return None, None
 
     for change_dir in dirs:
-        conductor_compile.main([str(change_dir)])
+        compile_exit = conductor_compile.main([str(change_dir)])
+        if compile_exit != 0:
+            return "compile_marker", (
+                f"conductor compile of {change_dir} failed with exit {compile_exit}"
+            )
 
     results = [check_compile_markers.check_marker(d) for d in dirs]
     failing = [r for r in results if r["status"] != "ok"]
@@ -285,7 +289,13 @@ def _run_preflight_and_labels(
 ) -> tuple[str | None, list[str]]:
     """Preflight gate + labels -- see module docstring step 3. Returns
     `(refused_step, labels)`; labels are only meaningful when
-    `refused_step` is None."""
+    `refused_step` is None.
+
+    A `preflight.main()` exit of 0 does not guarantee a marker was written --
+    `preflight._run()` has a real success path where tree state can't be
+    recorded and it returns 0 without calling `write_marker()`. An unreadable
+    marker is therefore refused (`"preflight"`), not read back as an empty,
+    genuinely-no-labels-required pass."""
     argv = ["run", "--repo", str(repo), "--risk", risk, "--target-branch", base_branch]
     if gates:
         argv += ["--gates", ",".join(gates)]
@@ -297,7 +307,9 @@ def _run_preflight_and_labels(
     if exit_code != 0:
         return "preflight", []
     marker = preflight.read_marker(repo)
-    labels = list((marker or {}).get("labels") or [])
+    if marker is None:
+        return "preflight", []
+    labels = list(marker.get("labels") or [])
     return None, labels
 
 
@@ -350,23 +362,22 @@ def open_or_update_pull_request(
         if data.get("state") == "OPEN":
             pr_url = data.get("url")
             pr_number = data.get("number")
-            current_labels = {entry.get("name") for entry in data.get("labels", [])}
-            # Apply every preflight-computed label the PR doesn't already
-            # carry -- not `ensure_pr_risk_label()`, which deliberately no-ops
-            # whenever ANY go:risk-* label is already present (see its own
-            # docstring), so it can't be trusted to guarantee the exact
-            # preflight-computed label set lands on an update.
-            for label in labels:
-                if label in current_labels:
-                    continue
-                applied = pr_labels._add_label(str(repo), pr_url, label, runner=runner)
-                if applied is None:
-                    return {
-                        "pr_url": None,
-                        "pr_number": None,
-                        "refused_step": "pr_labels",
-                        "detail": f"failed to apply label {label!r} to {pr_url}",
-                    }
+            # Ensure the preflight-computed risk/no-automerge labels land on
+            # the existing PR via the shared helpers rather than a second
+            # label-application implementation.
+            risk_label = next(
+                (label for label in labels if label.startswith("go:risk-")), None
+            )
+            if risk_label is not None:
+                pr_labels.ensure_pr_risk_label(
+                    str(repo), pr_url, risk_label.removeprefix("go:risk-")
+                )
+            pr_labels.ensure_pr_no_automerge_label(
+                str(repo),
+                pr_url,
+                "go:no-automerge" not in labels,
+                runner=runner,
+            )
             return {
                 "pr_url": pr_url,
                 "pr_number": pr_number,
