@@ -486,7 +486,7 @@ def _proves_land_pr_py_refuses_out_of_range_route_before_any_push():
     for bad_route in ("c", "Z", "route-a"):
         pushed = []
 
-        def fake_push(repo, branch, runner):
+        def fake_push(repo, branch, remote, runner):
             pushed.append(True)
             return None
 
@@ -512,6 +512,56 @@ def _proves_land_pr_py_refuses_out_of_range_route_before_any_push():
             raise AssertionError(
                 f"route={bad_route!r} pushed the branch before refusing"
             )
+
+
+def _proves_land_pr_py_push_honors_remote_pushdefault():
+    """`_push_target()` must honor `git config remote.pushDefault` (the "I
+    push to my fork, not upstream" knob) rather than `_push()` always
+    hardcoding `origin` -- mirroring `queue_triage.py`'s own `_push_target()`,
+    outside this task's scope to import from directly, so re-derived here
+    against the same primitives. Without this, a repo whose `origin` is a
+    read-only upstream (fork remote configured separately) has every push
+    denied -- the exact incident `queue_triage._push_target()`'s docstring
+    records."""
+
+    def fork_runner(cmd, **kwargs):
+        if cmd[-3:] == ["config", "--get", "remote.pushDefault"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="fork\n", stderr="")
+        if len(cmd) >= 3 and cmd[-3] == "remote" and cmd[-2] == "get-url":
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="git@github.com:me/widget.git\n", stderr=""
+            )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    remote, slug = land_pr._push_target(Path("/tmp"), fork_runner)
+    if (remote, slug) != ("fork", "me/widget"):
+        raise AssertionError(
+            f"pushDefault=fork did not resolve to ('fork', 'me/widget'): {(remote, slug)!r}"
+        )
+
+    def no_pushdefault_runner(cmd, **kwargs):
+        if cmd[-3:] == ["config", "--get", "remote.pushDefault"]:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    remote2, slug2 = land_pr._push_target(Path("/tmp"), no_pushdefault_runner)
+    if (remote2, slug2) != ("origin", None):
+        raise AssertionError(
+            f"no pushDefault did not fall back to ('origin', None): {(remote2, slug2)!r}"
+        )
+
+    seen: list[list[str]] = []
+
+    def capture_runner(cmd, **kwargs):
+        seen.append(cmd)
+        if "rev-parse" in cmd:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    land_pr._push(Path("/tmp"), "feature", "fork", capture_runner)
+    push_cmds = [c for c in seen if "push" in c]
+    if not push_cmds or "fork" not in push_cmds[0] or "origin" in push_cmds[0]:
+        raise AssertionError(f"_push did not use the resolved remote: {push_cmds!r}")
 
 
 def _proves_land_pr_py_update_path_verifies_before_reporting_success():
@@ -622,6 +672,9 @@ class TestPrCreationCallsiteEnforcementCoverage(unittest.TestCase):
 
     def test_land_pr_refuses_out_of_range_route_before_any_push(self):
         _proves_land_pr_py_refuses_out_of_range_route_before_any_push()
+
+    def test_land_pr_push_honors_remote_pushdefault(self):
+        _proves_land_pr_py_push_honors_remote_pushdefault()
 
 
 if __name__ == "__main__":

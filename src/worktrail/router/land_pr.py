@@ -53,6 +53,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import re
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
@@ -343,7 +344,37 @@ def _run_preflight_and_labels(
     return None, labels
 
 
-def _push(repo: Path, branch: str, runner: Runner) -> str | None:
+_GITHUB_SLUG_RE = re.compile(r"github\.com[:/]([^/\s]+/[^/\s]+?)(?:\.git)?/?$")
+
+
+def _push_target(repo: Path, runner: Runner) -> tuple[str, str | None]:
+    """Remote to push to, plus its GitHub `owner/repo` slug for `gh pr create
+    -R`/`gh pr view -R`.
+
+    Mirrors `workqueue/queue_triage.py`'s `_push_target()` (outside this
+    task's declared scope to import from directly, so re-derived here
+    against the same `git config`/`git remote` primitives rather than
+    re-guessing the behavior). Honors `git config remote.pushDefault` -- the
+    standard git knob for "I push to my fork, not upstream" -- and falls
+    back to `("origin", None)` so `gh` infers the base repo from the local
+    checkout the way an unconfigured caller always did. Without this,
+    `land_pr()` always pushes to `origin`, which is what caused a real
+    denied push in the incident `queue_triage._push_target()`'s docstring
+    records (an `origin` that is the read-only upstream, with the fork
+    configured as `remote.pushDefault`)."""
+    cfg = _git(repo, runner, "config", "--get", "remote.pushDefault")
+    remote = cfg.stdout.strip() if cfg.returncode == 0 else ""
+    if not remote:
+        return "origin", None
+    url = _git(repo, runner, "remote", "get-url", remote)
+    slug = None
+    if url.returncode == 0:
+        match = _GITHUB_SLUG_RE.search((url.stdout or "").strip())
+        slug = match.group(1) if match else None
+    return remote, slug
+
+
+def _push(repo: Path, branch: str, remote: str, runner: Runner) -> str | None:
     """Push the branch -- see module docstring step 4. Returns a
     refused-step name on failure, else None.
 
@@ -358,7 +389,7 @@ def _push(repo: Path, branch: str, runner: Runner) -> str | None:
     upstream = _git(
         repo, runner, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"
     )
-    args = ["push"] if upstream.returncode == 0 else ["push", "-u", "origin", branch]
+    args = ["push"] if upstream.returncode == 0 else ["push", "-u", remote, branch]
     cmd = ["git", "-C", str(repo), *args]
     try:
         result = runner(cmd, capture_output=True, text=True, timeout=60)
@@ -377,24 +408,26 @@ def open_or_update_pull_request(
     labels: Sequence[str],
     route: str,
     runner: Runner,
+    base_slug: str | None = None,
 ) -> dict[str, Any]:
     """Find-or-create the PR -- see module docstring step 5. Returns
     `{"pr_url", "pr_number", "refused_step", "detail"}`; `pr_url`/`pr_number`
     are None only when `refused_step` is set.
 
+    `base_slug` (from `_push_target()`), when set, is passed as `gh ... -R
+    <slug>` on both the lookup and create calls below -- without it, `gh`
+    infers the target repo from the current checkout's default remote, which
+    is wrong when `head_branch` was pushed to a non-default remote (a fork
+    via `remote.pushDefault`; see `_push_target()`).
+
     Shared with `orchestrator/integrate.py`'s group-PR open/update step
     (design.md D6) -- this is the only place a `gh pr create` literal for a
     non-sandbox caller may appear (see
     `test_pr_creation_callsite_enforcement_coverage.py`)."""
-    view = _gh(
-        repo,
-        runner,
-        "pr",
-        "view",
-        head_branch,
-        "--json",
-        "url,number,state,labels",
-    )
+    view_args = ["pr", "view", head_branch, "--json", "url,number,state,labels"]
+    if base_slug:
+        view_args += ["-R", base_slug]
+    view = _gh(repo, runner, *view_args)
     if view.returncode == 0:
         try:
             data = json.loads(view.stdout)
@@ -520,6 +553,8 @@ def open_or_update_pull_request(
         "--body",
         body,
     ]
+    if base_slug:
+        cmd += ["-R", base_slug]
     for label in labels:
         cmd += ["--label", label]
     try:
@@ -852,7 +887,8 @@ def land_pr(request: LandRequest) -> LandOutcome:
         return LandOutcome(
             outcome="refused", refused_step="push", detail="no current branch"
         )
-    refused = _push(repo, branch, runner)
+    push_remote, base_slug = _push_target(repo, runner)
+    refused = _push(repo, branch, push_remote, runner)
     if refused == "push_ambiguous":
         # A timeout/OSError mid-push means the server may already have
         # accepted the ref update -- the remote's state cannot be trusted as
@@ -908,6 +944,7 @@ def land_pr(request: LandRequest) -> LandOutcome:
         labels,
         request.route,
         runner,
+        base_slug=base_slug,
     )
     if pr_result["refused_step"]:
         # Not `refused`: the branch is already pushed at this point, so the
