@@ -750,11 +750,7 @@ class TestEvaluatorPromptTemplate(unittest.TestCase):
             "`fold-into-change` is never valid",
             qt.EVALUATOR_PROMPT_TEMPLATE,
         )
-        self.assertIn(
-            "`propose-change` is valid only when your evidence names one of "
-            "these known repos as the `target_repo`: {known_repos}",
-            qt.EVALUATOR_PROMPT_TEMPLATE,
-        )
+        self.assertIn("{propose_target_rule}", qt.EVALUATOR_PROMPT_TEMPLATE)
         self.assertIn("use `needs-decision`", qt.EVALUATOR_PROMPT_TEMPLATE)
 
     def test_prompt_output_schema_covers_all_verdict_types_and_target_fields(self):
@@ -915,6 +911,52 @@ class TestEvaluateGroupCandidateContext(QueueTriageTestBase):
             )
 
         self.assertEqual(result[0]["known_repos_by_brief"], {})
+
+    def test_repo_bearing_group_prompt_states_target_repo_without_allowlist(self):
+        from worktrail.orchestrator.spawnlib import SpawnResult
+
+        repo_root = self.base / "repo"
+        brief_path = self.write(
+            "a.md", repo=str(repo_root), body="## Focus\n\nanything at all\n"
+        )
+
+        with mock.patch(
+            "worktrail.orchestrator.spawnlib.spawn_agent",
+            return_value=SpawnResult(text="", usage={}),
+        ) as mock_spawn:
+            qt.evaluate_group(
+                str(repo_root), [brief_path], cwd=repo_root, repos_root=self.base
+            )
+
+        prompt_sent = mock_spawn.call_args.args[0]
+        self.assertIn(
+            f"`propose-change`'s `target_repo` for this group is simply "
+            f"`{repo_root}` (this group's own repo)",
+            prompt_sent,
+        )
+        self.assertNotIn(
+            "is valid only when your evidence names one of these known repos",
+            prompt_sent,
+        )
+        self.assertNotIn("(not applicable)", prompt_sent)
+
+    def test_no_repo_group_prompt_keeps_known_repos_allowlist_wording(self):
+        from worktrail.orchestrator.spawnlib import SpawnResult
+
+        brief_path = self.write("a.md", body="## Focus\n\nanything at all\n")
+
+        with mock.patch(
+            "worktrail.orchestrator.spawnlib.spawn_agent",
+            return_value=SpawnResult(text="", usage={}),
+        ) as mock_spawn:
+            qt.evaluate_group(qt.NO_REPO_KEY, [brief_path], cwd=self.base)
+
+        prompt_sent = mock_spawn.call_args.args[0]
+        self.assertIn(
+            "`propose-change` is valid only when your evidence names one of "
+            "these known repos as the `target_repo`: (none found).",
+            prompt_sent,
+        )
 
 
 class TestApplyVerdicts(QueueTriageTestBase):
