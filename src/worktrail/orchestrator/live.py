@@ -3798,6 +3798,7 @@ def _apply_step_commit(
         task["status"] = "fixing"
         task["retry_count"] = pre_retry
     report_fields = {k: rep.get(k) for k in orchestrate._REPORT_FIELDS}
+    convergence_summary: list | None = None
     if new in ("escalated", "failed"):
         # dispatch.transition computes this status in-memory only -- stamp it onto
         # the entry that actually produced it, not only onto downstream
@@ -3808,6 +3809,36 @@ def _apply_step_commit(
         # previously only "escalated" was stamped here, so clear_tasks() refused a
         # "failed" entry even though task status already read "failed".
         report_fields["terminal_status"] = new
+        if new == "escalated":
+            # Design D3: a task that burns all three review rounds escalates to a
+            # human, who otherwise has to reconstruct the argument by hand from
+            # scattered journal entries. Roll this run's review history for THIS
+            # task -- the rounds already journaled, plus the report escalating it
+            # right now -- into one round-ordered list on the escalating entry.
+            prior = [
+                e
+                for e in entries
+                if e.get("task") == task["id"] and e.get("role") == dispatch.ROLE_REVIEW
+            ]
+            convergence_summary = [
+                {
+                    "round": i + 1,
+                    "review_status": (e.get("report") or {}).get("review_status"),
+                    "critical_issues": (e.get("report") or {}).get("critical_issues"),
+                    "major_issues": (e.get("report") or {}).get("major_issues"),
+                    "notes": (e.get("report") or {}).get("notes"),
+                }
+                for i, e in enumerate(prior)
+            ]
+            convergence_summary.append(
+                {
+                    "round": len(prior) + 1,
+                    "review_status": rep.get("review_status"),
+                    "critical_issues": rep.get("critical_issues"),
+                    "major_issues": rep.get("major_issues"),
+                    "notes": rep.get("notes"),
+                }
+            )
     entry: dict = {
         "task": rep["task"],
         "role": rep["step"],
@@ -3824,6 +3855,8 @@ def _apply_step_commit(
         entry["tools_used"] = tools_used
     if skills_used:
         entry["skills_used"] = skills_used
+    if convergence_summary is not None:
+        entry["convergence_summary"] = convergence_summary
     if task.get("_scope_added_files"):
         entry["scope_escalated"] = True
         entry["scope_escalated_files"] = list(task["_scope_added_files"])

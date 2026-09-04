@@ -1,6 +1,6 @@
 ## 1. Re-review rounds carry the prior round's findings forward (`Re-review rounds carry the prior round's findings forward`)
 
-- [ ] 1.1 Implement requirement: In `src/worktrail/orchestrator/dispatch.py`, extend
+- [x] 1.1 Implement requirement: In `src/worktrail/orchestrator/dispatch.py`, extend
       `apply_report`'s existing `if role == ROLE_REVIEW and report.get("review_status"):`
       block (design.md D1) to also stash `report.get("critical_issues")`,
       `report.get("major_issues")`, and `report.get("notes")` onto the task under
@@ -27,7 +27,7 @@
 
 ## 2. Escalation records the full round-by-round history (`An escalated task's journal entry records every review round`)
 
-- [ ] 2.1 Implement requirement: In `src/worktrail/orchestrator/live.py`'s
+- [x] 2.1 Implement requirement: In `src/worktrail/orchestrator/live.py`'s
       `_apply_step_commit` (design.md D3), inside the existing
       `if new in ("escalated", "failed"):` block, when `new == "escalated"` build a
       `convergence_summary` list from `entries` (this run's accumulated journal list):
@@ -52,11 +52,11 @@
 
 ## 3. Verification
 
-- [ ] 3.1 [cleanup] Run `PYTHONPATH=src pytest -q` and confirm it is green, including the
+- [x] 3.1 [cleanup] Run `PYTHONPATH=src pytest -q` and confirm it is green, including the
       new tests from sections 1 and 2. Verification-only — no file changes expected.
-- [ ] 3.2 [cleanup] Run `python3 -m worktrail.orchestrator.orchestrate check` (golden
+- [x] 3.2 [cleanup] Run `python3 -m worktrail.orchestrator.orchestrate check` (golden
       record/replay regression) and confirm it is unaffected by the round-1 prompt text
       staying byte-identical. Verification-only — no file changes expected.
-- [ ] 3.3 [cleanup] Run `openspec validate orchestrator-review-loop-bounded-convergence
+- [x] 3.3 [cleanup] Run `openspec validate orchestrator-review-loop-bounded-convergence
       --strict` and confirm it passes. Verification-only — no file changes expected.
 

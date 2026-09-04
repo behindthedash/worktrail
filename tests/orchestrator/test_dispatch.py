@@ -26,6 +26,7 @@ from worktrail.orchestrator.dispatch import (
     ReviewWorkerPromptCtx,
     WorkerPromptCtx,
     agent_for,
+    apply_report,
     build_group_prompt,
     build_worker_prompt,
     transition,
@@ -1428,6 +1429,76 @@ class ResolvedDecisionDispatchGateTests(unittest.TestCase):
         self._ask()
         self._answer()
         return self._load()
+
+
+class TestReviewRoundAwareness(unittest.TestCase):
+    """A re-review round must carry the prior round's findings forward, while
+    round 1 renders exactly as it did before the clause existed."""
+
+    def test_round_one_prompt_has_no_round_or_prior_findings_text(self):
+        task = _make_task()
+        prompt = build_worker_prompt(ROLE_REVIEW, task, _make_ctx())
+
+        self.assertNotIn("review round", prompt)
+        self.assertNotIn("The previous round found", prompt)
+        self.assertNotIn("Still Present", prompt)
+
+    def test_round_one_prompt_is_unchanged_by_a_zero_retry_count(self):
+        """An explicit `retry_count: 0` renders byte-identical to its absence."""
+        absent = build_worker_prompt(ROLE_REVIEW, _make_task(), _make_ctx())
+        explicit_zero = build_worker_prompt(
+            ROLE_REVIEW, {**_make_task(), "retry_count": 0}, _make_ctx()
+        )
+
+        self.assertEqual(absent, explicit_zero)
+
+    def test_re_review_prompt_carries_prior_round_findings(self):
+        task = _make_task()
+        tasks = [task]
+        report = {
+            "task": task["id"],
+            "status": "success",
+            "review_status": "FAILED",
+            "critical_issues": 1,
+            "major_issues": 2,
+            "notes": "missing null check in parse()",
+        }
+        apply_report(tasks, report, ROLE_REVIEW)
+
+        prompt = build_worker_prompt(ROLE_REVIEW, task, _make_ctx())
+
+        self.assertIn("This is review round 2.", prompt)
+        self.assertIn("1 critical and 2 major issue(s)", prompt)
+        self.assertIn("missing null check in parse()", prompt)
+        self.assertIn("Resolved or Still Present", prompt)
+        # The reconciliation must be demanded before any new findings, and the
+        # clause must sit ahead of the review-file write instruction.
+        self.assertLess(
+            prompt.index("Still Present"),
+            prompt.index("before listing anything new"),
+        )
+        self.assertLess(
+            prompt.index("This is review round 2."),
+            prompt.index("-review.md"),
+        )
+
+    def test_passed_review_still_stashes_its_own_counts_and_notes(self):
+        """A PASSED review stashes too -- spec's "PASSED or skipped review"
+        scenario -- so a later round never reads a stale prior verdict."""
+        task = _make_task()
+        report = {
+            "task": task["id"],
+            "status": "success",
+            "review_status": "PASSED",
+            "critical_issues": 0,
+            "major_issues": 0,
+            "notes": "all AC verified",
+        }
+        apply_report([task], report, ROLE_REVIEW)
+
+        self.assertEqual(task["review_critical_issues"], 0)
+        self.assertEqual(task["review_major_issues"], 0)
+        self.assertEqual(task["review_notes"], "all AC verified")
 
 
 if __name__ == "__main__":
