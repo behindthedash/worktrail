@@ -56,6 +56,7 @@ from unittest.mock import patch
 
 from worktrail.drain import drain
 from worktrail.orchestrator import integrate, live
+from worktrail.router import land_pr
 from worktrail.workqueue import queue_triage
 
 SRC_ROOT = Path(integrate.__file__).resolve().parent.parent  # src/worktrail
@@ -276,6 +277,48 @@ def _proves_queue_triage_py_uses_enforced_labels():
         )
 
 
+def _proves_land_pr_py_uses_preflight_labels():
+    """land_pr.py's `open_or_update_pull_request` gh pr create call site
+    builds its `--label` flags from the `labels` argument, which callers
+    (`land_pr()`) source from `_run_preflight_and_labels()` ->
+    `preflight.read_marker()`'s pass marker, never an independently
+    hand-rolled list. Prove the wiring behaviorally: call
+    `open_or_update_pull_request` directly with a distinctive label set and
+    a fake runner, and confirm the constructed `gh pr create` command
+    carries exactly those labels."""
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout="https://example.invalid/pr/1\n", stderr=""
+        )
+
+    land_pr.open_or_update_pull_request(
+        Path("/fake/repo"),
+        "main",
+        "feature",
+        "title",
+        "body",
+        "low",
+        ["go:risk-canary"],
+        "route-a",
+        fake_run,
+    )
+    if (
+        "cmd" not in captured
+        or "--label" not in captured["cmd"]
+        or "go:risk-canary" not in captured["cmd"]
+    ):
+        raise AssertionError(
+            "land_pr.py's gh pr create call did not carry the labels passed "
+            "in -- its call site may have stopped routing through the "
+            "preflight-sourced label path"
+        )
+
+
 # relative-to-src/worktrail path -> callable proving its gh pr create call
 # either routes through the enforced label path, or is a reviewed,
 # policy-exempt sandbox/dev-tooling path. Every file
@@ -285,6 +328,7 @@ CALLSITE_CONSUMERS = {
     "orchestrator/live.py": _proves_live_py_full_is_sandbox_only_dev_tooling,
     "drain/drain.py": _proves_drain_py_uses_enforced_labels,
     "workqueue/queue_triage.py": _proves_queue_triage_py_uses_enforced_labels,
+    "router/land_pr.py": _proves_land_pr_py_uses_preflight_labels,
 }
 
 KNOWN_CALLSITES = set(CALLSITE_CONSUMERS)

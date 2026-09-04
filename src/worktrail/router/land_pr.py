@@ -109,6 +109,7 @@ class LandRequest:
     gates: list[str] = field(default_factory=list)
     run: str | None = None
     request_summary: str = ""
+    spec_lineage: str = ""
     commit_message: str | None = None
     checkpoint: bool = False
     watch_timeout_s: int = 600
@@ -135,22 +136,21 @@ class LandOutcome:
 
 
 def _git(repo: Path, runner: Runner, *args: str, timeout: int = 60):
-    return runner(
-        ["git", "-C", str(repo), *args],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    cmd = ["git", "-C", str(repo), *args]
+    try:
+        return runner(cmd, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr=str(exc))
 
 
 def _gh(repo: Path, runner: Runner, *args: str, timeout: int = 30):
-    return runner(
-        ["gh", *args],
-        cwd=str(repo),
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    cmd = ["gh", *args]
+    try:
+        return runner(
+            cmd, cwd=str(repo), capture_output=True, text=True, timeout=timeout
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr=str(exc))
 
 
 def _current_branch(repo: Path, runner: Runner) -> str | None:
@@ -193,7 +193,9 @@ def render_pr_body(
     )
 
 
-def _commit_pending(repo: Path, commit_message: str | None, runner: Runner) -> str | None:
+def _commit_pending(
+    repo: Path, commit_message: str | None, runner: Runner
+) -> str | None:
     """Commit a dirty tree, or refuse (`"dirty_tree"`) when no
     `commit_message` was supplied -- see module docstring step 1. Never
     touches a clean tree. Returns the refused-step name, or None on success."""
@@ -233,9 +235,9 @@ def _ensure_compile_markers(
     marker_paths = [
         str(conductor_compile.marker_path(d).relative_to(repo)) for d in dirs
     ]
-    diff = _git(repo, runner, "diff", "--name-only", "--", *marker_paths)
-    if diff.returncode == 0 and diff.stdout.strip():
-        _git(repo, runner, "add", "--", *marker_paths)
+    _git(repo, runner, "add", "--", *marker_paths)
+    staged = _git(repo, runner, "diff", "--cached", "--name-only", "--", *marker_paths)
+    if staged.returncode == 0 and staged.stdout.strip():
         change_names = ", ".join(d.name for d in dirs)
         _git(
             repo,
@@ -337,6 +339,7 @@ def open_or_update_pull_request(
             }
 
     cmd = [
+        "gh",
         "pr",
         "create",
         "--base",
@@ -350,7 +353,7 @@ def open_or_update_pull_request(
     ]
     for label in labels:
         cmd += ["--label", label]
-    result = pr_labels._run_gh_cmd(["gh", *cmd], str(repo), runner)
+    result = pr_labels._run_gh_cmd(cmd, str(repo), runner)
     out = (
         (result.stdout or result.stderr).strip().splitlines()[-1]
         if (result.stdout or result.stderr)
@@ -512,9 +515,7 @@ def _watch_ci(
     }
 
 
-def _merge_state_guard(
-    repo: Path, pr_number: int, runner: Runner
-) -> dict[str, Any]:
+def _merge_state_guard(repo: Path, pr_number: int, runner: Runner) -> dict[str, Any]:
     """Merge-state guard -- design.md D7. Returns the settled `gh pr view`
     JSON payload (possibly after up to `MERGE_STATE_RERUN_MAX` reruns of a
     CANCELLED/SUCCESS same-name check pair)."""
@@ -549,8 +550,9 @@ def _merge_state_guard(
         pair_found = False
         for entry in rollup:
             name = entry.get("name") or entry.get("context")
+            state = entry.get("conclusion") or entry.get("state")
             states = by_name.get(name, [])
-            if "CANCELLED" in states and "SUCCESS" in states:
+            if state == "CANCELLED" and "SUCCESS" in states:
                 database_id = entry.get("databaseId")
                 if database_id:
                     _gh(repo, runner, "run", "rerun", str(database_id))
@@ -630,14 +632,21 @@ def land_pr(request: LandRequest) -> LandOutcome:
         return LandOutcome(outcome="refused", refused_step=refused, detail=detail)
 
     refused, labels = _run_preflight_and_labels(
-        repo, request.base_branch, request.risk, request.gates, request.route, request.run
+        repo,
+        request.base_branch,
+        request.risk,
+        request.gates,
+        request.route,
+        request.run,
     )
     if refused:
         return LandOutcome(outcome="refused", refused_step=refused)
 
     branch = _current_branch(repo, runner)
     if not branch:
-        return LandOutcome(outcome="refused", refused_step="push", detail="no current branch")
+        return LandOutcome(
+            outcome="refused", refused_step="push", detail="no current branch"
+        )
     refused = _push(repo, branch, runner)
     if refused:
         return LandOutcome(outcome="refused", refused_step=refused)
@@ -645,15 +654,24 @@ def land_pr(request: LandRequest) -> LandOutcome:
     body = render_pr_body(
         summary=request.summary,
         route=request.route,
-        epic_feature_spec=request.request_summary or "none",
+        epic_feature_spec=request.spec_lineage or "none",
         gate_evidence="worktrail-preflight run: PASS",
         risk=request.risk,
         labels=labels,
-        automerge_recommendation="eligible" if "go:no-automerge" not in labels else "ineligible",
+        automerge_recommendation="eligible"
+        if "go:no-automerge" not in labels
+        else "ineligible",
     )
     pr_result = open_or_update_pull_request(
-        repo, request.base_branch, branch, request.title, body,
-        request.risk, labels, request.route, runner,
+        repo,
+        request.base_branch,
+        branch,
+        request.title,
+        body,
+        request.risk,
+        labels,
+        request.route,
+        runner,
     )
     if pr_result["refused_step"]:
         return LandOutcome(
@@ -670,9 +688,16 @@ def land_pr(request: LandRequest) -> LandOutcome:
     if run_path:
         _run_record_main(["set", run_path, "pull_request", pr_url])
 
-    watch = _watch_ci(repo, pr_number, request.watch_timeout_s, runner) if pr_number else {
-        "settled": False, "failing_checks": [], "log_excerpt": "", "budget_exhausted": True,
-    }
+    watch = (
+        _watch_ci(repo, pr_number, request.watch_timeout_s, runner)
+        if pr_number
+        else {
+            "settled": False,
+            "failing_checks": [],
+            "log_excerpt": "",
+            "budget_exhausted": True,
+        }
+    )
 
     if watch["budget_exhausted"]:
         if run_path:
@@ -704,7 +729,7 @@ def land_pr(request: LandRequest) -> LandOutcome:
             record = _load_run_record(Path(run_path))
             current_iteration = int(record.get("ci_patch_iterations") or 0)
         next_iteration = current_iteration + 1
-        if next_iteration > CI_PATCH_ITERATION_CEILING:
+        if next_iteration >= CI_PATCH_ITERATION_CEILING:
             merge_result = (
                 f"code defect ceiling reached after {current_iteration} patch "
                 "iteration(s)"
@@ -755,7 +780,11 @@ def land_pr(request: LandRequest) -> LandOutcome:
         merge_result = "merged externally"
         if run_path:
             _finish_or_checkpoint(
-                run_path, "completed_and_merged", pr_url, merge_result, request.checkpoint
+                run_path,
+                "completed_and_merged",
+                pr_url,
+                merge_result,
+                request.checkpoint,
             )
         return LandOutcome(
             outcome="landed",
@@ -830,6 +859,7 @@ def main(argv: list[str] | None = None) -> int:
     summary_group.add_argument("--summary-file")
     ap.add_argument("--run", default=None)
     ap.add_argument("--route", required=True)
+    ap.add_argument("--spec-lineage", default="", dest="spec_lineage")
     ap.add_argument("--risk", default="low")
     ap.add_argument("--gates", default="")
     ap.add_argument("--commit-message", default=None)
@@ -852,6 +882,7 @@ def main(argv: list[str] | None = None) -> int:
         gates=[g for g in args.gates.split(",") if g],
         run=args.run,
         request_summary=summary,
+        spec_lineage=args.spec_lineage,
         commit_message=args.commit_message,
         checkpoint=args.checkpoint,
         watch_timeout_s=args.watch_timeout_s,
