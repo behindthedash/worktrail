@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """A task that burns all three review rounds escalates to a human, and the
 human otherwise has to reconstruct the whole argument by hand from journal
 entries scattered across the run. `_apply_step_commit` now rolls this run's
