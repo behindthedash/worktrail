@@ -149,11 +149,13 @@ def _git(repo: Path, runner: Runner, *args: str, timeout: int = 60):
 
 
 def _gh(repo: Path, runner: Runner, *args: str, timeout: int = 30):
+    """`gh` subprocess call -- routed through `pr_labels._run_gh_cmd()` (the
+    AC's own named reuse target) so every call site here, including the
+    CI-watch loop, gets its transient-TLS retry rather than a second,
+    retry-less implementation of the same subprocess plumbing."""
     cmd = ["gh", *args]
     try:
-        return runner(
-            cmd, cwd=str(repo), capture_output=True, text=True, timeout=timeout
-        )
+        return pr_labels._run_gh_cmd(cmd, str(repo), runner, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return subprocess.CompletedProcess(cmd, 1, stdout="", stderr=str(exc))
 
@@ -373,36 +375,24 @@ def open_or_update_pull_request(
         if data.get("state") == "OPEN":
             pr_url = data.get("url")
             pr_number = data.get("number")
-            existing_labels = [
-                entry.get("name", "") for entry in (data.get("labels") or [])
-            ]
             # Ensure the preflight-computed risk/no-automerge labels land on
             # the existing PR via the shared helpers rather than a second
-            # label-application implementation. Unlike the public
-            # `ensure_pr_risk_label()` wrapper (which only adds when NO
-            # go:risk-* label exists at all, and has no runner parameter),
-            # this corrects a STALE risk label to the current computed value
-            # and honors the injected runner throughout, using
-            # `pr_labels`'s own private helpers (explicitly named as reuse
-            # targets in this task's own spec, alongside `_run_gh_cmd`).
+            # label-application implementation. `correct_pr_risk_label()`
+            # (unlike the conservative `ensure_pr_risk_label()`, whose "only
+            # add when none exists" contract is pinned for its other,
+            # post-hoc-correction callers) corrects a STALE risk label to the
+            # freshly-computed value from this run's own preflight pass, and
+            # honors the injected runner throughout.
             risk_label = next(
                 (label for label in labels if label.startswith("go:risk-")), None
             )
-            if risk_label is not None and risk_label not in existing_labels:
-                parsed = pr_labels._owner_repo_number(str(repo), pr_url, runner)
-                if parsed is not None:
-                    owner, repo_name, number = parsed
-                    for stale in existing_labels:
-                        if stale.startswith("go:risk-") and stale != risk_label:
-                            _gh(
-                                repo,
-                                runner,
-                                "api",
-                                f"repos/{owner}/{repo_name}/issues/{number}/labels/{stale}",
-                                "-X",
-                                "DELETE",
-                            )
-                pr_labels._add_label(str(repo), pr_url, risk_label, runner=runner)
+            if risk_label is not None:
+                pr_labels.correct_pr_risk_label(
+                    str(repo),
+                    pr_url,
+                    risk_label.removeprefix("go:risk-"),
+                    runner=runner,
+                )
             pr_labels.ensure_pr_no_automerge_label(
                 str(repo),
                 pr_url,
