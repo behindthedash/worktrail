@@ -1,6 +1,6 @@
 ## 1. Verdict shape, evaluator prompt, and parsing for the mechanical/judgment split
 
-- [ ] 1.1 Implement requirement: Evidence-required verdict per brief
+- [x] 1.1 Implement requirement: Evidence-required verdict per brief
       (MODIFIED) — `needs-update`'s optional `refuted_span`/`corrected_span`/
       `judgment_reason`. In `src/worktrail/workqueue/queue_triage.py`: add
       `refuted_span: str | None = None`, `corrected_span: str | None = None`,

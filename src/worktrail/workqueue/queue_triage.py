@@ -161,12 +161,10 @@ change that wasn't presented to you, even a plausible-looking one. If none of \
 the listed candidates are a good fit but the brief still clearly belongs in \
 this repo, use `propose-change` with a `target_repo` and a kebab-case \
 `proposed_change_name` instead. If `{repo}` is `{no_repo_key}` (no target \
-repo), `fold-into-change` is never valid for these briefs. `propose-change` \
-is valid only when your evidence names one of these known repos as the \
-`target_repo`: {known_repos}. If the brief needs to land somewhere but none \
-of these repos fit, or you cannot tell which one does, use `needs-decision` \
-with a `question` asking which repo it belongs to, rather than guessing a \
-target.
+repo), `fold-into-change` is never valid for these briefs. {propose_target_rule} \
+If the brief needs to land somewhere but none of these repos fit, or you \
+cannot tell which one does, use `needs-decision` with a `question` asking \
+which repo it belongs to, rather than guessing a target.
 
 Step 2b — work-directly requires reproduction evidence:
 Use `work-directly` only when your evidence cites a specific test, check, or \
@@ -1184,17 +1182,23 @@ def evaluate_group(
         for path in briefs
     )
     known_repos = _known_repos(repos_root) if repo == NO_REPO_KEY else []
-    known_repos_str = (
-        ", ".join(known_repos)
-        if known_repos
-        else ("(none found)" if repo == NO_REPO_KEY else "(not applicable)")
+    known_repos_str = ", ".join(known_repos) if known_repos else "(none found)"
+    propose_target_rule = (
+        "`propose-change` is valid only when your evidence names one of "
+        f"these known repos as the `target_repo`: {known_repos_str}."
+        if repo == NO_REPO_KEY
+        else (
+            "`propose-change`'s `target_repo` for this group is simply "
+            f"`{repo}` (this group's own repo) — there is no known-repos "
+            "allowlist to satisfy here."
+        )
     )
     prompt = EVALUATOR_PROMPT_TEMPLATE.format(
         repo=repo,
         briefs=brief_lines,
         no_repo_key=NO_REPO_KEY,
         memory_index=_memory_index_path(cwd),
-        known_repos=known_repos_str,
+        propose_target_rule=propose_target_rule,
     )
     result = spawnlib.spawn_agent(prompt, cwd, tier=DEFAULT_TIER, prefer=agent)
     candidates_by_brief = {
