@@ -322,6 +322,7 @@ _ROLE_ACTION = {
         "these are your complete checklist. "
         "Do NOT read the spec, data-model, contracts, or knowledge-graph. "
         "{review_checklist}"
+        "{round_awareness}"
         "Write `{spec_folder}reviews/{task_id}-review.md` with "
         "frontmatter `review_status: PASSED|FAILED`, `critical_issues:`, `major_issues:`. "
         "{review_verdict_rule} "
@@ -527,6 +528,26 @@ def _review_clauses(anchor: str) -> tuple:
     return _REVIEW_CHECKLIST_OWN_FILE, _REVIEW_VERDICT_OWN_FILE
 
 
+def _round_awareness_clause(task: dict[str, Any]) -> str:
+    """The re-review clause naming the round and the prior round's findings.
+
+    Empty on round 1 (`retry_count` absent or 0) so the round-1 prompt renders
+    byte-identical to a run that predates this clause -- this is additive, not
+    a rewording of the existing review brief.
+    """
+    retry_count = task.get("retry_count", 0) or 0
+    if retry_count == 0:
+        return ""
+    return (
+        f"This is review round {retry_count + 1}. The previous round found "
+        f"{task.get('review_critical_issues')} critical and "
+        f"{task.get('review_major_issues')} major issue(s): "
+        f"{task.get('review_notes')} "
+        f"For each of those, state in this review whether it is now Resolved or "
+        f"Still Present before listing anything new. "
+    )
+
+
 def _task_brief(ctx: WorkerPromptCtx | dict[str, Any], task_id: str) -> tuple:
     """`(path, note)` for the brief this worker opens.
 
@@ -601,6 +622,7 @@ def build_worker_prompt(
     tid = task["id"]
     brief, brief_note, brief_anchor = _task_brief(ctx, tid)
     review_checklist, review_verdict_rule = _review_clauses(brief_anchor)
+    round_awareness = _round_awareness_clause(task)
     scope = ", ".join(task.get("files", [])) or "(see task file)"
     is_noop_tail = task.get("kind") in ("e2e", "cleanup") and not task.get("files")
     if is_noop_tail:
@@ -614,6 +636,7 @@ def build_worker_prompt(
         task_brief=brief,
         review_checklist=review_checklist,
         review_verdict_rule=review_verdict_rule,
+        round_awareness=round_awareness,
     )
     # Role-differentiated reads: each role loads only what it actually needs.
     # Review and fix workers skip the full spec/plan (~60-80 KB saved per call).
@@ -1178,6 +1201,13 @@ def apply_report(
         task["head_sha"] = report["head_sha"]
     if role == ROLE_REVIEW and report.get("review_status"):
         task["review_status"] = report["review_status"].upper()
+        # Stash this round's findings on the task so the NEXT round's review
+        # prompt can ask the reviewer to reconcile against them. Plain
+        # overwrite: only the immediately-preceding round is ever needed here,
+        # the full history lives in the journal.
+        task["review_critical_issues"] = report.get("critical_issues")
+        task["review_major_issues"] = report.get("major_issues")
+        task["review_notes"] = report.get("notes")
     return old, new
 
 
