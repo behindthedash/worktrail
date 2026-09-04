@@ -427,11 +427,12 @@ def _proves_land_pr_py_applies_preflight_labels_on_update():
 
 def _proves_land_pr_py_mismatched_risk_label_is_not_permanently_stuck():
     """`ensure_pr_risk_label()` is documented add-only: it leaves a
-    pre-existing, DIFFERENT go:risk-* label in place. The update path's
-    post-mutation verification must accept that (any go:risk-* label proves
-    the ensure_* call ran) rather than requiring an exact match -- requiring
-    an exact match would make a PR whose risk label needs correcting
-    permanently unlandable, since re-invoking never changes the outcome."""
+    pre-existing, DIFFERENT go:risk-* label in place. The update path must
+    distinguish that case from a genuine failure -- it is surfaced as its
+    own `risk_label_mismatch` refused_step (Requirement: labels applied on
+    update -- the caller can see and act on the mismatch), never silently
+    accepted as success, and never conflated with `pr_update` (a real
+    failure needing a generic retry)."""
 
     def fake_run(cmd, **kwargs):
         if cmd[:3] == ["gh", "pr", "view"]:
@@ -469,10 +470,10 @@ def _proves_land_pr_py_mismatched_risk_label_is_not_permanently_stuck():
     finally:
         land_pr.pr_labels.ensure_pr_risk_label = real_ensure_risk
 
-    if result["refused_step"] is not None:
+    if result["refused_step"] != "risk_label_mismatch":
         raise AssertionError(
-            "update path treated a legitimately-preserved, mismatched "
-            f"go:risk-* label as a failure: {result!r}"
+            "update path did not surface the mismatched go:risk-* label "
+            f"as risk_label_mismatch: {result!r}"
         )
 
 

@@ -205,9 +205,18 @@ def _commit_pending(
 ) -> str | None:
     """Commit a dirty tree, or refuse (`"dirty_tree"`) when no
     `commit_message` was supplied -- see module docstring step 1. Never
-    touches a clean tree. Returns the refused-step name, or None on success."""
+    touches a clean tree. Returns the refused-step name, or None on success.
+
+    Fails closed on a `git status` failure (transient `index.lock`
+    contention, unreadable index, ...), matching `_ensure_compile_markers`'s
+    documented "fails closed on every git failure" posture -- a failed
+    status must not be read as "clean tree, nothing to do", since pending
+    work would then silently never reach the PR (the PR #902 shape this step
+    exists to close)."""
     status = _git(repo, runner, "status", "--porcelain")
-    if status.returncode != 0 or not status.stdout.strip():
+    if status.returncode != 0:
+        return "dirty_tree"
+    if not status.stdout.strip():
         return None
     if not commit_message:
         return "dirty_tree"
@@ -440,23 +449,31 @@ def open_or_update_pull_request(
                     verified_labels = []
             # `ensure_pr_risk_label()` is deliberately add-only: it leaves a
             # PRE-EXISTING, DIFFERENT go:risk-* label in place rather than
-            # correcting it. Requiring the exact computed risk label here
-            # would contradict that documented contract and make any PR
-            # whose risk label needs correcting permanently unlandable
-            # (stuck `ceiling` forever, since re-invoking never changes the
-            # outcome) -- so a risk label only needs SOME go:risk-* present
-            # (proof `ensure_pr_risk_label()` did its job), while every
-            # other computed label (e.g. go:no-automerge, which its ensure_*
+            # correcting it, so a mismatched (not missing) risk label is
+            # distinguished from a genuine failure -- it is reported, not
+            # silently accepted as `landed` (Requirement: labels applied on
+            # update) and not treated identically to a real failure. Every
+            # OTHER computed label (e.g. go:no-automerge, which its ensure_*
             # helper does guarantee when required) needs an exact match.
-            has_any_risk_label = any(
-                label.startswith("go:risk-") for label in verified_labels
+            wanted_risk = next(
+                (label for label in labels if label.startswith("go:risk-")), None
             )
-            missing = [
-                want
-                for want in labels
-                if want not in verified_labels
-                and not (want.startswith("go:risk-") and has_any_risk_label)
+            wanted_other = [
+                label for label in labels if not label.startswith("go:risk-")
             ]
+            risk_mismatch: str | None = None
+            missing = [label for label in wanted_other if label not in verified_labels]
+            if wanted_risk is not None and wanted_risk not in verified_labels:
+                if any(label.startswith("go:risk-") for label in verified_labels):
+                    risk_mismatch = (
+                        f"PR carries a different risk label than computed "
+                        f"({wanted_risk!r} wanted, present: "
+                        f"{[l for l in verified_labels if l.startswith('go:risk-')]!r}); "
+                        "ensure_pr_risk_label() is add-only by contract and does "
+                        "not correct an existing label"
+                    )
+                else:
+                    missing.append(wanted_risk)
             if edit_result.returncode != 0 or missing:
                 return {
                     "pr_url": pr_url,
@@ -466,6 +483,13 @@ def open_or_update_pull_request(
                         f"failed to update existing PR {pr_url}: gh pr edit "
                         f"exit={edit_result.returncode}, missing labels={missing}"
                     ),
+                }
+            if risk_mismatch is not None:
+                return {
+                    "pr_url": pr_url,
+                    "pr_number": pr_number,
+                    "refused_step": "risk_label_mismatch",
+                    "detail": risk_mismatch,
                 }
             return {
                 "pr_url": pr_url,
@@ -489,7 +513,20 @@ def open_or_update_pull_request(
     ]
     for label in labels:
         cmd += ["--label", label]
-    result = pr_labels._run_gh_cmd(cmd, str(repo), runner)
+    try:
+        result = pr_labels._run_gh_cmd(cmd, str(repo), runner)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        # Unlike every other `gh` call in this module (routed through `_gh()`,
+        # which catches exactly this), a raised exception here would escape
+        # `open_or_update_pull_request()` uncaught -- at exactly the point the
+        # module docstring promises is reported as `ceiling`, not raised:
+        # `_push()` has already succeeded, so the branch is on the remote.
+        return {
+            "pr_url": None,
+            "pr_number": None,
+            "refused_step": "pr_create",
+            "detail": f"gh pr create failed for branch {head_branch}: {exc}",
+        }
     out = (
         (result.stdout or result.stderr).strip().splitlines()[-1]
         if (result.stdout or result.stderr)
