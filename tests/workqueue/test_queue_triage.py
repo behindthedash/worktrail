@@ -4679,3 +4679,385 @@ class TestComputeRunSummaryAndReportEscalations(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestApplyNeedsUpdateRewrite(QueueTriageTestBase):
+    """2.1's `needs-update` mechanical/judgment split: a `refuted_span` that
+    still matches the brief's live focus text is rewritten in place and the
+    corrected brief re-evaluated; a `judgment_reason` (or a span that no
+    longer matches) is filed as a pending decision instead; an evidence-only
+    verdict keeps the pre-split append-a-note behaviour.
+    """
+
+    FOCUS = "the CLI reads config from settings.json at startup"
+    SPAN = "config from settings.json"
+
+    def _fresh(self) -> qt.Verdict:
+        """The canned verdict a re-evaluation of the rewritten brief returns.
+
+        Deliberately a `stale-close`: if the fresh verdict were (wrongly)
+        applied, the brief would be claimed and closed, which the tests below
+        assert never happens.
+        """
+        return qt.Verdict(
+            brief_id="b",
+            verdict="stale-close",
+            duplicate_of=None,
+            evidence="the corrected claim is already shipped",
+            confidence="high",
+        )
+
+    def _mechanical(self, corrected: str | None = None) -> qt.Verdict:
+        return qt.Verdict(
+            brief_id="b",
+            verdict="needs-update",
+            duplicate_of=None,
+            evidence="src/cli.py reads config.yaml, not settings.json",
+            confidence="high",
+            refuted_span=self.SPAN,
+            corrected_span=corrected,
+        )
+
+    def _assert_not_closed(self, path: Path) -> None:
+        """No claim/close/PR side effect: the brief is still queued, in place."""
+        self.assertTrue(path.exists())
+        self.assertTrue((self.queue / "b.md").exists())
+        self.assertEqual(qt.read_frontmatter(path)["status"], "queued")
+        picked = self.base / "picked"
+        self.assertFalse(picked.exists() and any(picked.iterdir()))
+
+    # -- mechanical branch ------------------------------------------------
+
+    def test_mechanical_rewrite_removes_span_and_reevaluates(self):
+        path = self.write("b.md", focus=self.FOCUS)
+        fresh = self._fresh()
+
+        with mock.patch(
+            "worktrail.workqueue.queue_triage.evaluate_briefs",
+            return_value=[fresh],
+        ) as mock_eval:
+            log = qt.apply_verdicts([self._mechanical()], confirm=True)
+
+        entry = log[0]
+        self.assertEqual(entry["verdict"], "needs-update")
+        self.assertEqual(entry["action"], "mechanical-rewrite")
+        self.assertEqual(entry["status"], "executed")
+        self.assertIsNone(entry["error"])
+        self.assertEqual(entry["path"], str(path))
+        self.assertEqual(entry["rewrite"], {"removed": self.SPAN, "replacement": ""})
+
+        # the span is gone from the brief's focus, the rest survives
+        focus = qt.read_frontmatter(path)["focus"]
+        self.assertNotIn(self.SPAN, focus)
+        self.assertIn("the CLI reads", focus)
+        self.assertIn("at startup", focus)
+
+        # the rewrite is recorded as a triage note alongside the evidence
+        content = path.read_text(encoding="utf-8")
+        run_date = datetime.date.today().isoformat()  # noqa: DTZ011
+        self.assertIn(f"## Triage {run_date}", content)
+        self.assertIn(self.SPAN, content)
+        self.assertIn("src/cli.py reads config.yaml, not settings.json", content)
+
+        # the corrected brief was re-evaluated, and the fresh verdict is
+        # reported rather than applied
+        mock_eval.assert_called_once()
+        self.assertEqual(list(mock_eval.call_args.args[1]), [path])
+        self.assertEqual(
+            entry["reevaluation"],
+            {"status": "produced", "verdict": qt.asdict(fresh), "error": None},
+        )
+        self._assert_not_closed(path)
+
+    def test_mechanical_rewrite_substitutes_corrected_span(self):
+        path = self.write("b.md", focus=self.FOCUS)
+
+        with mock.patch(
+            "worktrail.workqueue.queue_triage.evaluate_briefs",
+            return_value=[self._fresh()],
+        ):
+            log = qt.apply_verdicts(
+                [self._mechanical(corrected="config from config.yaml")], confirm=True
+            )
+
+        entry = log[0]
+        self.assertEqual(entry["status"], "executed")
+        self.assertEqual(
+            entry["rewrite"],
+            {"removed": self.SPAN, "replacement": "config from config.yaml"},
+        )
+        self.assertEqual(
+            qt.read_frontmatter(path)["focus"],
+            "the CLI reads config from config.yaml at startup",
+        )
+        self.assertIn("config from config.yaml", path.read_text(encoding="utf-8"))
+        self._assert_not_closed(path)
+
+    def test_reevaluation_failure_does_not_lose_the_rewrite(self):
+        path = self.write("b.md", focus=self.FOCUS)
+
+        with mock.patch(
+            "worktrail.workqueue.queue_triage.evaluate_briefs",
+            side_effect=RuntimeError("agent spawn failed"),
+        ):
+            log = qt.apply_verdicts([self._mechanical()], confirm=True)
+
+        entry = log[0]
+        self.assertEqual(entry["status"], "executed")
+        self.assertEqual(entry["reevaluation"]["status"], "error")
+        self.assertIsNone(entry["reevaluation"]["verdict"])
+        self.assertIn("agent spawn failed", entry["reevaluation"]["error"])
+        self.assertNotIn(self.SPAN, qt.read_frontmatter(path)["focus"])
+
+    # -- drift / too-short span -> judgment --------------------------------
+
+    def test_span_no_longer_in_live_focus_files_a_decision_instead(self):
+        path = self.write("b.md", focus=self.FOCUS)
+        verdict = self._mechanical()
+        # the brief drifted between evaluate and apply
+        qt._set_fm_fields(path, {"focus": "the CLI reads config from the env"})
+        before = path.read_text(encoding="utf-8")
+
+        with mock.patch(
+            "worktrail.workqueue.queue_triage.evaluate_briefs"
+        ) as mock_eval:
+            log = qt.apply_verdicts([verdict], confirm=True)
+
+        entry = log[0]
+        self.assertEqual(entry["verdict"], "needs-update")
+        self.assertEqual(entry["routed_to"], "needs-decision")
+        self.assertEqual(entry["action"], "file-decision")
+        self.assertEqual(entry["status"], "executed")
+        mock_eval.assert_not_called()
+
+        # focus is untouched -- nothing was rewritten blind
+        self.assertEqual(
+            qt.read_frontmatter(path)["focus"], "the CLI reads config from the env"
+        )
+        self.assertNotEqual(before, path.read_text(encoding="utf-8"))  # only stamped
+
+        from worktrail.workqueue import decisions
+
+        found = decisions.find_decision(entry["decision_id"], self.base)
+        self.assertIsNotNone(found)
+        record = found["path"].read_text(encoding="utf-8")
+        self.assertIn(self.SPAN, record)
+        self.assertIn("no longer", record)
+        self._assert_not_closed(path)
+
+    def test_span_under_the_minimum_length_is_treated_as_non_matching(self):
+        focus = "cfg is stale, per the audit"
+        path = self.write("b.md", focus=focus)
+        verdict = qt.Verdict(
+            brief_id="b",
+            verdict="needs-update",
+            duplicate_of=None,
+            evidence="cfg was renamed",
+            confidence="high",
+            refuted_span="cfg",  # present verbatim, but under 12 characters
+        )
+        self.assertIn("cfg", focus)
+        self.assertLess(len("cfg"), qt._MIN_REFUTED_SPAN_LEN)
+
+        log = qt.apply_verdicts([verdict], confirm=True)
+
+        entry = log[0]
+        self.assertEqual(entry["action"], "file-decision")
+        self.assertEqual(entry["routed_to"], "needs-decision")
+        self.assertEqual(entry["verdict"], "needs-update")
+        self.assertEqual(qt.read_frontmatter(path)["focus"], focus)
+
+    def test_rewrite_that_would_empty_the_focus_files_a_decision(self):
+        path = self.write("b.md", focus=self.FOCUS)
+        verdict = qt.Verdict(
+            brief_id="b",
+            verdict="needs-update",
+            duplicate_of=None,
+            evidence="the whole premise is refuted",
+            confidence="high",
+            refuted_span=self.FOCUS,  # the entire focus text
+        )
+
+        log = qt.apply_verdicts([verdict], confirm=True)
+
+        entry = log[0]
+        self.assertEqual(entry["action"], "file-decision")
+        self.assertEqual(entry["routed_to"], "needs-decision")
+        self.assertEqual(entry["status"], "executed")
+        # no empty `focus:` was written
+        self.assertEqual(qt.read_frontmatter(path)["focus"], self.FOCUS)
+
+        from worktrail.workqueue import decisions
+
+        found = decisions.find_decision(entry["decision_id"], self.base)
+        self.assertIn(
+            "no remaining focus text", found["path"].read_text(encoding="utf-8")
+        )
+        self._assert_not_closed(path)
+
+    # -- judgment branch ---------------------------------------------------
+
+    def _judgment(self) -> qt.Verdict:
+        return qt.Verdict(
+            brief_id="b",
+            verdict="needs-update",
+            duplicate_of=None,
+            evidence="two requirements in this brief contradict each other",
+            confidence="medium",
+            judgment_reason="Which of the two conflicting requirements wins?",
+        )
+
+    def test_judgment_reason_files_a_decision_and_leaves_focus_untouched(self):
+        path = self.write("b.md", focus=self.FOCUS)
+
+        log = qt.apply_verdicts([self._judgment()], confirm=True)
+
+        entry = log[0]
+        self.assertEqual(entry["verdict"], "needs-update")
+        self.assertEqual(entry["routed_to"], "needs-decision")
+        self.assertEqual(entry["action"], "file-decision")
+        self.assertEqual(entry["status"], "executed")
+        self.assertIsNone(entry["error"])
+
+        fm = qt.read_frontmatter(path)
+        self.assertEqual(fm["awaiting-decision"], entry["decision_id"])
+        self.assertEqual(fm["focus"], self.FOCUS)
+
+        from worktrail.workqueue import decisions
+
+        found = decisions.find_decision(entry["decision_id"], self.base)
+        self.assertIsNotNone(found)
+        self.assertEqual(found["status"], "open")
+        self.assertIn(
+            "Which of the two conflicting requirements wins?",
+            found["path"].read_text(encoding="utf-8"),
+        )
+        self._assert_not_closed(path)
+
+    def test_judgment_reason_wins_over_a_refuted_span(self):
+        """Both fields set: `judgment_reason` decides (parsing keeps both --
+        precedence is apply's call)."""
+        path = self.write("b.md", focus=self.FOCUS)
+        verdict = qt.Verdict(
+            brief_id="b",
+            verdict="needs-update",
+            duplicate_of=None,
+            evidence="ambiguous",
+            confidence="medium",
+            refuted_span=self.SPAN,
+            judgment_reason="Is settings.json still the intended source?",
+        )
+
+        log = qt.apply_verdicts([verdict], confirm=True)
+
+        self.assertEqual(log[0]["action"], "file-decision")
+        self.assertEqual(qt.read_frontmatter(path)["focus"], self.FOCUS)
+
+    # -- evidence-only branch is unchanged ---------------------------------
+
+    def test_verdict_with_neither_field_appends_a_note_as_before(self):
+        path = self.write("b.md", focus=self.FOCUS)
+        verdict = qt.Verdict(
+            brief_id="b",
+            verdict="needs-update",
+            duplicate_of=None,
+            evidence="target file renamed, brief needs a refresh",
+            confidence="medium",
+        )
+
+        log = qt.apply_verdicts([verdict], confirm=True)
+
+        entry = log[0]
+        self.assertEqual(entry["action"], "append-triage-note")
+        self.assertEqual(entry["status"], "executed")
+        self.assertNotIn("routed_to", entry)
+        self.assertEqual(qt.read_frontmatter(path)["focus"], self.FOCUS)
+        run_date = datetime.date.today().isoformat()  # noqa: DTZ011
+        content = path.read_text(encoding="utf-8")
+        self.assertIn(f"## Triage {run_date}", content)
+        self.assertIn("target file renamed, brief needs a refresh", content)
+        self.assertFalse((self.base / "decisions").exists())
+
+    # -- previews ----------------------------------------------------------
+
+    def test_preview_of_mechanical_branch_plans_the_rewrite_without_writing(self):
+        path = self.write("b.md", focus=self.FOCUS)
+        before = path.read_text(encoding="utf-8")
+
+        with mock.patch(
+            "worktrail.workqueue.queue_triage.evaluate_briefs"
+        ) as mock_eval:
+            log = qt.apply_verdicts(
+                [self._mechanical(corrected="config from config.yaml")], confirm=False
+            )
+
+        entry = log[0]
+        self.assertFalse(entry["confirm"])
+        self.assertEqual(entry["action"], "mechanical-rewrite")
+        self.assertEqual(entry["status"], "planned")
+        self.assertIsNone(entry["path"])
+        self.assertIsNone(entry["error"])
+        self.assertEqual(
+            entry["planned_rewrite"],
+            {"removed": self.SPAN, "replacement": "config from config.yaml"},
+        )
+        mock_eval.assert_not_called()
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+
+    def test_preview_of_judgment_branch_plans_the_decision_without_filing_it(self):
+        path = self.write("b.md", focus=self.FOCUS)
+        before = path.read_text(encoding="utf-8")
+
+        preview = qt.apply_verdicts([self._judgment()], confirm=False)[0]
+
+        self.assertEqual(preview["verdict"], "needs-update")
+        self.assertEqual(preview["routed_to"], "needs-decision")
+        self.assertEqual(preview["action"], "file-decision")
+        self.assertEqual(preview["status"], "planned")
+        self.assertIsNone(preview["path"])
+        self.assertEqual(
+            preview["planned_envelope"]["question"],
+            "Which of the two conflicting requirements wins?",
+        )
+        self.assertEqual(
+            preview["planned_envelope"]["decision_id"],
+            preview["planned_stamp"]["awaiting-decision"],
+        )
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+        self.assertFalse((self.base / "decisions").exists())
+
+        # the preview named the same decision the confirmed apply files
+        executed = qt.apply_verdicts([self._judgment()], confirm=True)[0]
+        self.assertEqual(
+            executed["decision_id"], preview["planned_stamp"]["awaiting-decision"]
+        )
+
+    def test_preview_of_stale_span_branch_plans_the_decision(self):
+        path = self.write("b.md", focus="the CLI reads config from the env")
+
+        preview = qt.apply_verdicts([self._mechanical()], confirm=False)[0]
+
+        self.assertEqual(preview["action"], "file-decision")
+        self.assertEqual(preview["routed_to"], "needs-decision")
+        self.assertEqual(preview["status"], "planned")
+        self.assertIn(self.SPAN, preview["planned_envelope"]["question"])
+        self.assertFalse((self.base / "decisions").exists())
+        self.assertEqual(
+            qt.read_frontmatter(path)["focus"], "the CLI reads config from the env"
+        )
+
+    def test_preview_of_evidence_only_verdict_is_the_generic_plan(self):
+        self.write("b.md", focus=self.FOCUS)
+        verdict = qt.Verdict(
+            brief_id="b",
+            verdict="needs-update",
+            duplicate_of=None,
+            evidence="target file renamed, brief needs a refresh",
+        )
+
+        preview = qt.apply_verdicts([verdict], confirm=False)[0]
+
+        self.assertEqual(preview["action"], "append-triage-note")
+        self.assertEqual(preview["status"], "planned")
+        self.assertNotIn("routed_to", preview)
+        self.assertNotIn("planned_rewrite", preview)
