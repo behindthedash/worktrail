@@ -30,6 +30,9 @@ triggers:
     - missing_context
     - SKIPPED-SMALL-DIFF
     - build_worker_prompt
+    - _unrelated_test_failure
+    - _rerun_failed_checks
+    - rerun_attempted
 ---
 
 You are working on **worktrail's task-orchestration core**: compiling specs/changes into a
@@ -96,6 +99,20 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
   strike. And in `wait_and_fix_ci`, a failed or timed-out ci-fix attempt is *one strike*, not the
   end of the loop — it re-polls CI (a salvaged commit may already be green) and spends the
   remaining strikes before returning "CI fix loop exhausted".
+- **A red check tries one free `gh run rerun --failed` before any ci-fix worker spawns**
+  (`verify.Verifier._unrelated_test_failure` / `_rerun_failed_checks`, gated by a per-call
+  `rerun_attempted` flag in `wait_and_fix_ci`): a failing test whose path never appears in
+  `gh pr diff --name-only` cannot be fixed by a ci-fix worker editing this PR's own diff no
+  matter how many strikes are spent on it. `_unrelated_test_failure` regex-matches `tests/...py`
+  paths out of the failed run's log and checks them against the diff's changed files
+  (disjoint-and-nonempty → True); a positive match issues `gh run rerun --failed` for every
+  failed workflow run at the branch's current head SHA (`_rerun_failed_checks`) and
+  `wait_and_fix_ci` re-polls once. The probe fires before the strike loop's first spawn and
+  costs it nothing — `rerun_attempted` ensures it tries at most once per `wait_and_fix_ci` call,
+  so a still-red rerun falls through to the unchanged spawn-and-strike path with the full
+  strike budget intact. Conservative by construction: no recognizable test path in the log, no
+  diff to compare, or any overlap between failing paths and changed files → False, leaving the
+  existing loop as the only path for a failure this heuristic cannot confidently classify.
 - **`review_status: SKIPPED-SMALL-DIFF` is a passed review** (`dispatch.transition`): it routes
   to `cleaning` like `PASSED` but leaves `retry_count` untouched. Any other value outside
   `PASSED|FAILED|SKIPPED-SMALL-DIFF` on a successful review report still raises `ValueError`
@@ -172,7 +189,8 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
   property threaded into the worker ctx
 - `orchestrator/verify.py` — `auto_merge()` and `_retry_auto_merge_methods`; the only place a
   merge-method rejection is turned into a method retry; `_salvage_uncommitted` and the
-  per-strike `continue` in `wait_and_fix_ci`
+  per-strike `continue` in `wait_and_fix_ci`; `_unrelated_test_failure`/`_rerun_failed_checks`,
+  the free-rerun probe `wait_and_fix_ci` tries once before spawning a ci-fix worker
 
 ---
-**Last Updated:** 2026-09-03
+**Last Updated:** 2026-09-04
