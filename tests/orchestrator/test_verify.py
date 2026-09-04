@@ -3000,3 +3000,97 @@ class CiFixTimeoutSalvageAndRetry(unittest.TestCase):
         self.assertTrue(ok, reason)
         self.assertEqual(len(spawn.prompts), 1)  # one ci-fix attempt, then green
         self.assertTrue(any("add" in c and "-u" in c for c in run.calls))
+
+
+class _UnrelatedFailureRun(FakeRun):
+    """FakeRun whose failing CI log names a test file, plus a `gh pr diff
+    --name-only` response -- the two signals `_unrelated_test_failure`
+    compares to decide whether a free rerun is worth trying before any
+    ci-fix worker spawn."""
+
+    def __init__(
+        self,
+        *a,
+        failing_test_path="tests/orchestrator/lifecycle/test_lifecycle_harness.py",
+        diff_files=(
+            "src/worktrail/workqueue/queue_triage.py",
+            "tests/workqueue/test_queue_triage.py",
+        ),
+        rerun_rc=0,
+        **kw,
+    ):
+        super().__init__(*a, **kw)
+        self.failing_test_path = failing_test_path
+        self.diff_files = diff_files
+        self.rerun_rc = rerun_rc
+
+    def __call__(self, cmd):
+        if cmd[:3] == ["gh", "run", "view"]:
+            self.calls.append(cmd)
+            return Proc(
+                0, f"FAILED {self.failing_test_path}::test_x - AssertionError\n", ""
+            )
+        if cmd[:3] == ["gh", "pr", "diff"] and "--name-only" in cmd:
+            self.calls.append(cmd)
+            return Proc(0, "\n".join(self.diff_files), "")
+        if cmd[:3] == ["gh", "run", "rerun"]:
+            self.calls.append(cmd)
+            return Proc(self.rerun_rc, "", "" if self.rerun_rc == 0 else "boom")
+        return super().__call__(cmd)
+
+
+class CiFixRerunProbe(unittest.TestCase):
+    """A red check whose failing test lives outside this PR's diff can never
+    be fixed by a ci-fix worker editing the diff -- `wait_and_fix_ci` tries
+    one free `gh run rerun --failed` first."""
+
+    def test_rerun_recovers_without_spawning_ci_fix(self):
+        run = _UnrelatedFailureRun(
+            {"run/feature-1": [view(rollup=RED), view(rollup=GREEN)]},
+            runs=json.dumps(
+                [{"databaseId": 9, "conclusion": "FAILURE", "headSha": "abc"}]
+            ),
+        )
+        spawn = FakeSpawn()
+        v = mk(run, spawn, "/tmp/x")
+        ok, reason = v.wait_and_fix_ci(FEATURE, "run/feature-1")
+        self.assertTrue(ok, reason)
+        self.assertEqual(spawn.prompts, [])  # no ci-fix worker spawned
+        self.assertTrue(run.find("gh", "run", "rerun", "9", "--failed"))
+
+    def test_rerun_still_red_falls_through_with_full_strike_budget(self):
+        # A single-item view queue repeats forever: every poll (probe's
+        # recheck included) still sees RED, matching CiFixExhaustionPath's
+        # own setup -- the probe must not cost the loop any of its 3 strikes.
+        run = _UnrelatedFailureRun(
+            {"run/feature-1": [view(rollup=RED)]},
+            runs=json.dumps(
+                [{"databaseId": 9, "conclusion": "FAILURE", "headSha": "abc"}]
+            ),
+        )
+        spawn = FakeSpawn()
+        v = mk(run, spawn, "/tmp/x")
+        ok, reason = v.wait_and_fix_ci(FEATURE, "run/feature-1")
+        self.assertFalse(ok)
+        self.assertIn("CI still failing", reason)
+        self.assertEqual(len(spawn.prompts), 3)  # full budget, unreduced
+        self.assertEqual(len(run.find("gh", "run", "rerun")), 1)  # tried exactly once
+
+    def test_failing_test_inside_diff_skips_rerun(self):
+        # The failing test IS part of this PR's own changes -- a real
+        # regression candidate, not a "nothing to fix" false positive. No
+        # rerun attempt; behaves exactly like CiFixExhaustionPath.
+        run = _UnrelatedFailureRun(
+            {"run/feature-1": [view(rollup=RED)]},
+            failing_test_path="tests/workqueue/test_queue_triage.py",
+            diff_files=("tests/workqueue/test_queue_triage.py",),
+            runs=json.dumps(
+                [{"databaseId": 9, "conclusion": "FAILURE", "headSha": "abc"}]
+            ),
+        )
+        spawn = FakeSpawn()
+        v = mk(run, spawn, "/tmp/x")
+        ok, _reason = v.wait_and_fix_ci(FEATURE, "run/feature-1")
+        self.assertFalse(ok)
+        self.assertEqual(len(spawn.prompts), 3)
+        self.assertFalse(run.find("gh", "run", "rerun"))
