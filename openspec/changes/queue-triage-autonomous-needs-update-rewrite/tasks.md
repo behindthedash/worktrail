@@ -35,7 +35,7 @@
 
 ## 2. Mechanical rewrite, judgment decision-filing, and preview
 
-- [ ] 2.1 Implement requirement: Apply step never closes a brief without an
+- [x] 2.1 Implement requirement: Apply step never closes a brief without an
       approved verdict (MODIFIED) — `needs-update`'s mechanical rewrite/
       re-evaluate and judgment decision-filing branches. Depends on 1.1's
       `Verdict` fields. In `src/worktrail/workqueue/queue_triage.py`:
@@ -127,13 +127,13 @@
 
 ## 3. Verification
 
-- [ ] 3.1 [cleanup] Run `PYTHONPATH=src pytest -q` and confirm it is green,
+- [x] 3.1 [cleanup] Run `PYTHONPATH=src pytest -q` and confirm it is green,
       including the new tests from sections 1-2. Verification-only — no
       file changes expected.
-- [ ] 3.2 [cleanup] Run `openspec validate
+- [x] 3.2 [cleanup] Run `openspec validate
       queue-triage-autonomous-needs-update-rewrite --strict` and confirm it
       passes. Verification-only — no file changes expected.
-- [ ] 3.3 [cleanup] Run `worktrail-compile
+- [x] 3.3 [cleanup] Run `worktrail-compile
       openspec/changes/queue-triage-autonomous-needs-update-rewrite` and
       confirm it passes (no same-file-chain or missing-test-scope findings).
       Verification-only — no file changes expected.
