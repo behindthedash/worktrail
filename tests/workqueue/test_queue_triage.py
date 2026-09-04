@@ -3921,28 +3921,35 @@ class TestRankChangeCandidates(QueueTriageTestBase):
         self.assertEqual([r["id"] for r in results], ["widget-export-pipeline"])
         self.assertGreaterEqual(results[0]["score"], qt._MIN_CANDIDATE_SCORE)
 
-    def test_change_at_the_floor_is_still_returned(self):
+    def test_change_exactly_at_the_floor_is_still_returned(self):
+        """The floor is inclusive: a change scoring exactly
+        `_MIN_CANDIDATE_SCORE` is kept, so the filter is `<` and not `<=`."""
+        shared = "alpha bravo charlie delta echo foxtrot golf hotel india"  # 9
+        change_only = (
+            "juliett kilo lima mike november oscar papa quebec romeo sierra tango"  # 11
+        )
+        brief_only = (
+            "uniform victor whiskey xray yankee zulu zero onex twox threex fourx"  # 11
+        )
+        # change tokens 9 + 11 == 20, brief tokens 9 + 11 == 20, overlap 9, so
+        # |A n B| / min(|A|, |B|) == 9/20 == 0.45 == _MIN_CANDIDATE_SCORE exactly.
         repo_root = self.base / "repo-at-floor"
         self._make_change(
             repo_root,
-            "half-overlapping-change",
-            why="alpha beta gamma delta",
-            tasks=[(False, "alpha beta gamma delta")],
+            "at-the-floor-change",
+            why=f"{shared} {change_only}",
+            tasks=[(False, f"{shared} {change_only}")],
         )
-        # brief focus tokens: alpha beta gamma delta epsilon zeta eta theta
-        # (8), change tokens: alpha beta gamma delta (4) -- overlap 4, so
-        # |A n B| / min(|A|, |B|) == 4/4 == 1.0 is well over the floor.
         brief_path = self.queue / "brief.md"
         brief_path.write_text(
-            "---\nstatus: queued\n---\n\n"
-            "## Focus\n\nalpha beta gamma delta epsilon zeta eta theta\n",
+            f"---\nstatus: queued\n---\n\n## Focus\n\n{shared} {brief_only}\n",
             encoding="utf-8",
         )
 
         results = qt.rank_change_candidates(brief_path, str(repo_root), top_k=5)
 
-        self.assertEqual([r["id"] for r in results], ["half-overlapping-change"])
-        self.assertGreaterEqual(results[0]["score"], qt._MIN_CANDIDATE_SCORE)
+        self.assertEqual([r["id"] for r in results], ["at-the-floor-change"])
+        self.assertEqual(results[0]["score"], qt._MIN_CANDIDATE_SCORE)
 
     def test_all_changes_below_floor_returns_empty_list(self):
         """Same empty-list contract as a repo with no active changes at all."""
