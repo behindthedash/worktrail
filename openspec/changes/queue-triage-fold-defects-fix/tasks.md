@@ -1,6 +1,6 @@
 ## 1. Fix all three `queue_triage.py` fold/candidate defects, with tests (`Candidate targets are ranked brief-to-active-change`, `Fold and propose are applied as a pull request, fail-closed`)
 
-- [ ] 1.1 Implement requirement: In `src/worktrail/workqueue/queue_triage.py`,
+- [x] 1.1 Implement requirement: In `src/worktrail/workqueue/queue_triage.py`,
       make all three fixes together (they are independent edits to the same
       file, sequenced to avoid same-file worker collisions — design.md
       Decisions 1-3), and add their regression tests in the same task, in
