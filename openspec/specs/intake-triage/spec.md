@@ -105,7 +105,7 @@ For each intake brief with a non-null `repo:`, the evaluation SHALL enumerate th
 
 ### Requirement: Fold and propose are applied as a pull request, fail-closed
 
-Applying a `fold-into-change` verdict SHALL, in a fresh worktree on a branch off a freshly-fetched `origin/<base branch>`, append the brief's focus as a `## Folded from <brief-id>` section to the target change's `proposal.md` and append an unchecked task derived from the brief to its `tasks.md`, with the task's checklist-item text collapsed to a single line (internal newlines/whitespace normalized) regardless of how the source evidence was formatted; applying a `propose-change` verdict SHALL create a new change under the target repo's `openspec/changes/` with proposal, design, specs, and tasks artifacts that pass `openspec validate`. Both verdicts SHALL fetch the target repo's base branch from `origin` before creating the worktree the change is authored in, so the fold or propose reflects the target repo's true current state rather than a potentially-stale local checkout, and a target archived upstream since the last local fetch is detected rather than silently treated as still active. In both cases the system SHALL commit, push, and open a pull request against the base branch, and SHALL close the brief (`status: done`) only after the pull request exists, stamping `triaged-to: <repo>:change:<change-id>` and the pull-request URL in the brief's closure note. If any step before the pull request fails — including the pre-branch fetch — the brief SHALL remain in `queue/` unmodified and the failure SHALL be reported.
+Applying a `fold-into-change` verdict SHALL, in a fresh worktree on a branch off the target repo's base branch, append the brief's focus as a `## Folded from <brief-id>` section to the target change's `proposal.md` and append unchecked tasks derived from the brief to its `tasks.md`; applying a `propose-change` verdict SHALL create a new change under the target repo's `openspec/changes/` with proposal, design, specs, and tasks artifacts that pass `openspec validate`. A `propose-change` verdict's authoring prompt SHALL name both gates the generated change must pass before the agent finishes — `openspec validate <name> --strict` and `worktrail-compile openspec/changes/<name>` — so the agent is told about the compile gate's own checks (a same-file task chain, a missing test-scope task) rather than only the validate gate. In both cases the system SHALL commit, push, and open a pull request against the base branch, and SHALL close the brief (`status: done`) only after the pull request exists, stamping `triaged-to: <repo>:change:<change-id>` and the pull-request URL in the brief's closure note. If any step before the pull request fails, the brief SHALL remain in `queue/` unmodified and the failure SHALL be reported.
 
 #### Scenario: Fold succeeds
 
@@ -136,6 +136,11 @@ Applying a `fold-into-change` verdict SHALL, in a fresh worktree on a branch off
 
 - **WHEN** `apply --confirm` executes `fold-into-change` and the target change's directory was archived by a commit on `origin/<base branch>` that the local checkout had not yet fetched
 - **THEN** the freshly-fetched worktree no longer has that target's `proposal.md`/`tasks.md`, the fold fails closed with that reported as the error, and the brief remains in `queue/` unmodified
+
+#### Scenario: Propose-change prompt names the compile gate
+
+- **WHEN** `_apply_propose_change()` formats `PROPOSE_CHANGE_PROMPT_TEMPLATE` for a brief
+- **THEN** the formatted prompt instructs the agent to run `worktrail-compile` against the new change directory and fix any reported problem, in addition to `openspec validate --strict`
 
 ### Requirement: Work-directly converts an intake brief into an execution brief
 Applying a `work-directly` verdict SHALL stamp `seeded-from: triage:<run-date>:direct` and
