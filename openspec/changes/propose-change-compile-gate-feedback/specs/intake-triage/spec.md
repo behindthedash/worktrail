@@ -19,6 +19,21 @@ Applying a `fold-into-change` verdict SHALL, in a fresh worktree on a branch off
 - **WHEN** the generated change does not pass `openspec validate`
 - **THEN** no commit is made, the brief is unchanged, and the validation output is reported
 
+#### Scenario: Multi-line evidence is collapsed for the tasks.md checklist item
+
+- **WHEN** `apply --confirm` executes `fold-into-change` for a verdict whose `evidence` spans multiple lines
+- **THEN** the target change's `tasks.md` gets a single-line `- [ ] N.1 <collapsed evidence>` checklist item with no embedded newlines, while `proposal.md`'s `## Folded from <brief-id>` section carries the evidence verbatim
+
+#### Scenario: Fetch fails before the worktree is created
+
+- **WHEN** `apply --confirm` executes `fold-into-change` or `propose-change` and `git fetch origin <base branch>` fails
+- **THEN** no worktree is created, the brief remains in `queue/` unmodified, and the run reports the fetch failure with the branch name that would have been used
+
+#### Scenario: Target was archived upstream since the last local fetch
+
+- **WHEN** `apply --confirm` executes `fold-into-change` and the target change's directory was archived by a commit on `origin/<base branch>` that the local checkout had not yet fetched
+- **THEN** the freshly-fetched worktree no longer has that target's `proposal.md`/`tasks.md`, the fold fails closed with that reported as the error, and the brief remains in `queue/` unmodified
+
 #### Scenario: Propose-change prompt names the compile gate
 
 - **WHEN** `_apply_propose_change()` formats `PROPOSE_CHANGE_PROMPT_TEMPLATE` for a brief
