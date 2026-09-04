@@ -397,6 +397,92 @@ class LiveMergeRecheckUnit(unittest.TestCase):
         v._recheck_merged_before_quarantine(FEATURE, "run/feature-1")
         self.assertFalse(run.find("gh", "pr", "merge"))
 
+    def test_terminal_check_failure_quarantines_without_consuming_poll_budget(self):
+        run = FakeRun(
+            {
+                "run/feature-1": [
+                    view(
+                        state="OPEN",
+                        auto_merge_request={"enabledBy": {"login": "bot"}},
+                        rollup=RED,
+                    )
+                ]
+            }
+        )
+        v = mk(run, FakeSpawn(), "/tmp/x")
+        ok, reason = v._wait_for_external_merge(FEATURE, "run/feature-1")
+        self.assertFalse(ok)
+        self.assertIn("build", reason)
+        self.assertEqual(len(run.find("gh", "pr", "view")), 1)
+        self.assertFalse(run.find("gh", "pr", "merge"))
+
+    def test_pending_checks_keep_waiting_then_merge(self):
+        pending_rollup = [
+            {"name": "build", "status": "IN_PROGRESS", "conclusion": None}
+        ]
+        run = FakeRun(
+            {
+                "run/feature-1": [
+                    view(
+                        state="OPEN",
+                        auto_merge_request={"enabledBy": {"login": "bot"}},
+                        rollup=pending_rollup,
+                    ),
+                    view(state="MERGED"),
+                ]
+            }
+        )
+        v = mk(run, FakeSpawn(), "/tmp/x")
+        ok, reason = v._wait_for_external_merge(FEATURE, "run/feature-1")
+        self.assertTrue(ok)
+        self.assertEqual(reason, "")
+        self.assertFalse(run.find("gh", "pr", "merge"))
+
+    def test_merged_wins_over_terminal_check_failure(self):
+        run = FakeRun({"run/feature-1": [view(state="MERGED", rollup=RED)]})
+        v = mk(run, FakeSpawn(), "/tmp/x")
+        ok, _ = v._wait_for_external_merge(FEATURE, "run/feature-1")
+        self.assertTrue(ok)
+        self.assertFalse(run.find("gh", "pr", "merge"))
+
+    def test_logs_one_line_per_poll(self):
+        pending_rollup = [
+            {"name": "build", "status": "IN_PROGRESS", "conclusion": None}
+        ]
+        run = FakeRun(
+            {
+                "run/feature-1": [
+                    view(
+                        state="OPEN",
+                        auto_merge_request={"enabledBy": {"login": "bot"}},
+                        rollup=pending_rollup,
+                    ),
+                    view(state="MERGED"),
+                ]
+            }
+        )
+        logs: list = []
+        v = verify.Verifier(
+            Path("/repo"),
+            "origin",
+            "dev",
+            "001-x",
+            run=run,
+            spawn=FakeSpawn(),
+            log=logs.append,
+            sleep=lambda *_: None,
+            worktree_base=Path("/tmp/x"),
+            max_polls=5,
+        )
+        ok, _ = v._wait_for_external_merge(FEATURE, "run/feature-1")
+        self.assertTrue(ok)
+        self.assertTrue(
+            any(
+                "waiting on external auto-merge" in line and "poll 1" in line
+                for line in logs
+            )
+        )
+
 
 class _FlipsToMergedAfterNViewsRun(FakeRun):
     """FakeRun that returns `flip_after`-many unmerged `view()`s for a branch,
