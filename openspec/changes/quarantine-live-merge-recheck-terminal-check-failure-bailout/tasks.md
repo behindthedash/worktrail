@@ -1,6 +1,6 @@
 ## 1. Terminal-failure bail-out and per-poll logging in the bounded external-merge wait
 
-- [ ] 1.1 In `src/worktrail/orchestrator/verify.py`, `Verifier._wait_for_external_merge()`
+- [x] 1.1 In `src/worktrail/orchestrator/verify.py`, `Verifier._wait_for_external_merge()`
       (currently lines 1271-1291), change only the body of the `for poll in
       range(self.max_polls)` loop, leaving `max_polls`, `poll_interval`,
       `poll_interval_max`, the `1.4**poll` backoff, the signature, both existing return
