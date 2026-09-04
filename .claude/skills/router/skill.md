@@ -23,6 +23,9 @@ triggers:
     - compile_max_same_file_chain
     - review_skip_max_diff_lines
     - pre_commit_cmd
+    - land_pr
+    - LandRequest
+    - LandOutcome
 ---
 
 You are working on **worktrail's GO v2 front door**: loading repo policy, classifying free-text
@@ -148,6 +151,22 @@ agents or writes task files — that is `orchestrator/`'s job.
   `propose-change`/`fold-into-change` verdict's own `_resolve_repo_dir()` call can find the repo
   too — both call sites must resolve consistently, not just the evaluate path (fixed together
   2026-09-03).
+- **`land_pr.py` is the one shared PR-landing pipeline every PR-opening call site composes with,
+  instead of each reimplementing a subset of it.** `land_pr(LandRequest) -> LandOutcome` runs, in
+  order: commit pending work (refuses `dirty_tree` without a `commit_message`), the compile-marker
+  gate for every OpenSpec change whose `tasks.md` changed, the preflight gate + label read-back,
+  push, find-or-create the PR (shared with `orchestrator/integrate.py`'s group-PR step), CI watch
+  to a terminal outcome (transient-infra reruns, no-checks-yet grace period, `code_defect` vs
+  `ceiling` classification via `CI_PATCH_ITERATION_CEILING`), the merge-state guard, the
+  review-thread gate, then finish (or, in checkpoint mode, append a decision to) the run record.
+  Refusal (steps 1-4) never touches the remote; a push or PR-create failure past that point is
+  reported as `outcome="ceiling"`, never `refused`, because the remote is already mutated (an
+  untouched-remote promise `refused` would misrepresent). Registered as `worktrail-land-pr`
+  (`worktrail.router.land_pr:main`). See the module's own docstring for the authoritative ordered
+  step list — it exists because PR #902 shipped 112 gate-verified files that were never committed
+  before `git push`, a gap each prior call site (`queue_triage.py`, `drain.py`,
+  `orchestrator/integrate.py`, and the agent-executed sdd-workflow/`worktrail-go` prose) closed
+  differently or not at all.
 
 ## Critical files
 - `router/parse_invocation.py` — the `worktrail-go` Phase 1 grammar (`parse`, `FORMS`, `ALIASES`,
@@ -164,6 +183,9 @@ agents or writes task files — that is `orchestrator/`'s job.
 - `router/dashboard.py` — pure file inspection (no git, network, or agents); spec lifecycle stage
   and next-action detection; also the source of `_resolve_repo_dir()`, which `skill_dispatch.py`'s
   single-brief-triage path uses to resolve a bare `repo:` value to an on-disk checkout
+- `router/land_pr.py` — `land_pr()`, `LandRequest`/`LandOutcome`; the shared
+  commit/compile-marker/preflight/push/PR/CI-watch/merge-guard/review-thread-gate/finish pipeline
+  every PR-opening call site should compose with instead of reimplementing a subset
 
 ---
-**Last Updated:** 2026-09-03
+**Last Updated:** 2026-09-04
