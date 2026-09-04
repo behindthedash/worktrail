@@ -40,9 +40,15 @@ class QueueTriageTestBase(unittest.TestCase):
         os.environ.pop("WORK_QUEUE_DIR", None)
         self._tmp.cleanup()
 
-    def write(self, name: str, repo: str | None = None, body: str = "") -> Path:
+    def write(
+        self,
+        name: str,
+        repo: str | None = None,
+        body: str = "",
+        focus: str | None = None,
+    ) -> Path:
         p = self.queue / name
-        p.write_text(_brief(name, repo=repo, body=body), encoding="utf-8")
+        p.write_text(_brief(focus or name, repo=repo, body=body), encoding="utf-8")
         return p
 
 
@@ -838,6 +844,7 @@ class TestEvaluateGroupCandidateContext(QueueTriageTestBase):
             "a.md",
             repo=str(repo_root),
             body="## Focus\n\nwidget export pipeline serializer downstream reporting\n",
+            focus="widget export pipeline serializer downstream reporting",
         )
 
         with mock.patch(
@@ -1754,6 +1761,7 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
         pr_returncode: int = 0,
         validate_returncode: int = 0,
         compile_returncode: int = 0,
+        fetch_returncode: int = 0,
         push_default: str | None = None,
     ):
         pr_url = "https://github.com/acme/widgets/pull/42"
@@ -1771,6 +1779,13 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
                 if "remote" in cmd and "get-url" in cmd:
                     return self._completed(
                         0, stdout="git@github.com:acme-fork/widgets.git\n"
+                    )
+                if "fetch" in cmd:
+                    return self._completed(
+                        fetch_returncode,
+                        stderr=""
+                        if fetch_returncode == 0
+                        else "fatal: could not read from remote repository",
                     )
                 if "worktree" in cmd and "add" in cmd:
                     self._seed_change()
@@ -1857,6 +1872,51 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
         self.assertIn("- [ ] 2.1", tasks_text)
         self.assertIn(self.verdict.evidence, tasks_text)
 
+    def test_multiline_evidence_is_collapsed_in_the_tasks_checklist_line(self):
+        """A `- [ ] N.1` item is one line: embedded newlines in the evidence
+        would spill its tail out of the checklist item. The `proposal.md`
+        prose section keeps the evidence verbatim."""
+        multiline = qt.Verdict(
+            brief_id="a",
+            verdict="fold-into-change",
+            duplicate_of=None,
+            evidence=(
+                "overlaps open tasks in widget-export-pipeline\n"
+                "specifically the serializer work\n\nand its docs"
+            ),
+            confidence="high",
+            target_change=self.target_change,
+            repo=str(self.repo),
+        )
+        run, _ = self._dispatcher()
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+            ),
+            mock.patch(
+                "worktrail.workqueue.queue_triage._refresh_pr_labels",
+                return_value=["go:risk-low"],
+            ),
+        ):
+            log = qt.apply_verdicts([multiline], confirm=True)
+
+        self.assertEqual(log[0]["status"], "executed", log[0])
+        change_dir = self.worktree_dir / "openspec" / "changes" / self.target_change
+
+        tasks_text = (change_dir / "tasks.md").read_text(encoding="utf-8")
+        task_line = next(
+            line for line in tasks_text.splitlines() if line.startswith("- [ ] 2.1 ")
+        )
+        self.assertEqual(
+            task_line,
+            "- [ ] 2.1 overlaps open tasks in widget-export-pipeline specifically "
+            "the serializer work and its docs",
+        )
+
+        # proposal.md keeps the evidence's original line breaks
+        proposal_text = (change_dir / "proposal.md").read_text(encoding="utf-8")
+        self.assertIn(multiline.evidence, proposal_text)
+
     def test_pr_creation_failure_leaves_brief_untouched_and_reports_branch(self):
         run, _ = self._dispatcher(pr_returncode=1)
         with (
@@ -1909,6 +1969,8 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
             if cmd[0] == "git" and "-C" in cmd:
                 if "symbolic-ref" in cmd:
                     return self._completed(0, stdout="origin/main\n")
+                if "fetch" in cmd:
+                    return self._completed(0)
                 if "worktree" in cmd and "add" in cmd:
                     self.worktree_dir.mkdir(parents=True, exist_ok=True)
                     return self._completed(0)
@@ -1992,6 +2054,56 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
         self.assertEqual(push, ["git", "push", "-u", "fork", self.branch])
         pr = next(c for c in self.seen if c[:3] == ["gh", "pr", "create"])
         self.assertEqual(pr[3:5], ["-R", "acme-fork/widgets"])
+
+    def test_fetch_failure_leaves_brief_untouched_and_reports_branch(self):
+        """A failed `git fetch origin <base>` short-circuits before any
+        worktree exists -- same untouched-brief/reported-branch shape as
+        every other pre-PR failure."""
+        run, _ = self._dispatcher(fetch_returncode=1)
+        with mock.patch(
+            "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+        ):
+            log = qt.apply_verdicts([self.verdict], confirm=True)
+
+        entry = log[0]
+        self.assertEqual(entry["status"], "error")
+        self.assertIn("git fetch origin main failed", entry["error"])
+        self.assertIn("could not read from remote repository", entry["error"])
+        self.assertEqual(entry["branch"], self.branch)
+        self.assertNotIn("pr_url", entry)
+
+        # nothing was created: no worktree add attempted, none left behind
+        self.assertFalse(any("worktree" in c and "add" in c for c in self.seen))
+        self.assertFalse(self.worktree_dir.exists())
+
+        # brief is completely untouched -- still queued, no claim/close attempted
+        self.assertTrue((self.queue / "a.md").exists())
+        fm = qt.read_frontmatter(self.queue / "a.md")
+        self.assertEqual(fm["status"], "queued")
+        self.assertNotIn("triaged-to", fm)
+
+    def test_worktree_is_created_off_the_fetched_remote_base_ref(self):
+        """Branching off the *local* base branch in a long-lived checkout
+        opens a PR that reverts already-merged work; fetch first, then branch
+        off `origin/<base>`."""
+        run, _ = self._dispatcher()
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+            ),
+            mock.patch(
+                "worktrail.workqueue.queue_triage._refresh_pr_labels",
+                return_value=["go:risk-low"],
+            ),
+        ):
+            log = qt.apply_verdicts([self.verdict], confirm=True)
+
+        self.assertEqual(log[0]["status"], "executed", log[0])
+        fetch = next(c for c in self.seen if "fetch" in c)
+        self.assertEqual(fetch[3:], ["fetch", "origin", "main"])
+        add = next(c for c in self.seen if "worktree" in c and "add" in c)
+        self.assertEqual(add[-1], "origin/main")
+        self.assertLess(self.seen.index(fetch), self.seen.index(add))
 
     def test_without_push_default_pushes_origin_and_lets_gh_infer_repo(self):
         run, _ = self._dispatcher()
@@ -2082,13 +2194,17 @@ class TestApplyProposeChange(QueueTriageTestBase):
         new_change_returncode: int = 0,
     ):
         pr_url = "https://github.com/acme/widgets/pull/43"
+        self.seen: list[list[str]] = []
 
         def _run(cmd, **kwargs):
+            self.seen.append(list(cmd))
             if cmd[0] == "git" and "-C" in cmd:
                 if "symbolic-ref" in cmd:
                     return self._completed(0, stdout="origin/main\n")
                 if "config" in cmd and "remote.pushDefault" in cmd:
                     return self._completed(1)
+                if "fetch" in cmd:
+                    return self._completed(0)
                 if "worktree" in cmd and "add" in cmd:
                     self.worktree_dir.mkdir(parents=True, exist_ok=True)
                     return self._completed(0)
@@ -2191,6 +2307,32 @@ class TestApplyProposeChange(QueueTriageTestBase):
         fm = qt.read_frontmatter(self.queue / "a.md")
         self.assertEqual(fm["status"], "queued")
         self.assertNotIn("triaged-to", fm)
+
+    def test_worktree_is_created_off_the_fetched_remote_base_ref(self):
+        """`_worktree_pr_close()` is shared with the fold path: propose must
+        branch off `origin/<base>` after a fetch too."""
+        run, _ = self._dispatcher()
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+            ),
+            mock.patch(
+                "worktrail.workqueue.queue_triage._refresh_pr_labels",
+                return_value=["go:risk-low"],
+            ),
+            mock.patch(
+                "worktrail.orchestrator.spawnlib.spawn_agent",
+                side_effect=self._spawn(),
+            ),
+        ):
+            log = qt.apply_verdicts([self.verdict], confirm=True)
+
+        self.assertEqual(log[0]["status"], "executed", log[0])
+        fetch = next(c for c in self.seen if "fetch" in c)
+        self.assertEqual(fetch[3:], ["fetch", "origin", "main"])
+        add = next(c for c in self.seen if "worktree" in c and "add" in c)
+        self.assertEqual(add[-1], "origin/main")
+        self.assertLess(self.seen.index(fetch), self.seen.index(add))
 
     def test_openspec_new_change_failure_is_an_error_before_agent_spawns(self):
         run, _ = self._dispatcher(new_change_returncode=1)
@@ -2324,6 +2466,8 @@ class TestApplyRepoResolution(QueueTriageTestBase):
                     return self._completed(
                         0, stdout="git@github.com:acme-fork/widgets.git\n"
                     )
+                if "fetch" in cmd:
+                    return self._completed(0)
                 if "worktree" in cmd and "add" in cmd:
                     self._seed_fold_change(worktree_dir)
                     return self._completed(0)
@@ -2394,6 +2538,8 @@ class TestApplyRepoResolution(QueueTriageTestBase):
                     return self._completed(
                         0, stdout="git@github.com:acme-fork/widgets.git\n"
                     )
+                if "fetch" in cmd:
+                    return self._completed(0)
                 if "worktree" in cmd and "add" in cmd:
                     worktree_dir.mkdir(parents=True, exist_ok=True)
                     return self._completed(0)
@@ -2589,6 +2735,8 @@ class TestApplyProposeChangeRepoLessStamp(QueueTriageTestBase):
                     return self._completed(0, stdout="origin/main\n")
                 if "config" in cmd and "remote.pushDefault" in cmd:
                     return self._completed(1)
+                if "fetch" in cmd:
+                    return self._completed(0)
                 if "worktree" in cmd and "add" in cmd:
                     worktree_dir.mkdir(parents=True, exist_ok=True)
                     return self._completed(0)
@@ -2850,7 +2998,12 @@ class TestApplyPropseChangeWipCapDowngrade(QueueTriageTestBase):
         repo_root = self.base / "repo-over-cap"
         self._make_active_change(repo_root, "change-1")
         self._write_policy(repo_root, max_active_changes=1)
-        self.write("a.md", repo=str(repo_root), body="## Focus\n\npropose this\n")
+        self.write(
+            "a.md",
+            repo=str(repo_root),
+            body="## Focus\n\npropose this\n",
+            focus="do the thing for some change",
+        )
         verdict = qt.Verdict(
             brief_id="a",
             verdict="propose-change",
@@ -3720,9 +3873,9 @@ class TestRankChangeCandidates(QueueTriageTestBase):
         )
         self._make_change(
             repo_root,
-            "unrelated-billing-cleanup",
-            why="Clean up stale billing invoice reconciliation cron jobs.",
-            tasks=[(False, "Remove stale billing invoice cron entries")],
+            "finance-dashboard-export",
+            why="Export pipeline reporting for the finance dashboards.",
+            tasks=[(False, "Wire finance dashboards into the export pipeline")],
         )
         brief_path = self.queue / "brief.md"
         brief_path.write_text(
@@ -3737,7 +3890,80 @@ class TestRankChangeCandidates(QueueTriageTestBase):
         self.assertEqual(results[0]["open_task_count"], 1)
         self.assertIn("widget export pipeline", results[0]["feature_summary"])
         self.assertGreater(results[0]["score"], results[1]["score"])
-        self.assertEqual(results[1]["id"], "unrelated-billing-cleanup")
+        self.assertEqual(results[1]["id"], "finance-dashboard-export")
+
+    def test_below_floor_change_is_excluded_even_with_room_in_top_k(self):
+        """A weak overlap is noise the evaluator must read past -- and a
+        presented candidate is a legal `fold-into-change` target."""
+        repo_root = self.base / "repo-floor"
+        self._make_change(
+            repo_root,
+            "widget-export-pipeline",
+            why="Add a widget export pipeline for downstream reporting consumers.",
+            tasks=[(False, "Implement widget export pipeline serializer")],
+        )
+        self._make_change(
+            repo_root,
+            "unrelated-billing-cleanup",
+            why="Clean up stale billing invoice reconciliation cron jobs.",
+            tasks=[(False, "Remove stale billing invoice cron entries")],
+        )
+        brief_path = self.queue / "brief.md"
+        brief_path.write_text(
+            "---\nstatus: queued\n---\n\n"
+            "## Focus\n\nwidget export pipeline serializer downstream reporting\n",
+            encoding="utf-8",
+        )
+
+        results = qt.rank_change_candidates(brief_path, str(repo_root), top_k=5)
+
+        # top_k=5 leaves room for the weak candidate; the floor excludes it
+        self.assertEqual([r["id"] for r in results], ["widget-export-pipeline"])
+        self.assertGreaterEqual(results[0]["score"], qt._MIN_CANDIDATE_SCORE)
+
+    def test_change_at_the_floor_is_still_returned(self):
+        repo_root = self.base / "repo-at-floor"
+        self._make_change(
+            repo_root,
+            "half-overlapping-change",
+            why="alpha beta gamma delta",
+            tasks=[(False, "alpha beta gamma delta")],
+        )
+        # brief focus tokens: alpha beta gamma delta epsilon zeta eta theta
+        # (8), change tokens: alpha beta gamma delta (4) -- overlap 4, so
+        # |A n B| / min(|A|, |B|) == 4/4 == 1.0 is well over the floor.
+        brief_path = self.queue / "brief.md"
+        brief_path.write_text(
+            "---\nstatus: queued\n---\n\n"
+            "## Focus\n\nalpha beta gamma delta epsilon zeta eta theta\n",
+            encoding="utf-8",
+        )
+
+        results = qt.rank_change_candidates(brief_path, str(repo_root), top_k=5)
+
+        self.assertEqual([r["id"] for r in results], ["half-overlapping-change"])
+        self.assertGreaterEqual(results[0]["score"], qt._MIN_CANDIDATE_SCORE)
+
+    def test_all_changes_below_floor_returns_empty_list(self):
+        """Same empty-list contract as a repo with no active changes at all."""
+        repo_root = self.base / "repo-all-weak"
+        for i in range(3):
+            self._make_change(
+                repo_root,
+                f"unrelated-{i}",
+                why="Clean up stale billing invoice reconciliation cron jobs.",
+                tasks=[(False, "Remove stale billing invoice cron entries")],
+            )
+        brief_path = self.queue / "brief.md"
+        brief_path.write_text(
+            "---\nstatus: queued\n---\n\n"
+            "## Focus\n\nwidget export pipeline serializer downstream reporting\n",
+            encoding="utf-8",
+        )
+
+        self.assertEqual(
+            qt.rank_change_candidates(brief_path, str(repo_root), top_k=5), []
+        )
 
     def test_no_active_changes_returns_empty_list(self):
         repo_root = self.base / "repo-empty"
@@ -3767,6 +3993,7 @@ class TestRankChangeCandidates(QueueTriageTestBase):
         brief_path = self.write(
             "brief.md",
             body="## Focus\n\nwidget export pipeline serializer downstream reporting\n",
+            focus="widget export pipeline serializer downstream reporting",
         )
 
         results = qt.rank_change_candidates(brief_path, str(repo_root), top_k=2)

@@ -230,6 +230,8 @@ def _proves_queue_triage_py_uses_enforced_labels():
                 )
             if "config" in cmd and "remote.pushDefault" in cmd:
                 return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+            if "fetch" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
             if "worktree" in cmd and "add" in cmd:
                 change_dir.mkdir(parents=True, exist_ok=True)
                 (change_dir / "proposal.md").write_text("# Widget\n\n## Why\n\nx.\n")
