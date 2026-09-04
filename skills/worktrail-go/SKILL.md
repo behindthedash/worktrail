@@ -302,9 +302,10 @@ repo token in the invocation itself) before doing anything else:
      Run the apply with the Bash tool's `timeout` parameter set to 600000 (the apply can
      itself drive a PR through `worktrail-land-pr`'s CI-watch to a terminal outcome).
      Report the resulting `pr_url` and `landing.outcome` to the user. On a
-     `landing.outcome` of `code_defect` or `review_threads_blocking`, continue by
-     re-invoking `worktrail-land-pr` against `landing.run` (from `landing.worktree`)
-     until a terminal outcome is reached, then stop. Still no Phase 3 claim/dispatch —
+     `work-directly` verdict whose `landing.outcome` is `code_defect` or
+     `review_threads_blocking`, continue by re-invoking `worktrail-land-pr` against
+     `landing.run` (from `landing.worktree`) until a terminal outcome is reached, then
+     stop. Still no Phase 3 claim/dispatch —
      a triage-gate pickup never carries into Phase 3's claim+dispatch flow in the same
      invocation.
 

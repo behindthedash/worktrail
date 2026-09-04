@@ -1,6 +1,6 @@
 ## 1. Shared pipeline module — prerequisite for groups 2–5 and 12 (OpenSpec has no cross-group edge; dispatch this group first)
 
-- [ ] 1.1 Create `src/worktrail/router/land_pr.py` and register `worktrail-land-pr =
+- [x] 1.1 Create `src/worktrail/router/land_pr.py` and register `worktrail-land-pr =
       "worktrail.router.land_pr:main"` under `[project.scripts]` in `pyproject.toml`.
       The module holds `LandRequest`/`LandOutcome` frozen dataclasses,
       `land_pr(request) -> LandOutcome`, the private step functions
@@ -27,7 +27,7 @@
       record is completed with a real state; Requirement: Refusal leaves the remote
       untouched)
       files: src/worktrail/router/land_pr.py, pyproject.toml
-- [ ] 1.2 Tests for the pipeline. `tests/router/test_land_pr.py` (injected `FakeRun`-style
+- [x] 1.2 Tests for the pipeline. `tests/router/test_land_pr.py` (injected `FakeRun`-style
       runner scripting every `git`/`gh` reply): dirty tree without `commit_message` →
       `refused`/`dirty_tree`, no push recorded; compile gaps → `refused`/`compile_marker`,
       no push; preflight non-zero → `refused`/`preflight`; existing OPEN PR → no
