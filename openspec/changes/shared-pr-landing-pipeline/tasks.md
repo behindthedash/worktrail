@@ -82,7 +82,7 @@
 
 ## 3. Migrate close-stale OpenSpec (after group 1)
 
-- [ ] 3.1 In `src/worktrail/router/close_stale_openspec.py`, after a successful
+- [x] 3.1 In `src/worktrail/router/close_stale_openspec.py`, after a successful
       `flip_and_archive`, `main()` calls `land_pr(LandRequest(repo=worktree,
       base_branch=<--base>, title=f"chore({change_id}): close stale bookkeeping",
       summary=…, route="E", risk="low", run=<--run>, commit_message=…))` and merges
@@ -100,7 +100,7 @@
 
 ## 4. Migrate drain remediations (after group 1)
 
-- [ ] 4.1 In `src/worktrail/drain/drain.py`, replace `_open_sync_pending_pr`,
+- [x] 4.1 In `src/worktrail/drain/drain.py`, replace `_open_sync_pending_pr`,
       `_open_stale_bookkeeping_pr`, and `_open_openspec_archive_pr` with one
       `_land_remediation_pr(wt, repo_name, spec_id, base, title, summary, timeout)` that
       calls `land_pr(LandRequest(repo=wt, base_branch=base, route="E", risk="low",
@@ -137,7 +137,7 @@
 
 ## 6. Prose: sdd-workflow Phase 8
 
-- [ ] 6.1 In `skills/worktrail-sdd-workflow/SKILL.md` Phase 8, keep the
+- [x] 6.1 In `skills/worktrail-sdd-workflow/SKILL.md` Phase 8, keep the
       scope-completeness gate paragraph; replace the "Mandatory pre-PR test gate",
       "Automerge labels", and "For every PR produced" 1–4 sections with one
       `worktrail-land-pr` command block (flags per design.md D8), its exit-code table,
@@ -177,7 +177,7 @@
 
 ## 9. Prose: sync-PR subagent step
 
-- [ ] 9.1 In `skills/worktrail-go/references/subagent-prompts.md`'s sync step, replace the
+- [x] 9.1 In `skills/worktrail-go/references/subagent-prompts.md`'s sync step, replace the
       `worktrail-pre-pr-gate --labels-only` + `gh pr create` block and Step 4b's `gh pr
       checks --watch` / `gh pr merge` with `worktrail-land-pr --repo "$SYNC_WT" --base
       "$BASE" --run "$RUN" --route E --risk low --checkpoint …`; keep the
@@ -227,11 +227,11 @@
 
 ## 14. Folded from 20260904-165036-land-pr-push-refusal-wrong
 
-- [ ] 14.1 src/worktrail/router/land_pr.py:1008-1009 returns LandOutcome(outcome="refused", refused_step="push") with no detail argument at all, and _push() (land_pr.py:403-424) discards the failed git push's stdout/stderr, only returning the string "push" — confirming the repro's detail=null. The candidate change's declared capability ('fail-closed refusal before push ... with a bounded, classified watch outcome') directly covers fixing this refusal-detail gap, so the fix belongs there rather than as a standalone patch. Live re-repro 2026-09-04 (run go-20260904-165845, worktree fix/spec-drift-shared-pr-landing-pipeline): land-pr refused at push with detail=null while a direct git push -u origin <branch> from the same worktree, and a plain subprocess.run(['git','-C',<worktree>,'push','-u','origin',...]) from Python, both succeeded, so the failure is specific to the runner/env used inside land_pr._push, not the git push itself; capture and report the failed push's stderr in detail. Put the new tests in tests/router/test_land_pr_push_refusal.py (do not extend tests/router/test_land_pr.py: tasks 1.1->1.2 already saturate the compile same-file chain gate on that file).
+- [x] 14.1 src/worktrail/router/land_pr.py:1008-1009 returns LandOutcome(outcome="refused", refused_step="push") with no detail argument at all, and _push() (land_pr.py:403-424) discards the failed git push's stdout/stderr, only returning the string "push" — confirming the repro's detail=null. The candidate change's declared capability ('fail-closed refusal before push ... with a bounded, classified watch outcome') directly covers fixing this refusal-detail gap, so the fix belongs there rather than as a standalone patch. Live re-repro 2026-09-04 (run go-20260904-165845, worktree fix/spec-drift-shared-pr-landing-pipeline): land-pr refused at push with detail=null while a direct git push -u origin <branch> from the same worktree, and a plain subprocess.run(['git','-C',<worktree>,'push','-u','origin',...]) from Python, both succeeded, so the failure is specific to the runner/env used inside land_pr._push, not the git push itself; capture and report the failed push's stderr in detail. Put the new tests in tests/router/test_land_pr_push_refusal.py (do not extend tests/router/test_land_pr.py: tasks 1.1->1.2 already saturate the compile same-file chain gate on that file).
 
 ## 15. Folded from 20260904-180534-land-pr-push-branch-tracking
 
-- [ ] 15.1 Same _push() refusal as task 14.1 (openspec/changes/shared-pr-landing-pipeline/tasks.md:230), second repro 2026-09-05 on gracefully-giving-back run go-20260904-171615 (PR #716): the feature branch was created with `git worktree add ... -b <branch> origin/dev` so its upstream is origin/dev, and worktrail-land-pr refused at push (refused_step: push, detail: null) while a manual `git push -u origin <branch>` succeeded and a re-run then landed normally. In src/worktrail/router/land_pr.py, make _push() (land_pr.py:403-424) push with an explicit refspec (`git push -u origin HEAD:<branch>`) so a branch whose upstream tracks the base ref is never pushed to the wrong remote branch, and surface the failed git push's stderr in LandOutcome.detail (land_pr.py:1008-1009) instead of null. Add the tests to tests/router/test_land_pr_push_refusal.py alongside 14.1's (do not extend tests/router/test_land_pr.py).
+- [x] 15.1 Same _push() refusal as task 14.1 (openspec/changes/shared-pr-landing-pipeline/tasks.md:230), second repro 2026-09-05 on gracefully-giving-back run go-20260904-171615 (PR #716): the feature branch was created with `git worktree add ... -b <branch> origin/dev` so its upstream is origin/dev, and worktrail-land-pr refused at push (refused_step: push, detail: null) while a manual `git push -u origin <branch>` succeeded and a re-run then landed normally. In src/worktrail/router/land_pr.py, make _push() (land_pr.py:403-424) push with an explicit refspec (`git push -u origin HEAD:<branch>`) so a branch whose upstream tracks the base ref is never pushed to the wrong remote branch, and surface the failed git push's stderr in LandOutcome.detail (land_pr.py:1008-1009) instead of null. Add the tests to tests/router/test_land_pr_push_refusal.py alongside 14.1's (do not extend tests/router/test_land_pr.py).
 
 ## 16. Folded from 20260904-185838-tail-task-checkbox-sync-missing
 

@@ -122,8 +122,8 @@ from pathlib import Path
 from typing import Any
 
 from ..orchestrator import agent_capacity
-from ..orchestrator.integrate import _refresh_pr_labels
 from ..router import branch_selfcheck, dashboard, quarantine_selfcheck
+from ..router.land_pr import LandRequest, land_pr
 from ..router.policy import (
     OperatorConfigError,
     default_routing_file,
@@ -986,46 +986,6 @@ def _existing_sync_pending_pr(repo: Path, branch: str, timeout: int) -> str | No
     return url or None
 
 
-def _open_sync_pending_pr(
-    repo: Path,
-    wt: Path,
-    repo_name: str,
-    spec_id: str,
-    base: str,
-    branch: str,
-    timeout: int,
-) -> str:
-    """`gh pr create` for the sync branch, via the same enforced
-    label-resolution path `_open_openspec_archive_pr`/`_open_stale_bookkeeping_pr`
-    use (`_refresh_pr_labels` -> `pre_pr_gate.py --labels-only`), not
-    hand-rolled. Raises rather than returning a fabricated URL when
-    `gh pr create` fails outright."""
-    labels = _refresh_pr_labels(wt, ["go:risk-low"], base) or ["go:risk-low"]
-    cmd = ["gh", "pr", "create", "--base", base, "--head", branch]
-    for label in labels:
-        cmd += ["--label", label]
-    cmd += [
-        "--title",
-        f"chore({spec_id}): sync specs from change",
-        "--body",
-        (
-            f"Runs `/opsx:sync {spec_id}` and commits whatever it wrote into "
-            f"main specs.\n\nOpened by drain's sync-pending sweep."
-        ),
-    ]
-    result = subprocess.run(
-        cmd, check=False, capture_output=True, text=True, cwd=str(wt), timeout=timeout
-    )
-    out = (
-        (result.stdout or result.stderr).strip().splitlines()[-1]
-        if (result.stdout or result.stderr)
-        else "(no output)"
-    )
-    if result.returncode != 0 or not out.startswith("http"):
-        raise RuntimeError(f"gh pr create failed for {repo_name} {spec_id}: {out}")
-    return out
-
-
 def _run_sync_pending(
     finding: dict[str, Any],
     agent: str,
@@ -1102,8 +1062,14 @@ def _run_sync_pending(
                 # archive_openspec_change/close_stale_bookkeeping's identical
                 # push.
                 _run_git(wt, "push", "--force", "-u", "origin", branch, timeout=timeout)
-                pr_url = _open_sync_pending_pr(
-                    repo, wt, repo_name, spec_id, base, branch, timeout
+                pr_url = _land_remediation_pr(
+                    wt,
+                    repo_name,
+                    spec_id,
+                    base,
+                    f"chore({spec_id}): sync specs from change",
+                    f"Runs `/opsx:sync {spec_id}` and commits whatever it wrote into main specs.\n\nOpened by drain's sync-pending sweep.",
+                    timeout,
                 )
             else:
                 log(
@@ -1396,57 +1362,39 @@ def _reset_stale_bookkeeping_worktree(
             pass
 
 
-def _open_stale_bookkeeping_pr(
-    repo: Path,
+def _land_remediation_pr(
     wt: Path,
     repo_name: str,
     spec_id: str,
-    task_ids: list[str],
     base: str,
-    branch: str,
+    title: str,
+    summary: str,
     timeout: int,
 ) -> str:
-    """`gh pr create` for the status-flip-only branch. A status-only flip of
-    already-shipped work is inherently low risk -- no code change -- but the
-    label(s) are still sourced from the enforced label-resolution path
-    (`_refresh_pr_labels` -> `pre_pr_gate.py --labels-only`), not
-    hand-rolled, so a future policy change (e.g. a new required label) is
-    never silently missed here the way it was for four prior call sites
-    (see test_pr_creation_callsite_enforcement_coverage.py). Falls back to
-    the seed label only if refresh itself is unavailable (gate script
-    unresolvable). Resolved against `wt`, not `repo`: `wt`'s HEAD is this
-    PR's actual diff (the flip commit off `base`), while `repo` is whatever
-    branch the drain target happens to be checked out to -- diffing that
-    against `base` would stamp labels computed from an unrelated diff.
-    Raises rather than returning a fabricated URL when `gh pr create` fails
-    outright, e.g. an unresolvable --label -- it fails the WHOLE command
-    with a non-zero exit and no PR created (see orchestrator/integrate.py's
-    identical guard)."""
-    labels = _refresh_pr_labels(wt, ["go:risk-low"], base) or ["go:risk-low"]
-    cmd = ["gh", "pr", "create", "--base", base, "--head", branch]
-    for label in labels:
-        cmd += ["--label", label]
-    cmd += [
-        "--title",
-        f"chore({spec_id}): close stale bookkeeping",
-        "--body",
-        (
-            f"Flips `status:` to `completed` for already-shipped task(s) "
-            f"{', '.join(task_ids)} in `{spec_id}` -- their `files:` are already merged "
-            f"on `{base}`; no code change.\n\nOpened by drain's stale-bookkeeping sweep."
-        ),
-    ]
-    result = subprocess.run(
-        cmd, check=False, capture_output=True, text=True, cwd=str(wt), timeout=timeout
+    """Land a remediation PR through the shared pipeline. Returns the PR URL
+    on `landed` outcome, or raises RuntimeError on any other outcome with the
+    outcome detail in the message."""
+    request = LandRequest(
+        repo=str(wt),
+        base_branch=base,
+        route="E",
+        risk="low",
+        run=None,
+        request_summary=f"drain {title}",
+        watch_timeout_s=timeout,
+        title=title,
+        summary=summary,
+        commit_message=None,
     )
-    out = (
-        (result.stdout or result.stderr).strip().splitlines()[-1]
-        if (result.stdout or result.stderr)
-        else "(no output)"
+    outcome = land_pr(request)
+
+    if outcome.outcome == "landed":
+        return outcome.pr_url
+
+    detail = outcome.detail or outcome.refused_step or "unknown"
+    raise RuntimeError(
+        f"land_pr for {repo_name} {spec_id} failed: {outcome.outcome} ({detail})"
     )
-    if result.returncode != 0 or not out.startswith("http"):
-        raise RuntimeError(f"gh pr create failed for {repo_name} {spec_id}: {out}")
-    return out
 
 
 def close_stale_bookkeeping(
@@ -1553,8 +1501,14 @@ def close_stale_bookkeeping(
         # overwritten rather than rejected non-fast-forward -- otherwise the
         # finding wedges permanently even after the original cause clears.
         _run_git(wt, "push", "--force", "-u", "origin", branch, timeout=timeout)
-        pr_url = _open_stale_bookkeeping_pr(
-            repo, wt, repo_name, spec_id, task_ids, base, branch, timeout
+        pr_url = _land_remediation_pr(
+            wt,
+            repo_name,
+            spec_id,
+            base,
+            f"chore({spec_id}): close stale bookkeeping",
+            f"Flips `status:` to `completed` for already-shipped task(s) {', '.join(task_ids)} in `{spec_id}` -- their `files:` are already merged on `{base}`; no code change.\n\nOpened by drain's stale-bookkeeping sweep.",
+            timeout,
         )
     finally:
         # Best-effort: on the success path this must not raise past a real
@@ -1624,47 +1578,6 @@ def _run_openspec_archive(wt: Path, spec_id: str, timeout: int) -> None:
         )
 
 
-def _open_openspec_archive_pr(
-    repo: Path,
-    wt: Path,
-    repo_name: str,
-    spec_id: str,
-    base: str,
-    branch: str,
-    timeout: int,
-) -> str:
-    """`gh pr create` for the archive-only branch, via the same enforced
-    label-resolution path `_open_stale_bookkeeping_pr` uses (see that
-    docstring) -- labels are sourced from `_refresh_pr_labels`, not
-    hand-rolled. Raises rather than returning a fabricated URL when
-    `gh pr create` fails outright."""
-    labels = _refresh_pr_labels(wt, ["go:risk-low"], base) or ["go:risk-low"]
-    cmd = ["gh", "pr", "create", "--base", base, "--head", branch]
-    for label in labels:
-        cmd += ["--label", label]
-    cmd += [
-        "--title",
-        f"chore({spec_id}): archive completed change",
-        "--body",
-        (
-            f"Runs `openspec archive -y {spec_id}` for the completed change "
-            f"`{spec_id}` and commits whatever it moved/wrote.\n\n"
-            "Opened by drain's OpenSpec archive sweep."
-        ),
-    ]
-    result = subprocess.run(
-        cmd, check=False, capture_output=True, text=True, cwd=str(wt), timeout=timeout
-    )
-    out = (
-        (result.stdout or result.stderr).strip().splitlines()[-1]
-        if (result.stdout or result.stderr)
-        else "(no output)"
-    )
-    if result.returncode != 0 or not out.startswith("http"):
-        raise RuntimeError(f"gh pr create failed for {repo_name} {spec_id}: {out}")
-    return out
-
-
 def archive_openspec_change(
     finding: dict[str, Any],
     agent: str,
@@ -1726,8 +1639,14 @@ def archive_openspec_change(
         # branch is exclusively owned by this action and rebuilt from `base`
         # on every retry.
         _run_git(wt, "push", "--force", "-u", "origin", branch, timeout=timeout)
-        pr_url = _open_openspec_archive_pr(
-            repo, wt, repo_name, spec_id, base, branch, timeout
+        pr_url = _land_remediation_pr(
+            wt,
+            repo_name,
+            spec_id,
+            base,
+            f"chore({spec_id}): archive completed change",
+            f"Runs `openspec archive -y {spec_id}` for the completed change `{spec_id}` and commits whatever it moved/wrote.\n\nOpened by drain's OpenSpec archive sweep.",
+            timeout,
         )
     finally:
         try:
