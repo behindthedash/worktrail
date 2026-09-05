@@ -1115,6 +1115,29 @@ def test_the_cli_fails_loudly_when_impl_tasks_stay_scope_less(tmp_path, capsys):
     assert "scope" in err.lower()
 
 
+def test_the_scope_gap_guidance_distinguishes_tail_kinds(tmp_path, capsys):
+    """The remediation text used to list `docs/e2e/cleanup` as interchangeable
+    tail-kind choices with no distinction of what each executes -- the
+    contributing cause behind an author picking `[cleanup]` for a task that
+    needed `[e2e]` (brief 20260904-164604). It must now name the difference:
+    `e2e` spawns a worker, `cleanup`/`docs` execute nothing."""
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    d = repo / "openspec" / "changes" / "add-thing"
+    d.mkdir(parents=True)
+    (d / "proposal.md").write_text("## Why\nBecause.\n")
+    (d / "tasks.md").write_text("## 1. Core\n\n- [ ] 1.1 Add the parser\n")
+
+    rc = conductor_compile.main([str(d), "--no-llm"])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "e2e" in err and "spawns a worker" in err
+    assert "cleanup" in err and "execute nothing" in err
+
+
 def test_the_cli_json_mode_also_fails_loudly_when_impl_tasks_stay_scope_less(
     tmp_path, capsys
 ):
@@ -1899,6 +1922,24 @@ def test_the_consolidated_fixture_passes(tmp_path, capsys):
     assert "serial" not in err
     assert "missing test scope" not in err
     assert (d / conductor_compile.COMPILE_MARKER_NAME).exists()
+
+
+def test_the_cleanup_verification_mismatch_fixture_is_rejected(tmp_path, capsys):
+    """A `[cleanup]`-tagged task whose title reads as a command to run
+    (`live` incident go-20260904-153010's exact wording) fails compile,
+    naming the task and pointing at `[e2e]` instead. Every task declares its
+    own `files:`, so `--no-llm` never has to spawn a model."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    d = _make_change(repo, "cleanup-verification-mismatch.tasks.md")
+
+    rc = conductor_compile.main([str(d), "--no-llm"])
+    _out, err = capsys.readouterr()
+    assert rc == 1
+    assert "cleanup verification mismatch" in err
+    assert "2.1" in err
+    assert "[e2e]" in err
+    assert not (d / conductor_compile.COMPILE_MARKER_NAME).exists()
 
 
 def test_compile_run_plan_raises_plan_shape_error_on_a_cache_hit(tmp_path):

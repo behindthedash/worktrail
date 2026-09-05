@@ -796,10 +796,13 @@ def _print_scope_gap_error(gaps: list[str]) -> None:
         file=sys.stderr,
     )
     print(
-        "  a live run will refuse to fan these out (validate_task_metadata). Give "
-        "them a tail kind (docs/e2e/cleanup) if they genuinely need none, add explicit "
-        "`files:` scope to the artifact, or retry compile (--force) with more context "
-        "in proposal.md/design.md so the model can determine it.",
+        "  a live run will refuse to fan these out (validate_task_metadata). If it "
+        "genuinely needs no file scope, tag it with the tail kind matching what it "
+        "actually does at dispatch: `e2e` spawns a worker and runs commands "
+        "(tests, validation); `cleanup` and `docs` are journal-only status "
+        "transitions that execute nothing. Otherwise add explicit `files:` scope "
+        "to the artifact, or retry compile (--force) with more context in "
+        "proposal.md/design.md so the model can determine it.",
         file=sys.stderr,
     )
 
