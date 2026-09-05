@@ -2052,6 +2052,75 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
         proposal_text = (change_dir / "proposal.md").read_text(encoding="utf-8")
         self.assertIn(multiline.evidence, proposal_text)
 
+    def _fold_with_evidence(self, evidence: str, *, seed_files: list[str]) -> str:
+        """Run one fold whose `git worktree add` also seeds `seed_files` in the
+        worktree, returning the resulting `tasks.md` text."""
+        verdict = qt.Verdict(
+            brief_id="a",
+            verdict="fold-into-change",
+            duplicate_of=None,
+            evidence=evidence,
+            confidence="high",
+            target_change=self.target_change,
+            repo=str(self.repo),
+        )
+        run, _ = self._dispatcher()
+
+        def _run(cmd, **kwargs):
+            result = run(cmd, **kwargs)
+            if cmd[0] == "git" and "worktree" in cmd and "add" in cmd:
+                for rel in seed_files:
+                    path = self.worktree_dir / rel
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text("", encoding="utf-8")
+            return result
+
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run", side_effect=_run
+            ),
+            mock.patch(
+                "worktrail.workqueue.queue_triage._refresh_pr_labels",
+                return_value=["go:risk-low"],
+            ),
+        ):
+            log = qt.apply_verdicts([verdict], confirm=True)
+        self.assertEqual(log[0]["status"], "executed", log[0])
+        change_dir = self.worktree_dir / "openspec" / "changes" / self.target_change
+        return (change_dir / "tasks.md").read_text(encoding="utf-8")
+
+    def test_task_declares_files_scope_from_evidence_paths_plus_existing_test(self):
+        """Brief 20260903-145001: `worktrail-compile` refuses a task touching a
+        `src/` file with no `tests/` path when its test file already exists,
+        and evidence cites source files (with line ranges) but never their
+        tests. The generated task declares an explicit `files:` line naming
+        each existing evidence path (suffix stripped) plus the matching test."""
+        tasks_text = self._fold_with_evidence(
+            "src/widgets/export.py:120-140 re-fetches origin before "
+            "`src/widgets/io.py` reads it; src/widgets/missing.py is not real",
+            seed_files=[
+                "src/widgets/export.py",
+                "src/widgets/io.py",
+                "tests/widgets/test_export.py",
+            ],
+        )
+        lines = tasks_text.splitlines()
+        task_index = next(
+            i for i, line in enumerate(lines) if line.startswith("- [ ] 2.1 ")
+        )
+        self.assertEqual(
+            lines[task_index + 1],
+            "      files: src/widgets/io.py, src/widgets/export.py, "
+            "tests/widgets/test_export.py",
+        )
+
+    def test_task_declares_no_files_scope_when_evidence_names_no_existing_path(self):
+        tasks_text = self._fold_with_evidence(
+            "overlaps open tasks in widget-export-pipeline",
+            seed_files=[],
+        )
+        self.assertNotIn("files:", tasks_text)
+
     def test_pr_creation_failure_leaves_brief_untouched_and_reports_branch(self):
         run, _ = self._dispatcher(pr_returncode=1)
         with (
