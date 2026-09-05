@@ -3950,6 +3950,129 @@ def test_close_stale_bookkeeping_missing_task_file_raises(tmp_path):
         )
 
 
+def _write_stale_openspec_change(repo: Path, change_id: str) -> None:
+    """An OpenSpec change with one unchecked task, committed and pushed to
+    `origin/dev` -- the OpenSpec counterpart of _write_stale_bookkeeping_spec
+    for close_stale_bookkeeping's `format == "openspec"` branch."""
+    change_dir = repo / "openspec" / "changes" / change_id
+    change_dir.mkdir(parents=True)
+    (change_dir / "proposal.md").write_text(f"# {change_id}\n\n## Why\nstuff\n")
+    (change_dir / "tasks.md").write_text("## 1. Work\n\n- [ ] 1.1 Do the thing\n")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "seed change"], check=True)
+    subprocess.run(["git", "-C", str(repo), "push", "-q", "origin", "dev"], check=True)
+
+
+def _fake_openspec_archive_run():
+    """Fake `openspec archive -y <id> --json` by moving the change directory
+    under `openspec/changes/archive/`; everything else passes through."""
+    real_run = subprocess.run
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:2] == ["openspec", "archive"]:
+            cwd = Path(kwargs["cwd"])
+            change_id = cmd[3]
+            src = cwd / "openspec" / "changes" / change_id
+            dst = cwd / "openspec" / "changes" / "archive" / change_id
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            src.rename(dst)
+            return subprocess.CompletedProcess(cmd, 0, stdout="{}", stderr="")
+        return real_run(cmd, **kwargs)
+
+    return fake_run
+
+
+def test_close_stale_bookkeeping_openspec_flips_and_archives(tmp_path, monkeypatch):
+    import worktrail.router.close_stale_openspec as cso
+
+    repo = _init_repo_with_origin(tmp_path, "repo-a")
+    _write_stale_openspec_change(repo, "add-export")
+
+    finding = {
+        "repo": repo,
+        "repo_name": "repo-a",
+        "spec_id": "add-export",
+        "stale_task_ids": ["1.1"],
+        "format": "openspec",
+    }
+
+    land_pr_calls = []
+
+    def mock_land_pr(request):
+        land_pr_calls.append(request)
+        from worktrail.router.land_pr import LandOutcome
+
+        return LandOutcome(outcome="landed", pr_url="https://example.invalid/pr/9")
+
+    monkeypatch.setattr(drain, "land_pr", mock_land_pr)
+    monkeypatch.setattr(
+        drain.subprocess, "run", _fake_gh_subprocess_run("https://example.invalid/pr/9")
+    )
+    monkeypatch.setattr(cso.subprocess, "run", _fake_openspec_archive_run())
+
+    result = close_stale_bookkeeping(
+        finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None
+    )
+
+    assert result == {
+        "repo": "repo-a",
+        "spec_id": "add-export",
+        "task_ids": ["1.1"],
+        "pr_url": "https://example.invalid/pr/9",
+    }
+    assert len(land_pr_calls) == 1
+    assert land_pr_calls[0].title == "chore(add-export): close stale bookkeeping"
+    assert "openspec archive" in land_pr_calls[0].summary
+
+    def git_show(path: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git", "-C", str(repo), "show", f"fix/close-stale-add-export:{path}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    archived = git_show("openspec/changes/archive/add-export/tasks.md")
+    assert archived.returncode == 0
+    assert "[x] 1.1" in archived.stdout
+    assert git_show("openspec/changes/add-export/tasks.md").returncode != 0
+
+
+def test_close_stale_bookkeeping_openspec_flip_error_raises(tmp_path, monkeypatch):
+    repo = _init_repo_with_origin(tmp_path, "repo-a")
+    # No openspec/changes/add-export on origin/dev -> tasks.md missing in the
+    # fix worktree -> flip_and_archive reports an error.
+    finding = {
+        "repo": repo,
+        "repo_name": "repo-a",
+        "spec_id": "add-export",
+        "stale_task_ids": ["1.1"],
+        "format": "openspec",
+    }
+    land_pr_calls = []
+    monkeypatch.setattr(drain, "land_pr", lambda r: land_pr_calls.append(r))
+    monkeypatch.setattr(
+        drain.subprocess, "run", _fake_gh_subprocess_run("https://example.invalid/pr/9")
+    )
+
+    with pytest.raises(RuntimeError, match="tasks.md not found"):
+        close_stale_bookkeeping(
+            finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None
+        )
+    assert land_pr_calls == []
+
+
+def test_find_stale_bookkeeping_specs_carries_format(tmp_path):
+    repo_a = _make_repo(tmp_path, "repo-a")
+    _init_git_repo(repo_a)
+    _write_stale_bookkeeping_spec(repo_a, "spec-a")
+
+    found = find_stale_bookkeeping_specs(tmp_path)
+
+    assert len(found) == 1
+    assert found[0]["format"] == "devkit"
+
+
 def test_close_stale_bookkeeping_gh_pr_create_failure_raises(tmp_path, monkeypatch):
     from worktrail.drain.drain import StageRemediation
 
