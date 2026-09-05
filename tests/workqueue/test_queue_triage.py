@@ -4143,6 +4143,136 @@ class TestRankChangeCandidates(QueueTriageTestBase):
         self.assertEqual(len(results), 2)
 
 
+class TestNonGoalTokens(QueueTriageTestBase):
+    """Extract Non-Goals/Out-of-scope tokens from proposal.md and design.md."""
+
+    def test_no_marker_present_returns_empty_set(self):
+        """When neither proposal.md nor design.md has a Non-Goals section."""
+        change_dir = self.base / "change1"
+        change_dir.mkdir(parents=True)
+        (change_dir / "proposal.md").write_text(
+            "# Widget Export\n\n## Why\n\nAdd widget export support.\n",
+            encoding="utf-8",
+        )
+
+        result = qt._non_goal_tokens(change_dir)
+
+        self.assertEqual(result, set())
+
+    def test_missing_proposal_and_design_returns_empty_set(self):
+        """When neither proposal.md nor design.md exist."""
+        change_dir = self.base / "change2"
+        change_dir.mkdir(parents=True)
+
+        result = qt._non_goal_tokens(change_dir)
+
+        self.assertEqual(result, set())
+
+    def test_heading_form_marker_extracts_tokens(self):
+        """Extract from ## Non-Goals heading to next heading or EOF."""
+        change_dir = self.base / "change3"
+        change_dir.mkdir(parents=True)
+        (change_dir / "proposal.md").write_text(
+            "# Widget Export\n\n## Why\n\nAdd widget export.\n\n"
+            "## Non-Goals\n\n"
+            "This change does not include database schema migration or legacy system integration.\n\n"
+            "## Other\n\nOther content.\n",
+            encoding="utf-8",
+        )
+
+        result = qt._non_goal_tokens(change_dir)
+
+        self.assertIn("database", result)
+        self.assertIn("schema", result)
+        self.assertIn("migration", result)
+        self.assertIn("legacy", result)
+        self.assertIn("system", result)
+        self.assertIn("integration", result)
+        self.assertNotIn("other", result)
+
+    def test_bold_label_paragraph_marker_extracts_tokens(self):
+        """Extract from **Non-Goals:** bold-label paragraph to next heading or EOF."""
+        change_dir = self.base / "change4"
+        change_dir.mkdir(parents=True)
+        (change_dir / "proposal.md").write_text(
+            "# Widget Export\n\n"
+            "## Why\n\n"
+            "**Non-Goals:** This change excludes network latency optimization and "
+            "distributed cache support, focusing only on local serialization.\n\n"
+            "## Implementation\n\nDetails here.\n",
+            encoding="utf-8",
+        )
+
+        result = qt._non_goal_tokens(change_dir)
+
+        self.assertIn("network", result)
+        self.assertIn("latency", result)
+        self.assertIn("optimization", result)
+        self.assertIn("distributed", result)
+        self.assertIn("cache", result)
+        self.assertNotIn("implementation", result)
+
+    def test_bullet_form_out_of_scope_marker_extracts_tokens(self):
+        """Extract from - **Out of scope**: bullet to next heading or EOF."""
+        change_dir = self.base / "change5"
+        change_dir.mkdir(parents=True)
+        (change_dir / "proposal.md").write_text(
+            "# Widget Export\n\n"
+            "## Scope\n\n"
+            "- **Out of scope**: re-testing parallel orchestrator tasks, "
+            "printing authentication tokens, or replacing unit coverage\n\n"
+            "## Tasks\n\nImplement it.\n",
+            encoding="utf-8",
+        )
+
+        result = qt._non_goal_tokens(change_dir)
+
+        self.assertIn("testing", result)
+        self.assertIn("parallel", result)
+        self.assertIn("orchestrator", result)
+        self.assertIn("tasks", result)
+        self.assertIn("authentication", result)
+        self.assertIn("tokens", result)
+
+    def test_design_file_also_scanned_when_present(self):
+        """Extract markers from both proposal.md and design.md."""
+        change_dir = self.base / "change6"
+        change_dir.mkdir(parents=True)
+        (change_dir / "proposal.md").write_text(
+            "# Widget Export\n\n## Non-Goals\n\nNo database migration.\n",
+            encoding="utf-8",
+        )
+        (change_dir / "design.md").write_text(
+            "# Design\n\n## Non-Goals\n\nNo distributed cache.\n",
+            encoding="utf-8",
+        )
+
+        result = qt._non_goal_tokens(change_dir)
+
+        self.assertIn("database", result)
+        self.assertIn("migration", result)
+        self.assertIn("distributed", result)
+        self.assertIn("cache", result)
+
+    def test_combined_tokens_from_multiple_markers_in_same_file(self):
+        """Extract and combine tokens from multiple Non-Goals sections."""
+        change_dir = self.base / "change7"
+        change_dir.mkdir(parents=True)
+        (change_dir / "proposal.md").write_text(
+            "# Widget Export\n\n"
+            "## Non-Goals\n\nNo database work.\n\n"
+            "## Implementation\n\nWe do something.\n\n"
+            "## Non-Goals\n\nNo network optimization.\n",
+            encoding="utf-8",
+        )
+
+        result = qt._non_goal_tokens(change_dir)
+
+        self.assertIn("database", result)
+        self.assertIn("network", result)
+        self.assertIn("optimization", result)
+
+
 class TestEscalationLimitsAndDue(QueueTriageTestBase):
     """4.1(b): `_escalation_limits()`/`escalation_due()`, design D5."""
 
