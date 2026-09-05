@@ -48,9 +48,7 @@ covers call sites Worktrail's own Python code constructs.
 import ast
 import inspect
 import json
-import shutil
 import subprocess
-import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -58,7 +56,6 @@ from unittest.mock import patch
 from worktrail.drain import drain
 from worktrail.orchestrator import integrate, live
 from worktrail.router import land_pr
-from worktrail.workqueue import queue_triage
 
 SRC_ROOT = Path(integrate.__file__).resolve().parent.parent  # src/worktrail
 
@@ -193,88 +190,6 @@ def _proves_drain_py_uses_enforced_labels():
             "drain.py's gh pr create call did not carry the refreshed label -- "
             "its stale-bookkeeping PR may have stopped routing through the "
             "enforced label-resolution path"
-        )
-
-
-def _proves_queue_triage_py_uses_enforced_labels():
-    """workqueue/queue_triage.py's `_apply_fold_into_change` gh pr create call
-    site builds its `--label` flags from `_refresh_pr_labels(...)`'s return
-    value (falling back to the seed `["go:risk-low"]` only when refresh
-    itself is unavailable), never an independently hand-rolled label -- same
-    pattern as `drain.py`'s call site. Prove the wiring behaviorally: stub
-    `_refresh_pr_labels` to return a distinctive label set, stub
-    `subprocess.run` to fake `git`/`openspec`/`gh` and capture the constructed
-    `gh pr create` command, and confirm the captured command carries exactly
-    that refreshed label."""
-    qt = queue_triage
-    tmpdir = tempfile.mkdtemp(prefix="worktrail-callsite-proof-")
-    repo = Path(tmpdir) / "repo"
-    repo.mkdir(parents=True)
-    verdict = qt.Verdict(
-        brief_id="a",
-        verdict="fold-into-change",
-        duplicate_of=None,
-        evidence="overlaps open tasks",
-        confidence="high",
-        target_change="widget-export-pipeline",
-        repo=str(repo),
-    )
-    branch = qt._planned_fold_propose_branch(verdict)
-    worktree_dir = qt._fold_propose_worktree_dir(repo, branch)
-    change_dir = worktree_dir / "openspec" / "changes" / verdict.target_change
-    captured = {}
-
-    def fake_run(cmd, **kwargs):
-        if cmd[0] == "git" and "-C" in cmd:
-            if "symbolic-ref" in cmd:
-                return subprocess.CompletedProcess(
-                    cmd, 0, stdout="origin/main\n", stderr=""
-                )
-            if "config" in cmd and "remote.pushDefault" in cmd:
-                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
-            if "fetch" in cmd:
-                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-            if "worktree" in cmd and "add" in cmd:
-                change_dir.mkdir(parents=True, exist_ok=True)
-                (change_dir / "proposal.md").write_text("# Widget\n\n## Why\n\nx.\n")
-                (change_dir / "tasks.md").write_text("## 1. Tasks\n\n- [ ] 1.1 x\n")
-                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-            if "worktree" in cmd and "remove" in cmd:
-                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-            if "branch" in cmd and "-D" in cmd:
-                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-        if cmd[0] == "openspec" and cmd[1] == "validate":
-            return subprocess.CompletedProcess(cmd, 0, stdout="valid\n", stderr="")
-        if cmd[0] == "worktrail-compile":
-            (change_dir / ".compile-ok").write_text("fp\n")
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-        if cmd[0] == "git" and cmd[1] in ("add", "commit", "push"):
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-        if cmd[0] == "gh" and cmd[1:3] == ["pr", "create"]:
-            captured["cmd"] = cmd
-            return subprocess.CompletedProcess(
-                cmd, 0, stdout="https://example.invalid/pr/1\n", stderr=""
-            )
-        raise AssertionError(f"unexpected command: {cmd}")
-
-    try:
-        with (
-            patch.object(qt, "_refresh_pr_labels", return_value=["go:risk-canary"]),
-            patch.object(qt.subprocess, "run", side_effect=fake_run),
-        ):
-            qt._apply_fold_into_change(verdict)
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
-
-    if (
-        "cmd" not in captured
-        or "--label" not in captured["cmd"]
-        or "go:risk-canary" not in captured["cmd"]
-    ):
-        raise AssertionError(
-            "queue_triage.py's gh pr create call did not carry the refreshed "
-            "label -- its fold-into-change PR may have stopped routing "
-            "through the enforced label-resolution path"
         )
 
 
@@ -789,7 +704,6 @@ CALLSITE_CONSUMERS = {
     "orchestrator/integrate.py": _proves_integrate_py_uses_enforced_labels,
     "orchestrator/live.py": _proves_live_py_full_is_sandbox_only_dev_tooling,
     "drain/drain.py": _proves_drain_py_uses_enforced_labels,
-    "workqueue/queue_triage.py": _proves_queue_triage_py_uses_enforced_labels,
     "router/land_pr.py": _proves_land_pr_py_uses_preflight_labels,
 }
 

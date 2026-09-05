@@ -2349,6 +2349,45 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
 
         self.assertEqual(log[0]["status"], "executed", log[0])
 
+    def test_code_defect_closes_brief_and_leaves_worktree_on_disk(self):
+        pr_url = "https://github.com/acme/widgets/pull/42"
+        run = self._dispatcher()
+        land_outcome = LandOutcome(
+            outcome="code_defect",
+            pr_url=pr_url,
+            pr_number=42,
+            labels=["go:risk-low"],
+            run=None,
+            final_status="failed_recoverable",
+            failing_checks=["CI: build"],
+        )
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+            ),
+            mock.patch(
+                "worktrail.workqueue.queue_triage.land_pr", return_value=land_outcome
+            ),
+        ):
+            log = qt.apply_verdicts([self.verdict], confirm=True)
+
+        entry = log[0]
+        self.assertEqual(entry["status"], "executed")
+        self.assertIsNone(entry["error"])
+        self.assertEqual(entry["branch"], self.branch)
+        self.assertEqual(entry["pr_url"], pr_url)
+        self.assertEqual(entry["landing"]["outcome"], "code_defect")
+        self.assertEqual(entry["landing"]["final_status"], "failed_recoverable")
+        self.assertEqual(entry["landing"]["worktree"], str(self.worktree_dir))
+
+        # brief closed with triaged-to: the PR URL, no longer in queue/
+        self.assertFalse((self.queue / "a.md").exists())
+        picked_path = Path(entry["path"])
+        self.assertEqual(picked_path.parent, self.base / "picked")
+        fm = qt.read_frontmatter(picked_path)
+        self.assertEqual(fm["status"], "done")
+        self.assertEqual(fm["triaged-to"], pr_url)
+
 
 class TestApplyProposeChange(QueueTriageTestBase):
     """3.2's `propose-change` apply action: fresh worktree off the target
