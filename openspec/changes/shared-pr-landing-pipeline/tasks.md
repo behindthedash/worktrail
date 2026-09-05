@@ -56,7 +56,7 @@
 
 ## 2. Migrate queue-triage fold/propose (after group 1)
 
-- [ ] 2.1 In `src/worktrail/workqueue/queue_triage.py` `_worktree_pr_close()`, replace the
+- [x] 2.1 In `src/worktrail/workqueue/queue_triage.py` `_worktree_pr_close()`, replace the
       commit / `git push` / `_refresh_pr_labels` / `gh pr create` block with one
       `land_pr(LandRequest(repo=worktree_dir, base_branch=base_branch,
       title=_planned_fold_propose_pr_title(v), summary=pr_body, route="C", risk="low",
@@ -239,5 +239,5 @@
 
 ## 17. Folded from 20260903-145001-worktree-missing-committed-openspec-change
 
-- [ ] 17.1 src/worktrail/workqueue/queue_triage.py:2445-2488 fetches `origin/<base_branch>` and creates the worktree from that remote ref (not local HEAD), per the docstring at 2413-2434; the observed 'files missing in worktree but present at local HEAD' failure is consistent with the target change's commits existing locally but not yet pushed to origin at fetch time, a PR-landing/worktree-sequencing issue in this exact file. shared-pr-landing-pipeline already has 3 recent folds (#983, #975, #967) of the same class of queue_triage.py worktree/push bugs, confirming it's the active home for this kind of report.
+- [x] 17.1 src/worktrail/workqueue/queue_triage.py:2445-2488 fetches `origin/<base_branch>` and creates the worktree from that remote ref (not local HEAD), per the docstring at 2413-2434; the observed 'files missing in worktree but present at local HEAD' failure is consistent with the target change's commits existing locally but not yet pushed to origin at fetch time, a PR-landing/worktree-sequencing issue in this exact file. shared-pr-landing-pipeline already has 3 recent folds (#983, #975, #967) of the same class of queue_triage.py worktree/push bugs, confirming it's the active home for this kind of report.
       files: src/worktrail/workqueue/queue_triage.py, tests/workqueue/test_queue_triage.py

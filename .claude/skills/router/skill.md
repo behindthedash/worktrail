@@ -26,6 +26,7 @@ triggers:
     - land_pr
     - LandRequest
     - LandOutcome
+    - close_stale_openspec
 ---
 
 You are working on **worktrail's GO v2 front door**: loading repo policy, classifying free-text
@@ -166,7 +167,27 @@ agents or writes task files — that is `orchestrator/`'s job.
   step list — it exists because PR #902 shipped 112 gate-verified files that were never committed
   before `git push`, a gap each prior call site (`queue_triage.py`, `drain.py`,
   `orchestrator/integrate.py`, and the agent-executed sdd-workflow/`worktrail-go` prose) closed
-  differently or not at all.
+  differently or not at all. As of 2026-09-05 `drain.py` (`_land_remediation_pr`),
+  `close_stale_openspec.py`, and `workqueue/queue_triage.py` all compose with it.
+- **`_push()` always pushes with an explicit `HEAD:<branch>` refspec** (`git push -u <remote>
+  HEAD:<branch>`), never a bare `git push` to the configured upstream: a branch created via
+  `git worktree add ... -b <branch> origin/dev` tracks `origin/dev`, so a bare push targeted the
+  wrong remote branch (repro 2026-09-05, gracefully-giving-back PR #716). It no longer runs the
+  `rev-parse @{u}` upstream lookup at all. On a genuine `"push"` refusal it appends git's stderr
+  (falling back to stdout) to an optional `detail_out: list[str]` out-param, and `land_pr()`
+  surfaces that as `LandOutcome.detail` instead of `null` — an out-param rather than a widened
+  return type so existing callers/mocks of `_push(repo, branch, remote, runner)` keep working. A
+  timeout/`OSError` still returns `"push_ambiguous"` with nothing appended. Regression tests live
+  in `tests/router/test_land_pr_push_refusal.py`, deliberately not in `test_land_pr.py`.
+- **`close_stale_openspec.py` now lands the PR itself.** `main()` requires `--base` and `--run`;
+  after a successful `flip_and_archive` it calls `land_pr(LandRequest(route="E", risk="low",
+  title="chore(<change-id>): close stale bookkeeping", commit_message="chore(<change-id>):
+  archive completed change", ...))`, merges `asdict(outcome)` into the result under `"landing"`,
+  and maps the outcome to the exit code (`landed`→0, `refused`→2, `code_defect`/
+  `review_threads_blocking`→3, `ceiling`→4, anything else→1). A `flip_and_archive` error still
+  exits 1 without ever calling `land_pr`. The `worktrail-go` close-stale row is one integrated
+  invocation now (`worktrail-close-stale-openspec ... --base "$BASE" --run "$RUN" --json`), not a
+  separate `worktrail-land-pr` step. Confirming a task is truly shipped remains the agent's call.
 
 ## Critical files
 - `router/parse_invocation.py` — the `worktrail-go` Phase 1 grammar (`parse`, `FORMS`, `ALIASES`,
@@ -185,7 +206,10 @@ agents or writes task files — that is `orchestrator/`'s job.
   single-brief-triage path uses to resolve a bare `repo:` value to an on-disk checkout
 - `router/land_pr.py` — `land_pr()`, `LandRequest`/`LandOutcome`; the shared
   commit/compile-marker/preflight/push/PR/CI-watch/merge-guard/review-thread-gate/finish pipeline
-  every PR-opening call site should compose with instead of reimplementing a subset
+  every PR-opening call site should compose with instead of reimplementing a subset; `_push()`'s
+  explicit-refspec + `detail_out` contract lives here
+- `router/close_stale_openspec.py` — `flip_and_archive()` plus `main()`'s `land_pr` landing and
+  outcome→exit-code mapping for the `worktrail-close-stale-openspec` console script
 
 ---
-**Last Updated:** 2026-09-04
+**Last Updated:** 2026-09-05

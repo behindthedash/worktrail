@@ -11,6 +11,7 @@ triggers:
     - capacity_gated
     - no_pick
     - fallback-agent
+    - _land_remediation_pr
 ---
 
 You are working on **worktrail's queue-drain driver**: repeatedly spawning fresh-context headless
@@ -50,12 +51,23 @@ construction — nothing accumulates across iterations.
   `capacity_gated` (every configured agent gated at once) actually stops the drain.
 - **Applies the same `go:risk-*` PR label correction as the interactive path**
   (`pr_labels.ensure_pr_risk_label`) after a spawned one-shot's own `gh pr create`, since neither
-  Codex/OpenCode nor a headless `claude -p` session reliably runs the interactive PreToolUse
+  Codex/OpenCode nor a headless `claude -p` session reliably runs the interactive PreToutUse
   label-enforcement hook.
+- **Drain's three remediation sweeps (sync-pending, stale-bookkeeping, OpenSpec archive) open
+  their PR through one helper, `_land_remediation_pr`, which composes with the shared
+  `router/land_pr.py` pipeline** (`land_pr(LandRequest(route="E", risk="low", run=None,
+  watch_timeout_s=timeout, ...))`) — never a hand-rolled `gh pr create`. The former per-sweep
+  `_open_sync_pending_pr` / `_open_stale_bookkeeping_pr` / `_open_openspec_archive_pr` functions
+  and their `_refresh_pr_labels` import are gone. The helper returns the PR URL only on a
+  `landed` outcome and raises `RuntimeError` (`land_pr for <repo> <spec> failed: <outcome>
+  (<detail|refused_step>)`) on any other outcome, which `sweep_remediations` logs as an
+  `<action> error:` line and skips rather than aborting the sweep. Each sweep still does its own
+  `git push --force -u origin <branch>` before calling the helper. Tests mock `drain.land_pr`
+  directly (no `gh pr create` subprocess fake remains for these paths).
 
 ## Critical files
 - `drain/drain.py` — the whole driver: iteration loop, stop-condition classification, agent
-  fallback selection
+  fallback selection, and `_land_remediation_pr` (the single `land_pr` seam for remediation PRs)
 
 ---
-**Last Updated:** 2026-08-16
+**Last Updated:** 2026-09-05
