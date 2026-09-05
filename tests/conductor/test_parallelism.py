@@ -236,16 +236,12 @@ def test_genuinely_inert_cleanup_task_passes(tmp_path):
 
 
 def test_equivalent_e2e_task_is_unaffected(tmp_path):
-    tasks = [
-        _task("v", kind="e2e", title="Run `pytest -q` and confirm it is green")
-    ]
+    tasks = [_task("v", kind="e2e", title="Run `pytest -q` and confirm it is green")]
     assert parallelism.shape_problems(tasks, tmp_path, {}) == []
 
 
 def test_docs_tail_task_is_unaffected(tmp_path):
-    tasks = [
-        _task("v", kind="docs", title="Run `pytest -q` and confirm it is green")
-    ]
+    tasks = [_task("v", kind="docs", title="Run `pytest -q` and confirm it is green")]
     assert parallelism.shape_problems(tasks, tmp_path, {}) == []
 
 
