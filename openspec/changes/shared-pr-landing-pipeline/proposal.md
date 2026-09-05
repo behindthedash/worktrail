@@ -102,3 +102,7 @@ calls, so a step cannot be skipped by omission.
   beyond calling the shared PR-open step (the request names it as
   `conductor/integrate.py`; the file lives under `orchestrator/`); no CI workflow
   changes; no change to `gh pr merge` policy or auto-merge workflows.
+
+## Folded from 20260904-165036-land-pr-push-refusal-wrong
+
+src/worktrail/router/land_pr.py:1008-1009 returns LandOutcome(outcome="refused", refused_step="push") with no detail argument at all, and _push() (land_pr.py:403-424) discards the failed git push's stdout/stderr, only returning the string "push" — confirming the repro's detail=null. The candidate change's declared capability ('fail-closed refusal before push ... with a bounded, classified watch outcome') directly covers fixing this refusal-detail gap, so the fix belongs there rather than as a standalone patch. Live re-repro 2026-09-04 (run go-20260904-165845, worktree fix/spec-drift-shared-pr-landing-pipeline): land-pr refused at push with detail=null while a direct git push -u origin <branch> from the same worktree, and a plain subprocess.run(['git','-C',<worktree>,'push','-u','origin',...]) from Python, both succeeded, so the failure is specific to the runner/env used inside land_pr._push, not the git push itself; capture and report the failed push's stderr in detail. Put the new tests in tests/router/test_land_pr_push_refusal.py (do not extend tests/router/test_land_pr.py: tasks 1.1->1.2 already saturate the compile same-file chain gate on that file).
