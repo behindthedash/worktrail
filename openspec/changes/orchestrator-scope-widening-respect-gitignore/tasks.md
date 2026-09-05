@@ -1,6 +1,6 @@
 ## 1. Exclude gitignored paths from scope escalation
 
-- [ ] 1.1 In `src/worktrail/orchestrator/live.py`, in `_scope_escalation_files()`
+- [x] 1.1 In `src/worktrail/orchestrator/live.py`, in `_scope_escalation_files()`
       (currently building `candidates` from existing, non-absolute, in-worktree
       `missing_context` paths and then subtracting the task's own already-declared
       `files`), add a filter after that existing-file check that drops any candidate
