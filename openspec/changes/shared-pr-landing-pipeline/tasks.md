@@ -119,7 +119,7 @@
 
 ## 5. Migrate orchestrator group-PR open step (after group 1)
 
-- [ ] 5.1 In `src/worktrail/orchestrator/integrate.py`'s group-PR creation path, replace
+- [x] 5.1 In `src/worktrail/orchestrator/integrate.py`'s group-PR creation path, replace
       `_refresh_pr_labels(...)`, `_pr_label_args(...)`, the inline
       `["gh","pr","create",…]` list, and its `_run_gh_with_retry` call with
       `land_pr.open_or_update_pull_request(repo, pr_base, gb, title, body, risk=<from
@@ -206,7 +206,7 @@
 
 ## 12. Enforcement collapse (after groups 2–5)
 
-- [ ] 12.1 In `tests/router/test_pr_creation_callsite_enforcement_coverage.py`, collapse
+- [x] 12.1 In `tests/router/test_pr_creation_callsite_enforcement_coverage.py`, collapse
       `CALLSITE_CONSUMERS` to `{"router/land_pr.py":
       _proves_land_pr_labels_come_from_preflight_marker, "orchestrator/live.py":
       <existing sandbox proof>}`; delete the `integrate`/`drain`/`queue_triage` proof
@@ -235,7 +235,7 @@
 
 ## 16. Folded from 20260904-185838-tail-task-checkbox-sync-missing
 
-- [ ] 16.1 Orchestrator tail tasks (e2e/cleanup/docs kinds) that complete with zero commits leave tasks.md's '- [ ]' unchecked on base, so the run ends in checkbox_status_divergence and needs a manual sync PR every time (observed go-20260904-183520: PR #982 existed only to check 2.1 and archive). src/worktrail/orchestrator/integrate.py:731-835 (detect_checkbox_status_divergence / _record_checkbox_status_divergence) is detection-only and never writes, merges, or pushes. In src/worktrail/orchestrator/integrate.py, after a journal-only tail task completes, flip its tasks.md checkbox and, when every task is then checked, run `openspec archive -y --json`, then land that docs-only commit through land_pr.open_or_update_pull_request (the same worktrail-land-pr path task 5.1 routes the group PR through) so the run's own closeout leaves tasks.md consistent on base. Add tests in tests/orchestrator/test_integrate_tail_checkbox_sync.py (do not extend tests/orchestrator/test_integrate.py, which task 5.1 already targets): a tail task with zero commits produces a checkbox-flip PR via the patched land_pr call, and no divergence finding is recorded afterwards. Related: openspec/changes/tail-dispatch-noop-and-pr-discovery-guard is already closed (commit a438a4ef, 0 open tasks) and only makes the no-op explicit.
+- [x] 16.1 Orchestrator tail tasks (e2e/cleanup/docs kinds) that complete with zero commits leave tasks.md's '- [ ]' unchecked on base, so the run ends in checkbox_status_divergence and needs a manual sync PR every time (observed go-20260904-183520: PR #982 existed only to check 2.1 and archive). src/worktrail/orchestrator/integrate.py:731-835 (detect_checkbox_status_divergence / _record_checkbox_status_divergence) is detection-only and never writes, merges, or pushes. In src/worktrail/orchestrator/integrate.py, after a journal-only tail task completes, flip its tasks.md checkbox and, when every task is then checked, run `openspec archive -y --json`, then land that docs-only commit through land_pr.open_or_update_pull_request (the same worktrail-land-pr path task 5.1 routes the group PR through) so the run's own closeout leaves tasks.md consistent on base. Add tests in tests/orchestrator/test_integrate_tail_checkbox_sync.py (do not extend tests/orchestrator/test_integrate.py, which task 5.1 already targets): a tail task with zero commits produces a checkbox-flip PR via the patched land_pr call, and no divergence finding is recorded afterwards. Related: openspec/changes/tail-dispatch-noop-and-pr-discovery-guard is already closed (commit a438a4ef, 0 open tasks) and only makes the no-op explicit.
 
 ## 17. Folded from 20260903-145001-worktree-missing-committed-openspec-change
 

@@ -765,6 +765,226 @@ def _record_checkbox_status_divergence(
         print(f"  WARNING: Failed to record checkbox status divergence: {e}")
 
 
+CHECKBOX_SYNC_GROUP = "checkbox-sync"
+
+
+def sync_checkbox_status(
+    repo: Path,
+    remote: str | None,
+    base: str | None,
+    spec_id: str,
+    tasks: list,
+    run_id: str,
+    journal_path: str | None = None,
+    *,
+    route: str | None = None,
+    gates: str = "",
+    make_verifier: Callable[[], verify.Verifier] | None = None,
+    git_lock: threading.Lock | None = None,
+) -> dict | None:
+    """Land the checkbox flips `detect_checkbox_status_divergence` would
+    otherwise only report, so the run's own closeout leaves the task artifact
+    consistent on base.
+
+    Tail tasks (e2e/cleanup/docs kinds) routinely complete with zero commits --
+    an e2e task that only runs the suite has nothing to ship -- so no tail PR
+    ever carries their `tasks.md` checkbox, and every such run ended in
+    `checkbox_status_divergence` plus a manual sync PR (worktrail PR #982
+    existed only to tick 2.1 and archive). This step opens that PR itself: a
+    disposable worktree on `<remote>/<base>`, the same `_write_group_task_status`
+    write the group PRs use, `openspec archive -y` once every task is checked,
+    then the shared `land_pr.open_or_update_pull_request` step (labels computed
+    there from `risk="low"` + this run's gates/route -- a docs-only diff) and
+    the same verify/merge path the tail-reconciliation PRs take.
+
+    Returns None when nothing diverged (or nothing could be written); otherwise
+    `{"tasks", "branch", "pr_url", "archived", "state", "detail"}` with `state`
+    one of `MERGED`/`OPEN`/`QUARANTINED`, mirrored into the journal's
+    `groups["checkbox-sync"]` record like any other group.
+    """
+    findings = detect_checkbox_status_divergence(
+        repo, remote, base, spec_id, tasks, git_lock=git_lock
+    )
+    if not findings or not remote or not base:
+        return None
+    task_ids = sorted(f["task"] for f in findings)
+    repo = Path(repo)
+    branch = f"{run_id}/{CHECKBOX_SYNC_GROUP}"
+    remote_base_ref = f"{remote}/{base}"
+    lock = git_lock if git_lock is not None else contextlib.nullcontext()
+    wt = (
+        repo.parent
+        / f"{repo.name}-{CHECKBOX_SYNC_GROUP}"
+        / f"{run_id}-{uuid.uuid4().hex[:8]}"
+    )
+    with lock:
+        _git(repo, "worktree", "prune", check=False)
+        r = _git(
+            repo,
+            "worktree",
+            "add",
+            "-f",
+            "-B",
+            branch,
+            str(wt),
+            remote_base_ref,
+            check=False,
+        )
+    if r.returncode != 0:
+        return None
+    result: dict = {
+        "tasks": task_ids,
+        "branch": branch,
+        "pr_url": "",
+        "archived": False,
+        "state": "",
+        "detail": "",
+    }
+    try:
+        status = {t["id"]: t.get("status") for t in tasks}
+        _write_group_task_status(
+            wt, spec_id, {"name": CHECKBOX_SYNC_GROUP, "tasks": task_ids}, status
+        )
+        spec_path = _spec_path_for(wt, spec_id)
+        if (
+            spec_path.parent.name == "changes"
+            and spec_path.parent.parent.name == "openspec"
+        ):
+            try:
+                _, now_tasks = taskformats.load_spec(str(spec_path))
+            except Exception:  # noqa: BLE001 -- unreadable artifact: skip archive, keep the flips
+                now_tasks = []
+            if now_tasks and all(
+                t.get("status") in coordinator.DONE for t in now_tasks
+            ):
+                a = subprocess.run(
+                    ["openspec", "archive", "-y", spec_id, "--json"],
+                    cwd=wt,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                )
+                if a.returncode == 0:
+                    _git(wt, "add", "-A", check=False)
+                    if (
+                        _git(wt, "diff", "--cached", "--quiet", check=False).returncode
+                        != 0
+                    ):
+                        _git(
+                            wt,
+                            "commit",
+                            "-q",
+                            "-m",
+                            f"chore({spec_id}): archive completed change",
+                        )
+                    result["archived"] = True
+        if (
+            _git(wt, "rev-parse", "HEAD").stdout.strip()
+            == _git(wt, "rev-parse", remote_base_ref).stdout.strip()
+        ):
+            return None  # nothing was written after all
+        push = _git(wt, "push", "-u", remote, f"HEAD:{branch}", check=False)
+        if push.returncode != 0:
+            result.update(
+                state="QUARANTINED", detail=f"push failed: {push.stderr.strip()[:300]}"
+            )
+            _write_group_journal(
+                journal_path,
+                CHECKBOX_SYNC_GROUP,
+                "",
+                branch,
+                "QUARANTINED",
+                QUARANTINE_INTEGRATION_ERROR,
+            )
+            return result
+        remote_url = _git(repo, "remote", "get-url", remote).stdout.strip()
+        gh_repo = (
+            remote_url.removesuffix(".git").split("github.com", 1)[-1].lstrip(":/")
+            if "github.com" in remote_url
+            else None
+        )
+        outcome = land_pr.open_or_update_pull_request(
+            wt,
+            base,
+            branch,
+            f"[{run_id}] {CHECKBOX_SYNC_GROUP}: {', '.join(task_ids)}",
+            (
+                f"Marks {', '.join(f'`{t}`' for t in task_ids)} completed in the task "
+                f"artifact{' and archives the change' if result['archived'] else ''} -- "
+                f"these tail task(s) completed with no commits of their own, so no other "
+                f"PR carried their checkbox.\n\nparallel-orchestrator {run_id}."
+            ),
+            risk="low",
+            labels=None,
+            route=route or "",
+            gates=[g for g in gates.split(",") if g] if gates else [],
+            runner=subprocess.run,
+            base_slug=gh_repo,
+        )
+        if outcome.get("refused_step"):
+            result.update(state="QUARANTINED", detail=str(outcome.get("detail") or ""))
+            _write_group_journal(
+                journal_path,
+                CHECKBOX_SYNC_GROUP,
+                "",
+                branch,
+                "QUARANTINED",
+                QUARANTINE_INTEGRATION_ERROR,
+            )
+            return result
+        result["pr_url"] = outcome["pr_url"]
+        _write_group_journal(
+            journal_path, CHECKBOX_SYNC_GROUP, outcome["pr_url"], branch, "OPEN"
+        )
+        print(f"  PR [{CHECKBOX_SYNC_GROUP:9}] base={base:18} -> {outcome['pr_url']}")
+        verifier = (
+            make_verifier()
+            if make_verifier is not None
+            else _default_tail_verifier(repo, remote, base, spec_id)
+        )
+        merged: list = []
+        quarantined: dict = {}
+        verifier.verify_one(
+            {
+                "name": CHECKBOX_SYNC_GROUP,
+                "tasks": task_ids,
+                "depends_on": [],
+                "reqs": [],
+            },
+            branch,
+            None,
+            merged,
+            quarantined,
+            threading.Lock(),
+            armed={},
+        )
+        if CHECKBOX_SYNC_GROUP in merged:
+            result["state"] = "MERGED"
+            _write_group_journal(
+                journal_path, CHECKBOX_SYNC_GROUP, outcome["pr_url"], branch, "MERGED"
+            )
+        elif CHECKBOX_SYNC_GROUP in quarantined:
+            result.update(
+                state="QUARANTINED", detail=str(quarantined[CHECKBOX_SYNC_GROUP])
+            )
+            _write_group_journal(
+                journal_path,
+                CHECKBOX_SYNC_GROUP,
+                outcome["pr_url"],
+                branch,
+                "QUARANTINED",
+                QUARANTINE_INTEGRATION_ERROR,
+            )
+        else:
+            result["state"] = "OPEN"
+        return result
+    finally:
+        with lock:
+            _git(repo, "worktree", "remove", "--force", str(wt), check=False)
+        shutil.rmtree(wt, ignore_errors=True)
+
+
 def _record_unreconciled_tail_evidence(
     journal_path: str | None, findings: list
 ) -> None:
