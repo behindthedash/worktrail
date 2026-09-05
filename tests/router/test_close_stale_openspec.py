@@ -195,6 +195,8 @@ class TestMainInvokesLandPrOnSuccess(unittest.TestCase):
                         "nonexistent-change",
                         "--base",
                         "main",
+                        "--run",
+                        "/path/to/run",
                         "--json",
                     ]
                 )
@@ -283,6 +285,8 @@ class TestMainInvokesLandPrOnSuccess(unittest.TestCase):
                             "test-change",
                             "--base",
                             "main",
+                            "--run",
+                            "/path/to/run",
                             "--json",
                         ]
                     )

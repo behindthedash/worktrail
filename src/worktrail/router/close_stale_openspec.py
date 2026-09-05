@@ -38,6 +38,7 @@ import argparse
 import json
 import subprocess
 import sys
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -154,7 +155,7 @@ def main(argv=None) -> int:
         help="comma-separated task ids to flip (e.g. 2.1,3.1); default: all pending",
     )
     parser.add_argument("--base", required=True, help="base branch for landing")
-    parser.add_argument("--run", default=None, help="run record path")
+    parser.add_argument("--run", required=True, help="run record path")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
@@ -183,14 +184,7 @@ def main(argv=None) -> int:
     landing_outcome = land_pr(landing_request)
 
     # Merge landing outcome into result
-    res["landing"] = {
-        "outcome": landing_outcome.outcome,
-        "pr_url": landing_outcome.pr_url,
-        "pr_number": landing_outcome.pr_number,
-        "final_status": landing_outcome.final_status,
-        "merge_result": landing_outcome.merge_result,
-        "run": landing_outcome.run,
-    }
+    res["landing"] = asdict(landing_outcome)
 
     if args.json:
         print(json.dumps(res))
