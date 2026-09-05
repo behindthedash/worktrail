@@ -17,3 +17,4 @@ node_modules/
 .claude/graph.json
 .claude/graph-index.json
 .claude/code-map.md
+.claude/tsc-cache/
