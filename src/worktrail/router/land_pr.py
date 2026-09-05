@@ -400,7 +400,13 @@ def _push_target(repo: Path, runner: Runner) -> tuple[str, str | None]:
     return remote, slug
 
 
-def _push(repo: Path, branch: str, remote: str, runner: Runner) -> str | None:
+def _push(
+    repo: Path,
+    branch: str,
+    remote: str,
+    runner: Runner,
+    detail_out: list[str] | None = None,
+) -> str | None:
     """Push the branch -- see module docstring step 4. Returns a
     refused-step name on failure, else None.
 
@@ -411,7 +417,12 @@ def _push(repo: Path, branch: str, remote: str, runner: Runner) -> str | None:
     update before the client's connection dropped, so the remote's state is
     unknown. That case returns `"push_ambiguous"` instead, so the caller can
     route it to `ceiling` (needs reconciliation) rather than a `refused`
-    outcome that promises an untouched remote."""
+    outcome that promises an untouched remote. On a genuine `"push"`
+    refusal, git's own stderr (falling back to stdout) is appended to
+    `detail_out` when the caller supplies one, so the caller never surfaces
+    a bare `null` for a failure git already explained -- kept as an
+    out-param rather than widening the return type so every existing
+    caller/mock of this signature keeps working unchanged."""
     upstream = _git(
         repo, runner, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"
     )
@@ -421,7 +432,13 @@ def _push(repo: Path, branch: str, remote: str, runner: Runner) -> str | None:
         result = runner(cmd, capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.TimeoutExpired):
         return "push_ambiguous"
-    return None if result.returncode == 0 else "push"
+    if result.returncode == 0:
+        return None
+    if detail_out is not None:
+        detail = (result.stderr or result.stdout or "").strip()
+        if detail:
+            detail_out.append(detail)
+    return "push"
 
 
 def open_or_update_pull_request(
@@ -973,7 +990,8 @@ def land_pr(request: LandRequest) -> LandOutcome:
             outcome="refused", refused_step="push", detail="no current branch"
         )
     push_remote, base_slug = _push_target(repo, runner)
-    refused = _push(repo, branch, push_remote, runner)
+    push_detail: list[str] = []
+    refused = _push(repo, branch, push_remote, runner, push_detail)
     if refused == "push_ambiguous":
         # A timeout/OSError mid-push means the server may already have
         # accepted the ref update -- the remote's state cannot be trusted as
@@ -1006,7 +1024,11 @@ def land_pr(request: LandRequest) -> LandOutcome:
             detail="push result ambiguous -- verify remote branch state before retrying",
         )
     if refused:
-        return LandOutcome(outcome="refused", refused_step=refused)
+        return LandOutcome(
+            outcome="refused",
+            refused_step=refused,
+            detail=push_detail[0] if push_detail else None,
+        )
 
     body = render_pr_body(
         summary=request.summary,
