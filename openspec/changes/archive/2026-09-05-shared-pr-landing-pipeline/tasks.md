@@ -218,7 +218,7 @@
 
 ## 13. Verification
 
-- [ ] 13.1 [e2e] Run `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m
+- [x] 13.1 [e2e] Run `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m
       worktrail.orchestrator.orchestrate check`; confirm `tests/test_plugin_surface.py`
       accepts `worktrail-land-pr` everywhere the skills name it and
       `tests/router/test_skill_prose_enforcement_coverage.py` stays green after the
