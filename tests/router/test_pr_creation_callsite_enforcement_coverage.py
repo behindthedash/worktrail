@@ -9,9 +9,12 @@ site skips applying it -- PR #74 (`pause_before_merge` unapplied), #80
 PreToolUse `worktrail-preflight` hook), #82 (`no_implementation_without_approval`
 had zero consumer), and the still-open `require_human_routes`/`gates` gap in
 `integrate.py`'s orchestrator group-PR path (queued separately -- see handoff
-`20260731-145729`; NOT fixed by this test). Each was patched individually
-after being discovered; nothing structurally stopped a fifth `gh pr create`
-invocation from shipping outside the enforced label path.
+`20260731-145729`; NOT fixed by this test), and PR #902 (112 files of
+gate-verified fixes pushed without ever being committed, and a stale
+`.compile-ok` marker reaching `gh pr create` undetected -- the incident that
+motivated collapsing every call site onto `router/land_pr.py`). Each was
+patched individually after being discovered; nothing structurally stopped a
+fifth `gh pr create` invocation from shipping outside the enforced label path.
 
 This test closes the *discovery* half of that failure mode (mirroring
 `test_gate_enforcement_coverage.py`'s `GATE_CONSUMERS` pattern):
@@ -28,8 +31,8 @@ This test closes the *discovery* half of that failure mode (mirroring
    detection itself needs to change.
 3. `CALLSITE_CONSUMERS` registers a proof callable per known call site that
    behaviorally demonstrates either (a) its labels are sourced from the
-   enforced label-resolution function (`_refresh_pr_labels` -> `pre_pr_gate.py
-   --labels-only`), not an independently hand-rolled list, or (b) the call
+   preflight pass marker (`_run_preflight_and_labels` ->
+   `preflight.read_marker`), not an independently hand-rolled list, or (b) the call
    site is a reviewed, policy-exempt sandbox/dev-tooling path that never
    produces a policy-governed PR -- exercised by
    `test_registered_consumers_actually_enforce`. Writing this test's AST walk
@@ -48,18 +51,15 @@ covers call sites Worktrail's own Python code constructs.
 import ast
 import inspect
 import json
-import shutil
 import subprocess
-import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from worktrail.orchestrator import integrate, live
+from worktrail.orchestrator import live
 from worktrail.router import land_pr
-from worktrail.workqueue import queue_triage
 
-SRC_ROOT = Path(integrate.__file__).resolve().parent.parent  # src/worktrail
+SRC_ROOT = Path(land_pr.__file__).resolve().parent.parent  # src/worktrail
 
 
 def extract_gh_pr_create_callsites() -> set:
@@ -80,32 +80,6 @@ def extract_gh_pr_create_callsites() -> set:
                 found.add(str(path.relative_to(SRC_ROOT)))
                 break
     return found
-
-
-def _proves_integrate_py_uses_enforced_labels():
-    """integrate.py's one `gh pr create` call site builds its `--label` flags
-    from `effective_labels`, which is `_refresh_pr_labels(...)`'s return value
-    (falling back to the caller-supplied `pr_labels` only when the gate script
-    is unresolvable or refresh fails) -- never an independently hand-rolled
-    list. Prove the wiring behaviorally: stub `_refresh_pr_labels` to return a
-    distinctive label set and confirm `_pr_label_args` (the function whose
-    output is spliced directly into the `gh pr create` cmd list at
-    integrate.py:906) reflects exactly those labels."""
-    with patch.object(integrate, "_refresh_pr_labels", return_value=["go:risk-canary"]):
-        fresh = integrate._refresh_pr_labels(
-            Path("/fake/repo"), ["go:risk-medium"], "main"
-        )
-    if fresh != ["go:risk-canary"]:
-        raise AssertionError(
-            "_refresh_pr_labels was not called for the label source -- "
-            "integrate.py's gh pr create call site may have stopped routing "
-            "through the enforced label-resolution path"
-        )
-    if integrate._pr_label_args(fresh) != ["--label", "go:risk-canary"]:
-        raise AssertionError(
-            "_pr_label_args did not turn the refreshed labels into the exact "
-            "--label flags spliced into the gh pr create cmd list"
-        )
 
 
 def _proves_live_py_full_is_sandbox_only_dev_tooling():
@@ -149,97 +123,18 @@ def _proves_live_py_full_is_sandbox_only_dev_tooling():
                 )
 
 
-def _proves_queue_triage_py_uses_enforced_labels():
-    """workqueue/queue_triage.py's `_apply_fold_into_change` gh pr create call
-    site builds its `--label` flags from `_refresh_pr_labels(...)`'s return
-    value (falling back to the seed `["go:risk-low"]` only when refresh
-    itself is unavailable), never an independently hand-rolled label -- same
-    pattern integrate.py uses. Prove the wiring behaviorally: stub
-    `_refresh_pr_labels` to return a distinctive label set, stub
-    `subprocess.run` to fake `git`/`openspec`/`gh` and capture the constructed
-    `gh pr create` command, and confirm the captured command carries exactly
-    that refreshed label."""
-    qt = queue_triage
-    tmpdir = tempfile.mkdtemp(prefix="worktrail-callsite-proof-")
-    repo = Path(tmpdir) / "repo"
-    repo.mkdir(parents=True)
-    verdict = qt.Verdict(
-        brief_id="a",
-        verdict="fold-into-change",
-        duplicate_of=None,
-        evidence="overlaps open tasks",
-        confidence="high",
-        target_change="widget-export-pipeline",
-        repo=str(repo),
-    )
-    branch = qt._planned_fold_propose_branch(verdict)
-    worktree_dir = qt._fold_propose_worktree_dir(repo, branch)
-    change_dir = worktree_dir / "openspec" / "changes" / verdict.target_change
-    captured = {}
-
-    def fake_run(cmd, **kwargs):
-        if cmd[0] == "git" and "-C" in cmd:
-            if "symbolic-ref" in cmd:
-                return subprocess.CompletedProcess(
-                    cmd, 0, stdout="origin/main\n", stderr=""
-                )
-            if "config" in cmd and "remote.pushDefault" in cmd:
-                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
-            if "fetch" in cmd:
-                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-            if "worktree" in cmd and "add" in cmd:
-                change_dir.mkdir(parents=True, exist_ok=True)
-                (change_dir / "proposal.md").write_text("# Widget\n\n## Why\n\nx.\n")
-                (change_dir / "tasks.md").write_text("## 1. Tasks\n\n- [ ] 1.1 x\n")
-                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-            if "worktree" in cmd and "remove" in cmd:
-                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-            if "branch" in cmd and "-D" in cmd:
-                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-        if cmd[0] == "openspec" and cmd[1] == "validate":
-            return subprocess.CompletedProcess(cmd, 0, stdout="valid\n", stderr="")
-        if cmd[0] == "worktrail-compile":
-            (change_dir / ".compile-ok").write_text("fp\n")
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-        if cmd[0] == "git" and cmd[1] in ("add", "commit", "push"):
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-        if cmd[0] == "gh" and cmd[1:3] == ["pr", "create"]:
-            captured["cmd"] = cmd
-            return subprocess.CompletedProcess(
-                cmd, 0, stdout="https://example.invalid/pr/1\n", stderr=""
-            )
-        raise AssertionError(f"unexpected command: {cmd}")
-
-    try:
-        with (
-            patch.object(qt, "_refresh_pr_labels", return_value=["go:risk-canary"]),
-            patch.object(qt.subprocess, "run", side_effect=fake_run),
-        ):
-            qt._apply_fold_into_change(verdict)
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
-
-    if (
-        "cmd" not in captured
-        or "--label" not in captured["cmd"]
-        or "go:risk-canary" not in captured["cmd"]
-    ):
-        raise AssertionError(
-            "queue_triage.py's gh pr create call did not carry the refreshed "
-            "label -- its fold-into-change PR may have stopped routing "
-            "through the enforced label-resolution path"
-        )
-
-
-def _proves_land_pr_py_uses_preflight_labels():
-    """land_pr.py's `open_or_update_pull_request` gh pr create call site
-    builds its `--label` flags from the `labels` argument, which callers
-    (`land_pr()`) source from `_run_preflight_and_labels()` ->
-    `preflight.read_marker()`'s pass marker, never an independently
-    hand-rolled list. Prove the wiring behaviorally: call
-    `open_or_update_pull_request` directly with a distinctive label set and
-    a fake runner, and confirm the constructed `gh pr create` command
-    carries exactly those labels."""
+def _proves_land_pr_labels_come_from_preflight_marker():
+    """land_pr.py's one `gh pr create` call site (`open_or_update_pull_request`)
+    carries exactly the labels `land_pr()` read back from the preflight pass
+    marker (`_run_preflight_and_labels()` -> `preflight.read_marker()`), never
+    an independently hand-rolled list. Prove it end to end: stub the preflight
+    gate to pass and its marker to carry a distinctive label set, run the real
+    `_run_preflight_and_labels()` to read them back, hand them to the real
+    `open_or_update_pull_request()` with an injected runner, and confirm the
+    `--label` flags on the captured `gh pr create` argv equal the marker's
+    labels -- then confirm `land_pr()` itself is what threads the one into
+    the other."""
+    marker_labels = ["go:risk-canary", "go:no-automerge"]
     captured = {}
 
     def fake_run(cmd, **kwargs):
@@ -250,6 +145,23 @@ def _proves_land_pr_py_uses_preflight_labels():
             cmd, 0, stdout="https://example.invalid/pr/1\n", stderr=""
         )
 
+    with (
+        patch.object(land_pr.preflight, "main", return_value=0),
+        patch.object(
+            land_pr.preflight,
+            "read_marker",
+            return_value={"labels": list(marker_labels), "state": "tree-1"},
+        ),
+        patch.object(land_pr.preflight, "tree_state", return_value="tree-1"),
+    ):
+        refused, labels = land_pr._run_preflight_and_labels(
+            Path("/fake/repo"), "main", "low", [], "E", None
+        )
+    if refused is not None or labels != marker_labels:
+        raise AssertionError(
+            f"_run_preflight_and_labels did not read the marker's labels back "
+            f"(refused={refused!r}, labels={labels!r})"
+        )
     land_pr.open_or_update_pull_request(
         Path("/fake/repo"),
         "main",
@@ -257,19 +169,25 @@ def _proves_land_pr_py_uses_preflight_labels():
         "title",
         "body",
         "low",
-        ["go:risk-canary"],
-        "route-a",
+        labels,
+        "E",
         fake_run,
     )
-    if (
-        "cmd" not in captured
-        or "--label" not in captured["cmd"]
-        or "go:risk-canary" not in captured["cmd"]
-    ):
+    cmd = captured.get("cmd")
+    if cmd is None or cmd[:3] != ["gh", "pr", "create"]:
+        raise AssertionError(f"no gh pr create was issued: {cmd!r}")
+    argv_labels = [cmd[i + 1] for i, tok in enumerate(cmd) if tok == "--label"]
+    if argv_labels != marker_labels:
         raise AssertionError(
-            "land_pr.py's gh pr create call did not carry the labels passed "
-            "in -- its call site may have stopped routing through the "
-            "preflight-sourced label path"
+            f"gh pr create --label flags {argv_labels!r} != preflight marker "
+            f"labels {marker_labels!r} -- land_pr.py's call site stopped "
+            "sourcing its labels from the pass marker"
+        )
+    source = inspect.getsource(land_pr.land_pr)
+    if "_run_preflight_and_labels(" not in source or "labels," not in source:
+        raise AssertionError(
+            "land_pr() no longer threads _run_preflight_and_labels()'s labels "
+            "into open_or_update_pull_request()"
         )
 
 
@@ -739,10 +657,8 @@ def _proves_land_pr_py_update_path_verifies_before_reporting_success():
 # policy-exempt sandbox/dev-tooling path. Every file
 # extract_gh_pr_create_callsites() finds MUST have an entry here.
 CALLSITE_CONSUMERS = {
-    "orchestrator/integrate.py": _proves_integrate_py_uses_enforced_labels,
+    "router/land_pr.py": _proves_land_pr_labels_come_from_preflight_marker,
     "orchestrator/live.py": _proves_live_py_full_is_sandbox_only_dev_tooling,
-    "workqueue/queue_triage.py": _proves_queue_triage_py_uses_enforced_labels,
-    "router/land_pr.py": _proves_land_pr_py_uses_preflight_labels,
 }
 
 KNOWN_CALLSITES = set(CALLSITE_CONSUMERS)
@@ -754,14 +670,14 @@ class TestPrCreationCallsiteEnforcementCoverage(unittest.TestCase):
         self.assertTrue(
             found,
             "extraction found no gh pr create call sites -- "
-            "integrate.py's cmd list may have moved/renamed",
+            "land_pr.py's cmd list may have moved/renamed",
         )
         unreviewed = found - KNOWN_CALLSITES
         self.assertFalse(
             unreviewed,
             f"new gh pr create call site(s) {sorted(unreviewed)} found with no "
-            "registered proof in CALLSITE_CONSUMERS -- wire the call through "
-            "_refresh_pr_labels()/pre_pr_gate.py before shipping, then add a "
+            "registered proof in CALLSITE_CONSUMERS -- route the call through "
+            "router/land_pr.py before shipping, then add a "
             "proof function here (see test_gate_enforcement_coverage.py for "
             "the established pattern)",
         )

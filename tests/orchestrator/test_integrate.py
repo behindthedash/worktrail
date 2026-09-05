@@ -19,6 +19,30 @@ from pathlib import Path
 from unittest.mock import patch
 
 from worktrail.orchestrator import coordinator, integrate
+from worktrail.router import land_pr as land_pr_module
+
+# integrate.py hands label computation to land_pr.open_or_update_pull_request
+# (labels=None -> pre_pr_gate.resolve_pr_labels), which would otherwise consult
+# the live policy/required-checks state. Stand in an offline, deterministic
+# version for the whole module; tests asserting on the label inputs re-patch it.
+_LABEL_PATCHER = patch.object(
+    land_pr_module.pre_pr_gate,
+    "resolve_pr_labels",
+    side_effect=lambda repo, policy, risk, gates, target_branch, route=None: (
+        [f"go:risk-{risk}"],
+        True,
+        "ok",
+    ),
+)
+
+
+def setUpModule():
+    _LABEL_PATCHER.start()
+
+
+def tearDownModule():
+    _LABEL_PATCHER.stop()
+
 
 Proc = namedtuple("Proc", "returncode stdout stderr")
 
@@ -598,10 +622,9 @@ class NoExistingBranchOrPR(unittest.TestCase):
                 "low",
                 "risk should be extracted from pr_labels seed",
             )
-            self.assertEqual(
+            self.assertIsNone(
                 call_args[1]["labels"],
-                ["go:risk-low"],
-                "labels should use original pr_labels seed",
+                "labels must be left to open_or_update_pull_request to compute",
             )
             self.assertEqual(
                 call_args[1]["runner"],
@@ -1100,9 +1123,16 @@ class TransientGhFailureRetry(unittest.TestCase):
 class PRLabels(unittest.TestCase):
     """The orchestrator carries the GO gate's exact labels to group PRs."""
 
-    def test_create_uses_seed_labels_without_refresh(self):
-        """Verify seed labels are refreshed via pre_pr_gate --labels-only before new PR creation."""
+    def test_create_computes_labels_from_seed_risk_in_land_pr(self):
+        """The seed's go:risk-* label supplies the risk; the labels on the new PR
+        are whatever `pre_pr_gate.resolve_pr_labels` computes inside
+        `land_pr.open_or_update_pull_request` from that risk + gates + route."""
         run = FakeRun(pr_view_responses={}, ls_remote_responses={})
+        resolve_calls = []
+
+        def fake_resolve(repo, policy, risk, gates, target_branch, route=None):
+            resolve_calls.append((risk, list(gates), target_branch, route))
+            return ["go:risk-high", "go:no-automerge"], False, "gated"
 
         with (
             patch(
@@ -1113,9 +1143,10 @@ class PRLabels(unittest.TestCase):
                 "worktrail.orchestrator.integrate.subprocess.run",
                 side_effect=run,
             ),
-            patch(
-                "worktrail.orchestrator.integrate._resolve_pre_pr_gate",
-                return_value=Path("/fake/gate"),
+            patch.object(
+                land_pr_module.pre_pr_gate,
+                "resolve_pr_labels",
+                side_effect=fake_resolve,
             ),
         ):
             mock_groups.return_value = [mock_group("base", ["T001"])]
@@ -1128,35 +1159,20 @@ class PRLabels(unittest.TestCase):
                 "run-labels",
                 "main",
                 cleanup=False,
-                pr_labels=["go:risk-high", "go:no-automerge"],
+                pr_labels=["go:risk-high"],
+                route="D",
+                gates="check1",
             )
 
-            # Verify pre_pr_gate --labels-only was called with --risk high
-            refresh_calls = [
-                c for c in run.calls if "--labels-only" in c and "--risk" in c
-            ]
-            self.assertGreaterEqual(
-                len(refresh_calls),
-                1,
-                "Should call pre_pr_gate --labels-only for new PR",
-            )
-            risk_idx = refresh_calls[0].index("--risk") + 1
-            self.assertEqual(refresh_calls[0][risk_idx], "high")
-
-            # Verify gh pr create received the FRESH labels (go:risk-high from the mock)
+            self.assertEqual(resolve_calls, [("high", ["check1"], "main", "D")])
             create_calls = run.find_calls("gh", "pr", "create")
             self.assertEqual(len(create_calls), 1)
-            # land_pr puts labels after --body, extract from --label onwards
-            label_indices = [i for i, x in enumerate(create_calls[0]) if x == "--label"]
-            self.assertGreater(
-                len(label_indices), 0, "Should have at least one --label flag"
-            )
-            # Check that the refreshed risk label is present
-            labels = []
-            for idx in label_indices:
-                if idx + 1 < len(create_calls[0]):
-                    labels.append(create_calls[0][idx + 1])
-            self.assertIn("go:risk-high", labels)
+            labels = [
+                create_calls[0][i + 1]
+                for i, tok in enumerate(create_calls[0])
+                if tok == "--label"
+            ]
+            self.assertEqual(labels, ["go:risk-high", "go:no-automerge"])
 
     def test_create_passes_eligible_label_only(self):
         run = FakeRun(pr_view_responses={}, ls_remote_responses={})

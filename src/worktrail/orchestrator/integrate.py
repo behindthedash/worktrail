@@ -106,74 +106,6 @@ def _extract_risk_from_labels(pr_labels: list[str]) -> str | None:
     return None
 
 
-def _pr_label_args(pr_labels: list[str] | None) -> list[str]:
-    """Build the exact label flags resolved by the GO pre-PR gate.
-
-    Labels are resolved by _refresh_pr_labels immediately before creating
-    each new group PR, so every fresh PR carries the current policy and
-    required-check state.  Existing OPEN/MERGED PRs keep their original
-    labels (deterministic).
-    """
-    return [arg for label in (pr_labels or []) for arg in ("--label", label)]
-
-
-def _refresh_pr_labels(
-    repo: Path,
-    pr_labels: list[str] | None,
-    target_branch: str,
-    gates: str = "",
-    route: str | None = None,
-) -> list[str] | None:
-    """Refresh PR labels by re-running the pre-PR gate's label resolution.
-
-    Returns fresh labels from the current policy and required-check state,
-    or None when the gate script cannot be resolved or no risk label is
-    present (caller should fall back to the original pr_labels).
-
-    route: the classified route letter, forwarded to pre_pr_gate.py's
-    --route so policy's require_human_routes check applies to orchestrator
-    group PRs the same way it applies to one-off PRs (worktrail-preflight
-    run already passes --route there). Omit only when the route is unknown.
-    """
-    if not pr_labels:
-        return None
-    gate_script = _resolve_pre_pr_gate()
-    if gate_script is None:
-        return None
-    risk = _extract_risk_from_labels(pr_labels)
-    if risk is None:
-        return None
-    try:
-        cmd = [
-            sys.executable,
-            str(gate_script),
-            "--repo",
-            str(repo),
-            "--labels-only",
-            "--risk",
-            risk,
-            "--gates",
-            gates,
-            "--target-branch",
-            target_branch,
-        ]
-        if route:
-            cmd += ["--route", route]
-        r = subprocess.run(
-            cmd,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if r.returncode != 0:
-            return None
-        labels = [l for l in r.stdout.strip().split() if l]
-        return labels if labels else None
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-
-
 # Max attempts to dispatch a resolve worker when task branches conflict at assembly time.
 # Assembly conflicts are deterministic (same two branches will conflict every time), so a
 # single attempt is the most useful budget: if the worker can't resolve it in one pass, a
@@ -504,34 +436,24 @@ def finish(
             if not g["depends_on"]
             else group_branch.get(g["depends_on"][0], "main")
         )
-        r = subprocess.run(
-            [
-                "gh",
-                "pr",
-                "create",
-                "--repo",
-                sandbox,
-                "--base",
-                target,
-                "--head",
-                gb,
-                "--title",
-                f"[{run_id}] {name}: {', '.join(group_tasks[name])}",
-                "--body",
-                (
-                    f"Group **{name}** | reqs: {', '.join(g['reqs']) or '-'} "
-                    f"| base: `{target}`\n\nparallel-orchestrator {run_id}."
-                ),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
+        # Sandbox validation PRs go through the same shared open/update step
+        # as production group PRs (no labels: the sandbox repo is policy-exempt).
+        outcome = land_pr.open_or_update_pull_request(
+            repo,
+            target,
+            gb,
+            f"[{run_id}] {name}: {', '.join(group_tasks[name])}",
+            (
+                f"Group **{name}** | reqs: {', '.join(g['reqs']) or '-'} "
+                f"| base: `{target}`\n\nparallel-orchestrator {run_id}."
+            ),
+            risk="",
+            labels=[],
+            route="",
+            runner=subprocess.run,
+            base_slug=sandbox,
         )
-        out = (
-            (r.stdout or r.stderr).strip().splitlines()[-1]
-            if (r.stdout or r.stderr)
-            else "(no output)"
-        )
+        out = outcome.get("pr_url") or outcome.get("detail") or "(no output)"
         prs.append((name, target, out))
         print(f"  PR [{name:9}] base={target:18} -> {out}")
 
@@ -915,8 +837,8 @@ def _run_drift_gate(iw: Path, name: str) -> tuple:
     `pre_pr_gate.changed_paths()`, which runs `git merge-base HEAD <base>` and
     `git diff --name-only` with `cwd` set to `--repo`; pointing this at the
     canonical repo (whose HEAD is the base branch) would yield an empty diff and
-    silently pass every check. `_refresh_pr_labels` may pass the canonical repo
-    because label resolution is policy-only and reads no diff.
+    silently pass every check. (Label resolution, by contrast, lives in
+    `land_pr.open_or_update_pull_request` and reads no diff.)
 
     Fail-closed like the smoke gate: an unresolvable gate script, a timeout, or a
     spawn error all return failure rather than letting an unchecked group open a PR.
@@ -1143,14 +1065,15 @@ def integrate_one(
     coexist -- BEFORE pushing/opening the PR. A non-zero exit quarantines the group
     instead of opening a red-CI PR, catching cross-task drift a CI round-trip earlier.
     None = skip. Only runs when the branch is freshly built (not on a remote-branch reuse).
-    pr_labels: initial labels resolved by the GO pre-PR gate. These are
-    REFRESHED immediately before each new group PR creation (by re-running
-    pre_pr_gate.py --labels-only) so every fresh PR reflects the current
+    pr_labels: seed labels resolved by the GO pre-PR gate. Only the seed's
+    go:risk-* label is used, as the risk from which
+    `land_pr.open_or_update_pull_request` recomputes the labels immediately
+    before each new group PR creation, so every fresh PR reflects the current
     policy and required-check state. Existing OPEN/MERGED PRs keep their
     original labels (deterministic). Pass None to skip label handling.
     route, gates: the classified route letter and comma-joined gates for
-    this run, forwarded to the label refresh so require_human_routes (and
-    any gate-driven eligibility check) reaches orchestrator-created group
+    this run, forwarded to that label computation so require_human_routes
+    (and any gate-driven eligibility check) reaches orchestrator-created group
     PRs the same way it reaches one-off PRs. Omit when unknown.
     policy: worktrail-go-policy.yaml's parsed dict, forwarded to
     `addons.runner.run_addons` so a freshly-built group branch gets its
@@ -1512,24 +1435,30 @@ def integrate_one(
         f"Group **{name}** | reqs: {', '.join(g['reqs']) or '-'} "
         f"| base: `{pr_base}`\n\nparallel-orchestrator {run_id}.{escalation_note}"
     )
-    effective_labels = (
-        _refresh_pr_labels(repo, pr_labels, pr_base, gates, route) or pr_labels
-    )
-    risk = _extract_risk_from_labels(effective_labels or [])
+    # Labels are computed inside the shared open/update step from the seed
+    # risk + this run's gates/route (design.md D6) -- integrate.py no longer
+    # runs a label refresh of its own. A seed with no go:risk-* label has
+    # nothing to recompute from, so it is forwarded verbatim instead.
+    risk = _extract_risk_from_labels(pr_labels or [])
+    effective_labels = None if risk is not None else list(pr_labels or [])
     gates_list = [g for g in gates.split(",") if g] if gates else []
-    outcome = land_pr.open_or_update_pull_request(
-        repo,
-        pr_base,
-        gb,
-        title,
-        body,
-        risk=risk,
-        labels=effective_labels or [],
-        route=route or "",
-        gates=gates_list,
-        runner=subprocess.run,
-        base_slug=gh_repo,
-    )
+
+    def _open_or_update() -> dict:
+        return land_pr.open_or_update_pull_request(
+            repo,
+            pr_base,
+            gb,
+            title,
+            body,
+            risk=risk or "",
+            labels=effective_labels,
+            route=route or "",
+            gates=gates_list,
+            runner=subprocess.run,
+            base_slug=gh_repo,
+        )
+
+    outcome = _open_or_update()
     for attempt in range(1, GH_TRANSIENT_ATTEMPTS):
         if not outcome.get("refused_step"):
             break
@@ -1543,19 +1472,7 @@ def integrate_one(
             f"(attempt {attempt}/{GH_TRANSIENT_ATTEMPTS - 1}, waiting {wait}s): {detail_excerpt}"
         )
         _retry_sleep(wait)
-        outcome = land_pr.open_or_update_pull_request(
-            repo,
-            pr_base,
-            gb,
-            title,
-            body,
-            risk=risk,
-            labels=effective_labels or [],
-            route=route or "",
-            gates=gates_list,
-            runner=subprocess.run,
-            base_slug=gh_repo,
-        )
+        outcome = _open_or_update()
     # `gh pr create` fails the WHOLE command (no PR created, non-zero exit) on
     # an unresolvable --label, e.g. "could not add label: 'go:risk-medium' not
     # found" -- catch that here rather than recording the error text itself as

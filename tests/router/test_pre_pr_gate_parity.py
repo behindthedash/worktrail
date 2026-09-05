@@ -38,11 +38,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 import worktrail.orchestrator.integrate as integrate_mod
+import worktrail.router.land_pr as land_pr_mod
 import worktrail.router.pre_pr_gate as pre_pr_gate_mod
 from worktrail.router.run_record import main as run_record_main
 
 GATE_SRC = Path(pre_pr_gate_mod.__file__).resolve()
 INTEGRATE_SRC = Path(integrate_mod.__file__).resolve()
+LAND_PR_SRC = Path(land_pr_mod.__file__).resolve()
 
 
 def _main_function_node(tree: ast.Module) -> ast.FunctionDef:
@@ -109,10 +111,12 @@ def _proves_run_drift_checks_shared():
 
 def _proves_resolve_pr_labels_shared():
     """`--labels-only` returns `resolve_pr_labels()` directly (pre_pr_gate.py's main()), and
-    integrate.py's `_refresh_pr_labels()` invokes the gate script with `--labels-only
-    --gates --route`, threading the same route/gates context the one-off path passes (brief
-    20260731-145729, PR #90) -- required for automerge_eligible()'s require_human_routes and
-    classifier-gates checks to apply identically to orchestrator group PRs."""
+    the orchestrator's group-PR path reaches the very same function: `integrate.py` no
+    longer resolves labels itself but calls `land_pr.open_or_update_pull_request(...,
+    labels=None, gates=..., route=...)`, whose `labels is None` branch calls
+    `resolve_pr_labels()` with the run's gates/route (design.md D6) -- so
+    `automerge_eligible()`'s require_human_routes and classifier-gates checks apply
+    identically to orchestrator group PRs and one-off PRs (brief 20260731-145729, PR #90)."""
     tree = ast.parse(GATE_SRC.read_text())
     main_node = _main_function_node(tree)
     if not _branch_calls(main_node, "labels_only", "resolve_pr_labels"):
@@ -120,12 +124,23 @@ def _proves_resolve_pr_labels_shared():
             "pre_pr_gate.py's --labels-only branch no longer returns resolve_pr_labels() -- "
             "orchestrator label parity broken"
         )
+    land_pr_src = LAND_PR_SRC.read_text()
+    if "pre_pr_gate.resolve_pr_labels(" not in land_pr_src:
+        raise AssertionError(
+            "land_pr.open_or_update_pull_request no longer computes labels via "
+            "pre_pr_gate.resolve_pr_labels() -- orchestrator label parity broken"
+        )
     integrate_src = INTEGRATE_SRC.read_text()
-    for required in ("--labels-only", "--gates", "--route"):
+    if "--labels-only" in integrate_src:
+        raise AssertionError(
+            "integrate.py grew its own --labels-only label resolution again -- labels for "
+            "group PRs must come from land_pr.open_or_update_pull_request (design.md D6)"
+        )
+    for required in ("open_or_update_pull_request(", "gates=gates_list", "route=route"):
         if required not in integrate_src:
             raise AssertionError(
-                f"integrate.py no longer threads {required} to pre_pr_gate.py -- orchestrator "
-                "automerge-eligibility parity broken (was fixed by brief 20260731-145729)"
+                f"integrate.py no longer threads {required} into the shared open/update "
+                "step -- orchestrator automerge-eligibility parity broken"
             )
 
 
