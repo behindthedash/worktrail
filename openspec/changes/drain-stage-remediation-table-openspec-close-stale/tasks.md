@@ -1,6 +1,6 @@
 ## 1. OpenSpec-aware stale-bookkeeping closeout
 
-- [ ] 1.1 In `src/worktrail/drain/drain.py`: (a) `find_stale_bookkeeping_specs` adds
+- [x] 1.1 In `src/worktrail/drain/drain.py`: (a) `find_stale_bookkeeping_specs` adds
       `"format": row.get("format") or "devkit"` to each finding dict; (b) `close_stale_bookkeeping`
       reads `finding.get("format", "devkit")` and moves the `_resolve_stale_task_path` /
       "no TASK-*.md found" pre-check under the devkit branch so it never runs for an OpenSpec
