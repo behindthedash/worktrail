@@ -79,6 +79,16 @@ _KEBAB_CASE_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 _TRIAGE_HEADING_RE = re.compile(r"^##\s+Triage\s+(\d{4}-\d{2}-\d{2})\s*$", re.MULTILINE)
 
+_NON_GOALS_MARKER_RE = re.compile(
+    r"(?:"
+    r"^##\s+Non-Goals\s*$|"
+    r"^\*\*(?:Non-Goals|Out of scope)\:\*\*|"
+    r"^-\s+\*\*(?:Non-goals|Out of scope)\*\*:"
+    r")"
+    r".*?(?=^ {0,3}#{1,6}(?:\s|$)|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+
 # `work-directly` requires evidence citing a specific test, check, or command
 # (per the evaluator prompt's step 2b) rather than evidence that only restates
 # the brief's description. Matches one of the common reproduction vocabulary
@@ -764,6 +774,37 @@ Below it the "candidate" is noise the evaluator still has to read past -- and a
 presented candidate is what a `fold-into-change` verdict is allowed to name, so
 an unrelated change in the list is a fold target waiting to be picked.
 """
+
+
+def _non_goal_tokens(change_dir: Path) -> set[str]:
+    """Extract Non-Goals/Out-of-scope tokens from a change's proposal.md and design.md.
+
+    Reads change_dir/proposal.md and (when present) change_dir/design.md,
+    extracts every Non-Goals / Out-of-scope section via _NON_GOALS_MARKER_RE
+    (capturing text from each marker to the next markdown heading or EOF),
+    and tokenizes the combined matched text with _tokenize().
+
+    Returns an empty set if files are missing or no marker found.
+    """
+    combined_text = ""
+
+    for filename in ("proposal.md", "design.md"):
+        filepath = change_dir / filename
+        if not filepath.is_file():
+            continue
+
+        try:
+            content = filepath.read_text(encoding="utf-8")
+        except OSError:
+            continue
+
+        for match in _NON_GOALS_MARKER_RE.finditer(content):
+            combined_text += match.group(0)
+
+    if not combined_text:
+        return set()
+
+    return _tokenize(combined_text)
 
 
 def rank_change_candidates(
