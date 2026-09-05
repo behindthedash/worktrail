@@ -1534,7 +1534,13 @@ TERMINAL_EPIC_STATUSES = frozenset(
     }
 )
 
-_EPIC_STATUS_LINE_RE = re.compile(r"^\*\*Status:\*\*\s*(.+?)\s*$", re.MULTILINE)
+# Accept both "**Status:** X" and "**Status**: X" (colon inside vs. outside
+# the closing bold markers), the same way `check_spec_sync.parent_spec_status`
+# does -- an epic written in the second style otherwise never reads as
+# terminal and surfaces as an epic-gap forever.
+_EPIC_STATUS_LINE_RE = re.compile(
+    r"^\*\*Status(?:\*\*:|:\*\*)\s*(.+?)\s*$", re.MULTILINE
+)
 _EPIC_FEATURE_HEADING_RE = re.compile(r"^###\s+Feature\b", re.MULTILINE)
 _EPIC_FEATURE_HEADING_NUM_RE = re.compile(r"^###\s+Feature\s+(\d+)\b", re.MULTILINE)
 _EPIC_NUMBER_RE = re.compile(r"^(\d{3})-")

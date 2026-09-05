@@ -5290,6 +5290,23 @@ class EpicStageDetection(unittest.TestCase):
         self.assertIn("terminal status", result["next_action"])
         self.assertEqual(result["citing_specs"], [])
 
+    def test_epic_complete_via_terminal_status_colon_outside_bold(self):
+        # "**Status**: completed" (colon outside the bold) is as common as
+        # "**Status:** completed"; both must read as terminal.
+        epic_file = self._mk_epic("003-legacy", features=3, status="Completed")
+        epic_file.write_text(
+            epic_file.read_text(encoding="utf-8").replace(
+                "**Status:** Completed", "**Status**: Completed"
+            ),
+            encoding="utf-8",
+        )
+        self.assertIn("**Status**: Completed", epic_file.read_text(encoding="utf-8"))
+
+        result = dashboard.detect_epic_stage(epic_file, self.repo)
+
+        self.assertEqual(result["stage"], "epic-complete")
+        self.assertEqual(result["status_header"], "Completed")
+
     def test_epic_complete_via_full_citation(self):
         epic_file = self._mk_epic("004-onboarding", features=1)
         self._mk_citing_spec("020-welcome", "004-onboarding")
