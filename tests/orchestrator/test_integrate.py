@@ -528,6 +528,53 @@ class NoExistingBranchOrPR(unittest.TestCase):
             create_calls = run.find_calls("gh", "pr", "create")
             self.assertEqual(len(create_calls), 1)
 
+    def test_group_pr_uses_land_pr_open_or_update(self):
+        """Verify group PR creation calls land_pr.open_or_update_pull_request with correct parameters."""
+        run = FakeRun(pr_view_responses={}, ls_remote_responses={})
+
+        with (
+            patch(
+                "worktrail.orchestrator.integrate.coordinator.plan_groups"
+            ) as mock_groups,
+            patch("worktrail.orchestrator.integrate._git", side_effect=run),
+            patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run),
+            patch.object(
+                integrate.land_pr, "open_or_update_pull_request"
+            ) as mock_land_pr,
+        ):
+            group = mock_group("base", ["T001"])
+            mock_groups.return_value = [group]
+            mock_land_pr.return_value = {
+                "pr_url": "https://github.com/owner/repo/pull/123",
+                "pr_number": 123,
+                "refused_step": None,
+                "detail": None,
+            }
+
+            prs, _gb, _ = integrate_groups(
+                Path("/repo"),
+                "spec-001",
+                [mock_task("T001")],
+                "origin",
+                "run-pr",
+                "main",
+                cleanup=False,
+                route="D",
+                gates="check1,check2",
+            )
+
+            # Verify land_pr.open_or_update_pull_request was called once
+            self.assertEqual(
+                mock_land_pr.call_count,
+                1,
+                "Should call land_pr.open_or_update_pull_request exactly once for new PR",
+            )
+            # Verify it was called with correct parameters
+            call_args = mock_land_pr.call_args
+            self.assertEqual(call_args[0][1], "main", "base_branch should be main")
+            self.assertEqual(call_args[1]["route"], "D", "route should be D")
+            self.assertEqual(len(prs), 1)
+
 
 class FailedLabelAddDoesNotCorruptPrUrl(unittest.TestCase):
     """brief 20260723-102500 Bug 1: `gh pr create --label X` fails the WHOLE
@@ -1044,12 +1091,10 @@ class PRLabels(unittest.TestCase):
             # Verify gh pr create received the FRESH labels (go:risk-high from the mock)
             create_calls = run.find_calls("gh", "pr", "create")
             self.assertEqual(len(create_calls), 1)
-            self.assertEqual(
-                create_calls[0][
-                    create_calls[0].index("--label") : create_calls[0].index("--title")
-                ],
-                ["--label", "go:risk-high"],
-            )
+            # land_pr puts labels after --body, extract from --label onwards
+            label_start = create_calls[0].index("--label")
+            labels = create_calls[0][label_start : label_start + 2]
+            self.assertEqual(labels, ["--label", "go:risk-high"])
         finally:
             os.unlink(fake_gate)
 
@@ -1076,9 +1121,9 @@ class PRLabels(unittest.TestCase):
             )
 
         create_calls = run.find_calls("gh", "pr", "create")
-        labels = create_calls[0][
-            create_calls[0].index("--label") : create_calls[0].index("--title")
-        ]
+        # land_pr puts labels after --body, extract from --label onwards
+        label_start = create_calls[0].index("--label")
+        labels = create_calls[0][label_start : label_start + 2]
         self.assertEqual(labels, ["--label", "go:risk-low"])
 
     def test_refresh_labels_passes_route_when_set(self):
@@ -2270,9 +2315,9 @@ class PrePrDriftGate(unittest.TestCase):
         self.assertEqual(len(self._gate_calls(run)), 1)
         create_calls = run.find_calls("gh", "pr", "create")
         self.assertEqual(len(create_calls), 1, "a clean group must still open its PR")
-        labels = create_calls[0][
-            create_calls[0].index("--label") : create_calls[0].index("--title")
-        ]
+        # land_pr puts labels after --body, extract from --label onwards
+        label_start = create_calls[0].index("--label")
+        labels = create_calls[0][label_start : label_start + 2]
         self.assertEqual(labels, ["--label", "go:risk-low"])
 
     def test_unresolvable_gate_script_fails_closed(self):

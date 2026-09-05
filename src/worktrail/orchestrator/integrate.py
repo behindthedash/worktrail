@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..addons import runner as addons_runner
+from ..router import land_pr
 from ..taskformats import resolve as taskformats
 from . import coordinator, dispatch, live, progress, worktree
 
@@ -1489,7 +1490,7 @@ def integrate_one(
         except Exception:  # noqa: BLE001, S110
             pass
 
-    # No PR found (conventional or operator); refresh labels and create new one
+    # No PR found (conventional or operator); open/update via land_pr pipeline
     fresh_labels = _refresh_pr_labels(
         repo, pr_labels, pr_base, gates=gates, route=route
     )
@@ -1511,32 +1512,22 @@ def integrate_one(
         if escalations
         else ""
     )
-    cmd = [
-        "gh",
-        "pr",
-        "create",
-        "--base",
+    title = f"[{run_id}] {name}: {', '.join(deliverable)}"
+    body = (
+        f"Group **{name}** | reqs: {', '.join(g['reqs']) or '-'} "
+        f"| base: `{pr_base}`\n\nparallel-orchestrator {run_id}.{escalation_note}"
+    )
+    risk = _extract_risk_from_labels(effective_labels or [])
+    outcome = _land_pr_with_retry(
+        repo,
         pr_base,
-        "--head",
         gb,
-        *_pr_label_args(effective_labels),
-        "--title",
-        f"[{run_id}] {name}: {', '.join(deliverable)}",
-        "--body",
-        (
-            f"Group **{name}** | reqs: {', '.join(g['reqs']) or '-'} "
-            f"| base: `{pr_base}`\n\nparallel-orchestrator {run_id}.{escalation_note}"
-        ),
-    ]
-    if gh_repo:
-        cmd += ["--repo", gh_repo]
-    # Transient-retried (the original defect): one GraphQL 500 on `gh pr create`
-    # must not quarantine a group whose implement/review/merge/smoke all passed.
-    r = _run_gh_with_retry(cmd, repo)
-    out = (
-        (r.stdout or r.stderr).strip().splitlines()[-1]
-        if (r.stdout or r.stderr)
-        else "(no output)"
+        title,
+        body,
+        risk=risk or "unknown",
+        labels=effective_labels or [],
+        route=route or "",
+        base_slug=gh_repo,
     )
     # `gh pr create` fails the WHOLE command (no PR created, non-zero exit) on
     # an unresolvable --label, e.g. "could not add label: 'go:risk-medium' not
@@ -1544,14 +1535,72 @@ def integrate_one(
     # `pr_url` with state OPEN, which corrupts the journal and (on --pipeline)
     # reads back as a truthy pr_url, wrongly treated as "already integrated"
     # (see brief 20260723-102500, Bug 1 + Bug 2).
-    if r.returncode != 0 or not out.startswith("http"):
-        quarantined[name] = f"gh pr create failed: {out}"
+    if outcome.get("refused_step"):
+        detail = outcome.get("detail", "(no detail)")
+        quarantined[name] = f"gh pr create failed: {detail}"
         print(f"  SKIP [{name:9}] -- {quarantined[name]}")
         _do_journal(name, "", gb, "QUARANTINED", QUARANTINE_INTEGRATION_ERROR)
         return None
-    print(f"  PR [{name:9}] base={pr_base:18} -> {out}")
-    _do_journal(name, out, gb, "OPEN")
-    return (name, pr_base, out)
+    pr_url = outcome.get("pr_url")
+    print(f"  PR [{name:9}] base={pr_base:18} -> {pr_url}")
+    _do_journal(name, pr_url, gb, "OPEN")
+    return (name, pr_base, pr_url)
+
+
+def _land_pr_with_retry(
+    repo: Path,
+    base_branch: str,
+    head_branch: str,
+    title: str,
+    body: str,
+    risk: str,
+    labels: list,
+    route: str,
+    base_slug: str | None = None,
+) -> dict:
+    """Call land_pr.open_or_update_pull_request with transient failure retry.
+
+    Retries only transient failures (gh errors matching _GH_TRANSIENT_PATTERNS);
+    deterministic failures (validation, labels, auth) are not retried.
+    """
+    outcome = land_pr.open_or_update_pull_request(
+        repo,
+        base_branch,
+        head_branch,
+        title,
+        body,
+        risk=risk,
+        labels=labels,
+        route=route,
+        runner=subprocess.run,
+        base_slug=base_slug,
+    )
+    for attempt in range(1, GH_TRANSIENT_ATTEMPTS):
+        if not outcome.get("refused_step"):
+            return outcome
+        detail = outcome.get("detail", "")
+        if not _gh_error_is_transient(detail):
+            return outcome
+        wait = GH_TRANSIENT_BACKOFF_S * attempt
+        detail_excerpt = (detail or "(no detail)").splitlines()[-1][:160]
+        print(
+            f"  RETRY open/update PR transient failure "
+            f"(attempt {attempt}/{GH_TRANSIENT_ATTEMPTS - 1}, waiting {wait}s): {detail_excerpt}"
+        )
+        _retry_sleep(wait)
+        outcome = land_pr.open_or_update_pull_request(
+            repo,
+            base_branch,
+            head_branch,
+            title,
+            body,
+            risk=risk,
+            labels=labels,
+            route=route,
+            runner=subprocess.run,
+            base_slug=base_slug,
+        )
+    return outcome
 
 
 def _read_group_journal_record(journal_path: str | None, name: str) -> dict:
