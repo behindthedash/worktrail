@@ -79,6 +79,16 @@ _KEBAB_CASE_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 _TRIAGE_HEADING_RE = re.compile(r"^##\s+Triage\s+(\d{4}-\d{2}-\d{2})\s*$", re.MULTILINE)
 
+_NON_GOALS_MARKER_RE = re.compile(
+    r"(?:"
+    r"^##\s+Non-Goals\s*$|"
+    r"^\*\*(?:Non-Goals|Out of scope)\:\*\*|"
+    r"^-\s+\*\*(?:Non-goals|Out of scope)\*\*:"
+    r")"
+    r".*?(?=^ {0,3}#{1,6}(?:\s|$)|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+
 # `work-directly` requires evidence citing a specific test, check, or command
 # (per the evaluator prompt's step 2b) rather than evidence that only restates
 # the brief's description. Matches one of the common reproduction vocabulary
@@ -766,6 +776,37 @@ an unrelated change in the list is a fold target waiting to be picked.
 """
 
 
+def _non_goal_tokens(change_dir: Path) -> set[str]:
+    """Extract Non-Goals/Out-of-scope tokens from a change's proposal.md and design.md.
+
+    Reads change_dir/proposal.md and (when present) change_dir/design.md,
+    extracts every Non-Goals / Out-of-scope section via _NON_GOALS_MARKER_RE
+    (capturing text from each marker to the next markdown heading or EOF),
+    and tokenizes the combined matched text with _tokenize().
+
+    Returns an empty set if files are missing or no marker found.
+    """
+    combined_text = ""
+
+    for filename in ("proposal.md", "design.md"):
+        filepath = change_dir / filename
+        if not filepath.is_file():
+            continue
+
+        try:
+            content = filepath.read_text(encoding="utf-8")
+        except OSError:
+            continue
+
+        for match in _NON_GOALS_MARKER_RE.finditer(content):
+            combined_text += match.group(0)
+
+    if not combined_text:
+        return set()
+
+    return _tokenize(combined_text)
+
+
 def rank_change_candidates(
     brief: Path, repo: str | None, top_k: int = 5
 ) -> list[dict[str, Any]]:
@@ -788,6 +829,11 @@ def rank_change_candidates(
     "open_task_count", "score"}`. `repo` falsy (`repo: null`), a repo with
     no active changes, and a repo whose every active change scores below the
     floor all return `[]` -- there is nothing worth ranking against.
+
+    A change that clears the focus-overlap floor but whose Non-Goals section
+    overlaps the brief's focus is excluded: if the change has a Non-Goals
+    section and `_overlap_coefficient(brief_tokens, non_goal_tokens) >=
+    _MIN_CANDIDATE_SCORE`, the change is skipped and not returned.
     """
     if not repo:
         return []
@@ -818,6 +864,16 @@ def rank_change_candidates(
         score = _overlap_coefficient(brief_tokens, _tokenize(summary) | task_tokens)
         if score < _MIN_CANDIDATE_SCORE:
             continue
+
+        change_dir = specs_root / "changes" / change["spec_id"]
+        non_goal_tokens = _non_goal_tokens(change_dir)
+        if (
+            non_goal_tokens
+            and _overlap_coefficient(brief_tokens, non_goal_tokens)
+            >= _MIN_CANDIDATE_SCORE
+        ):
+            continue
+
         scored.append(
             (
                 score,

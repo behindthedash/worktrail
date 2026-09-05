@@ -4142,6 +4142,296 @@ class TestRankChangeCandidates(QueueTriageTestBase):
 
         self.assertEqual(len(results), 2)
 
+    def test_change_excluded_when_non_goals_in_proposal_overlaps_brief_focus(self):
+        """A change with Non-Goals in proposal.md that overlaps the brief's focus
+        is excluded even though it would clear the summary/tasks score floor."""
+        repo_root = self.base / "repo-non-goals-proposal"
+        self._make_change(
+            repo_root,
+            "widget-export-pipeline",
+            why="Add a widget export pipeline for downstream reporting consumers.",
+            tasks=[
+                (False, "Implement widget export pipeline serializer"),
+                (False, "Wire finance dashboards into export pipeline"),
+            ],
+        )
+        change_dir = repo_root / "openspec" / "changes" / "widget-export-pipeline"
+        # Add Non-Goals section that overlaps sufficiently with the brief's focus
+        # Brief focus: widget export pipeline downstream reporting (5 tokens)
+        # Non-Goals with 3+ of those tokens will exceed threshold of 0.45
+        proposal_content = (change_dir / "proposal.md").read_text(encoding="utf-8")
+        (change_dir / "proposal.md").write_text(
+            proposal_content
+            + "\n## Non-Goals\n\nNo widget export pipeline implementation for mobile clients\n",
+            encoding="utf-8",
+        )
+        brief_path = self.queue / "brief.md"
+        brief_path.write_text(
+            "---\nstatus: queued\n---\n\n"
+            "## Focus\n\nwidget export pipeline downstream reporting\n",
+            encoding="utf-8",
+        )
+
+        results = qt.rank_change_candidates(brief_path, str(repo_root), top_k=5)
+
+        self.assertEqual(results, [])
+
+    def test_change_excluded_when_non_goals_in_design_overlaps_brief_focus(self):
+        """A change with Non-Goals in design.md that overlaps the brief's focus
+        is excluded."""
+        repo_root = self.base / "repo-non-goals-design"
+        self._make_change(
+            repo_root,
+            "widget-export-pipeline",
+            why="Add a widget export pipeline for downstream reporting consumers.",
+            tasks=[
+                (False, "Implement widget export pipeline serializer"),
+                (False, "Wire finance dashboards into export pipeline"),
+            ],
+        )
+        change_dir = repo_root / "openspec" / "changes" / "widget-export-pipeline"
+        # Add design.md with Non-Goals section that overlaps sufficiently
+        # Brief focus: widget export pipeline downstream reporting (5 tokens)
+        # Non-Goals with 3+ of those tokens will exceed threshold of 0.45
+        (change_dir / "design.md").write_text(
+            "# Design\n\n## Non-Goals\n\nNo widget export pipeline support for batch processing\n",
+            encoding="utf-8",
+        )
+        brief_path = self.queue / "brief.md"
+        brief_path.write_text(
+            "---\nstatus: queued\n---\n\n"
+            "## Focus\n\nwidget export pipeline downstream reporting\n",
+            encoding="utf-8",
+        )
+
+        results = qt.rank_change_candidates(brief_path, str(repo_root), top_k=5)
+
+        self.assertEqual(results, [])
+
+    def test_change_returned_when_non_goals_do_not_overlap_brief_focus(self):
+        """A change with Non-Goals that don't overlap the brief's focus is still
+        returned and ranked as before."""
+        repo_root = self.base / "repo-non-goals-no-overlap"
+        self._make_change(
+            repo_root,
+            "widget-export-pipeline",
+            why="Add a widget export pipeline for downstream reporting consumers.",
+            tasks=[
+                (False, "Implement widget export pipeline serializer"),
+                (False, "Wire finance dashboards into export pipeline"),
+            ],
+        )
+        change_dir = repo_root / "openspec" / "changes" / "widget-export-pipeline"
+        # Add Non-Goals section that doesn't overlap with the brief's focus
+        proposal_content = (change_dir / "proposal.md").read_text(encoding="utf-8")
+        (change_dir / "proposal.md").write_text(
+            proposal_content
+            + "\n## Non-Goals\n\nno database migration or caching infrastructure changes\n",
+            encoding="utf-8",
+        )
+        brief_path = self.queue / "brief.md"
+        brief_path.write_text(
+            "---\nstatus: queued\n---\n\n"
+            "## Focus\n\nwidget export pipeline downstream reporting\n",
+            encoding="utf-8",
+        )
+
+        results = qt.rank_change_candidates(brief_path, str(repo_root), top_k=5)
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["id"], "widget-export-pipeline")
+
+    def test_change_unaffected_when_no_non_goals_section(self):
+        """A change with no Non-Goals section is returned normally (regression test)."""
+        repo_root = self.base / "repo-no-non-goals"
+        self._make_change(
+            repo_root,
+            "widget-export-pipeline",
+            why="Add a widget export pipeline for downstream reporting consumers.",
+            tasks=[
+                (False, "Implement widget export pipeline serializer"),
+                (True, "Write export pipeline docs"),
+            ],
+        )
+        brief_path = self.queue / "brief.md"
+        brief_path.write_text(
+            "---\nstatus: queued\n---\n\n"
+            "## Focus\n\nwidget export pipeline downstream reporting\n",
+            encoding="utf-8",
+        )
+
+        results = qt.rank_change_candidates(brief_path, str(repo_root), top_k=5)
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["id"], "widget-export-pipeline")
+        self.assertEqual(results[0]["open_task_count"], 1)
+
+
+class TestNonGoalTokens(QueueTriageTestBase):
+    """Extract Non-Goals/Out-of-scope tokens from proposal.md and design.md."""
+
+    def test_no_marker_present_returns_empty_set(self):
+        """When neither proposal.md nor design.md has a Non-Goals section."""
+        change_dir = self.base / "change1"
+        change_dir.mkdir(parents=True)
+        (change_dir / "proposal.md").write_text(
+            "# Widget Export\n\n## Why\n\nAdd widget export support.\n",
+            encoding="utf-8",
+        )
+
+        result = qt._non_goal_tokens(change_dir)
+
+        self.assertEqual(result, set())
+
+    def test_missing_proposal_and_design_returns_empty_set(self):
+        """When neither proposal.md nor design.md exist."""
+        change_dir = self.base / "change2"
+        change_dir.mkdir(parents=True)
+
+        result = qt._non_goal_tokens(change_dir)
+
+        self.assertEqual(result, set())
+
+    def test_heading_form_marker_extracts_tokens(self):
+        """Extract from ## Non-Goals heading to next heading or EOF."""
+        change_dir = self.base / "change3"
+        change_dir.mkdir(parents=True)
+        (change_dir / "proposal.md").write_text(
+            "# Widget Export\n\n## Why\n\nAdd widget export.\n\n"
+            "## Non-Goals\n\n"
+            "This change does not include database schema migration or legacy system integration.\n\n"
+            "## Other\n\nOther content.\n",
+            encoding="utf-8",
+        )
+
+        result = qt._non_goal_tokens(change_dir)
+
+        self.assertIn("database", result)
+        self.assertIn("schema", result)
+        self.assertIn("migration", result)
+        self.assertIn("legacy", result)
+        self.assertIn("system", result)
+        self.assertIn("integration", result)
+        self.assertNotIn("other", result)
+
+    def test_bold_label_paragraph_marker_extracts_tokens(self):
+        """Extract from **Non-Goals:** bold-label paragraph to next heading or EOF."""
+        change_dir = self.base / "change4"
+        change_dir.mkdir(parents=True)
+        (change_dir / "proposal.md").write_text(
+            "# Widget Export\n\n"
+            "## Why\n\n"
+            "**Non-Goals:** This change excludes network latency optimization and "
+            "distributed cache support, focusing only on local serialization.\n\n"
+            "## Implementation\n\nDetails here.\n",
+            encoding="utf-8",
+        )
+
+        result = qt._non_goal_tokens(change_dir)
+
+        self.assertIn("network", result)
+        self.assertIn("latency", result)
+        self.assertIn("optimization", result)
+        self.assertIn("distributed", result)
+        self.assertIn("cache", result)
+        self.assertNotIn("implementation", result)
+
+    def test_bullet_form_out_of_scope_marker_extracts_tokens(self):
+        """Extract from - **Out of scope**: bullet to next heading or EOF."""
+        change_dir = self.base / "change5"
+        change_dir.mkdir(parents=True)
+        (change_dir / "proposal.md").write_text(
+            "# Widget Export\n\n"
+            "## Scope\n\n"
+            "- **Out of scope**: re-testing parallel orchestrator tasks, "
+            "printing authentication tokens, or replacing unit coverage\n\n"
+            "## Tasks\n\nImplement it.\n",
+            encoding="utf-8",
+        )
+
+        result = qt._non_goal_tokens(change_dir)
+
+        self.assertIn("testing", result)
+        self.assertIn("parallel", result)
+        self.assertIn("orchestrator", result)
+        self.assertIn("tasks", result)
+        self.assertIn("authentication", result)
+        self.assertIn("tokens", result)
+
+    def test_design_file_also_scanned_when_present(self):
+        """Extract markers from both proposal.md and design.md."""
+        change_dir = self.base / "change6"
+        change_dir.mkdir(parents=True)
+        (change_dir / "proposal.md").write_text(
+            "# Widget Export\n\n## Non-Goals\n\nNo database migration.\n",
+            encoding="utf-8",
+        )
+        (change_dir / "design.md").write_text(
+            "# Design\n\n## Non-Goals\n\nNo distributed cache.\n",
+            encoding="utf-8",
+        )
+
+        result = qt._non_goal_tokens(change_dir)
+
+        self.assertIn("database", result)
+        self.assertIn("migration", result)
+        self.assertIn("distributed", result)
+        self.assertIn("cache", result)
+
+    def test_combined_tokens_from_multiple_markers_in_same_file(self):
+        """Extract and combine tokens from multiple Non-Goals sections."""
+        change_dir = self.base / "change7"
+        change_dir.mkdir(parents=True)
+        (change_dir / "proposal.md").write_text(
+            "# Widget Export\n\n"
+            "## Non-Goals\n\nNo database work.\n\n"
+            "## Implementation\n\nWe do something.\n\n"
+            "## Non-Goals\n\nNo network optimization.\n",
+            encoding="utf-8",
+        )
+
+        result = qt._non_goal_tokens(change_dir)
+
+        self.assertIn("database", result)
+        self.assertIn("network", result)
+        self.assertIn("optimization", result)
+
+    def test_hashtag_not_treated_as_heading_boundary(self):
+        """Verify that #hashtag in content does not end the section."""
+        change_dir = self.base / "change8"
+        change_dir.mkdir(parents=True)
+        (change_dir / "proposal.md").write_text(
+            "# Widget Export\n\n"
+            "## Non-Goals\n\n"
+            "Some text here #hashtag more text omega final.\n\n"
+            "## Other\n\nOther content.\n",
+            encoding="utf-8",
+        )
+
+        result = qt._non_goal_tokens(change_dir)
+
+        # The section should include "omega" even though "#hashtag" appears
+        # (since #hashtag is not an ATX heading, just a # in the text)
+        self.assertIn("omega", result)
+        self.assertIn("hashtag", result)
+        self.assertNotIn("other", result)
+
+    def test_indented_heading_terminates_section(self):
+        """Verify that indented ATX headings (up to 3 spaces) terminate the section."""
+        change_dir = self.base / "change9"
+        change_dir.mkdir(parents=True)
+        (change_dir / "proposal.md").write_text(
+            "## Non-Goals\n\nalpha\n\n  ## Next\n\nleakword\n",
+            encoding="utf-8",
+        )
+
+        result = qt._non_goal_tokens(change_dir)
+
+        # "alpha" should be included, but "leakword" and "next" should not
+        self.assertIn("alpha", result)
+        self.assertNotIn("leakword", result)
+        self.assertNotIn("next", result)
+
 
 class TestEscalationLimitsAndDue(QueueTriageTestBase):
     """4.1(b): `_escalation_limits()`/`escalation_due()`, design D5."""
