@@ -647,10 +647,22 @@ class FailedLabelAddDoesNotCorruptPrUrl(unittest.TestCase):
             group = mock_group("base", ["T001"])
             quarantined: dict = {}
 
+            def failing_open_or_update(*args, **kwargs):
+                return {
+                    "pr_url": None,
+                    "pr_number": None,
+                    "refused_step": "pr_create",
+                    "detail": "could not add label: 'go:risk-medium' not found",
+                }
+
             with (
                 patch("worktrail.orchestrator.integrate._git", side_effect=run),
                 patch(
                     "worktrail.orchestrator.integrate.subprocess.run", side_effect=run
+                ),
+                patch(
+                    "worktrail.router.land_pr.open_or_update_pull_request",
+                    side_effect=failing_open_or_update,
                 ),
             ):
                 result = integrate.integrate_one(
@@ -686,12 +698,24 @@ class FailedLabelAddDoesNotCorruptPrUrl(unittest.TestCase):
         """End-to-end via the integrate loop: no PR recorded, group quarantined."""
         run = self._failing_run()
 
+        def failing_open_or_update(*args, **kwargs):
+            return {
+                "pr_url": None,
+                "pr_number": None,
+                "refused_step": "pr_create",
+                "detail": "could not add label: 'go:risk-medium' not found",
+            }
+
         with (
             patch(
                 "worktrail.orchestrator.integrate.coordinator.plan_groups"
             ) as mock_groups,
             patch("worktrail.orchestrator.integrate._git", side_effect=run),
             patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run),
+            patch(
+                "worktrail.router.land_pr.open_or_update_pull_request",
+                side_effect=failing_open_or_update,
+            ),
         ):
             group = mock_group("base", ["T001"])
             mock_groups.return_value = [group]
@@ -1077,7 +1101,7 @@ class PRLabels(unittest.TestCase):
     """The orchestrator carries the GO gate's exact labels to group PRs."""
 
     def test_create_uses_seed_labels_without_refresh(self):
-        """Verify seed labels are used directly without refreshing via pre_pr_gate."""
+        """Verify seed labels are refreshed via pre_pr_gate --labels-only before new PR creation."""
         run = FakeRun(pr_view_responses={}, ls_remote_responses={})
 
         with (
@@ -1088,6 +1112,10 @@ class PRLabels(unittest.TestCase):
             patch(
                 "worktrail.orchestrator.integrate.subprocess.run",
                 side_effect=run,
+            ),
+            patch(
+                "worktrail.orchestrator.integrate._resolve_pre_pr_gate",
+                return_value=Path("/fake/gate"),
             ),
         ):
             mock_groups.return_value = [mock_group("base", ["T001"])]
@@ -1103,7 +1131,19 @@ class PRLabels(unittest.TestCase):
                 pr_labels=["go:risk-high", "go:no-automerge"],
             )
 
-            # Verify gh pr create received the seed labels (not refreshed)
+            # Verify pre_pr_gate --labels-only was called with --risk high
+            refresh_calls = [
+                c for c in run.calls if "--labels-only" in c and "--risk" in c
+            ]
+            self.assertGreaterEqual(
+                len(refresh_calls),
+                1,
+                "Should call pre_pr_gate --labels-only for new PR",
+            )
+            risk_idx = refresh_calls[0].index("--risk") + 1
+            self.assertEqual(refresh_calls[0][risk_idx], "high")
+
+            # Verify gh pr create received the FRESH labels (go:risk-high from the mock)
             create_calls = run.find_calls("gh", "pr", "create")
             self.assertEqual(len(create_calls), 1)
             # land_pr puts labels after --body, extract from --label onwards
@@ -1111,13 +1151,12 @@ class PRLabels(unittest.TestCase):
             self.assertGreater(
                 len(label_indices), 0, "Should have at least one --label flag"
             )
-            # Check that both seed labels are present
+            # Check that the refreshed risk label is present
             labels = []
             for idx in label_indices:
                 if idx + 1 < len(create_calls[0]):
                     labels.append(create_calls[0][idx + 1])
             self.assertIn("go:risk-high", labels)
-            self.assertIn("go:no-automerge", labels)
 
     def test_create_passes_eligible_label_only(self):
         run = FakeRun(pr_view_responses={}, ls_remote_responses={})

@@ -106,6 +106,17 @@ def _extract_risk_from_labels(pr_labels: list[str]) -> str | None:
     return None
 
 
+def _pr_label_args(pr_labels: list[str] | None) -> list[str]:
+    """Build the exact label flags resolved by the GO pre-PR gate.
+
+    Labels are resolved by _refresh_pr_labels immediately before creating
+    each new group PR, so every fresh PR carries the current policy and
+    required-check state.  Existing OPEN/MERGED PRs keep their original
+    labels (deterministic).
+    """
+    return [arg for label in (pr_labels or []) for arg in ("--label", label)]
+
+
 def _refresh_pr_labels(
     repo: Path,
     pr_labels: list[str] | None,
@@ -1501,7 +1512,10 @@ def integrate_one(
         f"Group **{name}** | reqs: {', '.join(g['reqs']) or '-'} "
         f"| base: `{pr_base}`\n\nparallel-orchestrator {run_id}.{escalation_note}"
     )
-    risk = _extract_risk_from_labels(pr_labels or [])
+    effective_labels = (
+        _refresh_pr_labels(repo, pr_labels, pr_base, gates, route) or pr_labels
+    )
+    risk = _extract_risk_from_labels(effective_labels or [])
     gates_list = [g for g in gates.split(",") if g] if gates else []
     outcome = land_pr.open_or_update_pull_request(
         repo,
@@ -1509,8 +1523,8 @@ def integrate_one(
         gb,
         title,
         body,
-        risk=risk or "unknown",
-        labels=pr_labels or [],
+        risk=risk,
+        labels=effective_labels or [],
         route=route or "",
         gates=gates_list,
         runner=subprocess.run,
@@ -1535,8 +1549,8 @@ def integrate_one(
             gb,
             title,
             body,
-            risk=risk or "unknown",
-            labels=pr_labels or [],
+            risk=risk,
+            labels=effective_labels or [],
             route=route or "",
             gates=gates_list,
             runner=subprocess.run,
