@@ -100,7 +100,7 @@
 
 ## 4. Migrate drain remediations (after group 1)
 
-- [ ] 4.1 In `src/worktrail/drain/drain.py`, replace `_open_sync_pending_pr`,
+- [x] 4.1 In `src/worktrail/drain/drain.py`, replace `_open_sync_pending_pr`,
       `_open_stale_bookkeeping_pr`, and `_open_openspec_archive_pr` with one
       `_land_remediation_pr(wt, repo_name, spec_id, base, title, summary, timeout)` that
       calls `land_pr(LandRequest(repo=wt, base_branch=base, route="E", risk="low",
