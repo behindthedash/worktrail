@@ -85,7 +85,7 @@ _NON_GOALS_MARKER_RE = re.compile(
     r"^\*\*(?:Non-Goals|Out of scope)\:\*\*|"
     r"^-\s+\*\*(?:Non-goals|Out of scope)\*\*:"
     r")"
-    r".*?(?=^#{1,6}(?:\s|$)|\Z)",
+    r".*?(?=^ {0,3}#{1,6}(?:\s|$)|\Z)",
     re.MULTILINE | re.DOTALL,
 )
 

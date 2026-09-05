@@ -4292,6 +4292,22 @@ class TestNonGoalTokens(QueueTriageTestBase):
         self.assertIn("hashtag", result)
         self.assertNotIn("other", result)
 
+    def test_indented_heading_terminates_section(self):
+        """Verify that indented ATX headings (up to 3 spaces) terminate the section."""
+        change_dir = self.base / "change9"
+        change_dir.mkdir(parents=True)
+        (change_dir / "proposal.md").write_text(
+            "## Non-Goals\n\nalpha\n\n  ## Next\n\nleakword\n",
+            encoding="utf-8",
+        )
+
+        result = qt._non_goal_tokens(change_dir)
+
+        # "alpha" should be included, but "leakword" and "next" should not
+        self.assertIn("alpha", result)
+        self.assertNotIn("leakword", result)
+        self.assertNotIn("next", result)
+
 
 class TestEscalationLimitsAndDue(QueueTriageTestBase):
     """4.1(b): `_escalation_limits()`/`escalation_due()`, design D5."""
