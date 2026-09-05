@@ -4142,6 +4142,130 @@ class TestRankChangeCandidates(QueueTriageTestBase):
 
         self.assertEqual(len(results), 2)
 
+    def test_change_excluded_when_non_goals_in_proposal_overlaps_brief_focus(self):
+        """A change with Non-Goals in proposal.md that overlaps the brief's focus
+        is excluded even though it would clear the summary/tasks score floor."""
+        repo_root = self.base / "repo-non-goals-proposal"
+        self._make_change(
+            repo_root,
+            "widget-export-pipeline",
+            why="Add a widget export pipeline for downstream reporting consumers.",
+            tasks=[
+                (False, "Implement widget export pipeline serializer"),
+                (False, "Wire finance dashboards into export pipeline"),
+            ],
+        )
+        change_dir = repo_root / "openspec" / "changes" / "widget-export-pipeline"
+        # Add Non-Goals section that overlaps sufficiently with the brief's focus
+        # Brief focus: widget export pipeline downstream reporting (5 tokens)
+        # Non-Goals with 3+ of those tokens will exceed threshold of 0.45
+        proposal_content = (change_dir / "proposal.md").read_text(encoding="utf-8")
+        (change_dir / "proposal.md").write_text(
+            proposal_content
+            + "\n## Non-Goals\n\nNo widget export pipeline implementation for mobile clients\n",
+            encoding="utf-8",
+        )
+        brief_path = self.queue / "brief.md"
+        brief_path.write_text(
+            "---\nstatus: queued\n---\n\n"
+            "## Focus\n\nwidget export pipeline downstream reporting\n",
+            encoding="utf-8",
+        )
+
+        results = qt.rank_change_candidates(brief_path, str(repo_root), top_k=5)
+
+        self.assertEqual(results, [])
+
+    def test_change_excluded_when_non_goals_in_design_overlaps_brief_focus(self):
+        """A change with Non-Goals in design.md that overlaps the brief's focus
+        is excluded."""
+        repo_root = self.base / "repo-non-goals-design"
+        self._make_change(
+            repo_root,
+            "widget-export-pipeline",
+            why="Add a widget export pipeline for downstream reporting consumers.",
+            tasks=[
+                (False, "Implement widget export pipeline serializer"),
+                (False, "Wire finance dashboards into export pipeline"),
+            ],
+        )
+        change_dir = repo_root / "openspec" / "changes" / "widget-export-pipeline"
+        # Add design.md with Non-Goals section that overlaps sufficiently
+        # Brief focus: widget export pipeline downstream reporting (5 tokens)
+        # Non-Goals with 3+ of those tokens will exceed threshold of 0.45
+        (change_dir / "design.md").write_text(
+            "# Design\n\n## Non-Goals\n\nNo widget export pipeline support for batch processing\n",
+            encoding="utf-8",
+        )
+        brief_path = self.queue / "brief.md"
+        brief_path.write_text(
+            "---\nstatus: queued\n---\n\n"
+            "## Focus\n\nwidget export pipeline downstream reporting\n",
+            encoding="utf-8",
+        )
+
+        results = qt.rank_change_candidates(brief_path, str(repo_root), top_k=5)
+
+        self.assertEqual(results, [])
+
+    def test_change_returned_when_non_goals_do_not_overlap_brief_focus(self):
+        """A change with Non-Goals that don't overlap the brief's focus is still
+        returned and ranked as before."""
+        repo_root = self.base / "repo-non-goals-no-overlap"
+        self._make_change(
+            repo_root,
+            "widget-export-pipeline",
+            why="Add a widget export pipeline for downstream reporting consumers.",
+            tasks=[
+                (False, "Implement widget export pipeline serializer"),
+                (False, "Wire finance dashboards into export pipeline"),
+            ],
+        )
+        change_dir = repo_root / "openspec" / "changes" / "widget-export-pipeline"
+        # Add Non-Goals section that doesn't overlap with the brief's focus
+        proposal_content = (change_dir / "proposal.md").read_text(encoding="utf-8")
+        (change_dir / "proposal.md").write_text(
+            proposal_content
+            + "\n## Non-Goals\n\nno database migration or caching infrastructure changes\n",
+            encoding="utf-8",
+        )
+        brief_path = self.queue / "brief.md"
+        brief_path.write_text(
+            "---\nstatus: queued\n---\n\n"
+            "## Focus\n\nwidget export pipeline downstream reporting\n",
+            encoding="utf-8",
+        )
+
+        results = qt.rank_change_candidates(brief_path, str(repo_root), top_k=5)
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["id"], "widget-export-pipeline")
+
+    def test_change_unaffected_when_no_non_goals_section(self):
+        """A change with no Non-Goals section is returned normally (regression test)."""
+        repo_root = self.base / "repo-no-non-goals"
+        self._make_change(
+            repo_root,
+            "widget-export-pipeline",
+            why="Add a widget export pipeline for downstream reporting consumers.",
+            tasks=[
+                (False, "Implement widget export pipeline serializer"),
+                (True, "Write export pipeline docs"),
+            ],
+        )
+        brief_path = self.queue / "brief.md"
+        brief_path.write_text(
+            "---\nstatus: queued\n---\n\n"
+            "## Focus\n\nwidget export pipeline downstream reporting\n",
+            encoding="utf-8",
+        )
+
+        results = qt.rank_change_candidates(brief_path, str(repo_root), top_k=5)
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["id"], "widget-export-pipeline")
+        self.assertEqual(results[0]["open_task_count"], 1)
+
 
 class TestNonGoalTokens(QueueTriageTestBase):
     """Extract Non-Goals/Out-of-scope tokens from proposal.md and design.md."""
