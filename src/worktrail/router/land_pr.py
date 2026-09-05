@@ -422,12 +422,16 @@ def _push(
     `detail_out` when the caller supplies one, so the caller never surfaces
     a bare `null` for a failure git already explained -- kept as an
     out-param rather than widening the return type so every existing
-    caller/mock of this signature keeps working unchanged."""
-    upstream = _git(
-        repo, runner, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"
-    )
-    args = ["push"] if upstream.returncode == 0 else ["push", "-u", remote, branch]
-    cmd = ["git", "-C", str(repo), *args]
+    caller/mock of this signature keeps working unchanged.
+
+    Always pushes with an explicit `HEAD:<branch>` refspec rather than a
+    bare `push`/`push -u remote branch`: a branch created via
+    `git worktree add ... -b <branch> origin/dev` has its upstream tracking
+    `origin/dev`, not `origin/<branch>`, so a bare `push` (which pushes to
+    the configured upstream) would target the wrong remote branch. The
+    explicit refspec pins the destination regardless of what upstream is
+    configured."""
+    cmd = ["git", "-C", str(repo), "push", "-u", remote, f"HEAD:{branch}"]
     try:
         result = runner(cmd, capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.TimeoutExpired):

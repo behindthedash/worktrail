@@ -29,8 +29,6 @@ class PushDetailCaptureTests(unittest.TestCase):
 
     def _runner(self, push_result: subprocess.CompletedProcess):
         def runner(cmd, **kwargs):
-            if cmd[-3:] == ["rev-parse", "--abbrev-ref", "--symbolic-full-name"]:
-                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
             if "push" in cmd:
                 return push_result
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
@@ -80,8 +78,6 @@ class PushDetailCaptureTests(unittest.TestCase):
 
     def test_ambiguous_timeout_does_not_populate_detail_out(self) -> None:
         def runner(cmd, **kwargs):
-            if cmd[-3:] == ["rev-parse", "--abbrev-ref", "--symbolic-full-name"]:
-                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
             raise subprocess.TimeoutExpired(cmd=cmd, timeout=60)
 
         detail_out: list[str] = []
@@ -95,6 +91,42 @@ class PushDetailCaptureTests(unittest.TestCase):
         )
         refused = land_pr._push("/tmp", "feature", "origin", runner)
         self.assertEqual(refused, "push")
+
+
+class PushRefspecTests(unittest.TestCase):
+    """Regression tests for the branch-tracking-mismatch repro
+    (openspec/changes/shared-pr-landing-pipeline/tasks.md task 15.1): a
+    branch created via `git worktree add ... -b <branch> origin/dev` has
+    its upstream tracking `origin/dev`, so a bare `git push` (which pushes
+    to the configured upstream) pushes to the wrong remote branch. `_push()`
+    must always push with an explicit `HEAD:<branch>` refspec instead."""
+
+    def test_push_uses_explicit_head_refspec_regardless_of_upstream(self) -> None:
+        captured_cmds: list[list[str]] = []
+
+        def runner(cmd, **kwargs):
+            captured_cmds.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        refused = land_pr._push("/tmp/repo", "feature", "origin", runner)
+
+        self.assertIsNone(refused)
+        push_cmds = [cmd for cmd in captured_cmds if "push" in cmd]
+        self.assertEqual(len(push_cmds), 1)
+        self.assertEqual(
+            push_cmds[0],
+            ["git", "-C", "/tmp/repo", "push", "-u", "origin", "HEAD:feature"],
+        )
+
+    def test_push_never_calls_rev_parse_upstream_lookup(self) -> None:
+        def runner(cmd, **kwargs):
+            self.assertNotEqual(
+                cmd[-3:], ["rev-parse", "--abbrev-ref", "--symbolic-full-name"]
+            )
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        refused = land_pr._push("/tmp/repo", "feature", "origin", runner)
+        self.assertIsNone(refused)
 
 
 class RunRecordSpy:
