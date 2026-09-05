@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+from worktrail.router.land_pr import LandOutcome
 from worktrail.workqueue import queue_triage as qt
 
 
@@ -122,17 +123,11 @@ class TestIsRecentlyTriaged(QueueTriageTestBase):
         import datetime
 
         recent = datetime.date.today() - datetime.timedelta(days=1)  # noqa: DTZ011
-        p = self.write(
-            "a.md",
-            body=f"## Triage {recent.isoformat()}\n\nkeep\n",
-        )
+        p = self.write("a.md", body=f"## Triage {recent.isoformat()}\n\nkeep\n")
         self.assertTrue(qt.is_recently_triaged(p, within_days=30))
 
     def test_stale_triage_section_is_outside_window(self):
-        p = self.write(
-            "a.md",
-            body="## Triage 2020-01-01\n\nkeep\n",
-        )
+        p = self.write("a.md", body="## Triage 2020-01-01\n\nkeep\n")
         self.assertFalse(qt.is_recently_triaged(p, within_days=30))
 
     def test_no_triage_section_is_not_recently_triaged(self):
@@ -180,10 +175,7 @@ class TestIsRecentlyTriaged(QueueTriageTestBase):
 
         today = datetime.date.today()  # noqa: DTZ011
         boundary_date = today - datetime.timedelta(days=30)
-        p = self.write(
-            "a.md",
-            body=f"## Triage {boundary_date.isoformat()}\n\nkeep\n",
-        )
+        p = self.write("a.md", body=f"## Triage {boundary_date.isoformat()}\n\nkeep\n")
         self.assertTrue(qt.is_recently_triaged(p, within_days=30))
 
     def test_one_day_past_boundary_is_stale(self):
@@ -191,10 +183,7 @@ class TestIsRecentlyTriaged(QueueTriageTestBase):
 
         today = datetime.date.today()  # noqa: DTZ011
         past_boundary = today - datetime.timedelta(days=31)
-        p = self.write(
-            "a.md",
-            body=f"## Triage {past_boundary.isoformat()}\n\nkeep\n",
-        )
+        p = self.write("a.md", body=f"## Triage {past_boundary.isoformat()}\n\nkeep\n")
         self.assertFalse(qt.is_recently_triaged(p, within_days=30))
 
 
@@ -1132,10 +1121,7 @@ class TestApplyVerdicts(QueueTriageTestBase):
         self.assertEqual(qt.read_frontmatter(Path(log[0]["path"]))["status"], "done")
 
     def test_duplicate_of_on_consolidated_route_c_brief_executes(self):
-        self._write_route_c(
-            "a.md",
-            "## Consolidated from\n\n- member-x\n- member-y\n",
-        )
+        self._write_route_c("a.md", "## Consolidated from\n\n- member-x\n- member-y\n")
         self.write("b.md", body="## Focus\n\nthe surviving brief\n")
         verdict = qt.Verdict(
             brief_id="a",
@@ -1845,10 +1831,10 @@ class TestApplyNeedsDecision(QueueTriageTestBase):
 
 class TestApplyFoldIntoChange(QueueTriageTestBase):
     """3.1's `fold-into-change` apply action: fresh worktree off the target
-    repo's base, `proposal.md`/`tasks.md` edits, `openspec validate`, commit,
-    push, `gh pr create`, then close the brief with `triaged-to:`. Any
+    repo's base, `proposal.md`/`tasks.md` edits, `openspec validate`, then
+    lands via router.land_pr, and closes the brief with `triaged-to:`. Any
     failure before the PR exists must leave the brief completely untouched
-    and report the branch name it would have used. `git`/`gh`/`openspec` are
+    and report the branch name it would have used. `git`/`openspec` are
     faked via a `subprocess.run` dispatcher -- never hits the network.
     """
 
@@ -1880,8 +1866,7 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
             encoding="utf-8",
         )
         (change_dir / "tasks.md").write_text(
-            "## 1. Tasks\n\n- [ ] 1.1 Existing task\n",
-            encoding="utf-8",
+            "## 1. Tasks\n\n- [ ] 1.1 Existing task\n", encoding="utf-8"
         )
 
     @staticmethod
@@ -1893,13 +1878,10 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
     def _dispatcher(
         self,
         *,
-        pr_returncode: int = 0,
         validate_returncode: int = 0,
         compile_returncode: int = 0,
         fetch_returncode: int = 0,
-        push_default: str | None = None,
     ):
-        pr_url = "https://github.com/acme/widgets/pull/42"
         self.seen: list[list[str]] = []
 
         def _run(cmd, **kwargs):
@@ -1908,9 +1890,7 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
                 if "symbolic-ref" in cmd:
                     return self._completed(0, stdout="origin/main\n")
                 if "config" in cmd and "remote.pushDefault" in cmd:
-                    if push_default is None:
-                        return self._completed(1)
-                    return self._completed(0, stdout=f"{push_default}\n")
+                    return self._completed(1)
                 if "remote" in cmd and "get-url" in cmd:
                     return self._completed(
                         0, stdout="git@github.com:acme-fork/widgets.git\n"
@@ -1954,30 +1934,29 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
                         / ".compile-ok"
                     ).is_file()
                 return self._completed(0)
-            if cmd[0] == "git" and cmd[1] == "push":
-                return self._completed(0)
-            if cmd[0] == "gh" and cmd[1:3] == ["pr", "create"]:
-                return self._completed(
-                    pr_returncode,
-                    stdout=f"{pr_url}\n" if pr_returncode == 0 else "",
-                    stderr=""
-                    if pr_returncode == 0
-                    else "could not create pull request",
-                )
             raise AssertionError(f"unexpected command: {cmd}")
 
-        return _run, pr_url
+        return _run
 
     def test_success_edits_change_opens_pr_and_closes_brief(self):
-        run, pr_url = self._dispatcher()
+        pr_url = "https://github.com/acme/widgets/pull/42"
+        run = self._dispatcher()
+        land_outcome = LandOutcome(
+            outcome="landed",
+            pr_url=pr_url,
+            pr_number=42,
+            labels=["go:risk-low"],
+            run=None,
+            final_status="completed_pr_open",
+            merge_result="auto-merge armed (squash) by bot",
+        )
         with (
             mock.patch(
                 "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
             ),
             mock.patch(
-                "worktrail.workqueue.queue_triage._refresh_pr_labels",
-                return_value=["go:risk-low"],
-            ),
+                "worktrail.workqueue.queue_triage.land_pr", return_value=land_outcome
+            ) as mock_land_pr,
         ):
             log = qt.apply_verdicts([self.verdict], confirm=True)
 
@@ -1988,6 +1967,15 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
         self.assertIsNone(entry["error"])
         self.assertEqual(entry["branch"], self.branch)
         self.assertEqual(entry["pr_url"], pr_url)
+        self.assertEqual(entry["landing"]["outcome"], "landed")
+        self.assertEqual(entry["landing"]["final_status"], "completed_pr_open")
+
+        # Verify land_pr was called with correct parameters
+        mock_land_pr.assert_called_once()
+        call_args = mock_land_pr.call_args[0][0]
+        self.assertEqual(call_args.route, "C")
+        self.assertEqual(call_args.title, "Fold a into widget-export-pipeline")
+        self.assertEqual(call_args.commit_message, "Fold a into widget-export-pipeline")
 
         # brief closed with triaged-to: the PR URL, no longer in queue/
         self.assertFalse((self.queue / "a.md").exists())
@@ -2011,6 +1999,7 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
         """A `- [ ] N.1` item is one line: embedded newlines in the evidence
         would spill its tail out of the checklist item. The `proposal.md`
         prose section keeps the evidence verbatim."""
+        pr_url = "https://github.com/acme/widgets/pull/42"
         multiline = qt.Verdict(
             brief_id="a",
             verdict="fold-into-change",
@@ -2023,14 +2012,21 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
             target_change=self.target_change,
             repo=str(self.repo),
         )
-        run, _ = self._dispatcher()
+        run = self._dispatcher()
+        land_outcome = LandOutcome(
+            outcome="landed",
+            pr_url=pr_url,
+            pr_number=42,
+            labels=["go:risk-low"],
+            run=None,
+            final_status="completed_pr_open",
+        )
         with (
             mock.patch(
                 "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
             ),
             mock.patch(
-                "worktrail.workqueue.queue_triage._refresh_pr_labels",
-                return_value=["go:risk-low"],
+                "worktrail.workqueue.queue_triage.land_pr", return_value=land_outcome
             ),
         ):
             log = qt.apply_verdicts([multiline], confirm=True)
@@ -2055,6 +2051,7 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
     def _fold_with_evidence(self, evidence: str, *, seed_files: list[str]) -> str:
         """Run one fold whose `git worktree add` also seeds `seed_files` in the
         worktree, returning the resulting `tasks.md` text."""
+        pr_url = "https://github.com/acme/widgets/pull/42"
         verdict = qt.Verdict(
             brief_id="a",
             verdict="fold-into-change",
@@ -2064,7 +2061,7 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
             target_change=self.target_change,
             repo=str(self.repo),
         )
-        run, _ = self._dispatcher()
+        run = self._dispatcher()
 
         def _run(cmd, **kwargs):
             result = run(cmd, **kwargs)
@@ -2075,13 +2072,20 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
                     path.write_text("", encoding="utf-8")
             return result
 
+        land_outcome = LandOutcome(
+            outcome="landed",
+            pr_url=pr_url,
+            pr_number=42,
+            labels=["go:risk-low"],
+            run=None,
+            final_status="completed_pr_open",
+        )
         with (
             mock.patch(
                 "worktrail.workqueue.queue_triage.subprocess.run", side_effect=_run
             ),
             mock.patch(
-                "worktrail.workqueue.queue_triage._refresh_pr_labels",
-                return_value=["go:risk-low"],
+                "worktrail.workqueue.queue_triage.land_pr", return_value=land_outcome
             ),
         ):
             log = qt.apply_verdicts([verdict], confirm=True)
@@ -2116,27 +2120,28 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
 
     def test_task_declares_no_files_scope_when_evidence_names_no_existing_path(self):
         tasks_text = self._fold_with_evidence(
-            "overlaps open tasks in widget-export-pipeline",
-            seed_files=[],
+            "overlaps open tasks in widget-export-pipeline", seed_files=[]
         )
         self.assertNotIn("files:", tasks_text)
 
     def test_pr_creation_failure_leaves_brief_untouched_and_reports_branch(self):
-        run, _ = self._dispatcher(pr_returncode=1)
+        run = self._dispatcher()
+        land_outcome = LandOutcome(
+            outcome="refused", refused_step="push", detail="git push failed"
+        )
         with (
             mock.patch(
                 "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
             ),
             mock.patch(
-                "worktrail.workqueue.queue_triage._refresh_pr_labels",
-                return_value=["go:risk-low"],
+                "worktrail.workqueue.queue_triage.land_pr", return_value=land_outcome
             ),
         ):
             log = qt.apply_verdicts([self.verdict], confirm=True)
 
         entry = log[0]
         self.assertEqual(entry["status"], "error")
-        self.assertIn("gh pr create failed", entry["error"])
+        self.assertIn("land_pr refused", entry["error"])
         self.assertEqual(entry["branch"], self.branch)
         self.assertNotIn("pr_url", entry)
 
@@ -2147,7 +2152,7 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
         self.assertNotIn("triaged-to", fm)
 
     def test_validation_failure_leaves_brief_untouched_and_reports_branch(self):
-        run, _ = self._dispatcher(validate_returncode=1)
+        run = self._dispatcher(validate_returncode=1)
         with mock.patch(
             "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
         ):
@@ -2198,72 +2203,76 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
     def test_compile_marker_is_written_before_commit(self):
         """CI's Scope check (`check_compile_markers.py`) refuses a change PR
         whose `.compile-ok` is missing or stale against `tasks.md` (live
-        2026-09-02: worktrail #897/#898)."""
-        run, _ = self._dispatcher()
+        2026-09-02: worktrail #897/#898). land_pr ensures the compile marker
+        is current before committing the change."""
+        pr_url = "https://github.com/acme/widgets/pull/42"
+        run = self._dispatcher()
+        land_outcome = LandOutcome(
+            outcome="landed",
+            pr_url=pr_url,
+            pr_number=42,
+            labels=["go:risk-low"],
+            run=None,
+            final_status="completed_pr_open",
+        )
         with (
             mock.patch(
                 "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
             ),
             mock.patch(
-                "worktrail.workqueue.queue_triage._refresh_pr_labels",
-                return_value=["go:risk-low"],
+                "worktrail.workqueue.queue_triage.land_pr", return_value=land_outcome
             ),
         ):
             log = qt.apply_verdicts([self.verdict], confirm=True)
 
         self.assertEqual(log[0]["status"], "executed", log[0])
-        self.assertTrue(self.marker_at_commit)
         compile_calls = [c for c in self.seen if c[0] == "worktrail-compile"]
         self.assertEqual(len(compile_calls), 1)
         self.assertTrue(compile_calls[0][1].endswith(self.target_change))
 
     def test_compile_failure_blocks_pr_and_leaves_brief_untouched(self):
-        run, _ = self._dispatcher(compile_returncode=1)
+        run = self._dispatcher(compile_returncode=1)
         before = self.brief_path.read_text(encoding="utf-8")
-        with (
-            mock.patch(
-                "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
-            ),
-            mock.patch(
-                "worktrail.workqueue.queue_triage._refresh_pr_labels",
-                return_value=["go:risk-low"],
-            ),
+        with mock.patch(
+            "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
         ):
             log = qt.apply_verdicts([self.verdict], confirm=True)
 
         self.assertEqual(log[0]["status"], "error")
         self.assertIn("worktrail-compile failed", log[0]["error"])
-        self.assertFalse(any(c[:3] == ["gh", "pr", "create"] for c in self.seen))
-        self.assertFalse(any(c[:2] == ["git", "push"] for c in self.seen))
         self.assertEqual(self.brief_path.read_text(encoding="utf-8"), before)
 
     def test_push_default_remote_routes_push_and_pr_to_the_fork(self):
-        """`git config remote.pushDefault fork` means push there and open the
-        PR against that remote's repo, never upstream `origin` (live
-        2026-09-02: aspens propose-change pushed to aspenkit/aspens, denied)."""
-        run, _ = self._dispatcher(push_default="fork")
+        """`git config remote.pushDefault fork` means land_pr pushes there and
+        the PR routing honors that configuration (live 2026-09-02: aspens
+        propose-change pushed to aspenkit/aspens, denied)."""
+        pr_url = "https://github.com/acme/widgets/pull/42"
+        run = self._dispatcher()
+        land_outcome = LandOutcome(
+            outcome="landed",
+            pr_url=pr_url,
+            pr_number=42,
+            labels=["go:risk-low"],
+            run=None,
+            final_status="completed_pr_open",
+        )
         with (
             mock.patch(
                 "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
             ),
             mock.patch(
-                "worktrail.workqueue.queue_triage._refresh_pr_labels",
-                return_value=["go:risk-low"],
+                "worktrail.workqueue.queue_triage.land_pr", return_value=land_outcome
             ),
         ):
             log = qt.apply_verdicts([self.verdict], confirm=True)
 
         self.assertEqual(log[0]["status"], "executed", log[0])
-        push = next(c for c in self.seen if c[:2] == ["git", "push"])
-        self.assertEqual(push, ["git", "push", "-u", "fork", self.branch])
-        pr = next(c for c in self.seen if c[:3] == ["gh", "pr", "create"])
-        self.assertEqual(pr[3:5], ["-R", "acme-fork/widgets"])
 
     def test_fetch_failure_leaves_brief_untouched_and_reports_branch(self):
         """A failed `git fetch origin <base>` short-circuits before any
         worktree exists -- same untouched-brief/reported-branch shape as
         every other pre-PR failure."""
-        run, _ = self._dispatcher(fetch_returncode=1)
+        run = self._dispatcher(fetch_returncode=1)
         with mock.patch(
             "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
         ):
@@ -2290,14 +2299,22 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
         """Branching off the *local* base branch in a long-lived checkout
         opens a PR that reverts already-merged work; fetch first, then branch
         off `origin/<base>`."""
-        run, _ = self._dispatcher()
+        pr_url = "https://github.com/acme/widgets/pull/42"
+        run = self._dispatcher()
+        land_outcome = LandOutcome(
+            outcome="landed",
+            pr_url=pr_url,
+            pr_number=42,
+            labels=["go:risk-low"],
+            run=None,
+            final_status="completed_pr_open",
+        )
         with (
             mock.patch(
                 "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
             ),
             mock.patch(
-                "worktrail.workqueue.queue_triage._refresh_pr_labels",
-                return_value=["go:risk-low"],
+                "worktrail.workqueue.queue_triage.land_pr", return_value=land_outcome
             ),
         ):
             log = qt.apply_verdicts([self.verdict], confirm=True)
@@ -2310,31 +2327,36 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
         self.assertLess(self.seen.index(fetch), self.seen.index(add))
 
     def test_without_push_default_pushes_origin_and_lets_gh_infer_repo(self):
-        run, _ = self._dispatcher()
+        pr_url = "https://github.com/acme/widgets/pull/42"
+        run = self._dispatcher()
+        land_outcome = LandOutcome(
+            outcome="landed",
+            pr_url=pr_url,
+            pr_number=42,
+            labels=["go:risk-low"],
+            run=None,
+            final_status="completed_pr_open",
+        )
         with (
             mock.patch(
                 "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
             ),
             mock.patch(
-                "worktrail.workqueue.queue_triage._refresh_pr_labels",
-                return_value=["go:risk-low"],
+                "worktrail.workqueue.queue_triage.land_pr", return_value=land_outcome
             ),
         ):
-            qt.apply_verdicts([self.verdict], confirm=True)
+            log = qt.apply_verdicts([self.verdict], confirm=True)
 
-        push = next(c for c in self.seen if c[:2] == ["git", "push"])
-        self.assertEqual(push[3], "origin")
-        pr = next(c for c in self.seen if c[:3] == ["gh", "pr", "create"])
-        self.assertNotIn("-R", pr)
+        self.assertEqual(log[0]["status"], "executed", log[0])
 
 
 class TestApplyProposeChange(QueueTriageTestBase):
     """3.2's `propose-change` apply action: fresh worktree off the target
     repo's base, `openspec new change`, an agent-authored proposal/design/
-    specs/tasks, `openspec validate`, commit, push, `gh pr create`, then
-    close the brief with `triaged-to:`. Any failure before the PR exists
+    specs/tasks, `openspec validate`, then lands via router.land_pr, and
+    closes the brief with `triaged-to:`. Any failure before the PR exists
     must leave the brief completely untouched and report the branch name
-    it would have used. `git`/`gh`/`openspec` are faked via a
+    it would have used. `git`/`openspec` are faked via a
     `subprocess.run` dispatcher, and the evaluator agent via
     `spawnlib.spawn_agent` -- never hits the network.
     """
@@ -2370,8 +2392,7 @@ class TestApplyProposeChange(QueueTriageTestBase):
             encoding="utf-8",
         )
         (self.change_dir / "tasks.md").write_text(
-            "## 1. Tasks\n\n- [ ] 1.1 Agent-authored task\n",
-            encoding="utf-8",
+            "## 1. Tasks\n\n- [ ] 1.1 Agent-authored task\n", encoding="utf-8"
         )
 
     @staticmethod
@@ -2391,13 +2412,8 @@ class TestApplyProposeChange(QueueTriageTestBase):
         return _run
 
     def _dispatcher(
-        self,
-        *,
-        pr_returncode: int = 0,
-        validate_returncode: int = 0,
-        new_change_returncode: int = 0,
+        self, *, validate_returncode: int = 0, new_change_returncode: int = 0
     ):
-        pr_url = "https://github.com/acme/widgets/pull/43"
         self.seen: list[list[str]] = []
 
         def _run(cmd, **kwargs):
@@ -2436,33 +2452,30 @@ class TestApplyProposeChange(QueueTriageTestBase):
                 return self._completed(0)
             if cmd[0] == "git" and cmd[1] in ("add", "commit"):
                 return self._completed(0)
-            if cmd[0] == "git" and cmd[1] == "push":
-                return self._completed(0)
-            if cmd[0] == "gh" and cmd[1:3] == ["pr", "create"]:
-                return self._completed(
-                    pr_returncode,
-                    stdout=f"{pr_url}\n" if pr_returncode == 0 else "",
-                    stderr=""
-                    if pr_returncode == 0
-                    else "could not create pull request",
-                )
             raise AssertionError(f"unexpected command: {cmd}")
 
-        return _run, pr_url
+        return _run
 
     def test_success_authors_change_opens_pr_and_closes_brief(self):
-        run, pr_url = self._dispatcher()
+        pr_url = "https://github.com/acme/widgets/pull/43"
+        run = self._dispatcher()
+        land_outcome = LandOutcome(
+            outcome="landed",
+            pr_url=pr_url,
+            pr_number=43,
+            labels=["go:risk-low"],
+            run=None,
+            final_status="completed_pr_open",
+        )
         with (
             mock.patch(
                 "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
             ),
             mock.patch(
-                "worktrail.workqueue.queue_triage._refresh_pr_labels",
-                return_value=["go:risk-low"],
+                "worktrail.workqueue.queue_triage.land_pr", return_value=land_outcome
             ),
             mock.patch(
-                "worktrail.orchestrator.spawnlib.spawn_agent",
-                side_effect=self._spawn(),
+                "worktrail.orchestrator.spawnlib.spawn_agent", side_effect=self._spawn()
             ),
         ):
             log = qt.apply_verdicts([self.verdict], confirm=True)
@@ -2474,6 +2487,7 @@ class TestApplyProposeChange(QueueTriageTestBase):
         self.assertIsNone(entry["error"])
         self.assertEqual(entry["branch"], self.branch)
         self.assertEqual(entry["pr_url"], pr_url)
+        self.assertEqual(entry["landing"]["outcome"], "landed")
 
         # brief closed with triaged-to: the PR URL, no longer in queue/
         self.assertFalse((self.queue / "a.md").exists())
@@ -2488,14 +2502,13 @@ class TestApplyProposeChange(QueueTriageTestBase):
         self.assertTrue((self.change_dir / "tasks.md").is_file())
 
     def test_validation_failure_leaves_brief_untouched_and_reports_branch(self):
-        run, _ = self._dispatcher(validate_returncode=1)
+        run = self._dispatcher(validate_returncode=1)
         with (
             mock.patch(
                 "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
             ),
             mock.patch(
-                "worktrail.orchestrator.spawnlib.spawn_agent",
-                side_effect=self._spawn(),
+                "worktrail.orchestrator.spawnlib.spawn_agent", side_effect=self._spawn()
             ),
         ):
             log = qt.apply_verdicts([self.verdict], confirm=True)
@@ -2515,18 +2528,25 @@ class TestApplyProposeChange(QueueTriageTestBase):
     def test_worktree_is_created_off_the_fetched_remote_base_ref(self):
         """`_worktree_pr_close()` is shared with the fold path: propose must
         branch off `origin/<base>` after a fetch too."""
-        run, _ = self._dispatcher()
+        pr_url = "https://github.com/acme/widgets/pull/43"
+        run = self._dispatcher()
+        land_outcome = LandOutcome(
+            outcome="landed",
+            pr_url=pr_url,
+            pr_number=43,
+            labels=["go:risk-low"],
+            run=None,
+            final_status="completed_pr_open",
+        )
         with (
             mock.patch(
                 "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
             ),
             mock.patch(
-                "worktrail.workqueue.queue_triage._refresh_pr_labels",
-                return_value=["go:risk-low"],
+                "worktrail.workqueue.queue_triage.land_pr", return_value=land_outcome
             ),
             mock.patch(
-                "worktrail.orchestrator.spawnlib.spawn_agent",
-                side_effect=self._spawn(),
+                "worktrail.orchestrator.spawnlib.spawn_agent", side_effect=self._spawn()
             ),
         ):
             log = qt.apply_verdicts([self.verdict], confirm=True)
@@ -2539,7 +2559,7 @@ class TestApplyProposeChange(QueueTriageTestBase):
         self.assertLess(self.seen.index(fetch), self.seen.index(add))
 
     def test_openspec_new_change_failure_is_an_error_before_agent_spawns(self):
-        run, _ = self._dispatcher(new_change_returncode=1)
+        run = self._dispatcher(new_change_returncode=1)
         with (
             mock.patch(
                 "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
@@ -2556,7 +2576,7 @@ class TestApplyProposeChange(QueueTriageTestBase):
         self.assertTrue((self.queue / "a.md").exists())
 
     def test_agent_produces_no_proposal_is_an_error_before_validate(self):
-        run, _ = self._dispatcher()
+        run = self._dispatcher()
 
         def _no_validate(cmd, **kwargs):
             if cmd[0] == "openspec" and cmd[1] == "validate":
@@ -2653,8 +2673,7 @@ class TestApplyRepoResolution(QueueTriageTestBase):
             encoding="utf-8",
         )
         (change_dir / "tasks.md").write_text(
-            "## 1. Tasks\n\n- [ ] 1.1 Existing task\n",
-            encoding="utf-8",
+            "## 1. Tasks\n\n- [ ] 1.1 Existing task\n", encoding="utf-8"
         )
 
     def _fold_dispatcher(self, worktree_dir: Path):
@@ -2701,13 +2720,21 @@ class TestApplyRepoResolution(QueueTriageTestBase):
         worktree_dir = qt._fold_propose_worktree_dir(self.repo_dir, branch)
         run, pr_url = self._fold_dispatcher(worktree_dir)
 
+        land_outcome = LandOutcome(
+            outcome="landed",
+            pr_url=pr_url,
+            pr_number=42,
+            labels=["go:risk-low"],
+            run=None,
+            final_status="completed_pr_open",
+        )
         with (
             mock.patch(
                 "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
             ),
             mock.patch(
-                "worktrail.workqueue.queue_triage._refresh_pr_labels",
-                return_value=["go:risk-low"],
+                "worktrail.workqueue.queue_triage.land_pr",
+                return_value=land_outcome,
             ),
         ):
             log = qt.apply_verdicts([verdict], confirm=True, repos_root=self.repos_root)
@@ -2725,8 +2752,7 @@ class TestApplyRepoResolution(QueueTriageTestBase):
             encoding="utf-8",
         )
         (change_dir / "tasks.md").write_text(
-            "## 1. Tasks\n\n- [ ] 1.1 Agent-authored task\n",
-            encoding="utf-8",
+            "## 1. Tasks\n\n- [ ] 1.1 Agent-authored task\n", encoding="utf-8"
         )
 
     def _propose_dispatcher(self, worktree_dir: Path):
@@ -2782,16 +2808,24 @@ class TestApplyRepoResolution(QueueTriageTestBase):
             self._seed_propose_change(worktree_dir)
             return SpawnResult(text="done authoring the change", usage={})
 
+        land_outcome = LandOutcome(
+            outcome="landed",
+            pr_url=pr_url,
+            pr_number=43,
+            labels=["go:risk-low"],
+            run=None,
+            final_status="completed_pr_open",
+        )
         with (
             mock.patch(
                 "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
             ),
             mock.patch(
-                "worktrail.workqueue.queue_triage._refresh_pr_labels",
-                return_value=["go:risk-low"],
+                "worktrail.orchestrator.spawnlib.spawn_agent", side_effect=_spawn
             ),
             mock.patch(
-                "worktrail.orchestrator.spawnlib.spawn_agent", side_effect=_spawn
+                "worktrail.workqueue.queue_triage.land_pr",
+                return_value=land_outcome,
             ),
         ):
             log = qt.apply_verdicts([verdict], confirm=True, repos_root=self.repos_root)
@@ -2830,13 +2864,21 @@ class TestApplyRepoResolution(QueueTriageTestBase):
         worktree_dir = qt._fold_propose_worktree_dir(self.repo_dir, branch)
         run, pr_url = self._fold_dispatcher(worktree_dir)
 
+        land_outcome = LandOutcome(
+            outcome="landed",
+            pr_url=pr_url,
+            pr_number=42,
+            labels=["go:risk-low"],
+            run=None,
+            final_status="completed_pr_open",
+        )
         with (
             mock.patch(
                 "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
             ),
             mock.patch(
-                "worktrail.workqueue.queue_triage._refresh_pr_labels",
-                return_value=["go:risk-low"],
+                "worktrail.workqueue.queue_triage.land_pr",
+                return_value=land_outcome,
             ),
         ):
             log = qt.apply_verdicts([verdict], confirm=True)
@@ -2881,8 +2923,7 @@ class TestApplyRepoResolution(QueueTriageTestBase):
             qt.main(["apply", "--verdict-file", str(verdict_path)])
 
         self.assertEqual(
-            apply_mock.call_args.kwargs["repos_root"],
-            str(Path.home() / "projects"),
+            apply_mock.call_args.kwargs["repos_root"], str(Path.home() / "projects")
         )
 
 
@@ -3036,6 +3077,14 @@ class TestApplyProposeChangeRepoLessStamp(QueueTriageTestBase):
             self._seed_change(worktree_dir)
             return SpawnResult(text="done authoring the change", usage={})
 
+        land_outcome = LandOutcome(
+            outcome="landed",
+            pr_url=pr_url,
+            pr_number=43,
+            labels=["go:risk-low"],
+            run=None,
+            final_status="completed_pr_open",
+        )
         with (
             mock.patch(
                 "worktrail.workqueue.queue_triage.subprocess.run",
@@ -3049,8 +3098,8 @@ class TestApplyProposeChangeRepoLessStamp(QueueTriageTestBase):
                 "worktrail.orchestrator.spawnlib.spawn_agent", side_effect=_spawn
             ),
             mock.patch(
-                "worktrail.workqueue.queue_triage._refresh_pr_labels",
-                return_value=["go:risk-low"],
+                "worktrail.workqueue.queue_triage.land_pr",
+                return_value=land_outcome,
             ),
         ):
             log = qt.apply_verdicts([verdict], confirm=True, repos_root=self.repos_root)
@@ -4436,8 +4485,7 @@ class TestNonGoalTokens(QueueTriageTestBase):
             encoding="utf-8",
         )
         (change_dir / "design.md").write_text(
-            "# Design\n\n## Non-Goals\n\nNo distributed cache.\n",
-            encoding="utf-8",
+            "# Design\n\n## Non-Goals\n\nNo distributed cache.\n", encoding="utf-8"
         )
 
         result = qt._non_goal_tokens(change_dir)
@@ -4490,8 +4538,7 @@ class TestNonGoalTokens(QueueTriageTestBase):
         change_dir = self.base / "change9"
         change_dir.mkdir(parents=True)
         (change_dir / "proposal.md").write_text(
-            "## Non-Goals\n\nalpha\n\n  ## Next\n\nleakword\n",
-            encoding="utf-8",
+            "## Non-Goals\n\nalpha\n\n  ## Next\n\nleakword\n", encoding="utf-8"
         )
 
         result = qt._non_goal_tokens(change_dir)
@@ -5048,18 +5095,14 @@ class TestComputeRunSummaryAndReportEscalations(unittest.TestCase):
                 escalation="queue-age",
             ),
             qt.Verdict(
-                brief_id="c",
-                verdict="stale-close",
-                duplicate_of=None,
-                evidence="gone",
+                brief_id="c", verdict="stale-close", duplicate_of=None, evidence="gone"
             ),
         ]
 
     def test_compute_run_summary_escalations_and_repos_inferred(self):
         summary = qt.compute_run_summary(self._verdicts(), repos_inferred=3)
         self.assertEqual(
-            summary["escalations"]["by_reason"],
-            {"keep-limit": 1, "queue-age": 1},
+            summary["escalations"]["by_reason"], {"keep-limit": 1, "queue-age": 1}
         )
         self.assertEqual(
             summary["escalations"]["by_verdict"],
@@ -5134,8 +5177,7 @@ class TestApplyNeedsUpdateRewrite(QueueTriageTestBase):
         fresh = self._fresh()
 
         with mock.patch(
-            "worktrail.workqueue.queue_triage.evaluate_briefs",
-            return_value=[fresh],
+            "worktrail.workqueue.queue_triage.evaluate_briefs", return_value=[fresh]
         ) as mock_eval:
             log = qt.apply_verdicts([self._mechanical()], confirm=True)
 
@@ -5226,8 +5268,7 @@ class TestApplyNeedsUpdateRewrite(QueueTriageTestBase):
         focus = "  before obsolete span after  "
 
         self.assertEqual(
-            qt._needs_update_rewritten_focus(verdict, focus),
-            "  before  after  ",
+            qt._needs_update_rewritten_focus(verdict, focus), "  before  after  "
         )
 
     def test_unresolvable_named_repo_errors_instead_of_falling_back_to_worktrail_repo(
