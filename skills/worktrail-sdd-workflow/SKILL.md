@@ -184,103 +184,36 @@ purpose:` or `user approved:` (any other reason is rejected at write time). A
 judges only the latest entry per `--item`, so re-record an item to supersede an
 earlier `blocked` or mis-phrased entry.
 
-**Mandatory pre-PR test gate — every PR-producing route, every repo, one-off
-claude/codex workers included.** Before `gh pr create` (or updating an existing
-PR's head), run the gate from the worktree root and require exit 0:
+**Commit, compile, gate, push, open PR, watch CI.** Run the shared landing
+pipeline from the worktree root; it atomically handles commit, compile-marker
+verification, pre-PR gate, push, PR open/update, CI watch to a terminal
+outcome, and run-record finish. Requires `--repo`, `--base`, `--title`,
+`--summary` or `--summary-file`, `--route`, `--risk`, optional `--gates` and
+`--commit-message`, and `--json`:
 
 ```bash
-worktrail-preflight run --repo "$PWD" --run "$RUN" --risk "$RISK_LEVEL" --gates "$GATES" --target-branch "$BASE" --route "$ROUTE"
+worktrail-land-pr --repo "$PWD" --base "$BASE" --run "$RUN" --title "$TITLE" \
+  --summary-file /path/to/pr/body --route "$ROUTE" --risk "$RISK_LEVEL" \
+  --gates "$GATES" --json
 ```
 
-Run this **after commit, as the last step before `git push`/`gh pr create`** —
-not as an earlier sanity check on uncommitted work. The pass marker it records
-is keyed to the exact tree state (`tree_state()`), so a run against an
-uncommitted change can never satisfy the push-time `check()` gate the very
-next commit invalidates it. `run` itself refuses immediately on a dirty tree
-(`DIRTY_TREE_EXIT`) rather than spending the full gate's runtime on a result
-that's guaranteed to be discarded — but relying on that refusal still means an
-avoidable wasted run; sequence the commit first instead.
+| Exit code | Outcome | State |
+|---|---|---|
+| 0 | `landed` | PR merged or auto-merge armed; run record finished. |
+| 2 | `refused` | Rejected before push (dirty tree, compile gaps, preflight fail); remote untouched, re-run with fixes. |
+| 3 | `code_defect` | PR open, CI failed, run record open for repair. |
+| 3 | `review_threads_blocking` | PR open, review threads unresolved, run record open for gate action. |
+| 4 | `ceiling` | Push succeeded but PR create failed, or 5 code-defect iterations exhausted. |
 
-`worktrail-preflight run` executes `pre_pr_gate.py` in-process (identical
-checks and exit codes to calling `worktrail-pre-pr-gate` directly — it is a
-strict superset, not an alternate path) and, on a zero exit, additionally
-records a pass marker for the exact current tree **plus** the `go:risk-*`/
-`go:no-automerge` labels this risk/gates combination requires. That marker is
-what the machine-level `gh pr create` PreToolUse hook (delegating to
-`worktrail-preflight check`) reads: a `gh pr create` invocation whose
-`--label` flags don't match the recorded labels is denied at the tool-call
-level, independent of whether this SKILL.md section ran correctly. Do not
-call `worktrail-pre-pr-gate` directly for this step — it performs the same
-checks but never records the marker, so the label enforcement below silently
-never engages.
+**On `code_defect` outcome:** Repair the failing check per
+`../worktrail-go/references/ci-watch-loop.md` case 3 (diagnose root cause,
+apply minimal patch, disarm auto-merge, push), then re-run the same
+`worktrail-land-pr` command.
 
-The gate resolves `pre_pr_cmd` (fallback: `integrate_smoke_cmd`) from the
-target repo's `docs/specs/worktrail-go-policy.yaml` and runs it, streaming output. Rules:
-
-- Non-zero exit → do **NOT** open the PR. Fix the failures and re-run, or
-  finish with a failure state quoting the gate output. Never bypass silently.
-- Unconfigured repo → the gate fails by design (exit 2) with instructions;
-  add `pre_pr_cmd` to the repo policy, or `pre_pr_cmd: skip` to opt out
-  explicitly and record the skip in the PR body.
-- Paste the gate's summary line (command + PASS, or the explicit skip) into
-  the PR template's "Pre-PR Test Gate" section as evidence.
-- The parallel-orchestrator group path already enforces its own gate via
-  `--smoke-cmd`; group PRs opened by the orchestrator satisfy this
-  requirement without a second run. Self-chosen "tests for the files I
-  touched" runs do NOT satisfy it. Group PR labels are refreshed immediately
-  before each new PR creation: `integrate.py` calls `pre_pr_gate.py
-  --labels-only` per-group (via `_refresh_pr_labels()`), so every fresh PR
-  reflects the current policy and required-check state without the
-  orchestrator recalculating policy internally. Recycled/open PRs keep their
-  original labels.
-
-**Automerge labels (code-enforced at two points, not agent-narrated).** On a
-PASS, the gate above also prints an `AUTOMERGE LABELS:` line —
-`go:risk-<level>` always, plus `go:no-automerge` when
-`policy.automerge_eligible()` is false. Pass those exact labels to
-`gh pr create --label <label> [--label <label>]`; they must already exist in
-the target repo (bootstrapped once via `gh label create`, not per-PR). Two
-independent enforcement points now back this, so a skipped or wrong copy of
-the labels doesn't silently reach GitHub: (1) locally, the `gh pr create`
-PreToolUse hook denies the tool call itself when the labels it carries don't
-match the marker `worktrail-preflight run` just recorded; (2) on GitHub, a
-repo's own auto-merge automation (e.g. `.github/workflows/auto-merge.yml`)
-reads `go:no-automerge` to skip/undo arming, covering PRs created outside
-this hook's reach (e.g. a headless worker on a machine without it wired up).
-
-For every PR produced:
-
-1. PR body uses the template in routes.md (route, spec lineage, AC→evidence
-   map, pre-PR gate evidence, risk, rollback, auto-merge recommendation).
-2. Deterministic eligibility = `policy.automerge` × classifier `gates` × risk
-   (see `policy.py automerge_eligible`), now also encoded as the PR's
-   `go:risk-*`/`go:no-automerge` labels above; live conditions = required
-   checks green, no unresolved threads (code-enforced by the CI watch loop's
-   review-thread gate below, not agent-narrated), no conflicts, approvals
-   satisfied.
-3. Ineligible → deliver the PR and state the exact remaining approval needed.
-4. **Do not call `run_record.py finish` on a `completed_pr_open` /
-   `completed_and_merged` / `completed_awaiting_human_approval` status until
-   `../worktrail-go/references/ci-watch-loop.md`'s case-1 review-thread gate
-   (`worktrail-check-review-threads`) reports `blocking: false` (or
-   `checked: false`, i.e. no signal).** A check going green only proves
-   check pass/fail, never that reviewer findings were resolved -- datalena
-   PR #2133 accumulated 9 unresolved `security-review-llm` threads across 4
-   rounds of already-addressed findings before a human noticed and
-   replied+resolved each one by hand. Record `merge_decision` +
-   `merge_result`, then `run_record.py finish --status <state> --pr <url>`.
-   **The `go:risk-*` label correction is code-enforced inside `finish` itself**
-   (`router/pr_labels.py`'s `ensure_pr_risk_label`, called unconditionally
-   whenever the run record carries a `pull_request`, keyed off its own
-   `repository`/`risk_level` fields) -- there is no longer a separate
-   `worktrail-ensure-pr-label` step to remember here or on any other
-   PR-producing route. The standalone `worktrail-ensure-pr-label` CLI still
-   exists for the dispatch surfaces that observe run-record completion from
-   *outside* this process and never call `finish` themselves -- go's own
-   Phase 7 `poll_run.py` poll-exit path and `drain.py`'s queue-drain loop, for
-   headless Claude/OpenCode workers whose `finish` call happens in a spawned
-   subprocess this session doesn't control. Then report the completion state +
-   PR link + deferred handoffs as the final line.
+**On `review_threads_blocking` outcome:** Review and act on the unresolved
+review threads per `../worktrail-go/references/ci-watch-loop.md` review-thread
+gate (fix in code, push + re-run the gate, or record an explicit decision),
+then re-run the same `worktrail-land-pr` command.
 
 Only routes with non-PR completion states (for example
 `planned_ready_for_implementation` or `investigation_complete`) may stop

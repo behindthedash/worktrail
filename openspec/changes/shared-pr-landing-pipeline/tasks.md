@@ -137,7 +137,7 @@
 
 ## 6. Prose: sdd-workflow Phase 8
 
-- [ ] 6.1 In `skills/worktrail-sdd-workflow/SKILL.md` Phase 8, keep the
+- [x] 6.1 In `skills/worktrail-sdd-workflow/SKILL.md` Phase 8, keep the
       scope-completeness gate paragraph; replace the "Mandatory pre-PR test gate",
       "Automerge labels", and "For every PR produced" 1–4 sections with one
       `worktrail-land-pr` command block (flags per design.md D8), its exit-code table,
@@ -177,7 +177,7 @@
 
 ## 9. Prose: sync-PR subagent step
 
-- [ ] 9.1 In `skills/worktrail-go/references/subagent-prompts.md`'s sync step, replace the
+- [x] 9.1 In `skills/worktrail-go/references/subagent-prompts.md`'s sync step, replace the
       `worktrail-pre-pr-gate --labels-only` + `gh pr create` block and Step 4b's `gh pr
       checks --watch` / `gh pr merge` with `worktrail-land-pr --repo "$SYNC_WT" --base
       "$BASE" --run "$RUN" --route E --risk low --checkpoint …`; keep the
