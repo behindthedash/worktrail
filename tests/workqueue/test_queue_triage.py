@@ -1895,6 +1895,8 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
                     return self._completed(
                         0, stdout="git@github.com:acme-fork/widgets.git\n"
                     )
+                if "rev-list" in cmd:
+                    return self._completed(0, stdout=f"{getattr(self, 'ahead', 0)}\n")
                 if "fetch" in cmd:
                     return self._completed(
                         fetch_returncode,
@@ -2178,6 +2180,8 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
             if cmd[0] == "git" and "-C" in cmd:
                 if "symbolic-ref" in cmd:
                     return self._completed(0, stdout="origin/main\n")
+                if "rev-list" in cmd:
+                    return self._completed(0, stdout=f"{getattr(self, 'ahead', 0)}\n")
                 if "fetch" in cmd:
                     return self._completed(0)
                 if "worktree" in cmd and "add" in cmd:
@@ -2300,6 +2304,70 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
         self.assertEqual(add[-1], "origin/main")
         self.assertLess(self.seen.index(fetch), self.seen.index(add))
 
+    def test_unpushed_local_base_fails_closed_before_worktree_add(self):
+        """Live 2026-09-03: the fold target was committed on local `main` but
+        never pushed, so the worktree branched off `origin/main` lacked files
+        present at local HEAD. Fail closed with the unpushed count instead of
+        editing a stale tree; brief untouched, no worktree created."""
+        self.ahead = 2
+        run = self._dispatcher()
+        before = self.brief_path.read_text(encoding="utf-8")
+        with mock.patch(
+            "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+        ):
+            log = qt.apply_verdicts([self.verdict], confirm=True)
+
+        entry = log[0]
+        self.assertEqual(entry["status"], "error", entry)
+        self.assertIn("local main is 2 commit(s) ahead of origin/main", entry["error"])
+        self.assertIn("push main first", entry["error"])
+        self.assertEqual(entry["branch"], self.branch)
+        self.assertNotIn("pr_url", entry)
+
+        fetch = next(c for c in self.seen if "fetch" in c)
+        rev_list = next(c for c in self.seen if "rev-list" in c)
+        self.assertEqual(rev_list[3:], ["rev-list", "--count", "origin/main..main"])
+        self.assertLess(self.seen.index(fetch), self.seen.index(rev_list))
+        self.assertFalse(any("worktree" in c and "add" in c for c in self.seen))
+        self.assertFalse(self.worktree_dir.exists())
+        self.assertEqual(self.brief_path.read_text(encoding="utf-8"), before)
+        self.assertTrue((self.queue / "a.md").exists())
+
+    def test_missing_local_base_branch_is_not_treated_as_unpushed(self):
+        """`git rev-list` failing (no local base branch to compare) must not
+        block the fold -- there is nothing local to be ahead of the remote."""
+        pr_url = "https://github.com/acme/widgets/pull/42"
+        run = self._dispatcher()
+        land_outcome = LandOutcome(
+            outcome="landed",
+            pr_url=pr_url,
+            pr_number=42,
+            labels=["go:risk-low"],
+            run=None,
+            final_status="completed_pr_open",
+        )
+
+        def _run(cmd, **kwargs):
+            if "rev-list" in cmd:
+                self.seen.append(list(cmd))
+                return self._completed(
+                    128, stderr="fatal: bad revision 'origin/main..main'"
+                )
+            return run(cmd, **kwargs)
+
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run", side_effect=_run
+            ),
+            mock.patch(
+                "worktrail.workqueue.queue_triage.land_pr", return_value=land_outcome
+            ),
+        ):
+            log = qt.apply_verdicts([self.verdict], confirm=True)
+
+        self.assertEqual(log[0]["status"], "executed", log[0])
+        self.assertTrue(any("worktree" in c and "add" in c for c in self.seen))
+
     def test_code_defect_closes_brief_and_leaves_worktree_on_disk(self):
         pr_url = "https://github.com/acme/widgets/pull/42"
         run = self._dispatcher()
@@ -2416,6 +2484,8 @@ class TestApplyProposeChange(QueueTriageTestBase):
                     return self._completed(0, stdout="origin/main\n")
                 if "config" in cmd and "remote.pushDefault" in cmd:
                     return self._completed(1)
+                if "rev-list" in cmd:
+                    return self._completed(0, stdout=f"{getattr(self, 'ahead', 0)}\n")
                 if "fetch" in cmd:
                     return self._completed(0)
                 if "worktree" in cmd and "add" in cmd:
@@ -2691,6 +2761,8 @@ class TestApplyRepoResolution(QueueTriageTestBase):
                     return self._completed(
                         0, stdout="git@github.com:acme-fork/widgets.git\n"
                     )
+                if "rev-list" in cmd:
+                    return self._completed(0, stdout=f"{getattr(self, 'ahead', 0)}\n")
                 if "fetch" in cmd:
                     return self._completed(0)
                 if "worktree" in cmd and "add" in cmd:
@@ -2766,6 +2838,8 @@ class TestApplyRepoResolution(QueueTriageTestBase):
                     return self._completed(
                         0, stdout="git@github.com:acme-fork/widgets.git\n"
                     )
+                if "rev-list" in cmd:
+                    return self._completed(0, stdout=f"{getattr(self, 'ahead', 0)}\n")
                 if "fetch" in cmd:
                     return self._completed(0)
                 if "worktree" in cmd and "add" in cmd:
@@ -2974,6 +3048,8 @@ class TestApplyProposeChangeRepoLessStamp(QueueTriageTestBase):
                     return self._completed(0, stdout="origin/main\n")
                 if "config" in cmd and "remote.pushDefault" in cmd:
                     return self._completed(1)
+                if "rev-list" in cmd:
+                    return self._completed(0, stdout=f"{getattr(self, 'ahead', 0)}\n")
                 if "fetch" in cmd:
                     return self._completed(0)
                 if "worktree" in cmd and "add" in cmd:

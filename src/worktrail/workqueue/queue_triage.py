@@ -2379,6 +2379,45 @@ def _push_target(repo_path: Path) -> tuple[str, str | None]:
     return remote, slug
 
 
+def _unpushed_base_error(repo_path: Path, base_branch: str) -> str | None:
+    """Error string when the local `base_branch` is ahead of the just-fetched
+    `origin/<base_branch>`, else `None`.
+
+    The worktree is branched off the remote ref, so any commit that exists
+    only locally -- typically the very change a fold targets -- would be
+    absent from it and the PR would edit a stale tree. A missing local
+    `base_branch` (bare clone, detached checkout) is not an error: there is
+    nothing local to be ahead.
+    """
+    counted = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo_path),
+            "rev-list",
+            "--count",
+            f"origin/{base_branch}..{base_branch}",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if counted.returncode != 0:
+        return None
+    try:
+        ahead = int(counted.stdout.strip() or "0")
+    except ValueError:
+        return None
+    if ahead == 0:
+        return None
+    return (
+        f"local {base_branch} is {ahead} commit(s) ahead of origin/{base_branch}; "
+        f"the triage worktree is created from origin/{base_branch}, so push "
+        f"{base_branch} first (or the PR would miss the target change)"
+    )
+
+
 def _worktree_pr_close(
     v: Verdict,
     *,
@@ -2398,7 +2437,12 @@ def _worktree_pr_close(
     fresh worktree on `branch` off *that* remote ref -- the local
     `base_branch` in a long-lived checkout is routinely behind the remote, and
     branching off it opens a PR carrying unrelated regressions of already-
-    merged work -- then calls `prepare(worktree_dir)` to let the caller author the
+    merged work. The converse also fails closed: if the local `base_branch`
+    carries commits that `origin/<base_branch>` does not (live 2026-09-03: a
+    fold target committed locally but never pushed, so the worktree lacked
+    files present at local HEAD), this returns `status="error"` naming the
+    unpushed count rather than branching off a remote ref that predates the
+    target change -- then calls `prepare(worktree_dir)` to let the caller author the
     change in place (returning an error string on failure, `None` on
     success), runs `openspec validate <validate_target> --strict`, and runs
     `worktrail-compile` on the change so its `.compile-ok` marker matches the
@@ -2439,6 +2483,16 @@ def _worktree_pr_close(
                 f"git fetch origin {base_branch} failed: "
                 f"{(fetch.stderr or fetch.stdout).strip()}"
             ),
+            "branch": branch,
+        }
+
+    unpushed_error = _unpushed_base_error(repo_path, base_branch)
+    if unpushed_error:
+        return {
+            **result,
+            "status": "error",
+            "path": None,
+            "error": unpushed_error,
             "branch": branch,
         }
 
