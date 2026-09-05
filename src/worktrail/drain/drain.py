@@ -123,6 +123,7 @@ from typing import Any
 
 from ..orchestrator import agent_capacity
 from ..router import branch_selfcheck, dashboard, quarantine_selfcheck
+from ..router.close_stale_openspec import flip_and_archive
 from ..router.land_pr import LandRequest, land_pr
 from ..router.policy import (
     OperatorConfigError,
@@ -864,6 +865,7 @@ def find_stale_bookkeeping_specs(
                     "spec_id": spec_id,
                     "spec_rel": spec_rel,
                     "stale_task_ids": stale_task_ids,
+                    "format": row.get("format") or "devkit",
                 }
             )
     return found
@@ -1441,14 +1443,20 @@ def close_stale_bookkeeping(
     `git commit` "nothing to commit" `RuntimeError` on every sweep."""
     repo, repo_name, spec_id = finding["repo"], finding["repo_name"], finding["spec_id"]
     task_ids = finding["stale_task_ids"]
-    task_paths = [
-        _resolve_stale_task_path(repo, spec_id, task_id) for task_id in task_ids
-    ]
-    missing = [task_id for task_id, path in zip(task_ids, task_paths) if path is None]
-    if missing:
-        raise RuntimeError(
-            f"no TASK-*.md found for {repo_name} {spec_id}: {', '.join(missing)}"
-        )
+    spec_format = finding.get("format", "devkit")
+    task_paths: list[Path | None] = []
+    if spec_format != "openspec":
+        # devkit only: OpenSpec has no per-task TASK-*.md to resolve.
+        task_paths = [
+            _resolve_stale_task_path(repo, spec_id, task_id) for task_id in task_ids
+        ]
+        missing = [
+            task_id for task_id, path in zip(task_ids, task_paths) if path is None
+        ]
+        if missing:
+            raise RuntimeError(
+                f"no TASK-*.md found for {repo_name} {spec_id}: {', '.join(missing)}"
+            )
 
     base = _base_branch_for(repo)
     slug = f"close-stale-{spec_id}"
@@ -1472,20 +1480,51 @@ def close_stale_bookkeeping(
     log(f"close-stale-bookkeeping: {repo_name} {spec_id} -> {', '.join(task_ids)}")
     _run_git(repo, "worktree", "add", "-b", branch, str(wt), base, timeout=timeout)
     try:
-        changed_rel = [str(path.relative_to(repo)) for path in task_paths]
-        changed = [set_status_completed(wt / rel) for rel in changed_rel]
-        if not any(changed):
-            log(
-                f"close-stale-bookkeeping: {repo_name} {spec_id} tasks already "
-                f"completed on {base}, nothing to flip"
+        if spec_format == "openspec":
+            result = flip_and_archive(wt, spec_id, task_ids, timeout=timeout)
+            if result["error"]:
+                raise RuntimeError(
+                    f"close-stale-bookkeeping: {repo_name} {spec_id}: {result['error']}"
+                )
+            if not result["flipped"] and not result["archived"]:
+                log(
+                    f"close-stale-bookkeeping: {repo_name} {spec_id} tasks already "
+                    f"checked on {base}, nothing to flip"
+                )
+                return {
+                    "repo": repo_name,
+                    "spec_id": spec_id,
+                    "task_ids": task_ids,
+                    "pr_url": None,
+                }
+            _run_git(wt, "add", "-A", timeout=timeout)
+            body = (
+                f"Flips stale task(s) {', '.join(task_ids)} to `[x]` in `{spec_id}`'s "
+                f"`tasks.md` and archives the change via `openspec archive` -- their "
+                f"work is already merged on `{base}`; no code change.\n\n"
+                "Opened by drain's stale-bookkeeping sweep."
             )
-            return {
-                "repo": repo_name,
-                "spec_id": spec_id,
-                "task_ids": task_ids,
-                "pr_url": None,
-            }
-        _run_git(wt, "add", *changed_rel, timeout=timeout)
+        else:
+            changed_rel = [str(path.relative_to(repo)) for path in task_paths]
+            changed = [set_status_completed(wt / rel) for rel in changed_rel]
+            if not any(changed):
+                log(
+                    f"close-stale-bookkeeping: {repo_name} {spec_id} tasks already "
+                    f"completed on {base}, nothing to flip"
+                )
+                return {
+                    "repo": repo_name,
+                    "spec_id": spec_id,
+                    "task_ids": task_ids,
+                    "pr_url": None,
+                }
+            _run_git(wt, "add", *changed_rel, timeout=timeout)
+            body = (
+                f"Flips `status:` to `completed` for already-shipped task(s) "
+                f"{', '.join(task_ids)} in `{spec_id}` -- their `files:` are already "
+                f"merged on `{base}`; no code change.\n\n"
+                "Opened by drain's stale-bookkeeping sweep."
+            )
         _run_git(
             wt,
             "commit",
@@ -1507,7 +1546,7 @@ def close_stale_bookkeeping(
             spec_id,
             base,
             f"chore({spec_id}): close stale bookkeeping",
-            f"Flips `status:` to `completed` for already-shipped task(s) {', '.join(task_ids)} in `{spec_id}` -- their `files:` are already merged on `{base}`; no code change.\n\nOpened by drain's stale-bookkeeping sweep.",
+            body,
             timeout,
         )
     finally:
