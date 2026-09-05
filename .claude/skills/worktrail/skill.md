@@ -33,6 +33,9 @@ triggers:
     - _unrelated_test_failure
     - _rerun_failed_checks
     - rerun_attempted
+    - worktree_guard_hook
+    - worker_guard_settings_json
+    - PreToolUse
 ---
 
 You are working on **worktrail's task-orchestration core**: compiling specs/changes into a
@@ -132,6 +135,22 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
   and the setter marks it loaded so tests can inject a value without touching a policy file. A
   fan-out that never spawns, or a test driving `live_run_real` with a stub repo, must never read
   the policy — do not move the load back into the constructor.
+- **Every `claude` worker carries a PreToolUse worktree guard, injected via `--settings`**
+  (`spawnlib._with_default_setting_sources` → `worker_guard_settings_json`, hook module
+  `orchestrator/worktree_guard_hook.py`). The brief's `Worktree (operate ONLY here)` line is
+  advisory: on 2026-09-05 (run full-1788634519, task 2.1) an implement worker wrote into the
+  canonical `~/projects/worktrail` checkout, and the operator's own user-level guard hook never
+  fired because workers run with `--setting-sources project,local` (which drops user settings).
+  `--settings` is an additional source that survives that flag, so the guard travels with the
+  package. Rules: `Write`/`Edit`/`NotebookEdit` targets must resolve inside the worker's `cwd`
+  (sibling-prefix paths like `<wt>-other/` are outside); `Bash` is denied only when the command
+  spells out the canonical checkout path (`git rev-parse --git-common-dir` parent) and that
+  differs from `cwd`. The hook runs as `sys.executable -m worktrail.orchestrator.worktree_guard_hook`
+  (no PATH dependency), fails open on any exception (a broken guard must never stall a run), and
+  its `deny` is honored under `--permission-mode bypassPermissions` (live-verified 2026-09-05).
+  An explicit `--settings` in `extra_args` is respected and not overridden; non-`claude` agents
+  get no guard. `tests/orchestrator/test_worktree_guard_hook.py` pins the decisions and the
+  injection.
 - **AddOns run after a task's own work, before commit** (`addons/runner.run_addons`,
   called from `orchestrator/integrate.py` and `router/preflight.py`). `install`/`configure`
   failures are swallowed (best-effort priming); `run()` failures propagate. An add-on config'd
@@ -187,10 +206,16 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
   `_dispatch_terminal_groups` and the integrate+verify pool; `precheck`: the OpenSpec-vs-devkit
   "all files exist" INFO/WARN split; `LiveSpawn.pre_commit_cmd`: the lazy policy-backed
   property threaded into the worker ctx
+- `orchestrator/spawnlib.py` — `_with_default_setting_sources`/`worker_guard_settings_json`:
+  the per-`claude`-spawn defaults (`--setting-sources project,local` plus the `--settings`
+  guard-hook JSON) that `build_cmd` applies unless the caller passed them explicitly
+- `orchestrator/worktree_guard_hook.py` — the PreToolUse guard itself (`decide`,
+  `_canonical_root`, `HOOK_MATCHER`); runnable as `python -m`, reads the hook payload on stdin,
+  prints a `deny` decision or nothing, always exits 0
 - `orchestrator/verify.py` — `auto_merge()` and `_retry_auto_merge_methods`; the only place a
   merge-method rejection is turned into a method retry; `_salvage_uncommitted` and the
   per-strike `continue` in `wait_and_fix_ci`; `_unrelated_test_failure`/`_rerun_failed_checks`,
   the free-rerun probe `wait_and_fix_ci` tries once before spawning a ci-fix worker
 
 ---
-**Last Updated:** 2026-09-04
+**Last Updated:** 2026-09-05
