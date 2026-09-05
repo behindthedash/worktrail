@@ -38,6 +38,18 @@ move-a-brief mechanism never diverges between callers.
   file's pre-mutation content (and, for `claim`/`release`, undoes the queue/picked move) and
   returns `write-verification-failed` instead of a false-positive success — never trust "the
   write call returned" as proof the write is good.
+- **In-place frontmatter edits splice the whole key, continuation lines included.**
+  `_set_fm_fields`, `_remove_fm_field`, and `_set_fm_list_field` all go through
+  `_splice_fm_key`, which drops every indented/blank continuation line of the old value
+  (`|-` block scalar body or block-sequence items) along with the `key:` line. Replacing only
+  the `key:` line is how a block-scalar `focus` got corrupted live (2026-09-04): the old
+  continuation lines survived and PyYAML silently folded them into the new plain scalar.
+  Keys in `_LITERAL_FM_KEYS` (`focus`) are re-rendered via `serialize_frontmatter` as a `|-`
+  literal block so a canonical brief stays `is_canonical_style` instead of downgrading to
+  quotes. When the block parsed before the edit, `_check_fm_fields` re-parses the result and
+  requires every field just set to read back as requested (block-scalar values compare
+  `.strip()`ped), raising `ValueError` before anything hits disk; a block that was *already*
+  unparsable is still edited surgically and left to the caller's post-write `validate_brief`.
 - **Exit codes are part of the contract for `claim`/`claim-batch`**: 0 ok, 2 none, 3 ambiguous,
   4 already-claimed, 5 io-error, 6 write-verification-failed (keyed off the primary brief for
   `claim-batch`).
@@ -114,7 +126,9 @@ move-a-brief mechanism never diverges between callers.
 
 ## Critical files
 - `workqueue/work_queue.py` — the single implementation every consumer shares; do not reimplement
-  claim/done/release logic at a new call site
+  claim/done/release logic at a new call site. Its frontmatter editors (`_set_fm_fields`,
+  `_remove_fm_field`, `_set_fm_list_field`) share `_splice_fm_key` / `_fm_field_lines` /
+  `_check_fm_fields`; add new frontmatter mutations on top of those, not with fresh line-matching
 - `workqueue/queue_triage.py` — intake-triage verdict apply actions (stale-close, duplicate-of,
   fold-into-change, propose-change, keep); the only caller that closes briefs with `triaged=True`
 - `workqueue/create_handoff.py` (via `worktrail-handoff`) — brief creation entrypoint; delegates
@@ -129,6 +143,8 @@ move-a-brief mechanism never diverges between callers.
 - Never bypass the Route-C gate with `--triaged` for an ordinary completion — it is for triage
   closures only; a brief whose work was actually done still needs `--planning-only` or
   `--implementation-complete`.
+- Never replace a frontmatter `key:` line by itself — a block-scalar or list value has
+  continuation lines that must go with it; use `_splice_fm_key`.
 
 ---
-**Last Updated:** 2026-09-03
+**Last Updated:** 2026-09-05
