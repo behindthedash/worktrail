@@ -434,6 +434,7 @@ def open_or_update_pull_request(
     labels: Sequence[str],
     route: str,
     runner: Runner,
+    gates: Sequence[str] | None = None,
     base_slug: str | None = None,
 ) -> dict[str, Any]:
     """Find-or-create the PR -- see module docstring step 5. Returns

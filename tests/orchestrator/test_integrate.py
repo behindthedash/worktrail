@@ -539,8 +539,13 @@ class NoExistingBranchOrPR(unittest.TestCase):
             patch("worktrail.orchestrator.integrate._git", side_effect=run),
             patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run),
             patch.object(
-                integrate.land_pr, "open_or_update_pull_request"
+                integrate.land_pr,
+                "open_or_update_pull_request",
+                wraps=integrate.land_pr.open_or_update_pull_request,
             ) as mock_land_pr,
+            patch.object(
+                integrate.land_pr, "land_pr", wraps=integrate.land_pr.land_pr
+            ) as mock_land_pr_func,
         ):
             group = mock_group("base", ["T001"])
             mock_groups.return_value = [group]
@@ -561,6 +566,7 @@ class NoExistingBranchOrPR(unittest.TestCase):
                 cleanup=False,
                 route="D",
                 gates="check1,check2",
+                pr_labels=["go:risk-low"],
             )
 
             # Verify land_pr.open_or_update_pull_request was called once
@@ -569,10 +575,39 @@ class NoExistingBranchOrPR(unittest.TestCase):
                 1,
                 "Should call land_pr.open_or_update_pull_request exactly once for new PR",
             )
+            # Verify land_pr.land_pr is never called
+            self.assertEqual(
+                mock_land_pr_func.call_count,
+                0,
+                "Should never call land_pr.land_pr directly",
+            )
             # Verify it was called with correct parameters
             call_args = mock_land_pr.call_args
             self.assertEqual(call_args[0][1], "main", "base_branch should be main")
+            self.assertEqual(
+                call_args[0][2], "run-pr/base", "head_branch should be run-pr/base"
+            )
             self.assertEqual(call_args[1]["route"], "D", "route should be D")
+            self.assertEqual(
+                call_args[1]["gates"],
+                ["check1", "check2"],
+                "gates should be parsed list",
+            )
+            self.assertEqual(
+                call_args[1]["risk"],
+                "low",
+                "risk should be extracted from pr_labels seed",
+            )
+            self.assertEqual(
+                call_args[1]["labels"],
+                ["go:risk-low"],
+                "labels should use original pr_labels seed",
+            )
+            self.assertEqual(
+                call_args[1]["runner"],
+                subprocess.run,
+                "runner should be subprocess.run",
+            )
             self.assertEqual(len(prs), 1)
 
 
@@ -1041,62 +1076,48 @@ class TransientGhFailureRetry(unittest.TestCase):
 class PRLabels(unittest.TestCase):
     """The orchestrator carries the GO gate's exact labels to group PRs."""
 
-    def test_create_refreshes_labels_before_new_pr(self):
-        """Verify labels are refreshed via pre_pr_gate --labels-only before new PR creation."""
-        fd, fake_gate = tempfile.mkstemp(suffix="pre_pr_gate.py")
-        os.close(fd)
+    def test_create_uses_seed_labels_without_refresh(self):
+        """Verify seed labels are used directly without refreshing via pre_pr_gate."""
+        run = FakeRun(pr_view_responses={}, ls_remote_responses={})
 
-        try:
-            run = FakeRun(pr_view_responses={}, ls_remote_responses={})
+        with (
+            patch(
+                "worktrail.orchestrator.integrate.coordinator.plan_groups"
+            ) as mock_groups,
+            patch("worktrail.orchestrator.integrate._git", side_effect=run),
+            patch(
+                "worktrail.orchestrator.integrate.subprocess.run",
+                side_effect=run,
+            ),
+        ):
+            mock_groups.return_value = [mock_group("base", ["T001"])]
 
-            with (
-                patch(
-                    "worktrail.orchestrator.integrate.coordinator.plan_groups"
-                ) as mock_groups,
-                patch("worktrail.orchestrator.integrate._git", side_effect=run),
-                patch(
-                    "worktrail.orchestrator.integrate.subprocess.run",
-                    side_effect=run,
-                ),
-                patch(
-                    "worktrail.orchestrator.integrate._resolve_pre_pr_gate",
-                    return_value=Path(fake_gate),
-                ),
-            ):
-                mock_groups.return_value = [mock_group("base", ["T001"])]
-
-                integrate_groups(
-                    Path("/repo"),
-                    "spec-001",
-                    [mock_task("T001")],
-                    "origin",
-                    "run-labels",
-                    "main",
-                    cleanup=False,
-                    pr_labels=["go:risk-high", "go:no-automerge"],
-                )
-
-            # Verify pre_pr_gate --labels-only was called with --risk high
-            refresh_calls = [
-                c for c in run.calls if "--labels-only" in c and "--risk" in c
-            ]
-            self.assertGreaterEqual(
-                len(refresh_calls),
-                1,
-                "Should call pre_pr_gate --labels-only for new PR",
+            integrate_groups(
+                Path("/repo"),
+                "spec-001",
+                [mock_task("T001")],
+                "origin",
+                "run-labels",
+                "main",
+                cleanup=False,
+                pr_labels=["go:risk-high", "go:no-automerge"],
             )
-            risk_idx = refresh_calls[0].index("--risk") + 1
-            self.assertEqual(refresh_calls[0][risk_idx], "high")
 
-            # Verify gh pr create received the FRESH labels (go:risk-high from the mock)
+            # Verify gh pr create received the seed labels (not refreshed)
             create_calls = run.find_calls("gh", "pr", "create")
             self.assertEqual(len(create_calls), 1)
             # land_pr puts labels after --body, extract from --label onwards
-            label_start = create_calls[0].index("--label")
-            labels = create_calls[0][label_start : label_start + 2]
-            self.assertEqual(labels, ["--label", "go:risk-high"])
-        finally:
-            os.unlink(fake_gate)
+            label_indices = [i for i, x in enumerate(create_calls[0]) if x == "--label"]
+            self.assertGreater(
+                len(label_indices), 0, "Should have at least one --label flag"
+            )
+            # Check that both seed labels are present
+            labels = []
+            for idx in label_indices:
+                if idx + 1 < len(create_calls[0]):
+                    labels.append(create_calls[0][idx + 1])
+            self.assertIn("go:risk-high", labels)
+            self.assertIn("go:no-automerge", labels)
 
     def test_create_passes_eligible_label_only(self):
         run = FakeRun(pr_view_responses={}, ls_remote_responses={})
@@ -1126,96 +1147,93 @@ class PRLabels(unittest.TestCase):
         labels = create_calls[0][label_start : label_start + 2]
         self.assertEqual(labels, ["--label", "go:risk-low"])
 
-    def test_refresh_labels_passes_route_when_set(self):
-        """A classified route must reach pre_pr_gate.py --labels-only's --route so
-        policy's require_human_routes check applies to orchestrator group PRs the
-        same way it applies to one-off PRs (worktrail-preflight run)."""
-        fd, fake_gate = tempfile.mkstemp(suffix="pre_pr_gate.py")
-        os.close(fd)
+    def test_route_and_gates_passed_to_open_or_update(self):
+        """Route and gates parameters must be passed to open_or_update_pull_request."""
+        from worktrail.router import land_pr as land_pr_module
 
-        try:
-            run = FakeRun(pr_view_responses={}, ls_remote_responses={})
+        run = FakeRun(pr_view_responses={}, ls_remote_responses={})
 
-            with (
-                patch(
-                    "worktrail.orchestrator.integrate.coordinator.plan_groups"
-                ) as mock_groups,
-                patch("worktrail.orchestrator.integrate._git", side_effect=run),
-                patch(
-                    "worktrail.orchestrator.integrate.subprocess.run",
-                    side_effect=run,
-                ),
-                patch(
-                    "worktrail.orchestrator.integrate._resolve_pre_pr_gate",
-                    return_value=Path(fake_gate),
-                ),
-            ):
-                mock_groups.return_value = [mock_group("base", ["T001"])]
+        with (
+            patch(
+                "worktrail.orchestrator.integrate.coordinator.plan_groups"
+            ) as mock_groups,
+            patch("worktrail.orchestrator.integrate._git", side_effect=run),
+            patch(
+                "worktrail.orchestrator.integrate.subprocess.run",
+                side_effect=run,
+            ),
+            patch.object(land_pr_module, "open_or_update_pull_request") as mock_land_pr,
+        ):
+            group = mock_group("base", ["T001"])
+            mock_groups.return_value = [group]
+            mock_land_pr.return_value = {
+                "pr_url": "https://github.com/owner/repo/pull/123",
+                "pr_number": 123,
+                "refused_step": None,
+                "detail": None,
+            }
 
-                integrate_groups(
-                    Path("/repo"),
-                    "spec-001",
-                    [mock_task("T001")],
-                    "origin",
-                    "run-route",
-                    "main",
-                    cleanup=False,
-                    pr_labels=["go:risk-high"],
-                    route="J",
-                    gates="routing_cassette_required",
-                )
+            integrate_groups(
+                Path("/repo"),
+                "spec-001",
+                [mock_task("T001")],
+                "origin",
+                "run-route",
+                "main",
+                cleanup=False,
+                pr_labels=["go:risk-high"],
+                route="J",
+                gates="routing_cassette_required",
+            )
 
-            refresh_calls = [c for c in run.calls if "--labels-only" in c]
-            self.assertGreaterEqual(len(refresh_calls), 1)
-            route_idx = refresh_calls[0].index("--route") + 1
-            self.assertEqual(refresh_calls[0][route_idx], "J")
-            gates_idx = refresh_calls[0].index("--gates") + 1
-            self.assertEqual(refresh_calls[0][gates_idx], "routing_cassette_required")
-        finally:
-            os.unlink(fake_gate)
+            # Verify open_or_update_pull_request was called with route and gates
+            self.assertEqual(mock_land_pr.call_count, 1)
+            call_args = mock_land_pr.call_args
+            self.assertEqual(call_args[1]["route"], "J")
+            self.assertEqual(call_args[1]["gates"], ["routing_cassette_required"])
 
-    def test_refresh_labels_omits_route_when_unset(self):
-        """Existing callers that never pass route (e.g. finish() golden-record path,
-        callers on an unclassified run) must keep working unchanged: no --route flag
-        is sent to the gate script at all."""
-        fd, fake_gate = tempfile.mkstemp(suffix="pre_pr_gate.py")
-        os.close(fd)
+    def test_create_without_route_parameter(self):
+        """Callers that never pass route must still work: the seed labels are used
+        directly without a route parameter to open_or_update_pull_request."""
+        from worktrail.router import land_pr as land_pr_module
 
-        try:
-            run = FakeRun(pr_view_responses={}, ls_remote_responses={})
+        run = FakeRun(pr_view_responses={}, ls_remote_responses={})
 
-            with (
-                patch(
-                    "worktrail.orchestrator.integrate.coordinator.plan_groups"
-                ) as mock_groups,
-                patch("worktrail.orchestrator.integrate._git", side_effect=run),
-                patch(
-                    "worktrail.orchestrator.integrate.subprocess.run",
-                    side_effect=run,
-                ),
-                patch(
-                    "worktrail.orchestrator.integrate._resolve_pre_pr_gate",
-                    return_value=Path(fake_gate),
-                ),
-            ):
-                mock_groups.return_value = [mock_group("base", ["T001"])]
+        with (
+            patch(
+                "worktrail.orchestrator.integrate.coordinator.plan_groups"
+            ) as mock_groups,
+            patch("worktrail.orchestrator.integrate._git", side_effect=run),
+            patch(
+                "worktrail.orchestrator.integrate.subprocess.run",
+                side_effect=run,
+            ),
+            patch.object(land_pr_module, "open_or_update_pull_request") as mock_land_pr,
+        ):
+            group = mock_group("base", ["T001"])
+            mock_groups.return_value = [group]
+            mock_land_pr.return_value = {
+                "pr_url": "https://github.com/owner/repo/pull/123",
+                "pr_number": 123,
+                "refused_step": None,
+                "detail": None,
+            }
 
-                integrate_groups(
-                    Path("/repo"),
-                    "spec-001",
-                    [mock_task("T001")],
-                    "origin",
-                    "run-noroute",
-                    "main",
-                    cleanup=False,
-                    pr_labels=["go:risk-high"],
-                )
+            integrate_groups(
+                Path("/repo"),
+                "spec-001",
+                [mock_task("T001")],
+                "origin",
+                "run-noroute",
+                "main",
+                cleanup=False,
+                pr_labels=["go:risk-high"],
+            )
 
-            refresh_calls = [c for c in run.calls if "--labels-only" in c]
-            self.assertGreaterEqual(len(refresh_calls), 1)
-            self.assertNotIn("--route", refresh_calls[0])
-        finally:
-            os.unlink(fake_gate)
+            # Verify open_or_update_pull_request was called with empty route
+            self.assertEqual(mock_land_pr.call_count, 1)
+            call_args = mock_land_pr.call_args
+            self.assertEqual(call_args[1]["route"], "")  # default empty string
 
 
 class NoForceResetExistingRemoteBranch(unittest.TestCase):

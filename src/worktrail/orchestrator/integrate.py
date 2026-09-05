@@ -163,17 +163,6 @@ def _refresh_pr_labels(
         return None
 
 
-def _pr_label_args(pr_labels: list[str] | None) -> list[str]:
-    """Build the exact label flags resolved by the GO pre-PR gate.
-
-    Labels are resolved by _refresh_pr_labels immediately before creating
-    each new group PR, so every fresh PR carries the current policy and
-    required-check state.  Existing OPEN/MERGED PRs keep their original
-    labels (deterministic).
-    """
-    return [arg for label in (pr_labels or []) for arg in ("--label", label)]
-
-
 # Max attempts to dispatch a resolve worker when task branches conflict at assembly time.
 # Assembly conflicts are deterministic (same two branches will conflict every time), so a
 # single attempt is the most useful budget: if the worker can't resolve it in one pass, a
@@ -1491,11 +1480,6 @@ def integrate_one(
             pass
 
     # No PR found (conventional or operator); open/update via land_pr pipeline
-    fresh_labels = _refresh_pr_labels(
-        repo, pr_labels, pr_base, gates=gates, route=route
-    )
-    effective_labels = fresh_labels if fresh_labels is not None else pr_labels
-
     remote_url = _git(repo, "remote", "get-url", remote).stdout.strip()
     gh_repo = (
         remote_url.removesuffix(".git").split("github.com", 1)[-1].lstrip(":/")
@@ -1517,18 +1501,47 @@ def integrate_one(
         f"Group **{name}** | reqs: {', '.join(g['reqs']) or '-'} "
         f"| base: `{pr_base}`\n\nparallel-orchestrator {run_id}.{escalation_note}"
     )
-    risk = _extract_risk_from_labels(effective_labels or [])
-    outcome = _land_pr_with_retry(
+    risk = _extract_risk_from_labels(pr_labels or [])
+    gates_list = [g for g in gates.split(",") if g] if gates else []
+    outcome = land_pr.open_or_update_pull_request(
         repo,
         pr_base,
         gb,
         title,
         body,
         risk=risk or "unknown",
-        labels=effective_labels or [],
+        labels=pr_labels or [],
         route=route or "",
+        gates=gates_list,
+        runner=subprocess.run,
         base_slug=gh_repo,
     )
+    for attempt in range(1, GH_TRANSIENT_ATTEMPTS):
+        if not outcome.get("refused_step"):
+            break
+        detail = outcome.get("detail", "")
+        if not _gh_error_is_transient(detail):
+            break
+        wait = GH_TRANSIENT_BACKOFF_S * attempt
+        detail_excerpt = (detail or "(no detail)").splitlines()[-1][:160]
+        print(
+            f"  RETRY open/update PR transient failure "
+            f"(attempt {attempt}/{GH_TRANSIENT_ATTEMPTS - 1}, waiting {wait}s): {detail_excerpt}"
+        )
+        _retry_sleep(wait)
+        outcome = land_pr.open_or_update_pull_request(
+            repo,
+            pr_base,
+            gb,
+            title,
+            body,
+            risk=risk or "unknown",
+            labels=pr_labels or [],
+            route=route or "",
+            gates=gates_list,
+            runner=subprocess.run,
+            base_slug=gh_repo,
+        )
     # `gh pr create` fails the WHOLE command (no PR created, non-zero exit) on
     # an unresolvable --label, e.g. "could not add label: 'go:risk-medium' not
     # found" -- catch that here rather than recording the error text itself as
@@ -1545,62 +1558,6 @@ def integrate_one(
     print(f"  PR [{name:9}] base={pr_base:18} -> {pr_url}")
     _do_journal(name, pr_url, gb, "OPEN")
     return (name, pr_base, pr_url)
-
-
-def _land_pr_with_retry(
-    repo: Path,
-    base_branch: str,
-    head_branch: str,
-    title: str,
-    body: str,
-    risk: str,
-    labels: list,
-    route: str,
-    base_slug: str | None = None,
-) -> dict:
-    """Call land_pr.open_or_update_pull_request with transient failure retry.
-
-    Retries only transient failures (gh errors matching _GH_TRANSIENT_PATTERNS);
-    deterministic failures (validation, labels, auth) are not retried.
-    """
-    outcome = land_pr.open_or_update_pull_request(
-        repo,
-        base_branch,
-        head_branch,
-        title,
-        body,
-        risk=risk,
-        labels=labels,
-        route=route,
-        runner=subprocess.run,
-        base_slug=base_slug,
-    )
-    for attempt in range(1, GH_TRANSIENT_ATTEMPTS):
-        if not outcome.get("refused_step"):
-            return outcome
-        detail = outcome.get("detail", "")
-        if not _gh_error_is_transient(detail):
-            return outcome
-        wait = GH_TRANSIENT_BACKOFF_S * attempt
-        detail_excerpt = (detail or "(no detail)").splitlines()[-1][:160]
-        print(
-            f"  RETRY open/update PR transient failure "
-            f"(attempt {attempt}/{GH_TRANSIENT_ATTEMPTS - 1}, waiting {wait}s): {detail_excerpt}"
-        )
-        _retry_sleep(wait)
-        outcome = land_pr.open_or_update_pull_request(
-            repo,
-            base_branch,
-            head_branch,
-            title,
-            body,
-            risk=risk,
-            labels=labels,
-            route=route,
-            runner=subprocess.run,
-            base_slug=base_slug,
-        )
-    return outcome
 
 
 def _read_group_journal_record(journal_path: str | None, name: str) -> dict:
