@@ -32,6 +32,7 @@ plan writes no marker.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,6 +45,21 @@ from worktrail.orchestrator.coordinator import TAIL_KINDS, compute_levels
 # `compile_max_same_file_chain`.
 DEFAULT_MAX_CRITICAL_PATH_OVER_WIDTH = 2
 DEFAULT_MAX_SAME_FILE_CHAIN = 2
+
+# Design D2 rule 4 (brief 20260904-164604): a `[cleanup]`-kind tail task's
+# title reading as an imperative command to run something. `live.py`'s
+# ROLE_CLEANUP short-circuit never spawns a worker for this kind -- a body
+# like "Run pytest -q and confirm it is green" is journaled as success with
+# no command ever executed. Both patterns must match so incidental prose
+# ("cleanup after the previous run") doesn't false-positive alone.
+_CLEANUP_RUN_VERB_RE = re.compile(r"\b(run|execute)\b", re.IGNORECASE)
+_CLEANUP_COMMAND_RE = re.compile(
+    r"`[^`\n]+`"
+    r"|\b(pytest|npm|yarn|jest|mocha|tox)\b"
+    r"|\bopenspec\s+validate\b"
+    r"|\bpython3?\s+-m\b",
+    re.IGNORECASE,
+)
 
 # Per-task cost assumed when no prior run journal on this machine carries
 # timing data yet. Calibrated from the incident run (41-58 min per task with
@@ -195,7 +211,7 @@ def shape_problems(
     repo = Path(repo)
     fanout = [t for t in merged if t.get("kind") not in TAIL_KINDS]
     if not fanout:
-        return []
+        return _cleanup_verification_mismatches(merged)
 
     max_ratio = policy.get(
         "compile_max_critical_path_over_width", DEFAULT_MAX_CRITICAL_PATH_OVER_WIDTH
@@ -281,4 +297,31 @@ def shape_problems(
             )
             break
 
+    problems.extend(_cleanup_verification_mismatches(merged))
+
+    return problems
+
+
+def _cleanup_verification_mismatches(merged: Sequence[dict[str, Any]]) -> list[str]:
+    """Design D2 rule 4: a `[cleanup]` tail task authored as if it runs a
+    verification command. Unlike the other three rules this looks at *all*
+    tasks, not `fanout` -- `[cleanup]` is a `TAIL_KINDS` member excluded from
+    fanout on purpose, and this rule exists specifically to police that kind.
+    `[e2e]` is the tail kind that actually spawns a worker; `[cleanup]`'s
+    dispatch is a journal-only status transition that executes nothing
+    (`live.py`'s `cleanup_task_in_python`), so a body that reads as a command
+    to run is journaled as success without ever having run.
+    """
+    problems: list[str] = []
+    for t in merged:
+        if t.get("kind") != "cleanup":
+            continue
+        title = t.get("title") or ""
+        if _CLEANUP_RUN_VERB_RE.search(title) and _CLEANUP_COMMAND_RE.search(title):
+            problems.append(
+                f"cleanup verification mismatch: {t['id']} is tagged [cleanup] "
+                "but its title reads as a command to run -- [cleanup] never "
+                "spawns a worker (journal-only status transition, executes "
+                "nothing); retag it [e2e] so it actually runs"
+            )
     return problems

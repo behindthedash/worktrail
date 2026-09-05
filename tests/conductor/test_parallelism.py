@@ -12,8 +12,14 @@ import json
 from worktrail.conductor import parallelism
 
 
-def _task(tid, *, deps=(), files=(), kind="impl"):
-    return {"id": tid, "deps": list(deps), "files": list(files), "kind": kind}
+def _task(tid, *, deps=(), files=(), kind="impl", title=""):
+    return {
+        "id": tid,
+        "deps": list(deps),
+        "files": list(files),
+        "kind": kind,
+        "title": title,
+    }
 
 
 def _chain(n, file="src/hot.py"):
@@ -190,3 +196,58 @@ def test_missing_test_scope_rule_exempt_for_tail_kinds(tmp_path):
     (tmp_path / "tests" / "test_foo.py").write_text("")
     tasks = [_task("a", files=["src/foo.py"], kind="e2e")]
     assert parallelism.shape_problems(tasks, tmp_path, {}) == []
+
+
+# --------------------------------------------------------------------------- #
+# shape_problems() -- design D2 rule 4: cleanup/verification-body mismatch
+# --------------------------------------------------------------------------- #
+def test_cleanup_task_with_backticked_command_is_rejected(tmp_path):
+    tasks = [
+        _task("v", kind="cleanup", title="Run `pytest -q` and confirm it is green")
+    ]
+    problems = parallelism.shape_problems(tasks, tmp_path, {})
+    assert len(problems) == 1
+    assert "cleanup verification mismatch" in problems[0]
+    assert "v" in problems[0]
+    assert "[e2e]" in problems[0]
+
+
+def test_cleanup_task_with_live_incident_wording_is_rejected(tmp_path):
+    # The exact incident wording (go-20260904-153010, task 2.1): no
+    # backticks, but an imperative "Run" plus recognizable commands.
+    tasks = [
+        _task(
+            "2.1",
+            kind="cleanup",
+            title=(
+                "Run PYTHONPATH=src pytest -q and PYTHONPATH=src python3 -m "
+                "worktrail.orchestrator.orchestrate check; confirm both are "
+                "green and run openspec validate --strict"
+            ),
+        )
+    ]
+    problems = parallelism.shape_problems(tasks, tmp_path, {})
+    assert any("cleanup verification mismatch" in p and "2.1" in p for p in problems)
+
+
+def test_genuinely_inert_cleanup_task_passes(tmp_path):
+    tasks = [_task("v", kind="cleanup", title="Remove debug logging left in tasks 1-4")]
+    assert parallelism.shape_problems(tasks, tmp_path, {}) == []
+
+
+def test_equivalent_e2e_task_is_unaffected(tmp_path):
+    tasks = [_task("v", kind="e2e", title="Run `pytest -q` and confirm it is green")]
+    assert parallelism.shape_problems(tasks, tmp_path, {}) == []
+
+
+def test_docs_tail_task_is_unaffected(tmp_path):
+    tasks = [_task("v", kind="docs", title="Run `pytest -q` and confirm it is green")]
+    assert parallelism.shape_problems(tasks, tmp_path, {}) == []
+
+
+def test_cleanup_mismatch_fires_even_when_fanout_is_empty(tmp_path):
+    tasks = [
+        _task("v", kind="cleanup", title="Run `pytest -q` and confirm it is green")
+    ]
+    problems = parallelism.shape_problems(tasks, tmp_path, {})
+    assert any("cleanup verification mismatch" in p for p in problems)
