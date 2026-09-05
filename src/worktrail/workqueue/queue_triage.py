@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from ..orchestrator.integrate import _refresh_pr_labels
-from ..router import overlap_check
+from ..router import brief_probes, overlap_check
 from ..router.dashboard import _resolve_repo_dir
 from ..shared.brief_frontmatter import read_frontmatter, split_frontmatter
 from ..shared.homedir import worktrail_home
@@ -2661,6 +2661,40 @@ def _worktree_pr_close(
     }
 
 
+_PATH_LINE_SUFFIX_RE = re.compile(r":\d+(?:-\d+)?$")
+
+
+def _fold_task_file_scope(worktree_dir: Path, evidence: str) -> list[str]:
+    """Explicit `files:` scope for the task `_apply_fold_into_change()` appends.
+
+    `worktrail-compile` seeds a task's scope from an indented `files:` line
+    when one is present and only falls back to model inference without it --
+    and its scope check then refuses a task touching a `src/` file with no
+    `tests/` path when a `tests/**/test_<stem>*.py` for that file already
+    exists. Evidence like "src/pkg/mod.py:120-140 does X" cites the source file
+    but never the test, so the inferred scope failed that check on every fold
+    into a change with existing tests. This derives the scope the same way the
+    check does: every path probe in `evidence` (line-number suffix stripped)
+    that exists in the worktree, plus the first matching existing test file
+    for each `src/` path -- the same glob `parallelism.py` uses. An empty
+    result emits no `files:` line, leaving compile's inference as before.
+    """
+    files: list[str] = []
+    for probe in brief_probes.extract_probes(evidence).get("paths", []):
+        rel = _PATH_LINE_SUFFIX_RE.sub("", probe)
+        if rel in files or not (worktree_dir / rel).is_file():
+            continue
+        files.append(rel)
+    for rel in [f for f in files if f.startswith("src/")]:
+        matches = sorted(worktree_dir.glob(f"tests/**/test_{Path(rel).stem}*.py"))
+        if not matches:
+            continue
+        test_rel = matches[0].relative_to(worktree_dir).as_posix()
+        if test_rel not in files:
+            files.append(test_rel)
+    return files
+
+
 def _apply_fold_into_change(
     v: Verdict, *, repos_root: str | Path | None = None
 ) -> dict:
@@ -2723,10 +2757,14 @@ def _apply_fold_into_change(
             # A checklist item is one line: multi-line evidence would spill its
             # tail out of the `- [ ]` item and stop parsing as a task at all.
             task_evidence = " ".join(v.evidence.split())
+            task_block = f"- [ ] {group_number}.1 {task_evidence}\n"
+            file_scope = _fold_task_file_scope(worktree_dir, v.evidence)
+            if file_scope:
+                task_block += f"      files: {', '.join(file_scope)}\n"
             tasks_path.write_text(
                 tasks_text.rstrip("\n")
                 + f"\n\n## {group_number}. Folded from {v.brief_id}\n\n"
-                + f"- [ ] {group_number}.1 {task_evidence}\n",
+                + task_block,
                 encoding="utf-8",
             )
         except OSError as exc:

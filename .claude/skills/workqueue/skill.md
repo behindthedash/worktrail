@@ -99,6 +99,16 @@ move-a-brief mechanism never diverges between callers.
   worktrail #897/#898 both failed it). A compile failure returns `status="error"` before any
   push or `gh pr create`, and the brief is untouched. Bounded by `_COMPILE_TIMEOUT_S` (900s)
   since an OpenSpec change may need one model inference pass.
+- **The fold-into-change task declares an explicit `files:` scope line derived from its
+  evidence.** `_fold_task_file_scope(worktree_dir, evidence)` takes every path probe from
+  `router.brief_probes.extract_probes()` (a `:120-140` line-number suffix stripped) that exists
+  as a file in the worktree, then for each `src/` path appends the first matching existing
+  `tests/**/test_<stem>*.py` — the same glob compile's scope check uses. `worktrail-compile`
+  seeds scope from an indented `files:` line when present and otherwise infers it, and its scope
+  check refuses a task touching a `src/` file with no `tests/` path when that test file already
+  exists; evidence cites source files but never their tests, so the inferred scope failed on
+  every fold into a change with existing tests (brief 20260903-145001). An empty result emits no
+  `files:` line, leaving compile's inference as before.
 - **Push goes to `git config remote.pushDefault` when set, else `origin`.** `_push_target()`
   returns the remote plus its GitHub `owner/repo` slug so `gh pr create -R <slug>` targets the
   fork's repo; with no `pushDefault` it pushes `origin` and lets `gh` infer the base repo as
@@ -130,7 +140,8 @@ move-a-brief mechanism never diverges between callers.
   `_remove_fm_field`, `_set_fm_list_field`) share `_splice_fm_key` / `_fm_field_lines` /
   `_check_fm_fields`; add new frontmatter mutations on top of those, not with fresh line-matching
 - `workqueue/queue_triage.py` — intake-triage verdict apply actions (stale-close, duplicate-of,
-  fold-into-change, propose-change, keep); the only caller that closes briefs with `triaged=True`
+  fold-into-change, propose-change, keep); the only caller that closes briefs with `triaged=True`.
+  `_fold_task_file_scope` derives the folded task's `files:` scope from evidence paths
 - `workqueue/create_handoff.py` (via `worktrail-handoff`) — brief creation entrypoint; delegates
   repo inference to `repo_inference.infer_repo()` with a prefix-match fallback
 - `workqueue/repo_inference.py` — `InferenceResult(repo, rule, candidates)` + `infer_repo()`; the
