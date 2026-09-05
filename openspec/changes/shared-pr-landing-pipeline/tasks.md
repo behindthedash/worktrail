@@ -56,7 +56,7 @@
 
 ## 2. Migrate queue-triage fold/propose (after group 1)
 
-- [ ] 2.1 In `src/worktrail/workqueue/queue_triage.py` `_worktree_pr_close()`, replace the
+- [x] 2.1 In `src/worktrail/workqueue/queue_triage.py` `_worktree_pr_close()`, replace the
       commit / `git push` / `_refresh_pr_labels` / `gh pr create` block with one
       `land_pr(LandRequest(repo=worktree_dir, base_branch=base_branch,
       title=_planned_fold_propose_pr_title(v), summary=pr_body, route="C", risk="low",
@@ -82,7 +82,7 @@
 
 ## 3. Migrate close-stale OpenSpec (after group 1)
 
-- [ ] 3.1 In `src/worktrail/router/close_stale_openspec.py`, after a successful
+- [x] 3.1 In `src/worktrail/router/close_stale_openspec.py`, after a successful
       `flip_and_archive`, `main()` calls `land_pr(LandRequest(repo=worktree,
       base_branch=<--base>, title=f"chore({change_id}): close stale bookkeeping",
       summary=…, route="E", risk="low", run=<--run>, commit_message=…))` and merges
@@ -100,7 +100,7 @@
 
 ## 4. Migrate drain remediations (after group 1)
 
-- [ ] 4.1 In `src/worktrail/drain/drain.py`, replace `_open_sync_pending_pr`,
+- [x] 4.1 In `src/worktrail/drain/drain.py`, replace `_open_sync_pending_pr`,
       `_open_stale_bookkeeping_pr`, and `_open_openspec_archive_pr` with one
       `_land_remediation_pr(wt, repo_name, spec_id, base, title, summary, timeout)` that
       calls `land_pr(LandRequest(repo=wt, base_branch=base, route="E", risk="low",
@@ -227,11 +227,11 @@
 
 ## 14. Folded from 20260904-165036-land-pr-push-refusal-wrong
 
-- [ ] 14.1 src/worktrail/router/land_pr.py:1008-1009 returns LandOutcome(outcome="refused", refused_step="push") with no detail argument at all, and _push() (land_pr.py:403-424) discards the failed git push's stdout/stderr, only returning the string "push" — confirming the repro's detail=null. The candidate change's declared capability ('fail-closed refusal before push ... with a bounded, classified watch outcome') directly covers fixing this refusal-detail gap, so the fix belongs there rather than as a standalone patch. Live re-repro 2026-09-04 (run go-20260904-165845, worktree fix/spec-drift-shared-pr-landing-pipeline): land-pr refused at push with detail=null while a direct git push -u origin <branch> from the same worktree, and a plain subprocess.run(['git','-C',<worktree>,'push','-u','origin',...]) from Python, both succeeded, so the failure is specific to the runner/env used inside land_pr._push, not the git push itself; capture and report the failed push's stderr in detail. Put the new tests in tests/router/test_land_pr_push_refusal.py (do not extend tests/router/test_land_pr.py: tasks 1.1->1.2 already saturate the compile same-file chain gate on that file).
+- [x] 14.1 src/worktrail/router/land_pr.py:1008-1009 returns LandOutcome(outcome="refused", refused_step="push") with no detail argument at all, and _push() (land_pr.py:403-424) discards the failed git push's stdout/stderr, only returning the string "push" — confirming the repro's detail=null. The candidate change's declared capability ('fail-closed refusal before push ... with a bounded, classified watch outcome') directly covers fixing this refusal-detail gap, so the fix belongs there rather than as a standalone patch. Live re-repro 2026-09-04 (run go-20260904-165845, worktree fix/spec-drift-shared-pr-landing-pipeline): land-pr refused at push with detail=null while a direct git push -u origin <branch> from the same worktree, and a plain subprocess.run(['git','-C',<worktree>,'push','-u','origin',...]) from Python, both succeeded, so the failure is specific to the runner/env used inside land_pr._push, not the git push itself; capture and report the failed push's stderr in detail. Put the new tests in tests/router/test_land_pr_push_refusal.py (do not extend tests/router/test_land_pr.py: tasks 1.1->1.2 already saturate the compile same-file chain gate on that file).
 
 ## 15. Folded from 20260904-180534-land-pr-push-branch-tracking
 
-- [ ] 15.1 Same _push() refusal as task 14.1 (openspec/changes/shared-pr-landing-pipeline/tasks.md:230), second repro 2026-09-05 on gracefully-giving-back run go-20260904-171615 (PR #716): the feature branch was created with `git worktree add ... -b <branch> origin/dev` so its upstream is origin/dev, and worktrail-land-pr refused at push (refused_step: push, detail: null) while a manual `git push -u origin <branch>` succeeded and a re-run then landed normally. In src/worktrail/router/land_pr.py, make _push() (land_pr.py:403-424) push with an explicit refspec (`git push -u origin HEAD:<branch>`) so a branch whose upstream tracks the base ref is never pushed to the wrong remote branch, and surface the failed git push's stderr in LandOutcome.detail (land_pr.py:1008-1009) instead of null. Add the tests to tests/router/test_land_pr_push_refusal.py alongside 14.1's (do not extend tests/router/test_land_pr.py).
+- [x] 15.1 Same _push() refusal as task 14.1 (openspec/changes/shared-pr-landing-pipeline/tasks.md:230), second repro 2026-09-05 on gracefully-giving-back run go-20260904-171615 (PR #716): the feature branch was created with `git worktree add ... -b <branch> origin/dev` so its upstream is origin/dev, and worktrail-land-pr refused at push (refused_step: push, detail: null) while a manual `git push -u origin <branch>` succeeded and a re-run then landed normally. In src/worktrail/router/land_pr.py, make _push() (land_pr.py:403-424) push with an explicit refspec (`git push -u origin HEAD:<branch>`) so a branch whose upstream tracks the base ref is never pushed to the wrong remote branch, and surface the failed git push's stderr in LandOutcome.detail (land_pr.py:1008-1009) instead of null. Add the tests to tests/router/test_land_pr_push_refusal.py alongside 14.1's (do not extend tests/router/test_land_pr.py).
 
 ## 16. Folded from 20260904-185838-tail-task-checkbox-sync-missing
 
@@ -239,5 +239,5 @@
 
 ## 17. Folded from 20260903-145001-worktree-missing-committed-openspec-change
 
-- [ ] 17.1 src/worktrail/workqueue/queue_triage.py:2445-2488 fetches `origin/<base_branch>` and creates the worktree from that remote ref (not local HEAD), per the docstring at 2413-2434; the observed 'files missing in worktree but present at local HEAD' failure is consistent with the target change's commits existing locally but not yet pushed to origin at fetch time, a PR-landing/worktree-sequencing issue in this exact file. shared-pr-landing-pipeline already has 3 recent folds (#983, #975, #967) of the same class of queue_triage.py worktree/push bugs, confirming it's the active home for this kind of report.
+- [x] 17.1 src/worktrail/workqueue/queue_triage.py:2445-2488 fetches `origin/<base_branch>` and creates the worktree from that remote ref (not local HEAD), per the docstring at 2413-2434; the observed 'files missing in worktree but present at local HEAD' failure is consistent with the target change's commits existing locally but not yet pushed to origin at fetch time, a PR-landing/worktree-sequencing issue in this exact file. shared-pr-landing-pipeline already has 3 recent folds (#983, #975, #967) of the same class of queue_triage.py worktree/push bugs, confirming it's the active home for this kind of report.
       files: src/worktrail/workqueue/queue_triage.py, tests/workqueue/test_queue_triage.py

@@ -2541,8 +2541,6 @@ def _fake_gh_and_openspec_archive_subprocess_run(pr_url: str):
             return subprocess.CompletedProcess(cmd, 0, stdout="archived\n", stderr="")
         if cmd[:2] == ["gh", "pr"] and cmd[2] == "list":
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-        if cmd[:2] == ["gh", "pr"] and cmd[2] == "create":
-            return subprocess.CompletedProcess(cmd, 0, stdout=f"{pr_url}\n", stderr="")
         return real_run(cmd, **kwargs)
 
     return fake_run
@@ -2552,6 +2550,18 @@ def test_archive_openspec_change_runs_archive_and_opens_pr(tmp_path, monkeypatch
     repo = _init_repo_with_origin(tmp_path, "repo-a")
     finding = {"repo": repo, "repo_name": "repo-a", "spec_id": "add-export"}
 
+    land_pr_calls = []
+
+    def mock_land_pr(request):
+        land_pr_calls.append(request)
+        from worktrail.router.land_pr import LandOutcome
+
+        return LandOutcome(
+            outcome="landed",
+            pr_url="https://example.invalid/pr/9",
+        )
+
+    monkeypatch.setattr(drain, "land_pr", mock_land_pr)
     monkeypatch.setattr(
         drain.subprocess,
         "run",
@@ -2567,6 +2577,12 @@ def test_archive_openspec_change_runs_archive_and_opens_pr(tmp_path, monkeypatch
         "spec_id": "add-export",
         "pr_url": "https://example.invalid/pr/9",
     }
+    assert len(land_pr_calls) == 1
+    call = land_pr_calls[0]
+    assert call.route == "E"
+    assert call.risk == "low"
+    assert call.watch_timeout_s == 30
+    assert call.title == "chore(add-export): archive completed change"
     committed = subprocess.run(
         ["git", "-C", str(repo), "show", "chore/archive-add-export:ARCHIVED.marker"],
         capture_output=True,
@@ -2644,28 +2660,68 @@ def test_archive_openspec_change_existing_pr_skips_rearchiving(tmp_path, monkeyp
 
 
 def test_archive_openspec_change_gh_pr_create_failure_raises(tmp_path, monkeypatch):
+    from worktrail.drain.drain import StageRemediation
+
     repo = _init_repo_with_origin(tmp_path, "repo-a")
-    finding = {"repo": repo, "repo_name": "repo-a", "spec_id": "add-export"}
+
+    def mock_land_pr(request):
+        from worktrail.router.land_pr import LandOutcome
+
+        return LandOutcome(
+            outcome="ceiling",
+            refused_step="pr_create",
+            detail="label not found",
+        )
+
+    def mock_finder(repos_root, go_repo):
+        return [
+            {
+                "repo": repo,
+                "repo_name": "repo-a",
+                "spec_id": "add-export",
+                "spec_rel": "openspec/changes/add-export",
+            }
+        ]
+
     real_run = subprocess.run
 
     def fake_run(cmd, **kwargs):
         if cmd[:2] == ["openspec", "archive"]:
             Path(kwargs["cwd"], "ARCHIVED.marker").write_text("archived\n")
             return subprocess.CompletedProcess(cmd, 0, stdout="archived\n", stderr="")
-        if cmd[:2] == ["gh", "pr"] and cmd[2] == "list":
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-        if cmd[:2] == ["gh", "pr"] and cmd[2] == "create":
-            return subprocess.CompletedProcess(
-                cmd, 1, stdout="", stderr="label not found"
-            )
         return real_run(cmd, **kwargs)
 
-    monkeypatch.setattr(drain.subprocess, "run", fake_run)
-
-    with pytest.raises(RuntimeError, match="gh pr create failed"):
-        archive_openspec_change(
-            finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None
+    fake_table = [
+        StageRemediation(
+            "openspec_archive",
+            "archive-openspec-change",
+            mock_finder,
+            archive_openspec_change,
         )
+    ]
+
+    monkeypatch.setattr(drain, "land_pr", mock_land_pr)
+    monkeypatch.setattr(drain.subprocess, "run", fake_run)
+    monkeypatch.setattr(drain, "REMEDIATION_TABLE", fake_table)
+
+    logs = []
+    result = sweep_remediations(
+        tmp_path,
+        None,
+        ["claude"],
+        tmp_path / "capacity-cache",
+        30,
+        lambda c, t: SpawnOutcome(0),
+        lambda msg: logs.append(msg),
+        keys=["openspec_archive"],
+    )
+
+    assert result["openspec_archive"] == []
+    assert any(
+        "archive-openspec-change error: repo-a add-export: "
+        "land_pr for repo-a add-export failed: ceiling (label not found)" in log
+        for log in logs
+    )
 
 
 def _fake_sync_spawner(calls: list, exit_codes=None):
@@ -2698,9 +2754,18 @@ def test_resume_sync_pending_invokes_skill_dispatch_once_per_spec(
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", "seed spec"], check=True)
     subprocess.run(["git", "-C", str(repo), "push", "-q", "origin", "dev"], check=True)
 
-    monkeypatch.setattr(
-        drain.subprocess, "run", _fake_gh_subprocess_run("https://example.invalid/pr/9")
-    )
+    land_pr_calls = []
+
+    def mock_land_pr(request):
+        land_pr_calls.append(request)
+        from worktrail.router.land_pr import LandOutcome
+
+        return LandOutcome(
+            outcome="landed",
+            pr_url="https://example.invalid/pr/9",
+        )
+
+    monkeypatch.setattr(drain, "land_pr", mock_land_pr)
 
     calls = []
     logs = []
@@ -2735,6 +2800,12 @@ def test_resume_sync_pending_invokes_skill_dispatch_once_per_spec(
             "pr_url": "https://example.invalid/pr/9",
         }
     ]
+    assert len(land_pr_calls) == 1
+    call = land_pr_calls[0]
+    assert call.route == "E"
+    assert call.risk == "low"
+    assert call.watch_timeout_s == 60
+    assert call.title == "chore(spec-a): sync specs from change"
     assert any("resume-sync-pending" in line for line in logs)
     # The sync lands on the fix branch (committed, pushed, PR opened) -- the
     # canonical checkout's own `dev` is never written to directly, which is
@@ -2781,9 +2852,18 @@ def test_resume_sync_pending_one_failure_does_not_block_others(tmp_path, monkeyp
         ["git", "-C", str(repo_b), "push", "-q", "origin", "dev"], check=True
     )
 
-    monkeypatch.setattr(
-        drain.subprocess, "run", _fake_gh_subprocess_run("https://example.invalid/pr/9")
-    )
+    land_pr_calls = []
+
+    def mock_land_pr(request):
+        land_pr_calls.append(request)
+        from worktrail.router.land_pr import LandOutcome
+
+        return LandOutcome(
+            outcome="landed",
+            pr_url="https://example.invalid/pr/9",
+        )
+
+    monkeypatch.setattr(drain, "land_pr", mock_land_pr)
 
     calls = []
     result = resume_sync_pending(
@@ -2805,6 +2885,7 @@ def test_resume_sync_pending_one_failure_does_not_block_others(tmp_path, monkeyp
             "pr_url": "https://example.invalid/pr/9",
         },
     ]
+    assert len(land_pr_calls) == 1  # Only called for repo-b, not repo-a (which failed)
 
 
 def test_resume_verify_pending_invokes_full_real_once_per_spec(tmp_path):
@@ -3786,8 +3867,6 @@ def _fake_gh_subprocess_run(pr_url: str):
     def fake_run(cmd, **kwargs):
         if cmd[:2] == ["gh", "pr"] and cmd[2] == "list":
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-        if cmd[:2] == ["gh", "pr"] and cmd[2] == "create":
-            return subprocess.CompletedProcess(cmd, 0, stdout=f"{pr_url}\n", stderr="")
         return real_run(cmd, **kwargs)
 
     return fake_run
@@ -3807,6 +3886,18 @@ def test_close_stale_bookkeeping_flips_status_and_opens_pr(tmp_path, monkeypatch
         "stale_task_ids": ["TASK-001"],
     }
 
+    land_pr_calls = []
+
+    def mock_land_pr(request):
+        land_pr_calls.append(request)
+        from worktrail.router.land_pr import LandOutcome
+
+        return LandOutcome(
+            outcome="landed",
+            pr_url="https://example.invalid/pr/9",
+        )
+
+    monkeypatch.setattr(drain, "land_pr", mock_land_pr)
     monkeypatch.setattr(
         drain.subprocess, "run", _fake_gh_subprocess_run("https://example.invalid/pr/9")
     )
@@ -3821,6 +3912,12 @@ def test_close_stale_bookkeeping_flips_status_and_opens_pr(tmp_path, monkeypatch
         "task_ids": ["TASK-001"],
         "pr_url": "https://example.invalid/pr/9",
     }
+    assert len(land_pr_calls) == 1
+    call = land_pr_calls[0]
+    assert call.route == "E"
+    assert call.risk == "low"
+    assert call.watch_timeout_s == 30
+    assert call.title == "chore(spec-a): close stale bookkeeping"
     # The flip lands on the fix branch (pushed, PR opened), not on `repo`'s
     # own checked-out `dev` -- that branch is never touched by the action.
     flipped = subprocess.run(
@@ -3854,36 +3951,64 @@ def test_close_stale_bookkeeping_missing_task_file_raises(tmp_path):
 
 
 def test_close_stale_bookkeeping_gh_pr_create_failure_raises(tmp_path, monkeypatch):
+    from worktrail.drain.drain import StageRemediation
+
     repo = _init_repo_with_origin(tmp_path, "repo-a")
     _write_stale_bookkeeping_spec(repo, "spec-a")
     subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", "seed spec"], check=True)
     subprocess.run(["git", "-C", str(repo), "push", "-q", "origin", "dev"], check=True)
 
-    finding = {
-        "repo": repo,
-        "repo_name": "repo-a",
-        "spec_id": "spec-a",
-        "stale_task_ids": ["TASK-001"],
-    }
+    def mock_land_pr(request):
+        from worktrail.router.land_pr import LandOutcome
 
-    real_run = subprocess.run
-
-    def fake_run(cmd, **kwargs):
-        if cmd[:2] == ["gh", "pr"] and cmd[2] == "list":
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-        if cmd[:2] == ["gh", "pr"] and cmd[2] == "create":
-            return subprocess.CompletedProcess(
-                cmd, 1, stdout="", stderr="label not found"
-            )
-        return real_run(cmd, **kwargs)
-
-    monkeypatch.setattr(drain.subprocess, "run", fake_run)
-
-    with pytest.raises(RuntimeError, match="gh pr create failed"):
-        close_stale_bookkeeping(
-            finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None
+        return LandOutcome(
+            outcome="ceiling",
+            refused_step="pr_create",
+            detail="label not found",
         )
+
+    def mock_finder(repos_root, go_repo):
+        return [
+            {
+                "repo": repo,
+                "repo_name": "repo-a",
+                "spec_id": "spec-a",
+                "spec_rel": "docs/specs/spec-a",
+                "stale_task_ids": ["TASK-001"],
+            }
+        ]
+
+    fake_table = [
+        StageRemediation(
+            "stale_bookkeeping",
+            "close-stale-bookkeeping",
+            mock_finder,
+            close_stale_bookkeeping,
+        )
+    ]
+
+    monkeypatch.setattr(drain, "land_pr", mock_land_pr)
+    monkeypatch.setattr(drain, "REMEDIATION_TABLE", fake_table)
+
+    logs = []
+    result = sweep_remediations(
+        tmp_path,
+        None,
+        ["claude"],
+        tmp_path / "capacity-cache",
+        30,
+        lambda c, t: SpawnOutcome(0),
+        lambda msg: logs.append(msg),
+        keys=["stale_bookkeeping"],
+    )
+
+    assert result["stale_bookkeeping"] == []
+    assert any(
+        "close-stale-bookkeeping error: repo-a spec-a: "
+        "land_pr for repo-a spec-a failed: ceiling (label not found)" in log
+        for log in logs
+    )
 
 
 def test_nightly_drain_summary_contract_distinguishes_capacity_and_breaker():
