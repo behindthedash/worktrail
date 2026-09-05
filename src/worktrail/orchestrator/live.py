@@ -3341,6 +3341,13 @@ def _scope_escalation_files(
         if resolved.is_file():
             candidates.append(path.as_posix())
     candidates = sorted(set(candidates) - set(task.get("files") or []))
+    # Filter out gitignored paths
+    filtered = []
+    for candidate in candidates:
+        if _git(wt, "check-ignore", "--quiet", candidate, check=False).returncode == 0:
+            continue
+        filtered.append(candidate)
+    candidates = filtered
     if not candidates:
         return []
     locked = {

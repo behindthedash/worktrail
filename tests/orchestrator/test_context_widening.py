@@ -480,6 +480,94 @@ class TestContextWidening(unittest.TestCase):
         self.assertEqual(task["files"], ["src/foo.py", "src/helper.py"])
         self.assertTrue(task["_scope_escalated"])
 
+    def test_scope_escalation_excludes_gitignored_path(self):
+        """A missing_context path that exists but matches a .gitignore pattern
+        is excluded from scope escalation and returns []."""
+        with tempfile.TemporaryDirectory() as tmp:
+            wt = Path(tmp)
+            # Initialize as a git repo
+            subprocess.run(["git", "init", "-q", str(wt)], check=True)
+            subprocess.run(
+                ["git", "-C", str(wt), "config", "user.email", "t@t"], check=True
+            )
+            subprocess.run(
+                ["git", "-C", str(wt), "config", "user.name", "T"], check=True
+            )
+            # Create .gitignore with cache pattern
+            gitignore = wt / ".gitignore"
+            gitignore.write_text(".claude/tsc-cache/\n")
+            subprocess.run(
+                ["git", "-C", str(wt), "add", ".gitignore"],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(wt), "commit", "-q", "-m", "add gitignore"],
+                check=True,
+                capture_output=True,
+            )
+            # Create a file under the gitignored directory
+            cache_dir = wt / ".claude" / "tsc-cache"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            (cache_dir / "cache.json").write_text("x\n")
+
+            task = {"id": "TASK-001", "status": "fixing", "files": ["src/foo.py"]}
+            report = {
+                "status": "failed",
+                "missing_context": [".claude/tsc-cache/cache.json"],
+            }
+            self.assertEqual(
+                live._scope_escalation_files(
+                    task, report, wt, {task["id"]: task}, failed=True
+                ),
+                [],
+            )
+
+    def test_scope_escalation_excludes_gitignored_but_keeps_tracked(self):
+        """A missing_context list with one gitignored path and one ordinary path
+        returns only the ordinary tracked path."""
+        with tempfile.TemporaryDirectory() as tmp:
+            wt = Path(tmp)
+            # Initialize as a git repo
+            subprocess.run(["git", "init", "-q", str(wt)], check=True)
+            subprocess.run(
+                ["git", "-C", str(wt), "config", "user.email", "t@t"], check=True
+            )
+            subprocess.run(
+                ["git", "-C", str(wt), "config", "user.name", "T"], check=True
+            )
+            # Create .gitignore with cache pattern
+            gitignore = wt / ".gitignore"
+            gitignore.write_text(".claude/tsc-cache/\n")
+            # Create both a gitignored file and a tracked file
+            cache_dir = wt / ".claude" / "tsc-cache"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            (cache_dir / "cache.json").write_text("x\n")
+            src_dir = wt / "src"
+            src_dir.mkdir()
+            (src_dir / "helper.py").write_text("y\n")
+            # Commit gitignore and helper.py
+            subprocess.run(
+                ["git", "-C", str(wt), "add", "-A"],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(wt), "commit", "-q", "-m", "init"],
+                check=True,
+                capture_output=True,
+            )
+
+            task = {"id": "TASK-001", "status": "fixing", "files": ["src/foo.py"]}
+            report = {
+                "status": "failed",
+                "missing_context": [".claude/tsc-cache/cache.json", "src/helper.py"],
+            }
+            result = live._scope_escalation_files(
+                task, report, wt, {task["id"]: task}, failed=True
+            )
+            self.assertEqual(result, ["src/helper.py"])
+
 
 if __name__ == "__main__":
     unittest.main()
