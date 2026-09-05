@@ -2599,43 +2599,6 @@ def _worktree_pr_close(
     # On code_defect/review_threads_blocking, keep the worktree and report it
     if outcome.outcome in ("code_defect", "review_threads_blocking"):
         landing_dict["worktree"] = str(worktree_dir)
-        claim_res = claim(v.brief_id, by="queue-triage")
-        if claim_res["status"] != "claimed":
-            detail = claim_res.get("error")
-            return {
-                **result,
-                "status": "error",
-                "path": claim_res.get("path"),
-                "error": f"claim: {claim_res['status']}"
-                + (f" ({detail})" if detail else ""),
-                "branch": branch,
-                "pr_url": pr_url,
-                "landing": landing_dict,
-            }
-        done_res = done(v.brief_id, note=v.evidence, triaged_to=pr_url)
-        if done_res["status"] != "done":
-            detail = done_res.get("error")
-            release_res = release(v.brief_id)
-            return {
-                **result,
-                "status": "error",
-                "path": done_res.get("path"),
-                "error": f"done: {done_res['status']}"
-                + (f" ({detail})" if detail else ""),
-                "rolled_back": release_res["status"] == "released",
-                "branch": branch,
-                "pr_url": pr_url,
-                "landing": landing_dict,
-            }
-        return {
-            **result,
-            "status": "executed",
-            "path": done_res.get("path"),
-            "error": None,
-            "branch": branch,
-            "pr_url": pr_url,
-            "landing": landing_dict,
-        }
 
     # A PR now exists -- from here on, closing the brief is safe to attempt.
     # Any failure past this point is reported against the now-real branch/PR,
