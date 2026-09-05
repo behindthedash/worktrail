@@ -82,7 +82,7 @@
 
 ## 3. Migrate close-stale OpenSpec (after group 1)
 
-- [ ] 3.1 In `src/worktrail/router/close_stale_openspec.py`, after a successful
+- [x] 3.1 In `src/worktrail/router/close_stale_openspec.py`, after a successful
       `flip_and_archive`, `main()` calls `land_pr(LandRequest(repo=worktree,
       base_branch=<--base>, title=f"chore({change_id}): close stale bookkeeping",
       summary=…, route="E", risk="low", run=<--run>, commit_message=…))` and merges
