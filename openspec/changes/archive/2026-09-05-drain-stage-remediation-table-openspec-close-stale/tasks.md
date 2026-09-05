@@ -34,6 +34,6 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [e2e] Run `PYTHONPATH=src pytest -q tests/drain/test_drain.py
+- [x] 2.1 [e2e] Run `PYTHONPATH=src pytest -q tests/drain/test_drain.py
       tests/router/test_close_stale_openspec.py` and `openspec validate --strict` from the repo
       root and confirm both pass; depends on 1.1.
