@@ -31,6 +31,10 @@ Applying a `fold-into-change` verdict SHALL, in a fresh worktree on a branch off
 - **WHEN** `apply --confirm` executes `fold-into-change` and the target change's directory was archived by a commit on `origin/<base branch>` that the local checkout had not yet fetched
 - **THEN** the freshly-fetched worktree no longer has that target's `proposal.md`/`tasks.md`, the fold fails closed with that reported as the error, and the brief remains in `queue/` unmodified
 
+#### Scenario: Propose-change prompt names the compile gate
+- **WHEN** `_apply_propose_change()` formats `PROPOSE_CHANGE_PROMPT_TEMPLATE` for a brief
+- **THEN** the formatted prompt instructs the agent to run `worktrail-compile` against the new change directory and fix any reported problem, in addition to `openspec validate --strict`
+
 #### Scenario: CI reports a code defect on the landed PR
 - **WHEN** the pipeline's CI watch classifies the opened PR's failure as a code defect
 - **THEN** the brief is closed against the existing PR URL as before, the apply result reports the code-defect outcome with the failing check names and the surviving worktree path, and the run record is left unfinished for repair
