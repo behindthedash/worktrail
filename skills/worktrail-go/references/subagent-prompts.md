@@ -998,6 +998,9 @@ which reports untracked files too:
       --title "sync($SPEC_ID): post-orchestrator docs update" \
       --summary "Updates spec artifacts and task statuses after orchestrator run. Auto-generated." \
       --json
+    # Tear down the sync worktree and branch after successful landing.
+    git -C "$REPO" worktree remove "$SYNC_WT" --force
+    git -C "$REPO" branch -D "sync/$SPEC_ID" 2>/dev/null || true
   fi
 }
 ```
