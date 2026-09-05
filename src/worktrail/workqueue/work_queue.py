@@ -164,6 +164,7 @@ import yaml
 from ..shared.brief_frontmatter import (
     _find_frontmatter_block,
     read_frontmatter,
+    serialize_frontmatter,
     validate_brief,
 )
 from ..taskformats import resolve as _taskformats
@@ -500,13 +501,96 @@ def _yaml_scalar(value: Any) -> str:
     return scalar
 
 
+# Keys whose string values are rendered as a `|-` literal block scalar, matching
+# `serialize_frontmatter`'s canonical style so an in-place rewrite of a canonical
+# brief stays canonical (`is_canonical_style`) instead of downgrading to quotes.
+_LITERAL_FM_KEYS: tuple[str, ...] = ("focus",)
+
+
+def _fm_field_lines(key: str, value: Any) -> list[str]:
+    """Render one `key: value` frontmatter field as its YAML source lines."""
+    if key in _LITERAL_FM_KEYS and isinstance(value, str):
+        return serialize_frontmatter({key: value}).rstrip("\n").split("\n")
+    return [f"{key}: {_yaml_scalar(value)}"]
+
+
+def _is_fm_continuation(line: str) -> bool:
+    """Whether `line` continues the previous key's value (block scalar body,
+    block sequence item, or a blank line inside a block scalar) rather than
+    starting a new top-level key."""
+    return line.startswith(("  ", "\t")) or not line.strip()
+
+
+def _splice_fm_key(
+    lines: list[str], key: str, replacement: list[str] | None
+) -> tuple[list[str], bool]:
+    """Replace (or, with `replacement=None`, remove) the top-level `key` entry
+    in a frontmatter block's lines, including every continuation line that
+    belongs to its value.
+
+    Replacing only the `key:` line itself is how a `|-` block-scalar `focus`
+    got corrupted live (2026-09-04): the indented continuation lines survived,
+    and PyYAML silently folded them into the new plain scalar.
+    """
+    key_re = re.compile(r"^" + re.escape(key) + r"\s*:")
+    out: list[str] = []
+    found = False
+    skipping = False
+    for line in lines:
+        if skipping:
+            if _is_fm_continuation(line):
+                continue
+            skipping = False
+        if key_re.match(line):
+            found = True
+            skipping = True
+            if replacement:
+                out.extend(replacement)
+            continue
+        out.append(line)
+    return out, found
+
+
+def _parses_as_mapping(block: str) -> bool:
+    try:
+        return isinstance(yaml.safe_load(block), dict)
+    except yaml.YAMLError:
+        return False
+
+
+def _parse_fm_block(path: Path, block: str) -> dict[str, Any]:
+    """Parse a frontmatter block about to be written; raise instead of letting
+    a block *this edit* corrupted reach disk.
+
+    Callers only invoke this when the block parsed before the edit. A block
+    that was already unparsable is deliberately still edited surgically (the
+    bad line and every other field survive untouched) and left to the
+    caller's post-write `validate_brief` -- re-serializing or refusing there
+    would either clobber the file or block the one stamp that can still land.
+    """
+    try:
+        parsed = yaml.safe_load(block)
+    except yaml.YAMLError as exc:
+        raise ValueError(
+            f"{path}: edit would leave frontmatter unparsable -- refusing to write: {exc}"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(  # noqa: TRY004 -- ValueError is the uniform refuse-to-write contract callers catch
+            f"{path}: edit would leave frontmatter as a non-mapping -- refusing to write"
+        )
+    return parsed
+
+
 def _set_fm_fields(path: Path, fields: dict[str, str]) -> None:
     """Set/replace simple scalar fields inside the YAML frontmatter block.
 
     Operates only on the frontmatter region to preserve body formatting and key
-    order. A field already present is replaced in place; a new field is inserted
-    just before the closing `---`. Values are rendered via `_yaml_scalar`, and
-    the result is validated before the write is allowed to stand.
+    order. A field already present is replaced in place (together with any
+    block-scalar continuation lines of its old value); a new field is inserted
+    just before the closing `---`. Values are rendered via `_fm_field_lines`.
+    When the block parsed before the edit, the result must parse and read
+    back every field as requested before the write is allowed to stand (see
+    `_parse_fm_block` for why an already-broken block is still edited).
     """
     content = path.read_text(encoding="utf-8")
     m = _FM_RE.match(content)
@@ -517,41 +601,61 @@ def _set_fm_fields(path: Path, fields: dict[str, str]) -> None:
                 "refusing to prepend a new frontmatter block over already-broken content"
             )
         # no frontmatter -> create a minimal block
-        fm_lines = [f"{k}: {_yaml_scalar(v)}" for k, v in fields.items()]
-        path.write_text(
-            "---\n" + "\n".join(fm_lines) + "\n---\n" + content, encoding="utf-8"
-        )
+        lines: list[str] = []
+        for k, v in fields.items():
+            lines.extend(_fm_field_lines(k, v))
+        new_block = "\n".join(lines)
+        _check_fm_fields(path, new_block, fields)
+        path.write_text("---\n" + new_block + "\n---\n" + content, encoding="utf-8")
         return
 
     block = m.group(1)
     lines = block.split("\n")
-    remaining = dict(fields)
-    for i, line in enumerate(lines):
-        key = line.split(":", 1)[0].strip() if ":" in line else None
-        if key in remaining:
-            lines[i] = f"{key}: {_yaml_scalar(remaining.pop(key))}"
-    for k, v in remaining.items():  # append any not already present
-        lines.append(f"{k}: {_yaml_scalar(v)}")
+    for k, v in fields.items():
+        rendered = _fm_field_lines(k, v)
+        lines, found = _splice_fm_key(lines, k, rendered)
+        if not found:  # append any not already present
+            lines.extend(rendered)
     new_block = "\n".join(lines)
+    if _parses_as_mapping(block):
+        _check_fm_fields(path, new_block, fields)
     path.write_text(
         content[: m.start(1)] + new_block + content[m.end(1) :], encoding="utf-8"
     )
 
 
+def _check_fm_fields(path: Path, block: str, fields: dict[str, str]) -> None:
+    """Post-render check for `_set_fm_fields`: the block parses, and every field
+    just set reads back as the value that was requested."""
+    parsed = _parse_fm_block(path, block)
+    for k, v in fields.items():
+        if not isinstance(v, str):
+            continue
+        expected = v.strip() if k in _LITERAL_FM_KEYS else v
+        if parsed.get(k) != expected:
+            raise ValueError(
+                f"{path}: frontmatter field {k!r} would read back as "
+                f"{parsed.get(k)!r}, not {expected!r} -- refusing to write"
+            )
+
+
 def _remove_fm_field(path: Path, key: str) -> None:
-    """Remove a scalar frontmatter field (and nothing else) if present."""
+    """Remove a frontmatter field (and nothing else) if present, including any
+    block-scalar continuation lines of its value."""
     content = path.read_text(encoding="utf-8")
     m = _FM_RE.match(content)
     if not m:
         return
     block = m.group(1)
-    key_re = re.compile(r"^" + re.escape(key) + r"\s*:")
-    lines = [line for line in block.split("\n") if not key_re.match(line)]
+    lines, found = _splice_fm_key(block.split("\n"), key, None)
+    if not found:
+        return
     new_block = "\n".join(lines)
-    if new_block != block:
-        path.write_text(
-            content[: m.start(1)] + new_block + content[m.end(1) :], encoding="utf-8"
-        )
+    if _parses_as_mapping(block):
+        _parse_fm_block(path, new_block)
+    path.write_text(
+        content[: m.start(1)] + new_block + content[m.end(1) :], encoding="utf-8"
+    )
 
 
 def _set_fm_list_field(path: Path, key: str, values: list[str]) -> None:
@@ -563,42 +667,25 @@ def _set_fm_list_field(path: Path, key: str, values: list[str]) -> None:
     """
     content = path.read_text(encoding="utf-8")
     m = _FM_RE.match(content)
+    rendered = (
+        [f"{key}:"] + [f"  - {_yaml_scalar(v)}" for v in values] if values else None
+    )
     if not m:
         if _has_unterminated_fence(content):
             raise ValueError(
                 f"{path}: opening '---' fence present but no closing fence found -- "
                 "refusing to prepend a new frontmatter block over already-broken content"
             )
-        if not values:
+        if not rendered:
             return
-        block_text = key + ":\n" + "".join(f"  - {_yaml_scalar(v)}\n" for v in values)
+        block_text = "\n".join(rendered) + "\n"
         path.write_text(f"---\n{block_text}---\n{content}", encoding="utf-8")
         return
 
     block = m.group(1)
-    lines = block.split("\n")
-    new_lines: list[str] = []
-    skip_continuations = False
-    key_found = False
-    key_re = re.compile(r"^" + re.escape(key) + r"\s*:")
-
-    for line in lines:
-        if skip_continuations:
-            if line.startswith(("  ", "\t")):
-                continue
-            skip_continuations = False
-        if key_re.match(line):
-            key_found = True
-            skip_continuations = True
-            if values:
-                new_lines.append(f"{key}:")
-                new_lines.extend(f"  - {_yaml_scalar(v)}" for v in values)
-            continue
-        new_lines.append(line)
-
-    if not key_found and values:
-        new_lines.append(f"{key}:")
-        new_lines.extend(f"  - {_yaml_scalar(v)}" for v in values)
+    new_lines, key_found = _splice_fm_key(block.split("\n"), key, rendered)
+    if not key_found and rendered:
+        new_lines.extend(rendered)
 
     new_block = "\n".join(new_lines)
     path.write_text(

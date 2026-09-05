@@ -19,6 +19,7 @@ from unittest.mock import patch
 
 from worktrail.conductor import compile as runplan_compile
 from worktrail.conductor import runplan
+from worktrail.shared.brief_frontmatter import is_canonical_style
 from worktrail.workqueue import work_queue as q
 
 
@@ -1649,6 +1650,70 @@ class TestFrontmatterScalarQuoting(QueueTestBase):
         self.assertEqual(
             q._read_frontmatter(p).get("watch"), ["npm:typescript-eslint@8.66.0"]
         )
+
+
+class TestFrontmatterBlockScalarRewrite(QueueTestBase):
+    """Replacing or removing a key whose value is a YAML block scalar must
+    drop the indented continuation lines too, and the result must be verified
+    before the write stands.
+
+    Observed live 2026-09-04: `queue_triage`'s mechanical `needs-update`
+    rewrite called `_set_fm_fields(path, {"focus": ...})` on a brief whose
+    `focus:` was a `|-` block scalar. Only the `focus:` line was replaced; the
+    continuation lines survived and PyYAML silently folded them into the new
+    plain scalar, so the brief's focus became "<new text> <old line one> <old
+    line two>" -- valid-but-corrupted frontmatter that no post-write check
+    caught even though the helper's docstring promised one.
+    """
+
+    BLOCK = (
+        "---\nid: 20260101-000000-a\nfocus: |-\n  line one\n  line two\n"
+        "repo: /r\nstatus: queued\n---\n\nbody\n"
+    )
+
+    def _write_block_scalar_brief(self) -> Path:
+        p = self.queue / "20260101-000000-a.md"
+        p.write_text(self.BLOCK, encoding="utf-8")
+        return p
+
+    def test_replacing_block_scalar_focus_drops_continuation_lines(self):
+        p = self._write_block_scalar_brief()
+        q._set_fm_fields(p, {"focus": "new focus"})
+
+        fm = q._read_frontmatter(p)
+        self.assertEqual(fm.get("focus"), "new focus")
+        self.assertEqual(fm.get("status"), "queued")
+        self.assertEqual(fm.get("repo"), "/r")
+        self.assertNotIn("line one", p.read_text(encoding="utf-8"))
+
+    def test_rewritten_focus_keeps_canonical_block_scalar_style(self):
+        """The rewrite must not downgrade a canonical brief to quoted style."""
+        p = self._write_block_scalar_brief()
+        q._set_fm_fields(p, {"focus": "new focus: with a colon"})
+
+        content = p.read_text(encoding="utf-8")
+        self.assertTrue(is_canonical_style(content), content)
+        self.assertEqual(q._read_frontmatter(p).get("focus"), "new focus: with a colon")
+        self.assertIn("\nbody\n", content)
+
+    def test_removing_block_scalar_field_drops_continuation_lines(self):
+        p = self._write_block_scalar_brief()
+        q._remove_fm_field(p, "focus")
+
+        fm = q._read_frontmatter(p)
+        self.assertNotIn("focus", fm)
+        self.assertEqual(fm.get("status"), "queued")
+        self.assertNotIn("line one", p.read_text(encoding="utf-8"))
+
+    def test_unparsable_result_is_rejected_before_the_write(self):
+        p = self._write_block_scalar_brief()
+        before = p.read_text(encoding="utf-8")
+        with (
+            patch.object(q, "_yaml_scalar", return_value="a: b: c"),
+            self.assertRaises(ValueError),
+        ):
+            q._set_fm_fields(p, {"status": "picked"})
+        self.assertEqual(p.read_text(encoding="utf-8"), before)
 
 
 class TestNotYetDue(QueueTestBase):
