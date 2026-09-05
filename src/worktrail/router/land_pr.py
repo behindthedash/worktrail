@@ -65,8 +65,15 @@ from typing import Any
 
 from worktrail.conductor import compile as conductor_compile
 
-from . import check_compile_markers, check_review_threads, pr_labels, preflight
+from . import (
+    check_compile_markers,
+    check_review_threads,
+    pr_labels,
+    pre_pr_gate,
+    preflight,
+)
 from . import run_record as run_record_module
+from .policy import load_policy
 from .run_record import _load as _load_run_record
 
 Runner = Callable[..., "subprocess.CompletedProcess[str]"]
@@ -452,14 +459,24 @@ def open_or_update_pull_request(
     title: str,
     body: str,
     risk: str,
-    labels: Sequence[str],
+    labels: Sequence[str] | None,
     route: str,
     runner: Runner,
     base_slug: str | None = None,
+    gates: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Find-or-create the PR -- see module docstring step 5. Returns
     `{"pr_url", "pr_number", "refused_step", "detail"}`; `pr_url`/`pr_number`
     are None only when `refused_step` is set.
+
+    `labels` is the preflight pass marker's label set when the caller ran the
+    gate (`land_pr()` step 3). A caller with no marker of its own -- the
+    orchestrator's group-PR step, whose integration branch never runs
+    `worktrail-preflight` -- passes `labels=None` plus `risk`/`gates`/`route`,
+    and the labels are computed here with `pre_pr_gate.resolve_pr_labels()`,
+    the same function the marker itself is written from. Either way the label
+    computation and the create/update guard are one implementation
+    (design.md D6); no caller assembles `--label` flags of its own.
 
     `base_slug` (from `_push_target()`), when set, is passed as `gh ... -R
     <slug>` on both the lookup and create calls below -- without it, `gh`
@@ -471,6 +488,10 @@ def open_or_update_pull_request(
     (design.md D6) -- this is the only place a `gh pr create` literal for a
     non-sandbox caller may appear (see
     `test_pr_creation_callsite_enforcement_coverage.py`)."""
+    if labels is None:
+        labels, _eligible, _reason = pre_pr_gate.resolve_pr_labels(
+            repo, load_policy(repo), risk, list(gates), base_branch, route=route or None
+        )
     view_args = ["pr", "view", head_branch, "--json", "url,number,state,labels"]
     if base_slug:
         view_args += ["-R", base_slug]

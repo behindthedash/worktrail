@@ -6048,16 +6048,38 @@ def _pipeline_scheduler(
     _quarantined_task_ids = {
         tid for g in groups if g["name"] in quarantined for tid in g.get("tasks", [])
     }
+    _checkbox_tasks = [
+        t
+        for t in (tail_res or {}).get("tasks", tasks)
+        if t["id"] not in _quarantined_task_ids
+    ]
+    # Land the flips for tasks that completed with no commits of their own
+    # (journal-only tail tasks) before checking for divergence -- otherwise
+    # every such run ends in a finding that needs a manual sync PR.
+    checkbox_sync = integrate_module.sync_checkbox_status(
+        repo,
+        remote,
+        base,
+        spec_id,
+        _checkbox_tasks,
+        run_id,
+        journal_path,
+        route=route,
+        gates=gates,
+        make_verifier=make_verifier_fn,
+        git_lock=iv_lock,
+    )
+    if checkbox_sync is not None and checkbox_sync.get("state") != "MERGED":
+        print(
+            f"{_ts()} !! checkbox-sync PR did not merge "
+            f"({checkbox_sync.get('state') or 'no PR'}): {checkbox_sync.get('detail') or checkbox_sync.get('pr_url')}"
+        )
     checkbox_divergence = integrate_module.detect_checkbox_status_divergence(
         repo,
         remote,
         base,
         spec_id,
-        [
-            t
-            for t in (tail_res or {}).get("tasks", tasks)
-            if t["id"] not in _quarantined_task_ids
-        ],
+        _checkbox_tasks,
         git_lock=iv_lock,
     )
     integrate_module._record_checkbox_status_divergence(

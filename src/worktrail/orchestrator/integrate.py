@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..addons import runner as addons_runner
+from ..router import land_pr
 from ..taskformats import resolve as taskformats
 from . import coordinator, dispatch, live, progress, worktree
 
@@ -103,74 +104,6 @@ def _extract_risk_from_labels(pr_labels: list[str]) -> str | None:
         if label.startswith("go:risk-"):
             return label.removeprefix("go:risk-")
     return None
-
-
-def _refresh_pr_labels(
-    repo: Path,
-    pr_labels: list[str] | None,
-    target_branch: str,
-    gates: str = "",
-    route: str | None = None,
-) -> list[str] | None:
-    """Refresh PR labels by re-running the pre-PR gate's label resolution.
-
-    Returns fresh labels from the current policy and required-check state,
-    or None when the gate script cannot be resolved or no risk label is
-    present (caller should fall back to the original pr_labels).
-
-    route: the classified route letter, forwarded to pre_pr_gate.py's
-    --route so policy's require_human_routes check applies to orchestrator
-    group PRs the same way it applies to one-off PRs (worktrail-preflight
-    run already passes --route there). Omit only when the route is unknown.
-    """
-    if not pr_labels:
-        return None
-    gate_script = _resolve_pre_pr_gate()
-    if gate_script is None:
-        return None
-    risk = _extract_risk_from_labels(pr_labels)
-    if risk is None:
-        return None
-    try:
-        cmd = [
-            sys.executable,
-            str(gate_script),
-            "--repo",
-            str(repo),
-            "--labels-only",
-            "--risk",
-            risk,
-            "--gates",
-            gates,
-            "--target-branch",
-            target_branch,
-        ]
-        if route:
-            cmd += ["--route", route]
-        r = subprocess.run(
-            cmd,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if r.returncode != 0:
-            return None
-        labels = [l for l in r.stdout.strip().split() if l]
-        return labels if labels else None
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-
-
-def _pr_label_args(pr_labels: list[str] | None) -> list[str]:
-    """Build the exact label flags resolved by the GO pre-PR gate.
-
-    Labels are resolved by _refresh_pr_labels immediately before creating
-    each new group PR, so every fresh PR carries the current policy and
-    required-check state.  Existing OPEN/MERGED PRs keep their original
-    labels (deterministic).
-    """
-    return [arg for label in (pr_labels or []) for arg in ("--label", label)]
 
 
 # Max attempts to dispatch a resolve worker when task branches conflict at assembly time.
@@ -503,34 +436,24 @@ def finish(
             if not g["depends_on"]
             else group_branch.get(g["depends_on"][0], "main")
         )
-        r = subprocess.run(
-            [
-                "gh",
-                "pr",
-                "create",
-                "--repo",
-                sandbox,
-                "--base",
-                target,
-                "--head",
-                gb,
-                "--title",
-                f"[{run_id}] {name}: {', '.join(group_tasks[name])}",
-                "--body",
-                (
-                    f"Group **{name}** | reqs: {', '.join(g['reqs']) or '-'} "
-                    f"| base: `{target}`\n\nparallel-orchestrator {run_id}."
-                ),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
+        # Sandbox validation PRs go through the same shared open/update step
+        # as production group PRs (no labels: the sandbox repo is policy-exempt).
+        outcome = land_pr.open_or_update_pull_request(
+            repo,
+            target,
+            gb,
+            f"[{run_id}] {name}: {', '.join(group_tasks[name])}",
+            (
+                f"Group **{name}** | reqs: {', '.join(g['reqs']) or '-'} "
+                f"| base: `{target}`\n\nparallel-orchestrator {run_id}."
+            ),
+            risk="",
+            labels=[],
+            route="",
+            runner=subprocess.run,
+            base_slug=sandbox,
         )
-        out = (
-            (r.stdout or r.stderr).strip().splitlines()[-1]
-            if (r.stdout or r.stderr)
-            else "(no output)"
-        )
+        out = outcome.get("pr_url") or outcome.get("detail") or "(no output)"
         prs.append((name, target, out))
         print(f"  PR [{name:9}] base={target:18} -> {out}")
 
@@ -842,6 +765,226 @@ def _record_checkbox_status_divergence(
         print(f"  WARNING: Failed to record checkbox status divergence: {e}")
 
 
+CHECKBOX_SYNC_GROUP = "checkbox-sync"
+
+
+def sync_checkbox_status(
+    repo: Path,
+    remote: str | None,
+    base: str | None,
+    spec_id: str,
+    tasks: list,
+    run_id: str,
+    journal_path: str | None = None,
+    *,
+    route: str | None = None,
+    gates: str = "",
+    make_verifier: Callable[[], verify.Verifier] | None = None,
+    git_lock: threading.Lock | None = None,
+) -> dict | None:
+    """Land the checkbox flips `detect_checkbox_status_divergence` would
+    otherwise only report, so the run's own closeout leaves the task artifact
+    consistent on base.
+
+    Tail tasks (e2e/cleanup/docs kinds) routinely complete with zero commits --
+    an e2e task that only runs the suite has nothing to ship -- so no tail PR
+    ever carries their `tasks.md` checkbox, and every such run ended in
+    `checkbox_status_divergence` plus a manual sync PR (worktrail PR #982
+    existed only to tick 2.1 and archive). This step opens that PR itself: a
+    disposable worktree on `<remote>/<base>`, the same `_write_group_task_status`
+    write the group PRs use, `openspec archive -y` once every task is checked,
+    then the shared `land_pr.open_or_update_pull_request` step (labels computed
+    there from `risk="low"` + this run's gates/route -- a docs-only diff) and
+    the same verify/merge path the tail-reconciliation PRs take.
+
+    Returns None when nothing diverged (or nothing could be written); otherwise
+    `{"tasks", "branch", "pr_url", "archived", "state", "detail"}` with `state`
+    one of `MERGED`/`OPEN`/`QUARANTINED`, mirrored into the journal's
+    `groups["checkbox-sync"]` record like any other group.
+    """
+    findings = detect_checkbox_status_divergence(
+        repo, remote, base, spec_id, tasks, git_lock=git_lock
+    )
+    if not findings or not remote or not base:
+        return None
+    task_ids = sorted(f["task"] for f in findings)
+    repo = Path(repo)
+    branch = f"{run_id}/{CHECKBOX_SYNC_GROUP}"
+    remote_base_ref = f"{remote}/{base}"
+    lock = git_lock if git_lock is not None else contextlib.nullcontext()
+    wt = (
+        repo.parent
+        / f"{repo.name}-{CHECKBOX_SYNC_GROUP}"
+        / f"{run_id}-{uuid.uuid4().hex[:8]}"
+    )
+    with lock:
+        _git(repo, "worktree", "prune", check=False)
+        r = _git(
+            repo,
+            "worktree",
+            "add",
+            "-f",
+            "-B",
+            branch,
+            str(wt),
+            remote_base_ref,
+            check=False,
+        )
+    if r.returncode != 0:
+        return None
+    result: dict = {
+        "tasks": task_ids,
+        "branch": branch,
+        "pr_url": "",
+        "archived": False,
+        "state": "",
+        "detail": "",
+    }
+    try:
+        status = {t["id"]: t.get("status") for t in tasks}
+        _write_group_task_status(
+            wt, spec_id, {"name": CHECKBOX_SYNC_GROUP, "tasks": task_ids}, status
+        )
+        spec_path = _spec_path_for(wt, spec_id)
+        if (
+            spec_path.parent.name == "changes"
+            and spec_path.parent.parent.name == "openspec"
+        ):
+            try:
+                _, now_tasks = taskformats.load_spec(str(spec_path))
+            except Exception:  # noqa: BLE001 -- unreadable artifact: skip archive, keep the flips
+                now_tasks = []
+            if now_tasks and all(
+                t.get("status") in coordinator.DONE for t in now_tasks
+            ):
+                a = subprocess.run(
+                    ["openspec", "archive", "-y", spec_id, "--json"],
+                    cwd=wt,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                )
+                if a.returncode == 0:
+                    _git(wt, "add", "-A", check=False)
+                    if (
+                        _git(wt, "diff", "--cached", "--quiet", check=False).returncode
+                        != 0
+                    ):
+                        _git(
+                            wt,
+                            "commit",
+                            "-q",
+                            "-m",
+                            f"chore({spec_id}): archive completed change",
+                        )
+                    result["archived"] = True
+        if (
+            _git(wt, "rev-parse", "HEAD").stdout.strip()
+            == _git(wt, "rev-parse", remote_base_ref).stdout.strip()
+        ):
+            return None  # nothing was written after all
+        push = _git(wt, "push", "-u", remote, f"HEAD:{branch}", check=False)
+        if push.returncode != 0:
+            result.update(
+                state="QUARANTINED", detail=f"push failed: {push.stderr.strip()[:300]}"
+            )
+            _write_group_journal(
+                journal_path,
+                CHECKBOX_SYNC_GROUP,
+                "",
+                branch,
+                "QUARANTINED",
+                QUARANTINE_INTEGRATION_ERROR,
+            )
+            return result
+        remote_url = _git(repo, "remote", "get-url", remote).stdout.strip()
+        gh_repo = (
+            remote_url.removesuffix(".git").split("github.com", 1)[-1].lstrip(":/")
+            if "github.com" in remote_url
+            else None
+        )
+        outcome = land_pr.open_or_update_pull_request(
+            wt,
+            base,
+            branch,
+            f"[{run_id}] {CHECKBOX_SYNC_GROUP}: {', '.join(task_ids)}",
+            (
+                f"Marks {', '.join(f'`{t}`' for t in task_ids)} completed in the task "
+                f"artifact{' and archives the change' if result['archived'] else ''} -- "
+                f"these tail task(s) completed with no commits of their own, so no other "
+                f"PR carried their checkbox.\n\nparallel-orchestrator {run_id}."
+            ),
+            risk="low",
+            labels=None,
+            route=route or "",
+            gates=[g for g in gates.split(",") if g] if gates else [],
+            runner=subprocess.run,
+            base_slug=gh_repo,
+        )
+        if outcome.get("refused_step"):
+            result.update(state="QUARANTINED", detail=str(outcome.get("detail") or ""))
+            _write_group_journal(
+                journal_path,
+                CHECKBOX_SYNC_GROUP,
+                "",
+                branch,
+                "QUARANTINED",
+                QUARANTINE_INTEGRATION_ERROR,
+            )
+            return result
+        result["pr_url"] = outcome["pr_url"]
+        _write_group_journal(
+            journal_path, CHECKBOX_SYNC_GROUP, outcome["pr_url"], branch, "OPEN"
+        )
+        print(f"  PR [{CHECKBOX_SYNC_GROUP:9}] base={base:18} -> {outcome['pr_url']}")
+        verifier = (
+            make_verifier()
+            if make_verifier is not None
+            else _default_tail_verifier(repo, remote, base, spec_id)
+        )
+        merged: list = []
+        quarantined: dict = {}
+        verifier.verify_one(
+            {
+                "name": CHECKBOX_SYNC_GROUP,
+                "tasks": task_ids,
+                "depends_on": [],
+                "reqs": [],
+            },
+            branch,
+            None,
+            merged,
+            quarantined,
+            threading.Lock(),
+            armed={},
+        )
+        if CHECKBOX_SYNC_GROUP in merged:
+            result["state"] = "MERGED"
+            _write_group_journal(
+                journal_path, CHECKBOX_SYNC_GROUP, outcome["pr_url"], branch, "MERGED"
+            )
+        elif CHECKBOX_SYNC_GROUP in quarantined:
+            result.update(
+                state="QUARANTINED", detail=str(quarantined[CHECKBOX_SYNC_GROUP])
+            )
+            _write_group_journal(
+                journal_path,
+                CHECKBOX_SYNC_GROUP,
+                outcome["pr_url"],
+                branch,
+                "QUARANTINED",
+                QUARANTINE_INTEGRATION_ERROR,
+            )
+        else:
+            result["state"] = "OPEN"
+        return result
+    finally:
+        with lock:
+            _git(repo, "worktree", "remove", "--force", str(wt), check=False)
+        shutil.rmtree(wt, ignore_errors=True)
+
+
 def _record_unreconciled_tail_evidence(
     journal_path: str | None, findings: list
 ) -> None:
@@ -914,8 +1057,8 @@ def _run_drift_gate(iw: Path, name: str) -> tuple:
     `pre_pr_gate.changed_paths()`, which runs `git merge-base HEAD <base>` and
     `git diff --name-only` with `cwd` set to `--repo`; pointing this at the
     canonical repo (whose HEAD is the base branch) would yield an empty diff and
-    silently pass every check. `_refresh_pr_labels` may pass the canonical repo
-    because label resolution is policy-only and reads no diff.
+    silently pass every check. (Label resolution, by contrast, lives in
+    `land_pr.open_or_update_pull_request` and reads no diff.)
 
     Fail-closed like the smoke gate: an unresolvable gate script, a timeout, or a
     spawn error all return failure rather than letting an unchecked group open a PR.
@@ -1142,14 +1285,15 @@ def integrate_one(
     coexist -- BEFORE pushing/opening the PR. A non-zero exit quarantines the group
     instead of opening a red-CI PR, catching cross-task drift a CI round-trip earlier.
     None = skip. Only runs when the branch is freshly built (not on a remote-branch reuse).
-    pr_labels: initial labels resolved by the GO pre-PR gate. These are
-    REFRESHED immediately before each new group PR creation (by re-running
-    pre_pr_gate.py --labels-only) so every fresh PR reflects the current
+    pr_labels: seed labels resolved by the GO pre-PR gate. Only the seed's
+    go:risk-* label is used, as the risk from which
+    `land_pr.open_or_update_pull_request` recomputes the labels immediately
+    before each new group PR creation, so every fresh PR reflects the current
     policy and required-check state. Existing OPEN/MERGED PRs keep their
     original labels (deterministic). Pass None to skip label handling.
     route, gates: the classified route letter and comma-joined gates for
-    this run, forwarded to the label refresh so require_human_routes (and
-    any gate-driven eligibility check) reaches orchestrator-created group
+    this run, forwarded to that label computation so require_human_routes
+    (and any gate-driven eligibility check) reaches orchestrator-created group
     PRs the same way it reaches one-off PRs. Omit when unknown.
     policy: worktrail-go-policy.yaml's parsed dict, forwarded to
     `addons.runner.run_addons` so a freshly-built group branch gets its
@@ -1489,12 +1633,7 @@ def integrate_one(
         except Exception:  # noqa: BLE001, S110
             pass
 
-    # No PR found (conventional or operator); refresh labels and create new one
-    fresh_labels = _refresh_pr_labels(
-        repo, pr_labels, pr_base, gates=gates, route=route
-    )
-    effective_labels = fresh_labels if fresh_labels is not None else pr_labels
-
+    # No PR found (conventional or operator); open/update via land_pr pipeline
     remote_url = _git(repo, "remote", "get-url", remote).stdout.strip()
     gh_repo = (
         remote_url.removesuffix(".git").split("github.com", 1)[-1].lstrip(":/")
@@ -1511,47 +1650,65 @@ def integrate_one(
         if escalations
         else ""
     )
-    cmd = [
-        "gh",
-        "pr",
-        "create",
-        "--base",
-        pr_base,
-        "--head",
-        gb,
-        *_pr_label_args(effective_labels),
-        "--title",
-        f"[{run_id}] {name}: {', '.join(deliverable)}",
-        "--body",
-        (
-            f"Group **{name}** | reqs: {', '.join(g['reqs']) or '-'} "
-            f"| base: `{pr_base}`\n\nparallel-orchestrator {run_id}.{escalation_note}"
-        ),
-    ]
-    if gh_repo:
-        cmd += ["--repo", gh_repo]
-    # Transient-retried (the original defect): one GraphQL 500 on `gh pr create`
-    # must not quarantine a group whose implement/review/merge/smoke all passed.
-    r = _run_gh_with_retry(cmd, repo)
-    out = (
-        (r.stdout or r.stderr).strip().splitlines()[-1]
-        if (r.stdout or r.stderr)
-        else "(no output)"
+    title = f"[{run_id}] {name}: {', '.join(deliverable)}"
+    body = (
+        f"Group **{name}** | reqs: {', '.join(g['reqs']) or '-'} "
+        f"| base: `{pr_base}`\n\nparallel-orchestrator {run_id}.{escalation_note}"
     )
+    # Labels are computed inside the shared open/update step from the seed
+    # risk + this run's gates/route (design.md D6) -- integrate.py no longer
+    # runs a label refresh of its own. A seed with no go:risk-* label has
+    # nothing to recompute from, so it is forwarded verbatim instead.
+    risk = _extract_risk_from_labels(pr_labels or [])
+    effective_labels = None if risk is not None else list(pr_labels or [])
+    gates_list = [g for g in gates.split(",") if g] if gates else []
+
+    def _open_or_update() -> dict:
+        return land_pr.open_or_update_pull_request(
+            repo,
+            pr_base,
+            gb,
+            title,
+            body,
+            risk=risk or "",
+            labels=effective_labels,
+            route=route or "",
+            gates=gates_list,
+            runner=subprocess.run,
+            base_slug=gh_repo,
+        )
+
+    outcome = _open_or_update()
+    for attempt in range(1, GH_TRANSIENT_ATTEMPTS):
+        if not outcome.get("refused_step"):
+            break
+        detail = outcome.get("detail", "")
+        if not _gh_error_is_transient(detail):
+            break
+        wait = GH_TRANSIENT_BACKOFF_S * attempt
+        detail_excerpt = (detail or "(no detail)").splitlines()[-1][:160]
+        print(
+            f"  RETRY open/update PR transient failure "
+            f"(attempt {attempt}/{GH_TRANSIENT_ATTEMPTS - 1}, waiting {wait}s): {detail_excerpt}"
+        )
+        _retry_sleep(wait)
+        outcome = _open_or_update()
     # `gh pr create` fails the WHOLE command (no PR created, non-zero exit) on
     # an unresolvable --label, e.g. "could not add label: 'go:risk-medium' not
     # found" -- catch that here rather than recording the error text itself as
     # `pr_url` with state OPEN, which corrupts the journal and (on --pipeline)
     # reads back as a truthy pr_url, wrongly treated as "already integrated"
     # (see brief 20260723-102500, Bug 1 + Bug 2).
-    if r.returncode != 0 or not out.startswith("http"):
-        quarantined[name] = f"gh pr create failed: {out}"
+    if outcome.get("refused_step"):
+        detail = outcome.get("detail", "(no detail)")
+        quarantined[name] = f"gh pr create failed: {detail}"
         print(f"  SKIP [{name:9}] -- {quarantined[name]}")
         _do_journal(name, "", gb, "QUARANTINED", QUARANTINE_INTEGRATION_ERROR)
         return None
-    print(f"  PR [{name:9}] base={pr_base:18} -> {out}")
-    _do_journal(name, out, gb, "OPEN")
-    return (name, pr_base, out)
+    pr_url = outcome.get("pr_url")
+    print(f"  PR [{name:9}] base={pr_base:18} -> {pr_url}")
+    _do_journal(name, pr_url, gb, "OPEN")
+    return (name, pr_base, pr_url)
 
 
 def _read_group_journal_record(journal_path: str | None, name: str) -> dict:
