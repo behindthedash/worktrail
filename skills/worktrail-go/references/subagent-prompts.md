@@ -951,7 +951,7 @@ below picks up the resulting diff the same way as the devkit path.
 5. Update `knowledge-graph.json["metadata"]["updated_at"]` to the current ISO timestamp.
 6. Write the updated `knowledge-graph.json` back to `$SYNC_WT/docs/specs/$SPEC_ID/knowledge-graph.json`.
 
-**Step 4 — commit + PR if sync produced changes, with CI-wait gate:**
+**Step 4 — commit + PR if sync produced changes:**
 
 `git diff --quiet HEAD` only sees tracked-file changes — it misses a brand-new
 `knowledge-graph.json` written for a spec that had none yet (devkit path) or a
@@ -969,7 +969,7 @@ which reports untracked files too:
   # identical change on a differently-named branch (`chore/sync-$SPEC_ID` vs
   # this step's `sync/$SPEC_ID`) at any time, so neither side's own
   # same-branch dedup check ever sees the other's PR. A late fetch narrows —
-  # it cannot fully close — the TOCTOU window; Step 4b's immediate watch+merge
+  # it cannot fully close — the TOCTOU window; the immediate push+land below
   # is what actually keeps it narrow (confirmed live: PR #866 opened
   # unlabeled and sat 8+ hours with nothing to merge it, so drain's #867/#868
   # landed the same sync work first and left #866 CONFLICTING). Compare this
@@ -978,75 +978,36 @@ which reports untracked files too:
   git -C "$REPO" fetch origin
   if git -C "$SYNC_WT" diff --quiet "origin/$BASE" HEAD -- "$SYNC_PATH"; then
     echo "SYNC_ALREADY_LANDED: an equivalent change already reached $BASE (likely drain's own sweep) — skipping PR."
-    # No PR opened -> skip Step 4b entirely and tear down now, same as the
+    # No PR opened -> skip landing step and tear down now, same as the
     # "sync produces no changes" case below.
     git -C "$REPO" worktree remove "$SYNC_WT" --force
     git -C "$REPO" branch -D "sync/$SPEC_ID" 2>/dev/null || true
   else
     git -C "$SYNC_WT" push -u origin "sync/$SPEC_ID"
-    # Labels are mandatory, not optional: sync/archive PRs are always low risk,
-    # and without a go:risk-* label auto-merge never arms (policy.automerge_eligible()),
-    # so nothing merges or watches the PR for exactly the staleness/conflict risk
-    # above. Resolve via the same enforced path every other PR-producing step
-    # uses (worktrail-pre-pr-gate --labels-only), not a hardcoded literal.
-    PR_LABELS=$(worktrail-pre-pr-gate --repo "$SYNC_WT" --risk low --gates "" --target-branch "$BASE" --labels-only)
-    PR_LABEL_ARGS=()
-    for label in $PR_LABELS; do PR_LABEL_ARGS+=(--label "$label"); done
-    # gh derives owner/repo from the remote; no --repo flag needed for the consuming project
-    PR_URL=$(gh pr create --base "$BASE" --head "sync/$SPEC_ID" \
-      "${PR_LABEL_ARGS[@]}" \
+    # Land the sync PR through the shared pipeline, using checkpoint mode to
+    # append the outcome as a decision instead of finishing the run record.
+    # The run-record is still active for the spec worktree's own tail tasks
+    # and teardown, so checkpoint leaves the run open for the caller's use.
+    worktrail-land-pr \
+      --repo "$SYNC_WT" \
+      --base "$BASE" \
+      --run "$RUN" \
+      --route E \
+      --risk low \
+      --checkpoint \
       --title "sync($SPEC_ID): post-orchestrator docs update" \
-      --body "Updates spec artifacts and task statuses after orchestrator run. Auto-generated." \
-      | tail -1)
-
-    echo "$PR_URL"
+      --summary "Updates spec artifacts and task statuses after orchestrator run. Auto-generated." \
+      --json && {
+      # Tear down the sync worktree and branch after successful landing.
+      git -C "$REPO" worktree remove "$SYNC_WT" --force
+      git -C "$REPO" branch -D "sync/$SPEC_ID" 2>/dev/null || true
+    }
   fi
 }
 ```
 
-On `SYNC_ALREADY_LANDED`, `$PR_URL` is never set — skip Step 4b and proceed directly to
+On `SYNC_ALREADY_LANDED`, no PR is opened — proceed directly to
 `#worktree-lifecycle` for the spec worktree, same as the "sync produces no changes" case below.
-
-**Step 4b — CI-wait gate (separate Bash call, only if a PR was created).** Never
-hand-roll a `sleep` poll loop — a 30-min sleep loop exceeds the Bash tool's
-10-minute ceiling and strands the run (GO v1 defect L7, `docs/design/history/go-v2-design.md` §1.2).
-Use `gh pr checks --watch`, bounded by the Bash tool's `timeout` parameter:
-
-```bash
-# Run with the Bash tool timeout parameter set to 600000 (10 min).
-# --watch blocks until all checks settle; --fail-fast exits on first failure.
-gh pr checks "$PR_URL" --watch --fail-fast
-echo "CHECKS_EXIT=$?"
-```
-
-- **Exit 0** (all checks passed, or all skipped) → merge and tear down:
-  ```bash
-  gh pr merge "$PR_URL" --merge --delete-branch || echo "MERGE_BLOCKED"
-  # On success — Step 5, tear down the sync worktree:
-  git -C "$REPO" worktree remove "$SYNC_WT" --force
-  git -C "$REPO" branch -D "sync/$SPEC_ID" 2>/dev/null || true
-  # Step 6 — proceed to #worktree-lifecycle for the spec worktree.
-  ```
-  `MERGE_BLOCKED` (branch protection despite green checks) → quarantine: keep
-  `$SYNC_WT` and `$WT`, report the merge error, recovery = diagnose, fix,
-  re-run sync.
-- **Non-zero with a failed check** → quarantine: keep `$SYNC_WT` and `$WT`,
-  report which required check failed (`gh pr checks "$PR_URL"`), recovery =
-  fix CI, push to `sync/$SPEC_ID`, re-run sync.
-- **Bash tool timeout fired** (checks still pending after 10 min) → re-issue
-  the same `--watch` command, up to 3 times (30 min total). Still pending →
-  quarantine with worktrees preserved and report the stuck checks. Never
-  switch to a sleep loop and never background an unbounded waiter — and never
-  end the turn to "check again later": the whole wait stays inside these
-  blocking calls in one turn (single-turn wait discipline,
-  `ci-watch-loop.md` `{#ci-wait-discipline}`). When composing a NEW subagent
-  prompt with a PR tail, prefer ending the subagent at PR-opened and keeping
-  the wait in the dispatcher (wait-ownership rule, same section) unless the
-  subagent also owns failure classification.
-
-**Note on branch protection and CI-skip:** If `$BASE` has required status checks enforced via branch protection, `gh pr merge` itself will reject a red or pending PR. The `--watch` gate above is defence-in-depth and ensures conductor visibility into the wait; it also handles consuming projects that may lack branch protection.
-
-For `developer-kit` itself, both CI workflows (`plugin-validation.yml`, `skill-review.yml`) carry `paths-ignore: ['docs/specs/**']`. A spec-sync PR that only touches `docs/specs/` causes GitHub Actions to skip those workflows entirely; GitHub marks the skipped checks as "success" (not "pending"), so `--watch` returns immediately and `gh pr merge` proceeds without waiting. Do **not** use `[skip ci]` in the sync commit message instead — that suppresses check creation entirely, leaving required checks in "Expected" state and blocking the merge. Consuming repos (GGB, Datalena, etc.) should add the same `paths-ignore` pattern to their own CI if they want fast auto-merge on sync PRs.
 
 If sync produces no changes, skip step 4 (no commit/PR/CI-wait needed) but still tear down the sync worktree:
 ```bash
