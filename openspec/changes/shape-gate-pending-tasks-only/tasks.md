@@ -1,6 +1,6 @@
 ## 1. Pending-only fan-out filter
 
-- [ ] 1.1 In `src/worktrail/conductor/parallelism.py`, extend `shape_problems()`'s existing
+- [x] 1.1 In `src/worktrail/conductor/parallelism.py`, extend `shape_problems()`'s existing
   fan-out filter (`fanout = [t for t in merged if t.get("kind") not in TAIL_KINDS]`) to also
   exclude any task whose `status` is `"completed"`, so the critical-path/width, same-file
   chain, and missing-test-scope checks all evaluate only currently-pending fan-out tasks.
