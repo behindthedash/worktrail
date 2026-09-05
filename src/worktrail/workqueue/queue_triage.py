@@ -24,9 +24,9 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
-from ..orchestrator.integrate import _refresh_pr_labels
 from ..router import brief_probes, overlap_check
 from ..router.dashboard import _resolve_repo_dir
+from ..router.land_pr import LandRequest, land_pr
 from ..shared.brief_frontmatter import read_frontmatter, split_frontmatter
 from ..shared.homedir import worktrail_home
 from . import decisions, premise_check, repo_inference
@@ -2379,6 +2379,45 @@ def _push_target(repo_path: Path) -> tuple[str, str | None]:
     return remote, slug
 
 
+def _unpushed_base_error(repo_path: Path, base_branch: str) -> str | None:
+    """Error string when the local `base_branch` is ahead of the just-fetched
+    `origin/<base_branch>`, else `None`.
+
+    The worktree is branched off the remote ref, so any commit that exists
+    only locally -- typically the very change a fold targets -- would be
+    absent from it and the PR would edit a stale tree. A missing local
+    `base_branch` (bare clone, detached checkout) is not an error: there is
+    nothing local to be ahead.
+    """
+    counted = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo_path),
+            "rev-list",
+            "--count",
+            f"origin/{base_branch}..{base_branch}",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if counted.returncode != 0:
+        return None
+    try:
+        ahead = int(counted.stdout.strip() or "0")
+    except ValueError:
+        return None
+    if ahead == 0:
+        return None
+    return (
+        f"local {base_branch} is {ahead} commit(s) ahead of origin/{base_branch}; "
+        f"the triage worktree is created from origin/{base_branch}, so push "
+        f"{base_branch} first (or the PR would miss the target change)"
+    )
+
+
 def _worktree_pr_close(
     v: Verdict,
     *,
@@ -2391,30 +2430,33 @@ def _worktree_pr_close(
     commit_message: str,
     pr_body: str,
 ) -> dict:
-    """Shared worktree + validate + commit/push/PR + claim/close sequence.
+    """Shared worktree + validate + landing via router.land_pr + claim/close sequence.
 
     Per the spec's "Fold and propose are applied as a pull request,
     fail-closed" requirement: fetches `origin/<base_branch>` and creates a
     fresh worktree on `branch` off *that* remote ref -- the local
     `base_branch` in a long-lived checkout is routinely behind the remote, and
     branching off it opens a PR carrying unrelated regressions of already-
-    merged work -- then calls `prepare(worktree_dir)` to let the caller author the
+    merged work. The converse also fails closed: if the local `base_branch`
+    carries commits that `origin/<base_branch>` does not (live 2026-09-03: a
+    fold target committed locally but never pushed, so the worktree lacked
+    files present at local HEAD), this returns `status="error"` naming the
+    unpushed count rather than branching off a remote ref that predates the
+    target change -- then calls `prepare(worktree_dir)` to let the caller author the
     change in place (returning an error string on failure, `None` on
-    success), runs `openspec validate <validate_target> --strict`, runs
+    success), runs `openspec validate <validate_target> --strict`, and runs
     `worktrail-compile` on the change so its `.compile-ok` marker matches the
-    edited `tasks.md` (CI's Scope check, `check_compile_markers.py`, refuses a
-    change PR without one -- live 2026-09-02, worktrail #897/#898 both failed
-    it), commits, pushes to `_push_target()`'s remote, and opens the pull
-    request via `gh pr create` against that remote's repo. Only once
-    `gh pr create` reports a URL does this claim and close the brief (via
+    edited `tasks.md`. Then lands the change via `router.land_pr` which commits,
+    pushes, opens the pull request, watches CI, and completes the run record.
+    Only once a PR URL is returned does this claim and close the brief (via
     `claim()`/`done(..., triaged_to=pr_url)`, with rollback on `done()`
     failure) -- any failure before that point returns `status="error"` with
     the brief left completely untouched and the `branch` name it would have
     used, so a caller can diagnose or retry without the queue and the target
-    repo disagreeing about what happened. The local worktree (and, on
-    failure, the local branch) are always cleaned up in a `finally`,
-    regardless of outcome -- a pushed branch survives (git has no local undo
-    for a push), but nothing local should outlive this call.
+    repo disagreeing about what happened. The local worktree is cleaned up
+    in a `finally` except on `code_defect` or `review_threads_blocking` outcomes
+    where it is left on disk for manual review, otherwise it is always
+    removed regardless of outcome.
     """
     result = {
         "brief_id": v.brief_id,
@@ -2441,6 +2483,16 @@ def _worktree_pr_close(
                 f"git fetch origin {base_branch} failed: "
                 f"{(fetch.stderr or fetch.stdout).strip()}"
             ),
+            "branch": branch,
+        }
+
+    unpushed_error = _unpushed_base_error(repo_path, base_branch)
+    if unpushed_error:
+        return {
+            **result,
+            "status": "error",
+            "path": None,
+            "error": unpushed_error,
             "branch": branch,
         }
 
@@ -2471,6 +2523,7 @@ def _worktree_pr_close(
         }
 
     pr_url = None
+    outcome = None
     try:
         prepare_error = prepare(worktree_dir)
         if prepare_error:
@@ -2525,103 +2578,81 @@ def _worktree_pr_close(
                 "branch": branch,
             }
 
-        for git_args in (["add", "-A"], ["commit", "-m", commit_message]):
-            r = subprocess.run(
-                ["git", *git_args],
-                check=False,
-                capture_output=True,
-                text=True,
-                cwd=str(worktree_dir),
-                timeout=60,
-            )
-            if r.returncode != 0:
-                return {
-                    **result,
-                    "status": "error",
-                    "path": None,
-                    "error": (
-                        f"git {' '.join(git_args)} failed: "
-                        f"{(r.stderr or r.stdout).strip()}"
-                    ),
-                    "branch": branch,
-                }
-
-        push_remote, base_slug = _push_target(repo_path)
-        push = subprocess.run(
-            ["git", "push", "-u", push_remote, branch],
-            check=False,
-            capture_output=True,
-            text=True,
-            cwd=str(worktree_dir),
-            timeout=120,
+        land_request = LandRequest(
+            repo=str(worktree_dir),
+            base_branch=base_branch,
+            title=_planned_fold_propose_pr_title(v),
+            summary=pr_body,
+            route="C",
+            risk="low",
+            run=None,
+            request_summary=f"queue-triage {v.verdict} {v.brief_id}",
+            commit_message=commit_message,
+            watch_timeout_s=600,
         )
-        if push.returncode != 0:
+        outcome = land_pr(land_request)
+
+        pr_url = outcome.pr_url or ""
+        if outcome.outcome == "refused":
             return {
                 **result,
                 "status": "error",
                 "path": None,
-                "error": f"git push failed: {(push.stderr or push.stdout).strip()}",
+                "error": f"land_pr refused at {outcome.refused_step}"
+                + (f": {outcome.detail}" if outcome.detail else ""),
                 "branch": branch,
             }
 
-        labels = _refresh_pr_labels(worktree_dir, ["go:risk-low"], base_branch) or [
-            "go:risk-low"
-        ]
-        pr_cmd = ["gh", "pr", "create"]
-        if base_slug:
-            pr_cmd += ["-R", base_slug]
-        pr_cmd += ["--base", base_branch, "--head", branch]
-        for label in labels:
-            pr_cmd += ["--label", label]
-        pr_cmd += [
-            "--title",
-            _planned_fold_propose_pr_title(v),
-            "--body",
-            pr_body,
-        ]
-        pr = subprocess.run(
-            pr_cmd,
-            check=False,
-            capture_output=True,
-            text=True,
-            cwd=str(worktree_dir),
-            timeout=60,
-        )
-        pr_output = (pr.stdout or pr.stderr).strip()
-        pr_url = pr_output.splitlines()[-1] if pr_output else ""
-        if pr.returncode != 0 or not pr_url.startswith("http"):
-            pr_url = ""
+        if not pr_url:
             return {
                 **result,
                 "status": "error",
                 "path": None,
-                "error": f"gh pr create failed: {pr_output or '(no output)'}",
+                "error": f"land_pr {outcome.outcome} but no pr_url returned",
                 "branch": branch,
             }
     finally:
-        subprocess.run(
-            [
-                "git",
-                "-C",
-                str(repo_path),
-                "worktree",
-                "remove",
-                "--force",
-                str(worktree_dir),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        if not pr_url:
+        # Keep worktree on code_defect/review_threads_blocking for manual review
+        if outcome is None or outcome.outcome not in (
+            "code_defect",
+            "review_threads_blocking",
+        ):
             subprocess.run(
-                ["git", "-C", str(repo_path), "branch", "-D", branch],
+                [
+                    "git",
+                    "-C",
+                    str(repo_path),
+                    "worktree",
+                    "remove",
+                    "--force",
+                    str(worktree_dir),
+                ],
                 check=False,
                 capture_output=True,
                 text=True,
                 timeout=60,
             )
+            if not pr_url:
+                subprocess.run(
+                    ["git", "-C", str(repo_path), "branch", "-D", branch],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+
+    # Build the landing sub-dict for outcomes with a PR
+    landing_dict = {
+        "outcome": outcome.outcome,
+        "run": outcome.run,
+        "final_status": outcome.final_status,
+        "merge_result": outcome.merge_result,
+        "failing_checks": outcome.failing_checks,
+    }
+
+    # On code_defect/review_threads_blocking, keep the worktree and report it
+    if outcome.outcome in ("code_defect", "review_threads_blocking"):
+        landing_dict["worktree"] = str(worktree_dir)
 
     # A PR now exists -- from here on, closing the brief is safe to attempt.
     # Any failure past this point is reported against the now-real branch/PR,
@@ -2637,6 +2668,7 @@ def _worktree_pr_close(
             + (f" ({detail})" if detail else ""),
             "branch": branch,
             "pr_url": pr_url,
+            "landing": landing_dict,
         }
     done_res = done(v.brief_id, note=v.evidence, triaged_to=pr_url)
     if done_res["status"] != "done":
@@ -2650,6 +2682,7 @@ def _worktree_pr_close(
             "rolled_back": release_res["status"] == "released",
             "branch": branch,
             "pr_url": pr_url,
+            "landing": landing_dict,
         }
     return {
         **result,
@@ -2658,6 +2691,7 @@ def _worktree_pr_close(
         "error": None,
         "branch": branch,
         "pr_url": pr_url,
+        "landing": landing_dict,
     }
 
 
@@ -2698,12 +2732,12 @@ def _fold_task_file_scope(worktree_dir: Path, evidence: str) -> list[str]:
 def _apply_fold_into_change(
     v: Verdict, *, repos_root: str | Path | None = None
 ) -> dict:
-    """`fold-into-change`: worktree + proposal/tasks edit + validate + PR + close.
+    """`fold-into-change`: worktree + proposal/tasks edit + validate + landing via router.land_pr + close.
 
     Appends a `## Folded from <brief-id>` section to the target change's
     `proposal.md` and a new unchecked `## N. Folded from <brief-id>` task
     group to its `tasks.md` (`_next_task_group_number()`), then hands off to
-    `_worktree_pr_close()` for the shared validate/commit/push/PR/close
+    `_worktree_pr_close()` for the shared validate/landing via router.land_pr
     sequence.
     """
     result = {
@@ -2787,13 +2821,13 @@ def _apply_fold_into_change(
 def _apply_propose_change(
     v: Verdict, *, agent: str = "claude", repos_root: str | Path | None = None
 ) -> dict:
-    """`propose-change`: worktree + `openspec new change` + agent-authored change + validate + PR + close.
+    """`propose-change`: worktree + `openspec new change` + agent-authored change + validate + landing via router.land_pr + close.
 
     Runs `openspec new change <proposed_change_name>` to scaffold the change
     directory, then one `spawnlib.spawn_agent()` call (per
     `PROPOSE_CHANGE_PROMPT_TEMPLATE`) to author `proposal.md`/`design.md`/
     `specs/`/`tasks.md` in place, before handing off to
-    `_worktree_pr_close()` for the shared validate/commit/push/PR/close
+    `_worktree_pr_close()` for the shared validate/landing via router.land_pr
     sequence (mirroring `_apply_fold_into_change()`, per the spec's "Fold
     and propose are applied as a pull request, fail-closed" requirement,
     which covers both verdict types).
