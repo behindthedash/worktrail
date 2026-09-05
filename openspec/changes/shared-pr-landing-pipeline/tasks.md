@@ -177,7 +177,7 @@
 
 ## 9. Prose: sync-PR subagent step
 
-- [ ] 9.1 In `skills/worktrail-go/references/subagent-prompts.md`'s sync step, replace the
+- [x] 9.1 In `skills/worktrail-go/references/subagent-prompts.md`'s sync step, replace the
       `worktrail-pre-pr-gate --labels-only` + `gh pr create` block and Step 4b's `gh pr
       checks --watch` / `gh pr merge` with `worktrail-land-pr --repo "$SYNC_WT" --base
       "$BASE" --run "$RUN" --route E --risk low --checkpoint …`; keep the
