@@ -12,8 +12,14 @@ import json
 from worktrail.conductor import parallelism
 
 
-def _task(tid, *, deps=(), files=(), kind="impl"):
-    return {"id": tid, "deps": list(deps), "files": list(files), "kind": kind}
+def _task(tid, *, deps=(), files=(), kind="impl", status="pending"):
+    return {
+        "id": tid,
+        "deps": list(deps),
+        "files": list(files),
+        "kind": kind,
+        "status": status,
+    }
 
 
 def _chain(n, file="src/hot.py"):
@@ -190,3 +196,48 @@ def test_missing_test_scope_rule_exempt_for_tail_kinds(tmp_path):
     (tmp_path / "tests" / "test_foo.py").write_text("")
     tasks = [_task("a", files=["src/foo.py"], kind="e2e")]
     assert parallelism.shape_problems(tasks, tmp_path, {}) == []
+
+
+# --------------------------------------------------------------------------- #
+# shape_problems() judges the work still ahead: completed tasks are excluded
+# --------------------------------------------------------------------------- #
+def test_completed_predecessors_do_not_count_toward_the_serial_rule(tmp_path):
+    # The same 5-task chain the serial rule fires on, with its first three
+    # already run: only t3 -> t4 is still ahead, which is within the default.
+    tasks = [
+        _task(
+            f"t{i}",
+            deps=[f"t{i - 1}"] if i else [],
+            files=[f"f{i}.py"],
+            status="completed" if i < 3 else "pending",
+        )
+        for i in range(5)
+    ]
+    assert parallelism.shape_problems(tasks, tmp_path, {}) == []
+
+
+def test_a_completed_writer_no_longer_extends_a_same_file_chain(tmp_path):
+    tasks = _chain(3, file="src/hot.py")
+    tasks[0]["status"] = "completed"
+    # Suppress the serial rule so only the same-file rule is under test.
+    policy = {"compile_max_critical_path_over_width": 100}
+    assert parallelism.shape_problems(tasks, tmp_path, policy) == []
+
+
+def test_a_completed_task_with_missing_test_scope_is_not_flagged(tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_foo.py").write_text("")
+    tasks = [_task("a", files=["src/foo.py"], status="completed")]
+    assert parallelism.shape_problems(tasks, tmp_path, {}) == []
+
+
+def test_a_fully_pending_plan_evaluates_exactly_as_before(tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_hot.py").write_text("")
+    pending = _chain(3, file="src/hot.py")
+    without_status = [{k: v for k, v in t.items() if k != "status"} for t in pending]
+    problems = parallelism.shape_problems(pending, tmp_path, {})
+    assert problems == parallelism.shape_problems(without_status, tmp_path, {})
+    assert any("serial" in p for p in problems)
+    assert any("same-file chain" in p for p in problems)
+    assert any("missing test scope" in p for p in problems)

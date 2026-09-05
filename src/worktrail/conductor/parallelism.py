@@ -189,11 +189,20 @@ def shape_problems(
     or transitive), so restricting to one file's writers always yields a
     totally-ordered chain, not merely a partial one.
 
+    Tail kinds are excluded (they run after the fan-out), and so are tasks
+    already `status: "completed"` -- all three rules judge the work still
+    ahead of the run, so a chain or a same-file pile-up that has already been
+    executed must not fail a re-compile.
+
     An empty result means the plan is fine; any non-empty result is meant to
     fail the compile (`compile.py` raises `PlanShapeError`), not just warn.
     """
     repo = Path(repo)
-    fanout = [t for t in merged if t.get("kind") not in TAIL_KINDS]
+    fanout = [
+        t
+        for t in merged
+        if t.get("kind") not in TAIL_KINDS and t.get("status") != "completed"
+    ]
     if not fanout:
         return []
 
