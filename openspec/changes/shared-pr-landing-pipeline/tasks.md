@@ -137,7 +137,7 @@
 
 ## 6. Prose: sdd-workflow Phase 8
 
-- [ ] 6.1 In `skills/worktrail-sdd-workflow/SKILL.md` Phase 8, keep the
+- [x] 6.1 In `skills/worktrail-sdd-workflow/SKILL.md` Phase 8, keep the
       scope-completeness gate paragraph; replace the "Mandatory pre-PR test gate",
       "Automerge labels", and "For every PR produced" 1–4 sections with one
       `worktrail-land-pr` command block (flags per design.md D8), its exit-code table,
