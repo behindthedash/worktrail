@@ -829,6 +829,11 @@ def rank_change_candidates(
     "open_task_count", "score"}`. `repo` falsy (`repo: null`), a repo with
     no active changes, and a repo whose every active change scores below the
     floor all return `[]` -- there is nothing worth ranking against.
+
+    A change that clears the focus-overlap floor but whose Non-Goals section
+    overlaps the brief's focus is excluded: if the change has a Non-Goals
+    section and `_overlap_coefficient(brief_tokens, non_goal_tokens) >=
+    _MIN_CANDIDATE_SCORE`, the change is skipped and not returned.
     """
     if not repo:
         return []
@@ -859,6 +864,16 @@ def rank_change_candidates(
         score = _overlap_coefficient(brief_tokens, _tokenize(summary) | task_tokens)
         if score < _MIN_CANDIDATE_SCORE:
             continue
+
+        change_dir = specs_root / "changes" / change["spec_id"]
+        non_goal_tokens = _non_goal_tokens(change_dir)
+        if (
+            non_goal_tokens
+            and _overlap_coefficient(brief_tokens, non_goal_tokens)
+            >= _MIN_CANDIDATE_SCORE
+        ):
+            continue
+
         scored.append(
             (
                 score,
