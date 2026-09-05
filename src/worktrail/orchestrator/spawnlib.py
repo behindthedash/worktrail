@@ -418,7 +418,8 @@ SUPPORTED_AGENTS = {"claude", "codex", "opencode"}
 def _with_default_setting_sources(
     agent: str, extra_args: Sequence[str] | None
 ) -> list[str]:
-    """Default `--setting-sources project,local` onto every `claude` spawn.
+    """Default `--setting-sources project,local` and the worker worktree guard
+    (`--settings`, see `worker_guard_settings_json`) onto every `claude` spawn.
 
     Excludes the operator's USER-level ~/.claude/settings.json (and its Stop
     hook) from headless worker sessions -- confirmed root cause (investigation
@@ -433,9 +434,44 @@ def _with_default_setting_sources(
     user-level settings) is respected as-is and never overridden.
     """
     args = list(extra_args or [])
-    if agent == "claude" and "--setting-sources" not in args:
-        return ["--setting-sources", "project,local", *args]
+    if agent != "claude":
+        return args
+    if "--setting-sources" not in args:
+        args = ["--setting-sources", "project,local", *args]
+    if "--settings" not in args:
+        args = ["--settings", worker_guard_settings_json(), *args]
     return args
+
+
+def worker_guard_settings_json() -> str:
+    """The `--settings` JSON that injects `worktree_guard_hook` into a claude
+    worker as a PreToolUse hook. `--settings` is an additional settings source
+    that `--setting-sources project,local` does not drop, so the guard reaches
+    every worker regardless of the operator's own ~/.claude/settings.json --
+    which is exactly what let a worker write into the canonical checkout on
+    2026-09-05 (see the hook module's docstring). Runs the hook with the same
+    interpreter the orchestrator runs under, so it resolves the installed
+    `worktrail` package without depending on PATH."""
+    from . import worktree_guard_hook
+
+    return json.dumps(
+        {
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": worktree_guard_hook.HOOK_MATCHER,
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": f"{sys.executable} -m worktrail.orchestrator.worktree_guard_hook",
+                                "timeout": 5,
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+    )
 
 
 def build_cmd(
