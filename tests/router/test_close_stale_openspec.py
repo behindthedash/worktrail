@@ -15,6 +15,7 @@ import unittest.mock
 from pathlib import Path
 
 from worktrail.router import close_stale_openspec as cso
+from worktrail.router.land_pr import LandOutcome
 
 TASKS_MD = """## 1. Setup
 
@@ -129,6 +130,164 @@ class TestArchiveFailureIsSurfaced(unittest.TestCase):
 
             self.assertFalse(res["archived"])
             self.assertIn("boom", res["error"])
+
+
+class TestMainInvokesLandPrOnSuccess(unittest.TestCase):
+    def test_main_calls_land_pr_after_successful_flip_and_archive(self):
+        with tempfile.TemporaryDirectory() as t:
+            wt = Path(t)
+            _write_change(wt, "test-change")
+
+            mock_outcome = LandOutcome(
+                outcome="landed",
+                pr_url="https://github.com/org/repo/pull/123",
+                pr_number=123,
+                final_status="completed_pr_open",
+                merge_result="eligible for auto-merge",
+            )
+
+            with (
+                _patch_openspec_archive(0),
+                unittest.mock.patch(
+                    "worktrail.router.close_stale_openspec.land_pr",
+                    return_value=mock_outcome,
+                ) as mock_land_pr,
+            ):
+                result = cso.main(
+                    [
+                        "--worktree",
+                        str(wt),
+                        "--change-id",
+                        "test-change",
+                        "--base",
+                        "main",
+                        "--run",
+                        "/path/to/run",
+                        "--json",
+                    ]
+                )
+
+            # Verify land_pr was called once with correct parameters
+            self.assertEqual(mock_land_pr.call_count, 1)
+            call_args = mock_land_pr.call_args[0][0]  # First positional arg
+            self.assertEqual(call_args.repo, str(wt))
+            self.assertEqual(call_args.base_branch, "main")
+            self.assertEqual(
+                call_args.title, "chore(test-change): close stale bookkeeping"
+            )
+            self.assertEqual(call_args.route, "E")
+            self.assertEqual(call_args.risk, "low")
+            self.assertEqual(call_args.run, "/path/to/run")
+            self.assertEqual(result, 0)  # landed exit code
+
+    def test_main_does_not_call_land_pr_when_flip_and_archive_fails(self):
+        with tempfile.TemporaryDirectory() as t:
+            wt = Path(t)
+            # Don't create the change directory; this will fail flip_and_archive
+            with unittest.mock.patch(
+                "worktrail.router.close_stale_openspec.land_pr"
+            ) as mock_land_pr:
+                result = cso.main(
+                    [
+                        "--worktree",
+                        str(wt),
+                        "--change-id",
+                        "nonexistent-change",
+                        "--base",
+                        "main",
+                        "--json",
+                    ]
+                )
+
+            # land_pr should not have been called
+            self.assertEqual(mock_land_pr.call_count, 0)
+            self.assertEqual(result, 1)  # error exit code
+
+    def test_main_includes_landing_outcome_in_json_output(self):
+        with tempfile.TemporaryDirectory() as t:
+            wt = Path(t)
+            _write_change(wt, "test-change")
+
+            mock_outcome = LandOutcome(
+                outcome="landed",
+                pr_url="https://github.com/org/repo/pull/42",
+                pr_number=42,
+                final_status="completed_and_merged",
+                merge_result="merged by automerge",
+                run="/some/run/path",
+            )
+
+            with (
+                _patch_openspec_archive(0),
+                unittest.mock.patch(
+                    "worktrail.router.close_stale_openspec.land_pr",
+                    return_value=mock_outcome,
+                ),
+                unittest.mock.patch("builtins.print") as mock_print,
+            ):
+                cso.main(
+                    [
+                        "--worktree",
+                        str(wt),
+                        "--change-id",
+                        "test-change",
+                        "--base",
+                        "main",
+                        "--run",
+                        "/path/to/run",
+                        "--json",
+                    ]
+                )
+
+            # Verify print was called with JSON containing the landing outcome
+            self.assertEqual(mock_print.call_count, 1)
+            output_json = mock_print.call_args[0][0]
+            import json
+
+            output_dict = json.loads(output_json)
+            self.assertIn("landing", output_dict)
+            self.assertEqual(output_dict["landing"]["outcome"], "landed")
+            self.assertEqual(
+                output_dict["landing"]["pr_url"], "https://github.com/org/repo/pull/42"
+            )
+            self.assertEqual(output_dict["landing"]["pr_number"], 42)
+
+    def test_main_maps_landing_outcomes_to_exit_codes(self):
+        test_cases = [
+            ("landed", 0),
+            ("refused", 2),
+            ("code_defect", 3),
+            ("review_threads_blocking", 3),
+            ("ceiling", 4),
+        ]
+
+        for outcome_str, expected_exit_code in test_cases:
+            with self.subTest(outcome=outcome_str), tempfile.TemporaryDirectory() as t:
+                wt = Path(t)
+                _write_change(wt, "test-change")
+
+                mock_outcome = LandOutcome(outcome=outcome_str)
+
+                with (
+                    _patch_openspec_archive(0),
+                    unittest.mock.patch(
+                        "worktrail.router.close_stale_openspec.land_pr",
+                        return_value=mock_outcome,
+                    ),
+                ):
+                    result = cso.main(
+                        [
+                            "--worktree",
+                            str(wt),
+                            "--change-id",
+                            "test-change",
+                            "--base",
+                            "main",
+                            "--json",
+                        ]
+                    )
+
+                self.assertEqual(result, expected_exit_code)
 
 
 if __name__ == "__main__":

@@ -11,25 +11,25 @@ each hand-rolled the same three steps: flip every remaining unchecked
 checkbox in the change's `tasks.md`, run `openspec archive -y`, and let the
 caller's normal commit/push/PR/pre-PR-gate flow take it from there.
 
-This module scripts only the first two of those -- the mechanical, identical-
-every-time part. It deliberately does NOT commit, push, open a PR, or run
-`gh` at all: worktrail-go's own Phase 8 (pre-PR gate, PR template, automerge
-labels, CI watch loop) already owns that path and enforces label correctness
-via a PreToolUse hook (`worktrail-preflight`) that a bespoke `gh pr create`
-call here would bypass. It also does NOT decide which tasks are safe to flip
--- confirming that a task's shipped work is actually on `$BASE` (the "confirm
-the spec's pending impl tasks are truly shipped" step SKILL.md's close-stale
-row already documents) stays a judgment call for the dispatching agent, since
-OpenSpec's `tasks.md` carries no per-task `files:` frontmatter to check
-mechanically (unlike the devkit format's `TASK-*.md`) -- see
+This module scripts all three steps now: after flipping and archiving,
+it lands the bookkeeping PR through the shared `land_pr` pipeline (commit,
+compile-marker gate, preflight + labels, push, create/update PR, watch CI,
+finish run record). This single shared pipeline replaces every dispatcher's
+own hand-rolled commit/push/PR logic, ensuring correct label handling and
+CI watching across all callers. It also does NOT decide which tasks are safe
+to flip -- confirming that a task's shipped work is actually on `$BASE` (the
+"confirm the spec's pending impl tasks are truly shipped" step SKILL.md's
+close-stale row already documents) stays a judgment call for the dispatching
+agent, since OpenSpec's `tasks.md` carries no per-task `files:` frontmatter
+to check mechanically (unlike the devkit format's `TASK-*.md`) -- see
 `taskformats/openspec/schema.py`'s module docstring.
 
 `drain.py`'s `archive_openspec_change` is a different, non-reusable shape for
 this: it creates its own worktree/branch, assumes checkboxes are already
 flipped, and drives `gh pr create` directly for drain's own unattended
 background sweep. Nothing here duplicates it -- this operates on a worktree
-`worktrail-go` already created (`#fix-branch-worktree-setup`) and stops before
-the PR boundary.
+`worktrail-go` already created (`#fix-branch-worktree-setup`) and lands
+through the shared pipeline.
 """
 
 from __future__ import annotations
@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any
 
 from ..taskformats.openspec.schema import parse_tasks_md, set_task_checked
+from .land_pr import LandRequest, land_pr
 
 
 def flip_and_archive(
@@ -152,22 +153,62 @@ def main(argv=None) -> int:
         default=None,
         help="comma-separated task ids to flip (e.g. 2.1,3.1); default: all pending",
     )
+    parser.add_argument("--base", required=True, help="base branch for landing")
+    parser.add_argument("--run", default=None, help="run record path")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
     task_ids = args.task_ids.split(",") if args.task_ids else None
     res = flip_and_archive(Path(args.worktree), args.change_id, task_ids)
 
+    if res["error"]:
+        # flip_and_archive failed; do not attempt to land
+        if args.json:
+            print(json.dumps(res))
+        else:
+            print(f"ERROR: {res['error']}")
+        return 1
+
+    # Successful flip and archive; land the PR through the shared pipeline
+    landing_request = LandRequest(
+        repo=args.worktree,
+        base_branch=args.base,
+        title=f"chore({args.change_id}): close stale bookkeeping",
+        summary="Archive completed OpenSpec change",
+        route="E",
+        risk="low",
+        run=args.run,
+        commit_message=f"chore({args.change_id}): archive completed change",
+    )
+    landing_outcome = land_pr(landing_request)
+
+    # Merge landing outcome into result
+    res["landing"] = {
+        "outcome": landing_outcome.outcome,
+        "pr_url": landing_outcome.pr_url,
+        "pr_number": landing_outcome.pr_number,
+        "final_status": landing_outcome.final_status,
+        "merge_result": landing_outcome.merge_result,
+        "run": landing_outcome.run,
+    }
+
     if args.json:
         print(json.dumps(res))
-    elif res["error"]:
-        print(f"ERROR: {res['error']}")
     else:
         print(
             f"flipped={res['flipped']} already_checked={res['already_checked']} "
-            f"archived={res['archived']}"
+            f"archived={res['archived']} landing={landing_outcome.outcome}"
         )
-    return 0 if res["archived"] else 1
+
+    # Map landing outcome to exit code
+    exit_code_map = {
+        "landed": 0,
+        "refused": 2,
+        "code_defect": 3,
+        "review_threads_blocking": 3,
+        "ceiling": 4,
+    }
+    return exit_code_map.get(landing_outcome.outcome, 1)
 
 
 if __name__ == "__main__":
