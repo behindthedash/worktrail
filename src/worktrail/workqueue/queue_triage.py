@@ -84,8 +84,9 @@ _NON_GOALS_MARKER_RE = re.compile(
     r"^##\s+Non-Goals\s*$|"
     r"^\*\*(?:Non-Goals|Out of scope)\:\*\*|"
     r"^-\s+\*\*(?:Non-goals|Out of scope)\*\*:"
-    r")",
-    re.MULTILINE,
+    r")"
+    r".*?(?=^#{1,6}(?:\s|$)|\Z)",
+    re.MULTILINE | re.DOTALL,
 )
 
 # `work-directly` requires evidence citing a specific test, check, or command
@@ -798,16 +799,7 @@ def _non_goal_tokens(change_dir: Path) -> set[str]:
             continue
 
         for match in _NON_GOALS_MARKER_RE.finditer(content):
-            start = match.end()
-            remaining = content[start:]
-            heading_match = re.search(r"^#", remaining, re.MULTILINE)
-
-            if heading_match:
-                end = start + heading_match.start()
-            else:
-                end = len(content)
-
-            combined_text += content[start:end]
+            combined_text += match.group(0)
 
     if not combined_text:
         return set()

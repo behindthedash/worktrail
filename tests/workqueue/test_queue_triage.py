@@ -4272,6 +4272,26 @@ class TestNonGoalTokens(QueueTriageTestBase):
         self.assertIn("network", result)
         self.assertIn("optimization", result)
 
+    def test_hashtag_not_treated_as_heading_boundary(self):
+        """Verify that #hashtag in content does not end the section."""
+        change_dir = self.base / "change8"
+        change_dir.mkdir(parents=True)
+        (change_dir / "proposal.md").write_text(
+            "# Widget Export\n\n"
+            "## Non-Goals\n\n"
+            "Some text here #hashtag more text omega final.\n\n"
+            "## Other\n\nOther content.\n",
+            encoding="utf-8",
+        )
+
+        result = qt._non_goal_tokens(change_dir)
+
+        # The section should include "omega" even though "#hashtag" appears
+        # (since #hashtag is not an ATX heading, just a # in the text)
+        self.assertIn("omega", result)
+        self.assertIn("hashtag", result)
+        self.assertNotIn("other", result)
+
 
 class TestEscalationLimitsAndDue(QueueTriageTestBase):
     """4.1(b): `_escalation_limits()`/`escalation_due()`, design D5."""
