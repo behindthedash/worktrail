@@ -86,6 +86,9 @@ class RunRecordSpy:
     def set_calls(self) -> list[list[str]]:
         return [c for c in self.calls if c[0] == "set"]
 
+    def scope_review_calls(self) -> list[list[str]]:
+        return [c for c in self.calls if c[0] == "scope-review"]
+
 
 def _land_request(**overrides) -> land_pr.LandRequest:
     kwargs = {
@@ -759,6 +762,81 @@ class LandPrOrchestrationTests(unittest.TestCase):
         self.assertEqual(outcome.final_status, "blocked_product_decision")
         finish_calls = spy.finish_calls()
         self.assertEqual(len(finish_calls), 1)
+
+    def _assert_one_scope_review_before_finish(self, spy: RunRecordSpy) -> None:
+        scope_calls = spy.scope_review_calls()
+        self.assertEqual(len(scope_calls), 1)
+        self.assertEqual(scope_calls[0][1], spy.run_path)
+        self.assertIn("--item", scope_calls[0])
+        self.assertIn("queue-triage apply brief-1", scope_calls[0])
+        self.assertIn("complete", scope_calls[0])
+        self.assertIn("--evidence", scope_calls[0])
+        evidence = scope_calls[0][scope_calls[0].index("--evidence") + 1]
+        self.assertIn("on feature -> https://github.com/o/r/pull/1", evidence)
+        kinds = [c[0] for c in spy.calls]
+        self.assertLess(kinds.index("scope-review"), kinds.index("finish"))
+
+    def test_run_none_open_branch_records_scope_review_before_finish(self) -> None:
+        request = _land_request(run=None, request_summary="queue-triage apply brief-1")
+        outcome, spy = self._run(request, run_record_spy=RunRecordSpy("runs/n.yaml"))
+        self.assertEqual(outcome.final_status, "completed_pr_open")
+        self._assert_one_scope_review_before_finish(spy)
+
+    def test_run_none_merged_branch_records_scope_review_before_finish(
+        self,
+    ) -> None:
+        request = _land_request(run=None, request_summary="queue-triage apply brief-1")
+        outcome, spy = self._run(
+            request,
+            run_record_spy=RunRecordSpy("runs/n.yaml"),
+            _merge_state_guard={"state": "MERGED", "mergeStateStatus": "CLEAN"},
+        )
+        self.assertEqual(outcome.final_status, "completed_and_merged")
+        self._assert_one_scope_review_before_finish(spy)
+
+    def test_run_none_blocked_branch_records_scope_review_before_finish(
+        self,
+    ) -> None:
+        request = _land_request(run=None, request_summary="queue-triage apply brief-1")
+        outcome, spy = self._run(
+            request,
+            run_record_spy=RunRecordSpy("runs/n.yaml"),
+            _merge_state_guard={"state": "OPEN", "mergeStateStatus": "BLOCKED"},
+        )
+        self.assertEqual(outcome.final_status, "blocked_product_decision")
+        self._assert_one_scope_review_before_finish(spy)
+
+    def test_run_none_checkpoint_mode_records_no_scope_review(self) -> None:
+        request = _land_request(run=None, checkpoint=True)
+        outcome, spy = self._run(request)
+        self.assertEqual(outcome.outcome, "landed")
+        self.assertEqual(spy.scope_review_calls(), [])
+        self.assertEqual(spy.finish_calls(), [])
+
+    def test_caller_supplied_run_records_no_scope_review(self) -> None:
+        request = _land_request()
+        outcome, spy = self._run(request)
+        self.assertEqual(outcome.outcome, "landed")
+        self.assertEqual(spy.scope_review_calls(), [])
+        self.assertEqual(len(spy.finish_calls()), 1)
+
+    def test_finish_systemexit_string_surfaces_as_ceiling_detail(self) -> None:
+        class GateRefusingSpy(RunRecordSpy):
+            def __call__(self, argv: list[str]) -> int:
+                if argv[0] == "finish":
+                    self.calls.append(list(argv))
+                    raise SystemExit("scope_completeness_gate: 1 item(s) unreviewed")
+                return super().__call__(argv)
+
+        request = _land_request(run=None)
+        outcome, spy = self._run(request, run_record_spy=GateRefusingSpy())
+        self.assertEqual(outcome.outcome, "ceiling")
+        self.assertEqual(outcome.final_status, "failed_recoverable")
+        self.assertEqual(
+            outcome.merge_result, "PR open but run record could not be completed"
+        )
+        self.assertIn("scope_completeness_gate: 1 item(s) unreviewed", outcome.detail)
+        self.assertEqual(len(spy.finish_calls()), 1)
 
 
 if __name__ == "__main__":
