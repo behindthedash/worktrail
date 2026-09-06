@@ -43,7 +43,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [e2e] Run `PYTHONPATH=src pytest -q tests/router/test_land_pr.py
+- [x] 2.1 [e2e] Run `PYTHONPATH=src pytest -q tests/router/test_land_pr.py
       tests/router/test_land_pr_integration.py
       tests/router/test_land_pr_push_refusal.py
       tests/router/test_land_pr_resume.py` and `PYTHONPATH=src pytest -q
