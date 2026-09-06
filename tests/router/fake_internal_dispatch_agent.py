@@ -12,6 +12,13 @@ import sys
 import time
 from pathlib import Path
 
+# Executed as a bare script (`python3 fake_internal_dispatch_agent.py`), so the
+# `tests.router` package is not importable here -- reach the shared budget by
+# path instead of relying on PYTHONPATH surviving into the child environment.
+sys.path.insert(0, str(Path(__file__).parent))
+
+from _subprocess_timeouts import subprocess_timeout_s
+
 _RUN_PATH = re.compile(r"^Run record path: (.+)$", re.MULTILINE)
 
 
@@ -54,14 +61,14 @@ def _run_wrapper_lifecycle(agent: str, provider_args: list[str], prompt: str) ->
         if child.poll() is None:
             child.send_signal(signal.SIGTERM)
         try:
-            child.wait(timeout=5)
+            child.wait(timeout=subprocess_timeout_s())
         except subprocess.TimeoutExpired:
             child.kill()
-            child.wait(timeout=5)
+            child.wait(timeout=subprocess_timeout_s())
         raise SystemExit(130)
 
     signal.signal(signal.SIGTERM, interrupted)
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + subprocess_timeout_s()
     while not ready.exists() and child.poll() is None and time.monotonic() < deadline:
         time.sleep(0.01)
     if not ready.exists():

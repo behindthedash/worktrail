@@ -18,6 +18,8 @@ from unittest import mock
 from worktrail.router import skill_dispatch
 from worktrail.workqueue import decisions as decisions_mod
 
+from ._subprocess_timeouts import subprocess_timeout_s
+
 _FAKE_AGENT = Path(__file__).with_name("fake_internal_dispatch_agent.py")
 
 
@@ -117,7 +119,7 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
             command.append("--no-inherit-codex-auth")
         process = subprocess.Popen(command, env=environment)
         if outcome == "interrupted":
-            deadline = time.monotonic() + 5
+            deadline = time.monotonic() + subprocess_timeout_s()
             while (
                 not ready.exists()
                 and process.poll() is None
@@ -128,7 +130,7 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
                 ready.exists(), "fake seeded child never became interruptible"
             )
             if wrapper:
-                deadline = time.monotonic() + 5
+                deadline = time.monotonic() + subprocess_timeout_s()
                 while (
                     not wrapper_pid.exists()
                     and process.poll() is None
@@ -143,7 +145,7 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
                 target_pid = int(ready.read_text())
             os.kill(target_pid, signal.SIGTERM)
         return (
-            process.wait(timeout=5),
+            process.wait(timeout=subprocess_timeout_s()),
             run.read_text(),
             int(ready.read_text()) if ready.exists() else None,
             int(wrapper_pid.read_text()) if wrapper_pid.exists() else None,

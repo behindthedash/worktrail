@@ -23,6 +23,8 @@ import time
 import unittest
 from pathlib import Path
 
+from ._subprocess_timeouts import subprocess_timeout_s
+
 _FAKE_CHILD = Path(__file__).with_name("fake_openspec_propose_child.py")
 _CLI = shutil.which("worktrail-check-openspec-propose-resume")
 
@@ -42,7 +44,7 @@ class KillMidAuthoringResumesViaUpdateTests(unittest.TestCase):
                 [sys.executable, str(_FAKE_CHILD), str(change_dir), str(ready)]
             )
             try:
-                deadline = time.monotonic() + 5
+                deadline = time.monotonic() + subprocess_timeout_s()
                 while not ready.exists() and time.monotonic() < deadline:
                     time.sleep(0.01)
                 self.assertTrue(ready.exists(), "fake child never signaled readiness")
@@ -50,11 +52,11 @@ class KillMidAuthoringResumesViaUpdateTests(unittest.TestCase):
                 # the child is still "mid-authoring" design.md/tasks.md. This
                 # is the exact shape of the kill PR #455 fixed resume for.
                 child.kill()
-                child.wait(timeout=5)
+                child.wait(timeout=subprocess_timeout_s())
             finally:
                 if child.poll() is None:
                     child.kill()
-                    child.wait(timeout=5)
+                    child.wait(timeout=subprocess_timeout_s())
 
             self.assertTrue((change_dir / "proposal.md").is_file())
             self.assertFalse((change_dir / "design.md").exists())
