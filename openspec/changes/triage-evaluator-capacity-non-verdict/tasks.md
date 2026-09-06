@@ -1,6 +1,6 @@
 ## 1. Signal exhaustion out of the spawn helper
 
-- [ ] 1.1 In `src/worktrail/orchestrator/spawnlib.py`: add `exhausted: bool = False` and
+- [x] 1.1 In `src/worktrail/orchestrator/spawnlib.py`: add `exhausted: bool = False` and
       `failure_class: str = ""` to `SpawnResult` (design D1), give the inner `finish()` helper
       keyword-only `exhausted`/`failure_class` parameters defaulting to `False`/`""` that it
       passes through to the `SpawnResult` it builds, and set them at all three give-up returns
