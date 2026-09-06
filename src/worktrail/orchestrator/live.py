@@ -1916,12 +1916,24 @@ def _branch_content_in_base(repo: Path, branch: str, base_ref: str) -> bool:
     `_is_ancestor` alone reports a merged dependency as unmerged (brief
     20260901-175031). For that case, a three-way merge of `branch` into
     `base_ref` (`git merge-tree --write-tree`) yields exactly `base_ref`'s own
-    tree iff the branch contributes nothing base doesn't already have. A
-    conflicted or failed merge-tree is treated as "not in base" (fail-open to
-    the ancestry-stacking path, unchanged behavior)."""
+    tree iff the branch contributes nothing base doesn't already have.
+
+    A CONFLICTED merge-tree (exit 1) also counts as "in base" (brief
+    20260905-162859): when a group PR squash-merges with review fixups layered
+    on top of a task's own commits, the retained task branch's verbatim diff
+    never appears in base and a three-way merge conflicts on exactly those
+    hunks -- observed live on every retained shared-pr-landing-pipeline branch
+    (2.1/5.1/14.1/17.1). Such a branch can never be a stacking point either
+    way: a worktree forked from it fails the base carry with the same conflict
+    (`WorktreeMissingDependencyFileError` on every fan-out task). Treating it as
+    superseded lets the dependent fork from base, whose content is what the
+    dependency's group actually shipped. Only a merge-tree that FAILED to run
+    (exit >1, e.g. an unresolvable ref) stays "not in base"."""
     if _is_ancestor(repo, branch, base_ref):
         return True
     merged = _git(repo, "merge-tree", "--write-tree", base_ref, branch, check=False)
+    if merged.returncode == 1:
+        return True
     if merged.returncode != 0:
         return False
     base_tree = _git(
@@ -1981,6 +1993,13 @@ def dependency_start_ref(
         unmerged = [
             b for b in existing if not _branch_content_in_base(repo, b, base_ref)
         ]
+        for b in existing:
+            if b not in unmerged:
+                print(
+                    f"{_ts()}   !! {task.get('id', '?')}: retained dependency branch "
+                    f"{b} is already in {base_ref} (squash-merged); forking from "
+                    f"{base_ref} instead. Safe to prune: git branch -D {b}"
+                )
         if not unmerged:
             return (base_ref if existing else "HEAD"), []
         existing = unmerged
