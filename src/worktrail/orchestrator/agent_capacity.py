@@ -45,6 +45,12 @@ PROBE_INTERVAL_S = int(os.environ.get("GO_AGENT_GATE_PROBE_INTERVAL", "900"))
 
 # Failure classes that never self-heal, so probing through them would just
 # re-burn spawn attempts against a provider that requires operator action.
+# "auth" is deliberately NOT here: its requirement ("An auth failure gates its
+# cell without retry") bars retry/backoff on the *failed cell within one spawn*,
+# and explicitly calls an auth gate cooldown-derived and probe-eligible so a
+# re-authenticated operator who forgets to clear it is self-healed by the next
+# probe (specs/model-tier-routing, scenario "Re-authenticated operator forgets
+# to clear"). Adding it here would break that scenario.
 NEVER_PROBE_CLASSES = frozenset({"model_unavailable"})
 
 
