@@ -39,6 +39,20 @@ DEFAULT_COOLDOWNS = {
     "model_unavailable": 86400,
 }
 
+# Cadence at which a cooldown-derived gate is re-probed instead of trusted
+# blindly for its whole cooldown window (design.md D1, D2).
+PROBE_INTERVAL_S = int(os.environ.get("GO_AGENT_GATE_PROBE_INTERVAL", "900"))
+
+# Failure classes that never self-heal, so probing through them would just
+# re-burn spawn attempts against a provider that requires operator action.
+# "auth" is deliberately NOT here: its requirement ("An auth failure gates its
+# cell without retry") bars retry/backoff on the *failed cell within one spawn*,
+# and explicitly calls an auth gate cooldown-derived and probe-eligible so a
+# re-authenticated operator who forgets to clear it is self-healed by the next
+# probe (specs/model-tier-routing, scenario "Re-authenticated operator forgets
+# to clear"). Adding it here would break that scenario.
+NEVER_PROBE_CLASSES = frozenset({"model_unavailable"})
+
 
 class ProviderUnavailable(RuntimeError):
     """Raised when a provider's persisted cooldown has not expired."""
@@ -124,13 +138,13 @@ def save(value: dict, path: Path | None = None) -> None:
 def write_lock(path: Path) -> Iterator[None]:
     """Serialize a load -> mutate -> save sequence against concurrent writers.
 
-    Every writer in this module (``record``/``cmd_clear``) holds
+    Every writer in this module (``record``/``check``/``cmd_clear``) holds
     a blocking exclusive ``flock`` on a sidecar ``<cache>.lock`` for the whole
     read-modify-write; without it, two workers finishing close together both
     load the same snapshot and the second ``os.replace`` silently discards the
     first worker's provider state. The kernel drops the lock when the holder
-    dies, so a crash never wedges the cache. Readers (``check``,
-    ``gate_snapshot``, ``cmd_status``, bare ``load``) stay lock-free on
+    dies, so a crash never wedges the cache. Readers (``gate_snapshot``,
+    ``cmd_status``, bare ``load``) stay lock-free on
     purpose: ``save`` publishes via ``os.replace``, so a concurrent ``load``
     always sees a complete old or new file, never a torn one. Best-effort: if
     ``flock`` is unavailable (non-POSIX), degrade to the unlocked behavior
@@ -191,10 +205,22 @@ def gate_snapshot(
     }
 
 
+def _probeable(state: dict, now: datetime) -> bool:
+    if state.get("reset_source") == "provider":
+        return False
+    if state.get("failure_class") in NEVER_PROBE_CLASSES:
+        return False
+    last = _parse_time(state.get("probe_at")) or _parse_time(state.get("checked_at"))
+    if last is None:
+        return False
+    return (now - last).total_seconds() >= PROBE_INTERVAL_S
+
+
 def check(
     target: str, model: str, path: Path | None = None, now: datetime | None = None
 ) -> None:
     now = now or _now()
+    path = path or cache_path()
     key = provider_key(target, model)
     state = load(path).get("providers", {}).get(key)
     if not isinstance(state, dict):
@@ -202,8 +228,24 @@ def check(
     retry_at = _parse_time(state.get("retry_after")) or _parse_time(
         state.get("reset_at")
     )
-    if retry_at and retry_at > now:
-        raise ProviderUnavailable(key, state)
+    if not retry_at or retry_at <= now:
+        return
+    if _probeable(state, now):
+        with write_lock(path):
+            data = load(path)
+            fresh = data.get("providers", {}).get(key)
+            if isinstance(fresh, dict):
+                fresh_retry_at = _parse_time(fresh.get("retry_after")) or _parse_time(
+                    fresh.get("reset_at")
+                )
+                if fresh_retry_at and fresh_retry_at > now:
+                    if _probeable(fresh, now):
+                        fresh["probe_at"] = now.isoformat()
+                        save(data, path)
+                        return
+                    raise ProviderUnavailable(key, fresh)
+        return
+    raise ProviderUnavailable(key, state)
 
 
 def gate_for_agent(
@@ -261,6 +303,7 @@ def record(
     retry_after: datetime | None = None,
     source: str = "spawn",
     confidence: str = "high",
+    reset_source: str = "cooldown",
     path: Path | None = None,
     now: datetime | None = None,
 ) -> dict:
@@ -275,6 +318,7 @@ def record(
         "failure_class": failure_class,
         "source": source,
         "confidence": confidence,
+        "reset_source": reset_source,
     }
     if retry_after:
         state["retry_after"] = retry_after.isoformat()
@@ -479,6 +523,9 @@ def cmd_status(path: Path | None = None, now: datetime | None = None) -> int:
                 parts.append(f"         failure: {fc}")
             if checked:
                 parts.append(f"         checked: {checked}")
+            probe_at = state.get("probe_at")
+            if probe_at:
+                parts.append(f"         probed:  {probe_at}")
             if retry_at:
                 parts.append(f"         retry:   {retry_at.isoformat()}")
             print("\n".join(parts))

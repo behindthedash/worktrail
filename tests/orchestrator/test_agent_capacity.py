@@ -1012,3 +1012,235 @@ def test_main_clear_expired_requires_reason_and_rejects_all(tmp_path):
         ["--cache", str(path), "clear", "--expired", "--reason", "hygiene"]
     )
     assert rc == 0
+
+
+def test_probe_lets_first_check_through_after_probe_interval(tmp_path):
+    path = tmp_path / "capacity.json"
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    checked_at = now - timedelta(minutes=20)
+    agent_capacity.record(
+        "claude",
+        "sonnet",
+        outcome="unavailable",
+        failure_class="billing",
+        retry_after=now + timedelta(hours=1),
+        path=path,
+        now=checked_at,
+    )
+
+    agent_capacity.check("claude", "sonnet", path=path, now=now)
+
+    data = json.loads(path.read_text())
+    state = data["providers"]["claude:sonnet"]
+    assert state["probe_at"] == now.isoformat()
+
+    try:
+        agent_capacity.check(
+            "claude", "sonnet", path=path, now=now + timedelta(seconds=1)
+        )
+    except agent_capacity.ProviderUnavailable:
+        pass
+    else:
+        raise AssertionError("second check right after a probe should still gate")
+
+
+def test_check_resolves_default_path_through_probe_branch(tmp_path, monkeypatch):
+    path = tmp_path / "capacity.json"
+    monkeypatch.setenv("WORKTRAIL_AGENT_CAPACITY_CACHE", str(path))
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    checked_at = now - timedelta(minutes=20)
+    agent_capacity.record(
+        "claude",
+        "sonnet",
+        outcome="unavailable",
+        failure_class="billing",
+        retry_after=now + timedelta(hours=1),
+        path=path,
+        now=checked_at,
+    )
+
+    agent_capacity.check("claude", "sonnet", now=now)
+
+    data = json.loads(path.read_text())
+    state = data["providers"]["claude:sonnet"]
+    assert state["probe_at"] == now.isoformat()
+
+
+def test_probe_does_not_fire_before_the_interval_elapses(tmp_path):
+    path = tmp_path / "capacity.json"
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    checked_at = now - timedelta(minutes=5)
+    agent_capacity.record(
+        "claude",
+        "sonnet",
+        outcome="unavailable",
+        failure_class="billing",
+        retry_after=now + timedelta(hours=1),
+        path=path,
+        now=checked_at,
+    )
+    before = path.read_bytes()
+
+    try:
+        agent_capacity.check("claude", "sonnet", path=path, now=now)
+    except agent_capacity.ProviderUnavailable:
+        pass
+    else:
+        raise AssertionError("gate within the probe interval should still raise")
+
+    assert path.read_bytes() == before
+
+
+def test_provider_reset_source_is_never_probed(tmp_path):
+    path = tmp_path / "capacity.json"
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    checked_at = now - timedelta(minutes=20)
+    agent_capacity.record(
+        "claude",
+        "sonnet",
+        outcome="unavailable",
+        failure_class="billing",
+        retry_after=now + timedelta(hours=1),
+        reset_source="provider",
+        path=path,
+        now=checked_at,
+    )
+    before = path.read_bytes()
+
+    try:
+        agent_capacity.check("claude", "sonnet", path=path, now=now)
+    except agent_capacity.ProviderUnavailable:
+        pass
+    else:
+        raise AssertionError("provider-stated reset should never be probed through")
+
+    assert path.read_bytes() == before
+
+
+def test_model_unavailable_is_never_probed(tmp_path):
+    path = tmp_path / "capacity.json"
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    checked_at = now - timedelta(minutes=20)
+    agent_capacity.record(
+        "claude",
+        "sonnet",
+        outcome="unavailable",
+        failure_class="model_unavailable",
+        retry_after=now + timedelta(hours=1),
+        path=path,
+        now=checked_at,
+    )
+    before = path.read_bytes()
+
+    try:
+        agent_capacity.check("claude", "sonnet", path=path, now=now)
+    except agent_capacity.ProviderUnavailable:
+        pass
+    else:
+        raise AssertionError("model_unavailable should never be probed through")
+
+    assert path.read_bytes() == before
+
+
+def test_entry_without_reset_source_field_is_probeable(tmp_path):
+    path = tmp_path / "capacity.json"
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    checked_at = now - timedelta(minutes=20)
+    agent_capacity.record(
+        "claude",
+        "sonnet",
+        outcome="unavailable",
+        failure_class="billing",
+        retry_after=now + timedelta(hours=1),
+        path=path,
+        now=checked_at,
+    )
+    data = json.loads(path.read_text())
+    del data["providers"]["claude:sonnet"]["reset_source"]
+    path.write_text(json.dumps(data))
+
+    agent_capacity.check("claude", "sonnet", path=path, now=now)
+
+    data = json.loads(path.read_text())
+    assert "probe_at" in data["providers"]["claude:sonnet"]
+
+
+def test_record_stores_reset_source_and_defaults_to_cooldown(tmp_path):
+    path = tmp_path / "capacity.json"
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    state = agent_capacity.record(
+        "claude",
+        "sonnet",
+        outcome="unavailable",
+        failure_class="billing",
+        retry_after=now + timedelta(hours=1),
+        path=path,
+        now=now,
+    )
+    assert state["reset_source"] == "cooldown"
+
+    state = agent_capacity.record(
+        "claude",
+        "sonnet",
+        outcome="unavailable",
+        failure_class="billing",
+        retry_after=now + timedelta(hours=1),
+        reset_source="provider",
+        path=path,
+        now=now,
+    )
+    assert state["reset_source"] == "provider"
+
+
+def test_cmd_status_prints_probed_for_entry_with_probe_at(tmp_path, capsys):
+    path = tmp_path / "capacity.json"
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    checked_at = now - timedelta(minutes=20)
+    agent_capacity.record(
+        "claude",
+        "sonnet",
+        outcome="unavailable",
+        failure_class="billing",
+        retry_after=now + timedelta(hours=1),
+        path=path,
+        now=checked_at,
+    )
+    agent_capacity.check("claude", "sonnet", path=path, now=now)
+
+    rc = agent_capacity.cmd_status(path=path, now=now)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "probed:" in out
+
+
+def test_probe_interval_env_var_overrides_cadence(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent_capacity, "PROBE_INTERVAL_S", 60)
+    path = tmp_path / "capacity.json"
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    checked_at = now - timedelta(seconds=61)
+    agent_capacity.record(
+        "claude",
+        "sonnet",
+        outcome="unavailable",
+        failure_class="billing",
+        retry_after=now + timedelta(hours=1),
+        path=path,
+        now=checked_at,
+    )
+
+    agent_capacity.check("claude", "sonnet", path=path, now=now)
+
+    data = json.loads(path.read_text())
+    assert "probe_at" in data["providers"]["claude:sonnet"]
+
+
+def test_probe_interval_reads_env_var_at_import(monkeypatch):
+    monkeypatch.setenv("GO_AGENT_GATE_PROBE_INTERVAL", "60")
+    import importlib
+
+    reloaded = importlib.reload(agent_capacity)
+    try:
+        assert reloaded.PROBE_INTERVAL_S == 60
+    finally:
+        monkeypatch.delenv("GO_AGENT_GATE_PROBE_INTERVAL", raising=False)
+        importlib.reload(agent_capacity)
