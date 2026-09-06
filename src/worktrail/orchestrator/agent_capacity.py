@@ -132,13 +132,13 @@ def save(value: dict, path: Path | None = None) -> None:
 def write_lock(path: Path) -> Iterator[None]:
     """Serialize a load -> mutate -> save sequence against concurrent writers.
 
-    Every writer in this module (``record``/``cmd_clear``) holds
+    Every writer in this module (``record``/``check``/``cmd_clear``) holds
     a blocking exclusive ``flock`` on a sidecar ``<cache>.lock`` for the whole
     read-modify-write; without it, two workers finishing close together both
     load the same snapshot and the second ``os.replace`` silently discards the
     first worker's provider state. The kernel drops the lock when the holder
-    dies, so a crash never wedges the cache. Readers (``check``,
-    ``gate_snapshot``, ``cmd_status``, bare ``load``) stay lock-free on
+    dies, so a crash never wedges the cache. Readers (``gate_snapshot``,
+    ``cmd_status``, bare ``load``) stay lock-free on
     purpose: ``save`` publishes via ``os.replace``, so a concurrent ``load``
     always sees a complete old or new file, never a torn one. Best-effort: if
     ``flock`` is unavailable (non-POSIX), degrade to the unlocked behavior
@@ -231,9 +231,12 @@ def check(
                 fresh_retry_at = _parse_time(fresh.get("retry_after")) or _parse_time(
                     fresh.get("reset_at")
                 )
-                if fresh_retry_at and fresh_retry_at > now and _probeable(fresh, now):
-                    fresh["probe_at"] = now.isoformat()
-                    save(data, path)
+                if fresh_retry_at and fresh_retry_at > now:
+                    if _probeable(fresh, now):
+                        fresh["probe_at"] = now.isoformat()
+                        save(data, path)
+                        return
+                    raise ProviderUnavailable(key, fresh)
         return
     raise ProviderUnavailable(key, state)
 
