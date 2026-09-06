@@ -1100,6 +1100,45 @@ class TestLifecycle(unittest.TestCase):
             rec["capacity_gate"]["providers"], ["claude:sonnet", "opencode:safe/model"]
         )
         self.assertEqual(rec["capacity_gate"]["failure_class"], "transport")
+        self.assertEqual(
+            rec["capacity_gate"]["retry_after"], "2026-07-20T21:00:00+00:00"
+        )
+
+    def test_capacity_gate_retry_after_preserves_timezone_offset(self):
+        res = _start(self.tmp)
+        main(
+            [
+                "capacity-gate",
+                res["path"],
+                "--provider",
+                "claude:sonnet",
+                "--failure-class",
+                "rate_limit",
+                "--retry-after",
+                "2026-09-06T02:37:55+00:00",
+            ]
+        )
+        rec = _load(Path(res["path"]))
+        stored = rec["capacity_gate"]["retry_after"]
+        self.assertEqual(stored, "2026-09-06T02:37:55+00:00")
+        # Consumers parse this back (agent_capacity._parse_time); it must round-trip.
+        self.assertIsNotNone(datetime.fromisoformat(stored).tzinfo)
+
+    def test_capacity_gate_rejects_non_iso_retry_after(self):
+        res = _start(self.tmp)
+        with self.assertRaises(SystemExit):
+            main(
+                [
+                    "capacity-gate",
+                    res["path"],
+                    "--provider",
+                    "claude:sonnet",
+                    "--failure-class",
+                    "rate_limit",
+                    "--retry-after",
+                    "tomorrow-ish",
+                ]
+            )
 
     def test_capacity_gate_handles_chain_exhaustion_same_as_single_provider(self):
         routing_decision = {
