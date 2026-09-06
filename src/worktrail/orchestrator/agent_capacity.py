@@ -214,6 +214,7 @@ def check(
     target: str, model: str, path: Path | None = None, now: datetime | None = None
 ) -> None:
     now = now or _now()
+    path = path or cache_path()
     key = provider_key(target, model)
     state = load(path).get("providers", {}).get(key)
     if not isinstance(state, dict):

@@ -1044,6 +1044,28 @@ def test_probe_lets_first_check_through_after_probe_interval(tmp_path):
         raise AssertionError("second check right after a probe should still gate")
 
 
+def test_check_resolves_default_path_through_probe_branch(tmp_path, monkeypatch):
+    path = tmp_path / "capacity.json"
+    monkeypatch.setenv("WORKTRAIL_AGENT_CAPACITY_CACHE", str(path))
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    checked_at = now - timedelta(minutes=20)
+    agent_capacity.record(
+        "claude",
+        "sonnet",
+        outcome="unavailable",
+        failure_class="billing",
+        retry_after=now + timedelta(hours=1),
+        path=path,
+        now=checked_at,
+    )
+
+    agent_capacity.check("claude", "sonnet", now=now)
+
+    data = json.loads(path.read_text())
+    state = data["providers"]["claude:sonnet"]
+    assert state["probe_at"] == now.isoformat()
+
+
 def test_probe_does_not_fire_before_the_interval_elapses(tmp_path):
     path = tmp_path / "capacity.json"
     now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
