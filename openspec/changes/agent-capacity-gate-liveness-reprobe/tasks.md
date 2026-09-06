@@ -1,6 +1,6 @@
 ## 1. Probe-through for cooldown-derived capacity gates
 
-- [ ] 1.1 In `src/worktrail/orchestrator/agent_capacity.py`: add `PROBE_INTERVAL_S` read from
+- [x] 1.1 In `src/worktrail/orchestrator/agent_capacity.py`: add `PROBE_INTERVAL_S` read from
       `GO_AGENT_GATE_PROBE_INTERVAL` (default 900) and `NEVER_PROBE_CLASSES = frozenset({"model_unavailable"})`;
       give `record()` a `reset_source: str = "cooldown"` kwarg stored on the entry; extend
       `check()` so that when the entry is gated (`retry_at > now`), `state.get("reset_source")`
@@ -20,7 +20,7 @@
       the cadence (Requirements: A cooldown-derived gate is re-probed on a cadence; An auth
       failure gates its cell without retry).
       files: src/worktrail/orchestrator/agent_capacity.py, tests/orchestrator/test_agent_capacity.py
-- [ ] 1.2 In `src/worktrail/orchestrator/spawnlib.py`'s exhausted-budget record path (around
+- [x] 1.2 In `src/worktrail/orchestrator/spawnlib.py`'s exhausted-budget record path (around
       line 1238), call `agent_capacity.parse_explicit_reset(f"{last_raw}\n{proc.stderr or ''}")`;
       when it returns a timestamp pass it as `retry_after` with `reset_source="provider"`,
       otherwise keep `retry_after=agent_capacity.retry_time(failure_class)` with the default
@@ -60,6 +60,6 @@
 
 ## 3. Verification
 
-- [ ] 3.1 [e2e] Run `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m
+- [x] 3.1 [e2e] Run `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m
       worktrail.orchestrator.orchestrate check` and confirm both repository gates pass;
       depends on 1.1, 1.2, 2.1. Verification-only, no file changes expected.
