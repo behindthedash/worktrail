@@ -940,3 +940,72 @@ def test_auth_default_cooldown_is_one_day():
     # multi-hour run. Match model_unavailable's one-day default; operators clear
     # it explicitly once auth is fixed.
     assert agent_capacity.DEFAULT_COOLDOWNS["auth"] == 86400
+
+
+def _seed_gate(path, key, retry_at, source="drain", status="unavailable"):
+    raw = json.loads(path.read_text()) if path.exists() else {"version": 1}
+    providers = raw.setdefault("providers", {})
+    providers[key] = {
+        "status": status,
+        "failure_class": "capacity",
+        "retry_after": retry_at.isoformat(),
+        "source": source,
+        "checked_at": retry_at.isoformat(),
+    }
+    path.write_text(json.dumps(raw))
+
+
+def test_status_labels_expired_and_active_gates(tmp_path, capsys):
+    path = tmp_path / "capacity.json"
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    _seed_gate(path, "claude", now - timedelta(minutes=5))
+    _seed_gate(path, "claude-sub:opus", now + timedelta(minutes=5), source="spawn")
+    before = path.read_bytes()
+    rc = agent_capacity.cmd_status(path=path, now=now)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "  claude  unavailable  (expired)" in out
+    assert "  claude-sub:opus  unavailable  (active)" in out
+    assert path.read_bytes() == before
+
+
+def test_clear_expired_removes_only_expired_gates(tmp_path, capsys):
+    path = tmp_path / "capacity.json"
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    _seed_gate(path, "claude", now - timedelta(minutes=5))
+    _seed_gate(path, "codex", now + timedelta(minutes=5))
+    agent_capacity.record("opencode", "model", outcome="available", path=path, now=now)
+    rc = agent_capacity.cmd_clear("--expired", "hygiene", path=path, now=now)
+    assert rc == 0
+    data = json.loads(path.read_text())
+    assert "claude" not in data["providers"]
+    assert "codex" in data["providers"]
+    assert "opencode:model" in data["providers"]
+    assert len(data["audit"]) == 1
+    assert data["audit"][0]["scope"] == "expired"
+    assert "cleared: claude" in capsys.readouterr().out
+
+
+def test_clear_expired_noop_when_nothing_expired(tmp_path):
+    path = tmp_path / "capacity.json"
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    _seed_gate(path, "codex", now + timedelta(minutes=5))
+    before = path.read_bytes()
+    rc = agent_capacity.cmd_clear("--expired", "hygiene", path=path, now=now)
+    assert rc == 0
+    assert path.read_bytes() == before
+
+
+def test_main_clear_expired_requires_reason_and_rejects_all(tmp_path):
+    path = tmp_path / "capacity.json"
+    path.write_text('{"version":1,"providers":{},"configured_providers":[]}')
+    rc = agent_capacity.main(["--cache", str(path), "clear", "--expired"])
+    assert rc == 1
+    rc = agent_capacity.main(
+        ["--cache", str(path), "clear", "--expired", "--all", "--reason", "x"]
+    )
+    assert rc == 1
+    rc = agent_capacity.main(
+        ["--cache", str(path), "clear", "--expired", "--reason", "hygiene"]
+    )
+    assert rc == 0

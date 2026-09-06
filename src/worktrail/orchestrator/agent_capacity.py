@@ -420,6 +420,27 @@ def _add_audit(
         data["audit"] = data["audit"][-MAX_AUDIT_ENTRIES:]
 
 
+_GATED_STATUSES = frozenset({"unavailable", "gated", "blocked"})
+
+
+def _gate_retry_at(state: object) -> datetime | None:
+    """Return the retry window of a gated ``providers`` entry, or ``None``
+    when the entry is not gated or carries no timestamp."""
+    if not isinstance(state, dict) or state.get("status") not in _GATED_STATUSES:
+        return None
+    return _parse_time(state.get("retry_after")) or _parse_time(state.get("reset_at"))
+
+
+def _expired_keys(providers: dict, now: datetime) -> list[str]:
+    """Sorted keys ``cmd_status`` would label ``(expired)``: gated entries
+    whose retry window has already passed."""
+    return sorted(
+        key
+        for key, state in providers.items()
+        if (retry_at := _gate_retry_at(state)) is not None and retry_at <= now
+    )
+
+
 def cmd_status(path: Path | None = None, now: datetime | None = None) -> int:
     """Print every provider this cache has a recorded status for.
 
@@ -444,7 +465,13 @@ def cmd_status(path: Path | None = None, now: datetime | None = None) -> int:
             retry_at = _parse_time(state.get("retry_after")) or _parse_time(
                 state.get("reset_at")
             )
-            active = "  (active)" if retry_at and retry_at > now else ""
+            gate_at = _gate_retry_at(state)
+            if gate_at is None:
+                active = ""
+            elif gate_at > now:
+                active = "  (active)"
+            else:
+                active = "  (expired)"
             fc = state.get("failure_class", "")
             checked = state.get("checked_at", "")
             parts = [f"  {key}  {status_label}{active}"]
@@ -492,6 +519,18 @@ def cmd_clear(
             cleared = sorted(providers.keys())
             raw["providers"] = {}
             _add_audit(raw, "clear", "all", cleared, reason_trimmed, now)
+            save(raw, p)
+            for key in cleared:
+                print(f"cleared: {key}")
+            return 0
+
+        if scope == "--expired":
+            cleared = _expired_keys(providers, now)
+            if not cleared:
+                return 0
+            for key in cleared:
+                del raw["providers"][key]
+            _add_audit(raw, "clear", "expired", cleared, reason_trimmed, now)
             save(raw, p)
             for key in cleared:
                 print(f"cleared: {key}")
@@ -567,6 +606,13 @@ def main(argv: list[str] | None = None) -> int:
         help="clear all gates",
     )
     clear_parser.add_argument(
+        "--expired",
+        dest="expired_flag",
+        action="store_true",
+        default=False,
+        help="clear only gates whose retry window has already passed",
+    )
+    clear_parser.add_argument(
         "--reason", type=str, default="", help="required reason for clearing"
     )
 
@@ -603,12 +649,20 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "clear":
         scope = None
+        if args.expired_flag and (args.all_flag or args.scope):
+            print(
+                "error: --expired cannot be combined with --all or a provider key",
+                file=sys.stderr,
+            )
+            return 1
         if args.all_flag:
             scope = "--all"
+        elif args.expired_flag:
+            scope = "--expired"
         elif args.scope:
             scope = args.scope
         else:
-            print("error: specify a provider key or --all", file=sys.stderr)
+            print("error: specify a provider key, --all, or --expired", file=sys.stderr)
             return 1
         return cmd_clear(scope, args.reason, path=cache)
 
