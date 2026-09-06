@@ -1,6 +1,6 @@
 ## 1. Parse Claude's cap-notice reset wording
 
-- [ ] 1.1 In `src/worktrail/orchestrator/agent_capacity.py`: add a lenient module-level pattern
+- [x] 1.1 In `src/worktrail/orchestrator/agent_capacity.py`: add a lenient module-level pattern
       beside `_EXPLICIT_RESET_RE` matching `resets`/`resets at` followed by a clock time with an
       optional `:MM` and an optional parenthesised timezone (case-insensitive), plus a
       notice-size bound constant equal to `spawnlib`'s 600 chars (design.md D2). Extend
