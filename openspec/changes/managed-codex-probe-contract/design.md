@@ -105,6 +105,20 @@ one. Alternative considered: a bitmask/multi-failure report. Rejected — the
 epic's success metric asks for single-stage triage ("classified at least as
 X"), and a single ordered classification is simpler to test and to read.
 
+This order is causal precedence (which stage's failure the available
+evidence proves), not a mandate on the literal sequence of checks executed
+in code. An authentication refusal from the nested process also produces a
+non-zero exit, which `spawnlib.is_infra_failure` would otherwise read as a
+generic startup failure before ever inspecting stdout — so the probe checks
+for a documented auth-refusal signal on stdout *before* the generic
+startup/infra check, and reports `authentication` when found. This does not
+violate the ordering: a parseable, documented `error` event on stdout is
+itself proof the nested process started and reached the provider, so
+neither `startup` nor `provider_selection` is the stage that actually
+failed — `authentication` is the earliest one that did. (Confirmed by
+operator, 2026-09-06: accept this as the correct resolution rather than
+leaving `authentication` unreachable on its one realistic failure path.)
+
 ## Risks / Trade-offs
 
 - **Scratch-directory `cwd` diverges from a real task worktree's directory

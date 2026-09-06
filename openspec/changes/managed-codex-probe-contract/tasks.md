@@ -49,16 +49,22 @@
       returned by the nested process (e.g. exit-code/known-marker check
       appropriate to `codex exec --json`'s documented output) — extract only
       the provider/model identity field, not the full JSON event stream.
-- [ ] 4.3 Derive `authentication` from whether `prepare_codex_child_environment`
+- [x] 4.3 Derive `authentication` from whether `prepare_codex_child_environment`
       completed auth inheritance without raising, plus (if available) a
       non-secret "authenticated" signal from the nested process's own
       output — never read or forward `auth.json` contents.
 - [ ] 4.4 Derive `report_back` from whether the parsed final reply matches
       the expected no-op sentinel within the timeout.
-- [ ] 4.5 Implement the ordered stage-classification function from
+- [x] 4.5 Implement the ordered stage-classification function from
       design.md (environment_preparation → startup → provider_selection →
       authentication → timeout → report_back), returning the first failing
-      stage or a successful `report_back` outcome. (Requirement: Every run
+      stage or a successful `report_back` outcome. This order is causal
+      (which stage's failure the evidence proves), not the literal sequence
+      of checks executed in code: an authentication refusal also exits
+      non-zero, so its check runs ahead of the generic startup/infra check
+      in code -- a parseable auth-refusal event on stdout is itself proof
+      that startup and provider_selection succeeded, so classifying it as
+      `authentication` does not violate the ordering. (Requirement: Every run
       reports exactly one classified stage outcome; Sensitive values are
       redacted from every reported surface)
 

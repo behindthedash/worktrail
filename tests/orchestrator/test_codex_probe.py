@@ -1,5 +1,6 @@
 """Tests for codex_probe.py -- path-parity with skill_dispatch and spawnlib."""
 
+import json
 import os
 import shutil
 import subprocess
@@ -13,6 +14,8 @@ from worktrail.orchestrator.codex_probe import (
     ProbeReport,
     StageOutcome,
     build_probe_command,
+    extract_auth_failure_marker,
+    extract_authenticated_marker,
     prepare_environment,
     run_probe_command,
 )
@@ -499,6 +502,392 @@ class TestNoOpScopeEnforcement(unittest.TestCase):
                 self.assertIn("scratch directory", probe_result.diagnostic)
                 self.assertIn("repository working tree", probe_result.diagnostic)
                 self.assertIn("and", probe_result.diagnostic)
+            finally:
+                shutil.rmtree(cmd_scratch_dir, ignore_errors=True)
+
+
+class TestAuthInheritanceStageAttribution(unittest.TestCase):
+    """Tests for the pre-spawn half of the authentication stage (task 4.3):
+    an auth-inheritance raise from prepare_codex_child_environment must be
+    reported as AUTHENTICATION, not ENVIRONMENT_PREPARATION.
+    """
+
+    def test_auth_inheritance_raise_is_classified_as_authentication(self):
+        """A raise that only happens with inherit_auth=True is an auth failure."""
+
+        def only_auth_half_fails(_override=None, *, inherit_auth=True):
+            if inherit_auth:
+                raise OSError(
+                    "parent Codex is not authenticated with ChatGPT; run "
+                    "'codex login' or omit --inherit-codex-auth"
+                )
+            return ({"CODEX_HOME": "/tmp/child"}, "/tmp/child", False)
+
+        with patch.object(
+            codex_probe,
+            "prepare_codex_child_environment",
+            side_effect=only_auth_half_fails,
+        ):
+            report = prepare_environment(inherit_auth=True)
+
+        self.assertIsInstance(report, ProbeReport)
+        self.assertEqual(report.stage, StageOutcome.AUTHENTICATION)
+        self.assertFalse(report.success)
+        self.assertFalse(report.auth_usable)
+        self.assertIn("not authenticated with ChatGPT", report.diagnostic)
+
+    def test_home_half_failure_stays_environment_preparation(self):
+        """A raise that persists with inherit_auth=False is a home failure."""
+
+        def both_halves_fail(_override=None, *, inherit_auth=True):
+            raise OSError("CODEX_HOME '/ro/home' is not writable")
+
+        with patch.object(
+            codex_probe,
+            "prepare_codex_child_environment",
+            side_effect=both_halves_fail,
+        ):
+            report = prepare_environment(inherit_auth=True)
+
+        self.assertIsInstance(report, ProbeReport)
+        self.assertEqual(report.stage, StageOutcome.ENVIRONMENT_PREPARATION)
+        self.assertIsNone(report.auth_usable)
+
+    def test_no_attribution_retry_when_auth_was_not_requested(self):
+        """With inherit_auth=False there is no auth half to blame, so the
+        helper must not be called a second time."""
+
+        def always_fails(_override=None, *, inherit_auth=True):
+            raise OSError("CODEX_HOME '/ro/home' is not writable")
+
+        with patch.object(
+            codex_probe,
+            "prepare_codex_child_environment",
+            side_effect=always_fails,
+        ) as mock_prepare:
+            report = prepare_environment(inherit_auth=False)
+
+        self.assertEqual(mock_prepare.call_count, 1)
+        self.assertIsInstance(report, ProbeReport)
+        self.assertEqual(report.stage, StageOutcome.ENVIRONMENT_PREPARATION)
+
+
+class TestExtractAuthFailureMarker(unittest.TestCase):
+    """Tests for the post-spawn half of the authentication stage (task 4.3):
+    a non-secret label derived from the nested process's own output.
+    """
+
+    def test_not_logged_in_error_event(self):
+        stdout = (
+            '{"type": "thread.started", "thread_id": "t1"}\n'
+            '{"type": "error", "message": "Not logged in. Run codex login."}\n'
+        )
+        self.assertEqual(extract_auth_failure_marker(stdout), "not_logged_in")
+
+    def test_unauthorized_error_event(self):
+        stdout = '{"type": "error", "message": "request failed: HTTP 401"}\n'
+        self.assertEqual(extract_auth_failure_marker(stdout), "unauthorized")
+
+    def test_healthy_stream_reports_no_marker(self):
+        """Absence of an auth signal is not an auth failure ("if available")."""
+        stdout = (
+            '{"type": "thread.started", "thread_id": "t1"}\n'
+            '{"type": "turn.completed", "usage": {}}\n'
+        )
+        self.assertIsNone(extract_auth_failure_marker(stdout))
+
+    def test_non_auth_error_event_reports_no_marker(self):
+        stdout = '{"type": "error", "message": "sandbox denied write"}\n'
+        self.assertIsNone(extract_auth_failure_marker(stdout))
+
+    def test_non_auth_message_containing_401_reports_no_marker(self):
+        """`401` and `unauthorized` must not be matched as bare substrings:
+        they occur in request ids, millisecond values, and sandbox denials,
+        and a wrong `authentication` verdict sends an operator to
+        `codex login` for an error that has nothing to do with auth."""
+        for message in (
+            "stream error: internal server error (request id req_4013abcd)",
+            "model overloaded; retry after 401 ms",
+            "sandbox denied: unauthorized to write /etc/hosts",
+        ):
+            with self.subTest(message=message):
+                stdout = json.dumps({"type": "error", "message": message})
+                self.assertIsNone(extract_auth_failure_marker(stdout + "\n"))
+
+    def test_malformed_lines_are_skipped_not_raised(self):
+        stdout = (
+            "not json at all\n"
+            "[1, 2, 3]\n"
+            '{"type": "error"}\n'
+            '{"type": "error", "message": 42}\n'
+            '{"type": "error", "message": "unauthorized"}\n'
+            '{"type": "error", "messa\n'
+        )
+        self.assertEqual(extract_auth_failure_marker(stdout), "unauthorized")
+
+    def test_returns_only_a_fixed_label_never_the_message(self):
+        """The nested process's message can quote an account or token; only
+        this module's own vocabulary may leave the extractor."""
+        stdout = (
+            '{"type": "error", "message": "401 Unauthorized for '
+            'sk-secret-token / user@example.com"}\n'
+        )
+        marker = extract_auth_failure_marker(stdout)
+        self.assertEqual(marker, "unauthorized")
+        self.assertNotIn("sk-secret-token", marker)
+        self.assertNotIn("user@example.com", marker)
+
+
+class TestExtractAuthenticatedMarker(unittest.TestCase):
+    """Tests for the positive half of the authentication stage (task 4.3):
+    the "(if available) authenticated signal" from the nested process's own
+    output.
+    """
+
+    def test_served_turn_is_positive_evidence(self):
+        stdout = (
+            '{"type": "thread.started", "thread_id": "t1"}\n'
+            '{"type": "turn.completed", "usage": {}}\n'
+        )
+        self.assertTrue(extract_authenticated_marker(stdout))
+
+    def test_refused_run_reports_no_positive_signal(self):
+        stdout = (
+            '{"type": "thread.started", "thread_id": "t1"}\n'
+            '{"type": "error", "message": "401 Unauthorized"}\n'
+        )
+        self.assertIsNone(extract_authenticated_marker(stdout))
+
+    def test_silent_stream_is_none_never_false(self):
+        """Absence of a served turn is not evidence of an auth failure -- a
+        timeout, a sandbox denial and a 500 all look the same here."""
+        self.assertIsNone(extract_authenticated_marker(""))
+        self.assertIsNone(
+            extract_authenticated_marker(
+                '{"type": "thread.started", "thread_id": "t1"}\n'
+            )
+        )
+
+    def test_malformed_lines_are_skipped_not_raised(self):
+        stdout = (
+            "not json at all\n"
+            "[1, 2, 3]\n"
+            '{"type": "turn.completed"}\n'
+            '{"type": "turn.compl\n'
+        )
+        self.assertTrue(extract_authenticated_marker(stdout))
+
+
+class TestRunProbeCommandAuthenticationStage(unittest.TestCase):
+    """run_probe_command must classify an authenticated-refusal run as
+    AUTHENTICATION without storing the nested process's raw output.
+    """
+
+    def test_auth_failure_in_output_is_classified_and_redacted(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_dir = os.path.join(tmpdir, "test-repo")
+            os.makedirs(repo_dir)
+            _init_git_repo(repo_dir)
+            _add_and_commit_file(repo_dir, "test.txt", "initial content")
+
+            cmd, cmd_scratch_dir = build_probe_command()
+            try:
+                with patch.dict(
+                    os.environ,
+                    {"WORKTRAIL_CODEX_HOME": os.path.join(tmpdir, "codex-home")},
+                    clear=True,
+                ):
+                    prepared = prepare_environment(inherit_auth=False)
+                    if isinstance(prepared, ProbeReport):
+                        self.fail(
+                            f"Environment preparation failed: {prepared.diagnostic}"
+                        )
+                    child_env, _codex_home, _ = prepared
+
+                    # Startup and the session-started signal both pass; the
+                    # nested process then reports an auth refusal quoting a
+                    # secret-looking value that must not reach the report.
+                    refused = subprocess.CompletedProcess(
+                        args=cmd,
+                        returncode=0,
+                        stdout=(
+                            '{"type": "thread.started", "thread_id": "t1"}\n'
+                            '{"type": "error", "message": "401 Unauthorized '
+                            'for token sk-secret-token"}\n'
+                        ),
+                        stderr="",
+                    )
+                    with patch.object(
+                        codex_probe.subprocess, "run", return_value=refused
+                    ):
+                        result = run_probe_command(
+                            cmd,
+                            cmd_scratch_dir,
+                            child_env,
+                            timeout=30.0,
+                            repo_dir=repo_dir,
+                        )
+
+                self.assertIsInstance(result, ProbeReport)
+                self.assertEqual(result.stage, StageOutcome.AUTHENTICATION)
+                self.assertFalse(result.success)
+                self.assertFalse(result.auth_usable)
+                self.assertIn("unauthorized", result.diagnostic)
+                self.assertNotIn("sk-secret-token", result.diagnostic)
+            finally:
+                shutil.rmtree(cmd_scratch_dir, ignore_errors=True)
+
+    def test_auth_failure_on_non_zero_exit_is_still_authentication(self):
+        """The realistic auth refusal: codex exits non-zero *and* emits an
+        auth `error` event. `spawnlib.is_infra_failure` calls any non-zero
+        exit a startup failure before it looks at stdout, so without the auth
+        check running first this run would be reported as `startup` and send
+        the operator to debug PATH and spawn plumbing for an expired session.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_dir = os.path.join(tmpdir, "test-repo")
+            os.makedirs(repo_dir)
+            _init_git_repo(repo_dir)
+            _add_and_commit_file(repo_dir, "test.txt", "initial content")
+
+            cmd, cmd_scratch_dir = build_probe_command()
+            try:
+                with patch.dict(
+                    os.environ,
+                    {"WORKTRAIL_CODEX_HOME": os.path.join(tmpdir, "codex-home")},
+                    clear=True,
+                ):
+                    prepared = prepare_environment(inherit_auth=False)
+                    if isinstance(prepared, ProbeReport):
+                        self.fail(
+                            f"Environment preparation failed: {prepared.diagnostic}"
+                        )
+                    child_env, _codex_home, _ = prepared
+
+                    stdout = '{"type": "error", "message": "401 Unauthorized"}\n'
+                    # Guard the premise, so this test still means something if
+                    # spawnlib's classifier ever changes underneath it.
+                    self.assertTrue(spawnlib.is_infra_failure(1, stdout))
+
+                    refused = subprocess.CompletedProcess(
+                        args=cmd,
+                        returncode=1,
+                        stdout=stdout,
+                        stderr="",
+                    )
+                    with patch.object(
+                        codex_probe.subprocess, "run", return_value=refused
+                    ):
+                        result = run_probe_command(
+                            cmd,
+                            cmd_scratch_dir,
+                            child_env,
+                            timeout=30.0,
+                            repo_dir=repo_dir,
+                        )
+
+                self.assertIsInstance(result, ProbeReport)
+                self.assertEqual(result.stage, StageOutcome.AUTHENTICATION)
+                self.assertFalse(result.success)
+                self.assertFalse(result.auth_usable)
+                self.assertIn("unauthorized", result.diagnostic)
+            finally:
+                shutil.rmtree(cmd_scratch_dir, ignore_errors=True)
+
+    def test_auth_failure_without_session_started_is_still_authentication(self):
+        """An auth refusal that never got a `thread.started` event out is an
+        authentication failure, not a provider_selection one: the provider was
+        reached and refused the credential."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_dir = os.path.join(tmpdir, "test-repo")
+            os.makedirs(repo_dir)
+            _init_git_repo(repo_dir)
+            _add_and_commit_file(repo_dir, "test.txt", "initial content")
+
+            cmd, cmd_scratch_dir = build_probe_command()
+            try:
+                with patch.dict(
+                    os.environ,
+                    {"WORKTRAIL_CODEX_HOME": os.path.join(tmpdir, "codex-home")},
+                    clear=True,
+                ):
+                    prepared = prepare_environment(inherit_auth=False)
+                    if isinstance(prepared, ProbeReport):
+                        self.fail(
+                            f"Environment preparation failed: {prepared.diagnostic}"
+                        )
+                    child_env, _codex_home, _ = prepared
+
+                    refused = subprocess.CompletedProcess(
+                        args=cmd,
+                        returncode=0,
+                        stdout=(
+                            '{"type": "error", "message": "Not logged in. '
+                            'Run codex login."}\n'
+                        ),
+                        stderr="",
+                    )
+                    with patch.object(
+                        codex_probe.subprocess, "run", return_value=refused
+                    ):
+                        result = run_probe_command(
+                            cmd,
+                            cmd_scratch_dir,
+                            child_env,
+                            timeout=30.0,
+                            repo_dir=repo_dir,
+                        )
+
+                self.assertIsInstance(result, ProbeReport)
+                self.assertEqual(result.stage, StageOutcome.AUTHENTICATION)
+                self.assertFalse(result.auth_usable)
+                self.assertIn("not_logged_in", result.diagnostic)
+            finally:
+                shutil.rmtree(cmd_scratch_dir, ignore_errors=True)
+
+    def test_startup_failure_without_auth_evidence_stays_startup(self):
+        """Stage order is preserved in the other direction: a non-zero exit
+        with no parseable output really did fail to get off the ground, so it
+        stays STARTUP rather than being swept into the auth stage."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_dir = os.path.join(tmpdir, "test-repo")
+            os.makedirs(repo_dir)
+            _init_git_repo(repo_dir)
+            _add_and_commit_file(repo_dir, "test.txt", "initial content")
+
+            cmd, cmd_scratch_dir = build_probe_command()
+            try:
+                with patch.dict(
+                    os.environ,
+                    {"WORKTRAIL_CODEX_HOME": os.path.join(tmpdir, "codex-home")},
+                    clear=True,
+                ):
+                    prepared = prepare_environment(inherit_auth=False)
+                    if isinstance(prepared, ProbeReport):
+                        self.fail(
+                            f"Environment preparation failed: {prepared.diagnostic}"
+                        )
+                    child_env, _codex_home, _ = prepared
+
+                    failed_startup = subprocess.CompletedProcess(
+                        args=cmd,
+                        returncode=1,
+                        stdout="",
+                        stderr="",
+                    )
+                    with patch.object(
+                        codex_probe.subprocess, "run", return_value=failed_startup
+                    ):
+                        result = run_probe_command(
+                            cmd,
+                            cmd_scratch_dir,
+                            child_env,
+                            timeout=30.0,
+                            repo_dir=repo_dir,
+                        )
+
+                self.assertIsInstance(result, ProbeReport)
+                self.assertEqual(result.stage, StageOutcome.STARTUP)
             finally:
                 shutil.rmtree(cmd_scratch_dir, ignore_errors=True)
 
