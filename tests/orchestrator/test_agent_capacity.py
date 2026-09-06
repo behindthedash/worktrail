@@ -1142,31 +1142,6 @@ def test_model_unavailable_is_never_probed(tmp_path):
     assert path.read_bytes() == before
 
 
-def test_auth_is_never_probed(tmp_path):
-    path = tmp_path / "capacity.json"
-    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
-    checked_at = now - timedelta(minutes=20)
-    agent_capacity.record(
-        "claude",
-        "sonnet",
-        outcome="unavailable",
-        failure_class="auth",
-        retry_after=now + timedelta(hours=1),
-        path=path,
-        now=checked_at,
-    )
-    before = path.read_bytes()
-
-    try:
-        agent_capacity.check("claude", "sonnet", path=path, now=now)
-    except agent_capacity.ProviderUnavailable:
-        pass
-    else:
-        raise AssertionError("auth should never be probed through")
-
-    assert path.read_bytes() == before
-
-
 def test_entry_without_reset_source_field_is_probeable(tmp_path):
     path = tmp_path / "capacity.json"
     now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)

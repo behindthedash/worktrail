@@ -45,11 +45,7 @@ PROBE_INTERVAL_S = int(os.environ.get("GO_AGENT_GATE_PROBE_INTERVAL", "900"))
 
 # Failure classes that never self-heal, so probing through them would just
 # re-burn spawn attempts against a provider that requires operator action.
-# auth in particular needs `codex login` / a fresh key: probing it through
-# on a 15-minute cadence re-burns spawn_agent's retry budget 4x more often
-# than the hourly behaviour that motivated raising its cooldown to 86400s
-# (brief 20260901-175101) — see DEFAULT_COOLDOWNS["auth"] above.
-NEVER_PROBE_CLASSES = frozenset({"model_unavailable", "auth"})
+NEVER_PROBE_CLASSES = frozenset({"model_unavailable"})
 
 
 class ProviderUnavailable(RuntimeError):
