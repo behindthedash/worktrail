@@ -880,6 +880,19 @@ def _watch_ci(
     }
 
 
+def _pr_is_merged(repo: Path, pr_number: int, runner: Runner) -> bool:
+    """Ceiling-exit re-check -- design.md D4. Returns True only when `gh pr
+    view` succeeds, parses, and reports `state == "MERGED"`."""
+    result = _gh(repo, runner, "pr", "view", str(pr_number), "--json", "state")
+    if result.returncode != 0:
+        return False
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return False
+    return data.get("state") == "MERGED"
+
+
 def _merge_state_guard(repo: Path, pr_number: int, runner: Runner) -> dict[str, Any]:
     """Merge-state guard -- design.md D7. Returns the settled `gh pr view`
     JSON payload (possibly after up to `MERGE_STATE_RERUN_MAX` reruns of a
@@ -1199,6 +1212,18 @@ def land_pr(request: LandRequest) -> LandOutcome:
             "budget_exhausted": True,
         }
     )
+
+    if (
+        watch["budget_exhausted"]
+        and pr_number
+        and _pr_is_merged(repo, pr_number, runner)
+    ):
+        watch = {
+            "settled": True,
+            "failing_checks": [],
+            "log_excerpt": "",
+            "budget_exhausted": False,
+        }
 
     if watch["budget_exhausted"]:
         if run_path:
