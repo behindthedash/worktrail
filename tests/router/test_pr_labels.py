@@ -258,6 +258,72 @@ def test_ensure_pr_risk_label_returns_none_and_warns_when_owner_repo_unresolvabl
     assert "could not resolve" in capsys.readouterr().err
 
 
+def test_ensure_pr_risk_label_full_url_with_nonexistent_repo_runs_without_cwd(
+    monkeypatch, tmp_path
+):
+    """A landing repo torn down before `finish` (queue-triage removes its
+    worktree) must not break the correction: a full PR URL needs no cwd, so
+    `gh` runs from the parent's cwd instead of raising FileNotFoundError."""
+    seen_cwd = []
+
+    def fake_run(cmd, capture_output, text, cwd, timeout):
+        seen_cwd.append((cmd[:3], cwd))
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return _FakeCompleted(0, json.dumps({"labels": []}))
+        if cmd[:2] == ["gh", "api"]:
+            return _FakeCompleted(0, "")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(pr_labels.subprocess, "run", fake_run)
+    gone = str(tmp_path / "removed-worktree")
+    assert not Path(gone).exists()
+    result = ensure_pr_risk_label(gone, "https://github.com/o/r/pull/9", "low")
+    assert result == "go:risk-low"
+    assert seen_cwd == [
+        (["gh", "pr", "view"], None),
+        (["gh", "api", "repos/o/r/issues/9/labels"], None),
+    ]
+
+
+def test_ensure_pr_risk_label_existing_repo_passes_it_as_cwd(monkeypatch, tmp_path):
+    seen_cwd = []
+
+    def fake_run(cmd, capture_output, text, cwd, timeout):
+        seen_cwd.append(cwd)
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return _FakeCompleted(0, json.dumps({"labels": []}))
+        if cmd[:2] == ["gh", "api"]:
+            return _FakeCompleted(0, "")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(pr_labels.subprocess, "run", fake_run)
+    repo = str(tmp_path)
+    result = ensure_pr_risk_label(repo, "https://github.com/o/r/pull/9", "low")
+    assert result == "go:risk-low"
+    assert seen_cwd == [repo, repo]
+
+
+def test_ensure_pr_risk_label_bare_number_with_nonexistent_repo_warns(
+    monkeypatch, tmp_path, capsys
+):
+    """A bare PR number needs `repo`'s origin remote to resolve owner/repo;
+    with the repo gone there is nothing to resolve, so the existing
+    'could not resolve' skip path still applies (no crash, no api call)."""
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return _FakeCompleted(0, json.dumps({"labels": []}))
+        if cmd == ["git", "remote", "get-url", "origin"]:
+            return _FakeCompleted(128, "", "fatal: not a git repository")
+        raise AssertionError(f"gh api must not run: {cmd}")
+
+    monkeypatch.setattr(pr_labels.subprocess, "run", fake_run)
+    gone = str(tmp_path / "removed-worktree")
+    result = ensure_pr_risk_label(gone, "42", "medium")
+    assert result is None
+    assert "could not resolve" in capsys.readouterr().err
+
+
 def test_ensure_pr_no_automerge_label_resolves_owner_repo_from_git_for_bare_pr_number(
     monkeypatch,
 ):

@@ -504,6 +504,44 @@ class TestLifecycle(unittest.TestCase):
         self.assertEqual(rec["final_status"], "completed_pr_open")
         self.assertIn("pull/5", rec["pull_request"])
 
+    def test_finish_applies_correction_when_repository_removed_after_start(self):
+        """queue-triage tears down its landing worktree before `finish` runs;
+        the correction must still reach `gh` (running without a cwd) rather
+        than degrade into the 'risk-label correction failed' warning."""
+        repo = tempfile.mkdtemp()
+        res = _start(self.tmp, repo=repo, risk="medium")
+        _complete_scope_review(res["path"])
+        shutil.rmtree(repo)
+        seen = []
+
+        def fake_run(cmd, capture_output, text, cwd, timeout):
+            seen.append((cmd[:2], cwd))
+            if cmd[:3] == ["gh", "pr", "view"]:
+                return subprocess.CompletedProcess(cmd, 0, '{"labels": []}', "")
+            if cmd[:2] == ["gh", "api"]:
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        out, err = StringIO(), StringIO()
+        with (
+            patch("worktrail.router.pr_labels.subprocess.run", fake_run),
+            patch("sys.stdout", out),
+            patch("sys.stderr", err),
+        ):
+            rc = main(
+                [
+                    "finish",
+                    res["path"],
+                    "--status",
+                    "completed_pr_open",
+                    "--pr",
+                    "https://github.com/x/y/pull/6",
+                ]
+            )
+        self.assertEqual(rc, 0)
+        self.assertEqual(seen, [(["gh", "pr"], None), (["gh", "api"], None)])
+        self.assertNotIn("risk-label correction failed", err.getvalue())
+
     def test_finish_sanitizes_malformed_list_pull_request_instead_of_crashing(self):
         """A handful of pre-existing run records (older writer / hand-edited)
         hold `pull_request` as a list instead of a string. Confirmed live:
