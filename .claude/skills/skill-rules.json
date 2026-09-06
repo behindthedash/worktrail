@@ -119,6 +119,8 @@
           "LandRequest",
           "LandOutcome",
           "close_stale_openspec",
+          "capacity-gate",
+          "retry_after",
           "router",
           "front",
           "door",

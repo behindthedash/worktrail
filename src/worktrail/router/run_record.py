@@ -577,6 +577,21 @@ def _safe_provider(value: str) -> str:
     return value[:120] or "unknown"
 
 
+def _iso_retry_after(value: str) -> str:
+    """Validate an ISO-8601 timestamp, preserving its timezone offset verbatim.
+
+    ``_safe_provider`` is a slug sanitizer and turns ``+00:00`` into ``_00:00``,
+    which every downstream ``retry_after`` consumer then fails to parse.
+    """
+    try:
+        datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise SystemExit(
+            f"capacity-gate --retry-after must be an ISO-8601 timestamp: {value!r}"
+        ) from exc
+    return value
+
+
 def cmd_capacity_gate(args: argparse.Namespace) -> int:
     path = Path(args.path)
     record = _load(path)
@@ -584,7 +599,7 @@ def cmd_capacity_gate(args: argparse.Namespace) -> int:
     if not providers:
         raise SystemExit("capacity-gate requires at least one --provider")
     failure_class = _safe_provider(args.failure_class)
-    retry_after = _safe_provider(args.retry_after) if args.retry_after else None
+    retry_after = _iso_retry_after(args.retry_after) if args.retry_after else None
     record["capacity_gate"] = {
         "status": "blocked",
         "providers": providers,
