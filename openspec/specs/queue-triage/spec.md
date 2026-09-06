@@ -77,7 +77,11 @@ for "no restriction" — since no such allowlist applies to a repo-bearing group
 implies one is misleading regardless of the placeholder used.
 A verdict that is missing, malformed, or missing required evidence or required
 target fields SHALL be recorded as `keep` with the evaluator's raw output retained as
-evidence text, never silently dropped from the output. Every recorded verdict SHALL carry
+evidence text, never silently dropped from the output. That fail-open rule SHALL apply only
+to output an evaluator actually produced: when the group's evaluator spawn was exhausted
+without a model answer (see the `worker-exhaustion-non-result` capability), the `evaluate`
+step SHALL record no verdict at all for any brief in that group -- neither `keep` nor any
+other -- rather than retaining the spawn's error output as evidence. Every recorded verdict SHALL carry
 the brief's `premise_check` results (empty for a no-repo brief). For a brief in the no-repo
 group, any verdict that would be recorded as `keep` — including every fail-open fallback —
 SHALL instead be recorded as `needs-decision` with the question "which repo does this brief
@@ -191,6 +195,12 @@ needed must never also silently auto-rewrite the brief.
 - **WHEN** an evaluator returns `needs-update` with both `refuted_span` and
   `judgment_reason` set
 - **THEN** the verdict file records only `judgment_reason` for that brief
+
+#### Scenario: The evaluator spawn was exhausted before any verdict
+- **WHEN** a group's evaluator spawn gives up on provider capacity, so its output text is the
+  provider's usage-limit message rather than any model's answer
+- **THEN** the verdict file records no verdict for any brief in that group, and no brief in it
+  gains a `keep` verdict carrying that text as evidence
 
 ### Requirement: Archived or renamed target repo short-circuits its group
 Before evaluating any brief in a repo group with a non-null `repo:` value, the evaluator SHALL
