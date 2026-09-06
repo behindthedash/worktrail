@@ -80,7 +80,11 @@ def _run_gh_cmd(cmd, repo, runner=None, timeout=30) -> subprocess.CompletedProce
             cmd,
             capture_output=True,
             text=True,
-            cwd=repo,
+            # A torn-down landing repo (e.g. queue-triage's worktree removed
+            # before `finish` ran) must not turn the correction into a
+            # FileNotFoundError from subprocess: `gh` only needs cwd for
+            # bare-number resolution, so fall back to the parent's cwd.
+            cwd=repo if repo and Path(repo).is_dir() else None,
             timeout=timeout,
         )
         if result.returncode == 0 or not _is_transient_tls(result.stderr):
