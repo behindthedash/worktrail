@@ -635,9 +635,16 @@ def test_cli_human_mode_reports_overlap_warning_to_stderr_without_blocking(
     captured = capsys.readouterr()
     assert exit_code == 0
     warning_lines = [line for line in captured.err.splitlines() if line.strip()]
-    assert len(warning_lines) == 1
-    assert warning_lines[0].startswith("overlap warning: [spec-slug] ")
-    assert "add-durable-artifact-dedup-gate" in warning_lines[0]
+    # Quote the raw stderr in every failure message: this assertion was
+    # observed failing under concurrent orchestrator smoke runs (2026-09-05,
+    # run go-20260905-182103 feature-2 and feature-3) while passing alone, on
+    # CI, and under a 2-concurrent-suite repro. A bare length comparison says
+    # nothing about what the extra or missing line actually was, so the next
+    # occurrence has to be reproduced before it can be diagnosed.
+    stderr_detail = f"stderr was {captured.err!r}"
+    assert len(warning_lines) == 1, stderr_detail
+    assert warning_lines[0].startswith("overlap warning: [spec-slug] "), stderr_detail
+    assert "add-durable-artifact-dedup-gate" in warning_lines[0], stderr_detail
     # stdout carries only the brief path -- no blocking, no failure output.
     brief_path = Path(captured.out.strip())
     assert brief_path.is_file()
