@@ -1235,12 +1235,34 @@ def spawn_agent(
                 failure_class = agent_capacity.classify_failure(
                     proc.returncode, last_raw, proc.stderr or ""
                 )
+            # A provider that states its own reset time ("... try again at Aug
+            # 8th, 2026 2:17 AM.") is authoritative: honour it verbatim and mark
+            # the gate `provider`-derived so the probe cadence leaves it alone
+            # until that instant. Without a stated reset the gate is only our
+            # own guess from the failure class, so it stays `cooldown`-derived
+            # and remains probe-eligible.
+            #
+            # A stated reset that is already in the PAST is not honoured: the
+            # gate it would write is expired the moment it lands, so the
+            # `_select()` below re-serves this very cell, fails the same way,
+            # and loops forever (no attempt budget stops it -- a re-selected
+            # cell gets a fresh one). Stale notice text and clock skew both
+            # produce that shape, so fall back to the class cooldown, which
+            # always gates forward.
+            explicit_reset = agent_capacity.parse_explicit_reset(
+                f"{last_raw}\n{proc.stderr or ''}"
+            )
+            if explicit_reset is not None and explicit_reset <= datetime.datetime.now(
+                datetime.timezone.utc
+            ):
+                explicit_reset = None
             agent_capacity.record(
                 cell.target,
                 cell.model,
                 outcome="unavailable",
                 failure_class=failure_class,
-                retry_after=agent_capacity.retry_time(failure_class),
+                retry_after=explicit_reset or agent_capacity.retry_time(failure_class),
+                reset_source="provider" if explicit_reset else "cooldown",
             )
 
         if proc.returncode != 0:

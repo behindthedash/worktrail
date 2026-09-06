@@ -97,6 +97,14 @@ CLAUDE_THEN_OPENCODE_ROUTING = _routing(
     default_tier="t2-build",
 )
 
+# A reset instant comfortably in the future, in the wall-clock wording
+# `parse_explicit_reset` matches. Computed rather than hard-coded so the tests
+# that rely on the gate actually gating do not silently invert once a fixed date
+# slips into the past.
+_FUTURE_RESET_TEXT = (
+    datetime.datetime.now().astimezone() + datetime.timedelta(days=365)
+).strftime("%b %d, %Y %I:%M %p")
+
 SINGLE_CODEX_ROUTING = _routing(
     {"codex-sub": _target("codex")},
     {"t2-build": {"codex-sub": {"model": "gpt-5.3-codex", "effort": None}}},
@@ -2130,6 +2138,183 @@ class InfraFailureFallback(unittest.TestCase):
         self.assertEqual(calls[1][0], "claude")
         self.assertEqual(calls[2][:2], ["opencode", "run"])
         self.assertEqual(calls[3][:2], ["opencode", "run"])
+
+    def test_provider_stated_reset_is_honoured_verbatim(self):
+        """A usage-cap notice that names its own reset instant is authoritative:
+        the gate carries that timestamp, not our class cooldown, and is marked
+        `provider`-derived so the probe cadence leaves it alone until then."""
+
+        def fake_run(cmd, **kwargs):
+            return Proc(
+                1,
+                "",
+                "Rate limited. ... try again at " + _FUTURE_RESET_TEXT + ".",
+            )
+
+        original = spawnlib.subprocess.run
+        spawnlib.subprocess.run = fake_run
+        try:
+            with (
+                tempfile.TemporaryDirectory() as cwd,
+                _patch_routing(SINGLE_CODEX_ROUTING),
+                patch.object(
+                    spawnlib,
+                    "prepare_codex_child_environment",
+                    return_value=(
+                        os.environ.copy(),
+                        "/tmp/worktrail-codex-child",
+                        False,
+                    ),
+                ),
+            ):
+                spawnlib.spawn_agent(
+                    "prompt", cwd, tier="t2-build", retries=0, sleep=lambda *_: None
+                )
+        finally:
+            spawnlib.subprocess.run = original
+
+        gate = spawnlib.agent_capacity.load()["providers"]["codex-sub:gpt-5.3-codex"]
+        self.assertEqual(gate["status"], "unavailable")
+        self.assertEqual(gate["reset_source"], "provider")
+        expected = spawnlib.agent_capacity.parse_explicit_reset(
+            "try again at " + _FUTURE_RESET_TEXT + "."
+        )
+        self.assertIsNotNone(expected)
+        self.assertEqual(
+            datetime.datetime.fromisoformat(gate["retry_after"]),
+            expected,
+        )
+
+    def test_failure_without_stated_reset_stays_cooldown_derived(self):
+        """No stated reset means the window is only our own guess, so it keeps
+        the per-class cooldown and stays probe-eligible."""
+
+        def fake_run(cmd, **kwargs):
+            return Proc(1, "", "boom")
+
+        original = spawnlib.subprocess.run
+        spawnlib.subprocess.run = fake_run
+        try:
+            with (
+                tempfile.TemporaryDirectory() as cwd,
+                _patch_routing(SINGLE_CODEX_ROUTING),
+                patch.object(
+                    spawnlib,
+                    "prepare_codex_child_environment",
+                    return_value=(
+                        os.environ.copy(),
+                        "/tmp/worktrail-codex-child",
+                        False,
+                    ),
+                ),
+            ):
+                spawnlib.spawn_agent(
+                    "prompt", cwd, tier="t2-build", retries=0, sleep=lambda *_: None
+                )
+        finally:
+            spawnlib.subprocess.run = original
+
+        gate = spawnlib.agent_capacity.load()["providers"]["codex-sub:gpt-5.3-codex"]
+        self.assertEqual(gate["reset_source"], "cooldown")
+        checked = datetime.datetime.fromisoformat(gate["checked_at"])
+        expected = spawnlib.agent_capacity.retry_time(
+            gate["failure_class"], now=checked
+        )
+        # `record()` derives retry_after from its own `now`, microseconds off
+        # this entry's persisted checked_at -- compare the cooldown WINDOW, not
+        # an exact instant.
+        self.assertAlmostEqual(
+            datetime.datetime.fromisoformat(gate["retry_after"]).timestamp(),
+            expected.timestamp(),
+            delta=1.0,
+        )
+
+    def test_stated_reset_already_in_the_past_is_not_honoured(self):
+        """A stated reset that has already elapsed would write a gate expired on
+        arrival, so the next `_select()` re-serves this same cell and the spawn
+        loops forever. Fall back to the class cooldown, which always gates
+        forward."""
+        past = (
+            datetime.datetime.now().astimezone() - datetime.timedelta(days=30)
+        ).strftime("%b %d, %Y %I:%M %p")
+
+        def fake_run(cmd, **kwargs):
+            return Proc(1, "", f"Rate limited. ... try again at {past}.")
+
+        original = spawnlib.subprocess.run
+        spawnlib.subprocess.run = fake_run
+        try:
+            with (
+                tempfile.TemporaryDirectory() as cwd,
+                _patch_routing(SINGLE_CODEX_ROUTING),
+                patch.object(
+                    spawnlib,
+                    "prepare_codex_child_environment",
+                    return_value=(
+                        os.environ.copy(),
+                        "/tmp/worktrail-codex-child",
+                        False,
+                    ),
+                ),
+            ):
+                spawnlib.spawn_agent(
+                    "prompt", cwd, tier="t2-build", retries=0, sleep=lambda *_: None
+                )
+        finally:
+            spawnlib.subprocess.run = original
+
+        gate = spawnlib.agent_capacity.load()["providers"]["codex-sub:gpt-5.3-codex"]
+        self.assertEqual(gate["reset_source"], "cooldown")
+        self.assertGreater(
+            datetime.datetime.fromisoformat(gate["retry_after"]),
+            datetime.datetime.now(datetime.timezone.utc),
+        )
+
+    def test_successful_spawn_on_a_probeable_gate_clears_it(self):
+        """The probe branch is only useful if the spawn it lets through can
+        actually lift the gate: a success records `available`, so the next
+        `check()` passes instead of raising."""
+        stale = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
+            minutes=30
+        )
+        spawnlib.agent_capacity.record(
+            "codex-sub",
+            "gpt-5.3-codex",
+            outcome="unavailable",
+            failure_class="billing",
+            retry_after=datetime.datetime.now(datetime.timezone.utc)
+            + datetime.timedelta(hours=1),
+            now=stale,
+        )
+
+        def fake_run(cmd, **kwargs):
+            return Proc(0, json.dumps({"type": "item.completed", "text": "ok"}), "")
+
+        original = spawnlib.subprocess.run
+        spawnlib.subprocess.run = fake_run
+        try:
+            with (
+                tempfile.TemporaryDirectory() as cwd,
+                _patch_routing(SINGLE_CODEX_ROUTING),
+                patch.object(
+                    spawnlib,
+                    "prepare_codex_child_environment",
+                    return_value=(
+                        os.environ.copy(),
+                        "/tmp/worktrail-codex-child",
+                        False,
+                    ),
+                ),
+            ):
+                spawnlib.spawn_agent(
+                    "prompt", cwd, tier="t2-build", retries=0, sleep=lambda *_: None
+                )
+        finally:
+            spawnlib.subprocess.run = original
+
+        gate = spawnlib.agent_capacity.load()["providers"]["codex-sub:gpt-5.3-codex"]
+        self.assertEqual(gate["status"], "available")
+        spawnlib.agent_capacity.check("codex-sub", "gpt-5.3-codex")
 
 
 class SpawnClaudePFallback(unittest.TestCase):
