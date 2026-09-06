@@ -46,12 +46,8 @@ class TriageCapacityBoundaryTests(unittest.TestCase):
         exc = EvaluatorUnavailable(
             "behindthedash/worktrail", [self.brief.stem], "billing"
         )
-        with patch.object(
-            skill_dispatch, "evaluate_single_brief", side_effect=exc
-        ):
-            code, out, err = self._run(
-                ["--evaluate-brief-triage", str(self.brief)]
-            )
+        with patch.object(skill_dispatch, "evaluate_single_brief", side_effect=exc):
+            code, out, err = self._run(["--evaluate-brief-triage", str(self.brief)])
 
         self.assertEqual(code, 2)
         self.assertIsNone(json.loads(out.strip()))
@@ -61,9 +57,10 @@ class TriageCapacityBoundaryTests(unittest.TestCase):
 
     def test_evaluator_unavailable_propagates_out_of_evaluate_single_brief(self):
         exc = EvaluatorUnavailable("worktrail", [self.brief.stem], "billing")
-        with patch(
-            "worktrail.workqueue.queue_triage.evaluate_briefs", side_effect=exc
-        ), self.assertRaises(EvaluatorUnavailable) as caught:
+        with (
+            patch("worktrail.workqueue.queue_triage.evaluate_briefs", side_effect=exc),
+            self.assertRaises(EvaluatorUnavailable) as caught,
+        ):
             skill_dispatch.evaluate_single_brief(
                 self.brief, repo="worktrail", cwd=self.tmp.name
             )
@@ -71,9 +68,7 @@ class TriageCapacityBoundaryTests(unittest.TestCase):
 
     def test_none_verdict_still_exits_one_with_null(self):
         with patch.object(skill_dispatch, "evaluate_single_brief", return_value=None):
-            code, out, err = self._run(
-                ["--evaluate-brief-triage", str(self.brief)]
-            )
+            code, out, err = self._run(["--evaluate-brief-triage", str(self.brief)])
 
         self.assertEqual(code, 1)
         self.assertIsNone(json.loads(out.strip()))
@@ -86,7 +81,7 @@ class TriageCapacityBoundaryTests(unittest.TestCase):
 
     def test_apply_rejects_null_payload_without_typeerror(self):
         before = self.brief.read_bytes()
-        code, out, err = self._run(["--apply-brief-triage", "null", "--confirm"])
+        code, out, _err = self._run(["--apply-brief-triage", "null", "--confirm"])
 
         self.assertEqual(code, 1)
         entry = json.loads(out.strip())
@@ -104,7 +99,7 @@ class TriageCapacityBoundaryTests(unittest.TestCase):
                 "evidence": "",
             }
         )
-        code, out, err = self._run(["--apply-brief-triage", payload, "--confirm"])
+        code, out, _err = self._run(["--apply-brief-triage", payload, "--confirm"])
 
         self.assertEqual(code, 1)
         entry = json.loads(out.strip())
