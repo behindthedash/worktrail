@@ -58,7 +58,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Sequence
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -682,22 +682,33 @@ def open_or_update_pull_request(
     }
 
 
-def _run_record_main(argv: list[str]) -> tuple[int, str]:
-    """`run_record.main(argv)`, capturing whatever it printed to stdout.
+def _run_record_main(argv: list[str]) -> tuple[int, str, str]:
+    """`run_record.main(argv)`, capturing whatever it printed to stdout and
+    stderr. Returns `(exit_code, stdout, detail)`.
 
     `run_record.main()` can raise `SystemExit` rather than returning a code
-    (e.g. via argparse, or an explicit `sys.exit`) -- caught here so a
+    (e.g. via argparse, or an explicit `sys.exit("...")`) -- caught here so a
     run-record write failure always surfaces as a nonzero `exit_code` the
     caller can act on, never an uncaught exception that skips the outcome
     classification entirely (Requirement: run record is completed with a
-    real state)."""
-    buf = io.StringIO()
+    real state). A string `SystemExit` code (how `run_record` reports e.g.
+    a scope-completeness gate refusal) is kept as `detail`; otherwise
+    `detail` is whatever was written to stderr."""
+    out = io.StringIO()
+    err = io.StringIO()
+    detail = ""
     try:
-        with redirect_stdout(buf):
+        with redirect_stdout(out), redirect_stderr(err):
             exit_code = run_record_module.main(argv)
     except SystemExit as exc:
-        exit_code = exc.code if isinstance(exc.code, int) else (1 if exc.code else 0)
-    return exit_code, buf.getvalue()
+        if isinstance(exc.code, int):
+            exit_code = exc.code
+        elif exc.code:
+            exit_code = 1
+            detail = str(exc.code)
+        else:
+            exit_code = 0
+    return exit_code, out.getvalue(), detail or err.getvalue().strip()
 
 
 def _ensure_run_record(
@@ -723,7 +734,7 @@ def _ensure_run_record(
         "--request",
         request_summary,
     ]
-    exit_code, out = _run_record_main(argv)
+    exit_code, out, _ = _run_record_main(argv)
     if exit_code != 0:
         return None
     try:
@@ -944,16 +955,29 @@ def _finish_or_checkpoint(
     pr_url: str,
     merge_result: str,
     checkpoint: bool,
-) -> bool:
+    pipeline_owns_record: bool = False,
+    request_summary: str = "",
+    scope_evidence: str = "",
+) -> tuple[bool, str]:
     """Finish the run record, or (checkpoint mode, all-pass case only)
     append a decision instead -- design.md D7's checkpoint substitution.
 
-    Returns whether the write succeeded, so a caller reporting `outcome=
+    When the pipeline itself started the record (`pipeline_owns_record`,
+    i.e. the caller passed `run=None` and step 6 started one), nobody else
+    ever appends a scope-review entry to it, so `finish`'s scope-completeness
+    gate would refuse an otherwise clean landing. The pipeline therefore
+    records its own single `complete` scope-review item (the request summary,
+    evidenced by the landed commit/branch/PR) before finishing -- non-
+    checkpoint mode only, since checkpoint mode never finishes.
+
+    Returns `(ok, detail)`: whether the write succeeded, plus whatever
+    `run_record` reported on failure, so a caller reporting `outcome=
     "landed"` can downgrade instead of reporting success on a run record
     that was never actually completed (Requirement: run record is completed
-    with a real state)."""
+    with a real state). A failed scope-review append fails exactly like a
+    failed finish."""
     if checkpoint:
-        exit_code, _ = _run_record_main(
+        exit_code, _, detail = _run_record_main(
             [
                 "append",
                 run_path,
@@ -961,8 +985,23 @@ def _finish_or_checkpoint(
                 f"{status_value}: {merge_result}",
             ]
         )
-        return exit_code == 0
-    exit_code, _ = _run_record_main(
+        return exit_code == 0, detail
+    if pipeline_owns_record:
+        exit_code, _, detail = _run_record_main(
+            [
+                "scope-review",
+                run_path,
+                "--item",
+                request_summary,
+                "--status",
+                "complete",
+                "--evidence",
+                scope_evidence,
+            ]
+        )
+        if exit_code != 0:
+            return False, detail
+    exit_code, _, detail = _run_record_main(
         [
             "finish",
             run_path,
@@ -974,7 +1013,7 @@ def _finish_or_checkpoint(
             merge_result,
         ]
     )
-    return exit_code == 0
+    return exit_code == 0, detail
 
 
 def land_pr(request: LandRequest) -> LandOutcome:
@@ -1133,7 +1172,11 @@ def land_pr(request: LandRequest) -> LandOutcome:
             merge_result="run record could not be started; PR is open but unrecorded",
             detail="run_record start failed",
         )
-    set_exit, _ = _run_record_main(["set", run_path, "pull_request", pr_url])
+    pipeline_owns_record = request.run is None and run_path is not None
+    head = _git(repo, runner, "rev-parse", "HEAD")
+    head_sha = head.stdout.strip() if head.returncode == 0 else "HEAD"
+    scope_evidence = f"{head_sha} on {branch} -> {pr_url}"
+    set_exit, _, _ = _run_record_main(["set", run_path, "pull_request", pr_url])
     if set_exit != 0:
         return LandOutcome(
             outcome="ceiling",
@@ -1280,12 +1323,15 @@ def land_pr(request: LandRequest) -> LandOutcome:
 
     if status.get("state") == "MERGED":
         merge_result = "merged externally"
-        recorded = _finish_or_checkpoint(
+        recorded, detail = _finish_or_checkpoint(
             run_path,
             "completed_and_merged",
             pr_url,
             merge_result,
             request.checkpoint,
+            pipeline_owns_record,
+            request.request_summary,
+            scope_evidence,
         )
         if not recorded:
             return LandOutcome(
@@ -1296,6 +1342,7 @@ def land_pr(request: LandRequest) -> LandOutcome:
                 run=run_path,
                 final_status="failed_recoverable",
                 merge_result="PR merged but run record could not be completed",
+                detail=detail,
             )
         return LandOutcome(
             outcome="landed",
@@ -1342,8 +1389,15 @@ def land_pr(request: LandRequest) -> LandOutcome:
 
     if status.get("mergeStateStatus") == "BLOCKED":
         merge_result = "blocked on branch protection after merge-state guard and review-thread gate"
-        recorded = _finish_or_checkpoint(
-            run_path, "blocked_product_decision", pr_url, merge_result, False
+        recorded, detail = _finish_or_checkpoint(
+            run_path,
+            "blocked_product_decision",
+            pr_url,
+            merge_result,
+            False,
+            pipeline_owns_record,
+            request.request_summary,
+            scope_evidence,
         )
         if not recorded:
             return LandOutcome(
@@ -1354,6 +1408,7 @@ def land_pr(request: LandRequest) -> LandOutcome:
                 run=run_path,
                 final_status="failed_recoverable",
                 merge_result="PR blocked but run record could not be completed",
+                detail=detail,
             )
         return LandOutcome(
             outcome="landed",
@@ -1366,8 +1421,15 @@ def land_pr(request: LandRequest) -> LandOutcome:
         )
 
     merge_result = _automerge_mechanism(status)
-    recorded = _finish_or_checkpoint(
-        run_path, "completed_pr_open", pr_url, merge_result, request.checkpoint
+    recorded, detail = _finish_or_checkpoint(
+        run_path,
+        "completed_pr_open",
+        pr_url,
+        merge_result,
+        request.checkpoint,
+        pipeline_owns_record,
+        request.request_summary,
+        scope_evidence,
     )
     if not recorded:
         return LandOutcome(
@@ -1378,6 +1440,7 @@ def land_pr(request: LandRequest) -> LandOutcome:
             run=run_path,
             final_status="failed_recoverable",
             merge_result="PR open but run record could not be completed",
+            detail=detail,
         )
     return LandOutcome(
         outcome="landed",
