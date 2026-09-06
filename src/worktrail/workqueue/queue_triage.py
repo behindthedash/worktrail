@@ -1186,7 +1186,9 @@ def evaluate_group(
     inconclusive) falls through to the normal spawn unchanged.
 
     Returns a single-element list -- `[{"repo", "brief_ids", "raw_text",
-    "candidates_by_brief", "premise_by_brief", "known_repos_by_brief"}]` --
+    "candidates_by_brief", "premise_by_brief", "known_repos_by_brief"}]`, plus
+    `"exhausted": True` and `"failure_class"` when the spawn gave up without
+    ever producing a verdict (`raw_text` is `""` in that case) --
     rather than the raw string directly, so a caller fanning out across
     multiple groups can `.extend()` every call's result into one flat list,
     without a shape special-case for the archived short-circuit. `raw_text`
@@ -1285,7 +1287,7 @@ def evaluate_group(
     known_repos_by_brief = (
         {bid: known_repos for bid in brief_ids} if repo == NO_REPO_KEY else {}
     )
-    if getattr(result, "exhausted", False):
+    if result.exhausted:
         # The spawn gave up (design D2): `result.text` is the provider's
         # capacity/error stream, never evaluator output. Hand back an empty
         # `raw_text` so no consumer can parse an error message into verdicts.
@@ -1295,7 +1297,7 @@ def evaluate_group(
                 "brief_ids": brief_ids,
                 "raw_text": "",
                 "exhausted": True,
-                "failure_class": getattr(result, "failure_class", ""),
+                "failure_class": result.failure_class,
                 "candidates_by_brief": candidates_by_brief,
                 "premise_by_brief": premise_by_brief,
                 "known_repos_by_brief": known_repos_by_brief,

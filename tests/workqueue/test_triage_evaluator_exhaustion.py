@@ -17,12 +17,12 @@ import io
 import json
 import os
 import tempfile
-import types
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
+from worktrail.orchestrator.spawnlib import SpawnResult
 from worktrail.workqueue import queue_triage as qt
 
 
@@ -35,22 +35,18 @@ def _brief(focus: str, repo: str | None = None, body: str = "") -> str:
 
 def _spawn_result(
     text: str, *, exhausted: bool = False, failure_class: str = ""
-) -> types.SimpleNamespace:
-    """A `SpawnResult`-shaped stand-in carrying 1.1's exhaustion fields.
+) -> SpawnResult:
+    """A real `SpawnResult` carrying 1.1's exhaustion fields.
 
-    A namespace rather than the real `SpawnResult` so this test pins the
-    contract `queue_triage` consumes (`.text`/`.exhausted`/`.failure_class`)
-    without depending on the NamedTuple's field order.
+    The real NamedTuple rather than a stand-in, so these tests bind to the
+    actual spawn contract `queue_triage` consumes: dropping or renaming
+    `exhausted`/`failure_class` breaks them loudly.
     """
-    return types.SimpleNamespace(
+    return SpawnResult(
         text=text,
         usage={},
         exhausted=exhausted,
         failure_class=failure_class,
-        session_id="",
-        served_target="",
-        served_model="",
-        served_harness="",
     )
 
 
