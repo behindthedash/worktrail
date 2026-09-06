@@ -761,7 +761,10 @@ def test_concurrent_record_capacity_gate_calls_both_survive(tmp_path, monkeypatc
     from worktrail.drain import drain
 
     path = tmp_path / "capacity.json"
-    now = datetime(2026, 8, 12, 20, 0, tzinfo=timezone.utc)
+    # Real clock: record_capacity_gate prunes drain-owned entries whose
+    # retry window has already passed, so a fixed past date would let the
+    # second writer legitimately drop the first writer's expired gate.
+    now = datetime.now(timezone.utc)
     _run_racing_writers(
         tmp_path,
         monkeypatch,
