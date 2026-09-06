@@ -53,7 +53,7 @@
       completed auth inheritance without raising, plus (if available) a
       non-secret "authenticated" signal from the nested process's own
       output — never read or forward `auth.json` contents.
-- [ ] 4.4 Derive `report_back` from whether the parsed final reply matches
+- [x] 4.4 Derive `report_back` from whether the parsed final reply matches
       the expected no-op sentinel within the timeout.
 - [x] 4.5 Implement the ordered stage-classification function from
       design.md (environment_preparation → startup → provider_selection →
@@ -70,13 +70,13 @@
 
 ## 5. Launcher entry point
 
-- [ ] 5.1 Add a CLI entry point module (`argparse`-based, mirroring
+- [x] 5.1 Add a CLI entry point module (`argparse`-based, mirroring
       `check_agent_contract.py`'s `main()`) accepting an explicit read-only
       or writable parent `CODEX_HOME` override and a required/bounded
       `--timeout`. (Requirement: Probe is independently invocable on demand)
-- [ ] 5.2 Register the entry point in `pyproject.toml`'s `[project.scripts]`
+- [x] 5.2 Register the entry point in `pyproject.toml`'s `[project.scripts]`
       following this repo's `worktrail-*` naming convention.
-- [ ] 5.3 Print the structured report (stage, success, diagnostic, redacted
+- [x] 5.3 Print the structured report (stage, success, diagnostic, redacted
       signals) to stdout in a machine-parseable form (JSON) and exit non-zero
       on any non-`report_back`-success outcome.
 
@@ -93,20 +93,22 @@
 - [x] 6.3 Test no-op scope enforcement: assert a successful run leaves a
       fixture repository's `git status --porcelain` unchanged, and assert
       that a simulated out-of-scope mutation is reported as a failure.
-- [ ] 6.4 Test timeout behavior: a subprocess mock that raises
+- [x] 6.4 Test timeout behavior: a subprocess mock that raises
       `subprocess.TimeoutExpired` (or blocks past a short configured
       timeout) yields a `timeout` stage outcome, and confirm the launcher
       requires or defaults a bounded timeout (no unbounded run is possible).
-- [ ] 6.5 Test secret redaction: feed a fixture nested-process stdout/stderr
+- [x] 6.5 Test secret redaction: feed a fixture nested-process stdout/stderr
       containing fake token/cookie-shaped content and assert none of it
       appears in the structured report, only presence/usability booleans.
-- [ ] 6.6 Test each of the six stage-outcome classifications independently
+- [x] 6.6 Test each of the six stage-outcome classifications independently
       (one fixture per stage) so a future regression pinpoints which stage
       broke.
-- [ ] 6.7 Add/update `tests/test_plugin_surface.py` coverage if the new
+- [x] 6.7 Add/update `tests/test_plugin_surface.py` coverage if the new
       entry point needs plugin-surface registration; otherwise confirm no
       plugin surface changes are required (this is an operator CLI, not a
-      skill-facing command).
+      skill-facing command). Confirmed: `test_every_referenced_command_is_a_real_console_script`
+      only validates commands skill docs reference; an unreferenced operator
+      CLI needs no plugin-surface entry.
 
 ## 7. Verification
 

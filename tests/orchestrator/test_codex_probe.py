@@ -1,5 +1,6 @@
 """Tests for codex_probe.py -- path-parity with skill_dispatch and spawnlib."""
 
+import dataclasses
 import json
 import os
 import shutil
@@ -267,7 +268,12 @@ class TestNoOpScopeEnforcement(unittest.TestCase):
                     successful_result = subprocess.CompletedProcess(
                         args=cmd,
                         returncode=0,
-                        stdout='{"type": "thread.started", "thread_id": "test-thread-id"}\nok',
+                        stdout=(
+                            '{"type": "thread.started", "thread_id": "test-thread-id"}\n'
+                            '{"type": "turn.completed"}\n'
+                            '{"type": "item.completed", "item": '
+                            '{"type": "agent_message", "text": "ok"}}\n'
+                        ),
                         stderr="",
                     )
 
@@ -293,9 +299,10 @@ class TestNoOpScopeEnforcement(unittest.TestCase):
                     check=True,
                 ).stdout
 
-                # Assert success: the run should return CompletedProcess with returncode 0
-                self.assertIsInstance(probe_result, subprocess.CompletedProcess)
-                self.assertEqual(probe_result.returncode, 0)
+                # Assert success: the run should classify as a successful report_back
+                self.assertIsInstance(probe_result, ProbeReport)
+                self.assertEqual(probe_result.stage, StageOutcome.REPORT_BACK)
+                self.assertTrue(probe_result.success)
 
                 # Assert git status unchanged: before and after should be identical
                 self.assertEqual(status_before, status_after)
@@ -890,6 +897,215 @@ class TestRunProbeCommandAuthenticationStage(unittest.TestCase):
                 self.assertEqual(result.stage, StageOutcome.STARTUP)
             finally:
                 shutil.rmtree(cmd_scratch_dir, ignore_errors=True)
+
+
+class TestSixStageOutcomes(unittest.TestCase):
+    """One fixture per stage outcome not already covered elsewhere, so a
+    future regression pinpoints which stage broke (task 6.6).
+
+    `environment_preparation` is covered by `TestReadOnlyCodexHome`,
+    `startup` by `test_startup_failure_without_auth_evidence_stays_startup`,
+    and `authentication` by `TestRunProbeCommandAuthenticationStage` --
+    this class adds the three stages those don't reach:
+    `provider_selection`, `timeout`, and a `report_back` failure (its
+    success case is covered by
+    `test_successful_run_leaves_git_status_unchanged`).
+    """
+
+    def _prepared_env(self, tmpdir):
+        with patch.dict(
+            os.environ,
+            {"WORKTRAIL_CODEX_HOME": os.path.join(tmpdir, "codex-home")},
+            clear=True,
+        ):
+            prepared = prepare_environment(inherit_auth=False)
+        if isinstance(prepared, ProbeReport):
+            self.fail(f"Environment preparation failed: {prepared.diagnostic}")
+        child_env, _codex_home, _automatic_home = prepared
+        return child_env
+
+    def test_provider_selection_stage(self):
+        """Startup passes (non-empty output, exit 0) but the nested process
+        never reports a `thread.started` session -- classified as
+        `provider_selection`, not `startup`."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_dir = os.path.join(tmpdir, "test-repo")
+            os.makedirs(repo_dir)
+            _init_git_repo(repo_dir)
+            _add_and_commit_file(repo_dir, "test.txt", "initial content")
+
+            cmd, cmd_scratch_dir = build_probe_command()
+            try:
+                child_env = self._prepared_env(tmpdir)
+                no_session = subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=0,
+                    stdout='{"type": "turn.started"}\n',
+                    stderr="",
+                )
+                with patch.object(
+                    codex_probe.subprocess, "run", return_value=no_session
+                ):
+                    result = run_probe_command(
+                        cmd,
+                        cmd_scratch_dir,
+                        child_env,
+                        timeout=30.0,
+                        repo_dir=repo_dir,
+                    )
+
+                self.assertIsInstance(result, ProbeReport)
+                self.assertEqual(result.stage, StageOutcome.PROVIDER_SELECTION)
+                self.assertFalse(result.success)
+            finally:
+                shutil.rmtree(cmd_scratch_dir, ignore_errors=True)
+
+    def test_timeout_stage(self):
+        """A subprocess that exceeds the wall-clock bound is classified as
+        `timeout` rather than propagating `subprocess.TimeoutExpired`."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_dir = os.path.join(tmpdir, "test-repo")
+            os.makedirs(repo_dir)
+            _init_git_repo(repo_dir)
+            _add_and_commit_file(repo_dir, "test.txt", "initial content")
+
+            cmd, cmd_scratch_dir = build_probe_command()
+            try:
+                child_env = self._prepared_env(tmpdir)
+
+                def mock_run(*args, **kwargs):
+                    raise subprocess.TimeoutExpired(cmd=cmd, timeout=30.0)
+
+                with patch.object(codex_probe.subprocess, "run", side_effect=mock_run):
+                    result = run_probe_command(
+                        cmd,
+                        cmd_scratch_dir,
+                        child_env,
+                        timeout=30.0,
+                        repo_dir=repo_dir,
+                    )
+
+                self.assertIsInstance(result, ProbeReport)
+                self.assertEqual(result.stage, StageOutcome.TIMEOUT)
+                self.assertFalse(result.success)
+            finally:
+                shutil.rmtree(cmd_scratch_dir, ignore_errors=True)
+
+    def test_report_back_failure_stage(self):
+        """The nested process starts, authenticates, and completes, but its
+        final reply does not match the expected sentinel -- classified as a
+        failing `report_back`, not a silent pass."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_dir = os.path.join(tmpdir, "test-repo")
+            os.makedirs(repo_dir)
+            _init_git_repo(repo_dir)
+            _add_and_commit_file(repo_dir, "test.txt", "initial content")
+
+            cmd, cmd_scratch_dir = build_probe_command()
+            try:
+                child_env = self._prepared_env(tmpdir)
+                wrong_reply = subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=0,
+                    stdout=(
+                        '{"type": "thread.started", "thread_id": "t1"}\n'
+                        '{"type": "item.completed", "item": '
+                        '{"type": "agent_message", "text": "not ok"}}\n'
+                    ),
+                    stderr="",
+                )
+                with patch.object(
+                    codex_probe.subprocess, "run", return_value=wrong_reply
+                ):
+                    result = run_probe_command(
+                        cmd,
+                        cmd_scratch_dir,
+                        child_env,
+                        timeout=30.0,
+                        repo_dir=repo_dir,
+                    )
+
+                self.assertIsInstance(result, ProbeReport)
+                self.assertEqual(result.stage, StageOutcome.REPORT_BACK)
+                self.assertFalse(result.success)
+            finally:
+                shutil.rmtree(cmd_scratch_dir, ignore_errors=True)
+
+
+class TestSecretRedaction(unittest.TestCase):
+    """Task 6.5: a secret-shaped value anywhere in the nested process's
+    stdout/stderr must never appear in the structured report, regardless of
+    which stage classifies the run."""
+
+    def test_secret_in_report_back_success_output_is_not_leaked(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_dir = os.path.join(tmpdir, "test-repo")
+            os.makedirs(repo_dir)
+            _init_git_repo(repo_dir)
+            _add_and_commit_file(repo_dir, "test.txt", "initial content")
+
+            cmd, cmd_scratch_dir = build_probe_command()
+            try:
+                with patch.dict(
+                    os.environ,
+                    {"WORKTRAIL_CODEX_HOME": os.path.join(tmpdir, "codex-home")},
+                    clear=True,
+                ):
+                    prepared = prepare_environment(inherit_auth=False)
+                if isinstance(prepared, ProbeReport):
+                    self.fail(f"Environment preparation failed: {prepared.diagnostic}")
+                child_env, _codex_home, _ = prepared
+
+                secret = "sk-supersecrettoken-should-never-leak"
+                leaky = subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=0,
+                    stdout=(
+                        '{"type": "thread.started", "thread_id": "t1", '
+                        f'"cookie": "{secret}"}}\n'
+                        '{"type": "item.completed", "item": '
+                        f'{{"type": "agent_message", "text": "ok ({secret})"}}}}\n'
+                    ),
+                    stderr=f"leaked stderr token {secret}",
+                )
+                with patch.object(codex_probe.subprocess, "run", return_value=leaky):
+                    result = run_probe_command(
+                        cmd,
+                        cmd_scratch_dir,
+                        child_env,
+                        timeout=30.0,
+                        repo_dir=repo_dir,
+                    )
+
+                self.assertIsInstance(result, ProbeReport)
+                report_str = json.dumps(dataclasses.asdict(result))
+                self.assertNotIn(secret, report_str)
+            finally:
+                shutil.rmtree(cmd_scratch_dir, ignore_errors=True)
+
+
+class TestLauncherTimeoutRequired(unittest.TestCase):
+    """Task 6.4: the launcher requires a bounded `--timeout` -- no unbounded
+    run is possible."""
+
+    def test_main_requires_timeout_argument(self):
+        with self.assertRaises(SystemExit):
+            codex_probe.main([])
+
+    def test_main_accepts_explicit_timeout_and_exits_on_failure(self):
+        """A parsed, bounded --timeout flows through to a real classified
+        outcome (mocking environment preparation to fail fast avoids
+        spawning a real codex process in this unit test)."""
+        failing_report = ProbeReport(
+            stage=StageOutcome.ENVIRONMENT_PREPARATION,
+            success=False,
+            diagnostic="forced failure for --timeout wiring test",
+        )
+        with patch.object(
+            codex_probe, "prepare_environment", return_value=failing_report
+        ):
+            exit_code = codex_probe.main(["--timeout", "5"])
+        self.assertEqual(exit_code, 1)
 
 
 if __name__ == "__main__":

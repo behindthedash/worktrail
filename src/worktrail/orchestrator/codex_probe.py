@@ -8,11 +8,15 @@ for the full contract this module implements.
 
 from __future__ import annotations
 
+import argparse
+import dataclasses
 import enum
 import json
 import os
 import re
+import shutil
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass, replace
 
@@ -267,16 +271,20 @@ _AUTH_FAILURE_MARKERS: tuple[tuple[str, tuple[re.Pattern[str], ...]], ...] = (
                 r"\b401\b\W{0,3}unauthorized",
                 r"\bunauthorized\b\W{0,3}\(?401\b",
                 # `401` as an HTTP/status code rather than an arbitrary number.
-                r"\b(?:http|https|status|response|error|code)\b"
-                r"\W{0,3}(?:code\b\W{0,3})?401\b",
+                (
+                    r"\b(?:http|https|status|response|error|code)\b"
+                    r"\W{0,3}(?:code\b\W{0,3})?401\b"
+                ),
                 # The bare status text as the whole message -- an error whose
                 # entire content is "unauthorized" is the provider's refusal,
                 # unlike "unauthorized" as a word inside a longer sentence
                 # about something else.
                 r"\Aunauthorized\W*\Z",
                 # `unauthorized` qualified by nearby credential wording.
-                r"\bunauthorized\b.{0,40}?"
-                r"\b(?:api[ _-]?key|token|credential|bearer|login)\b",
+                (
+                    r"\bunauthorized\b.{0,40}?"
+                    r"\b(?:api[ _-]?key|token|credential|bearer|login)\b"
+                ),
             )
         ),
     ),
@@ -372,6 +380,38 @@ def extract_authenticated_marker(stdout: str) -> bool | None:
             continue
         if event.get("type") == "turn.completed":
             return True
+    return None
+
+
+def extract_final_reply(stdout: str) -> str | None:
+    """Return the nested process's final agent reply text, or `None` if the
+    documented `item.completed`/`agent_message` event never appears.
+
+    This is task 4.4's report_back signal: `codex exec --json`'s documented
+    stream emits the agent's reply as an `item.completed` event whose `item`
+    carries `type: "agent_message"` and a `text` field. Only that field is
+    read -- matching the other extractors here, the raw event stream is never
+    stored on a `ProbeReport`. Malformed lines are skipped rather than
+    raising, matching `extract_session_started_marker`.
+    """
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") != "item.completed":
+            continue
+        item = event.get("item")
+        if not isinstance(item, dict) or item.get("type") != "agent_message":
+            continue
+        text = item.get("text")
+        if isinstance(text, str):
+            return text
     return None
 
 
@@ -532,6 +572,12 @@ def run_probe_command(
     a run exits non-zero, so checking it later would leave the whole
     `authentication` post-spawn stage unreachable on its one realistic failure
     path. See that branch for why this preserves the ordered classification.
+
+    A run no earlier stage (or the no-op-scope check) has already classified
+    is always converted to a `REPORT_BACK` outcome before returning, never a
+    raw `subprocess.CompletedProcess`: `extract_final_reply` looks for the
+    documented `item.completed`/`agent_message` event and compares its text
+    against `EXPECTED_REPLY`, the last check in design.md's ordering.
     """
     try:
         pre_spawn_snapshot: NoOpScopeSnapshot | None = snapshot_no_op_scope(
@@ -706,4 +752,75 @@ def run_probe_command(
                     session_started_marker=result.session_started_marker,
                     auth_usable=result.auth_usable,
                 )
+    # report_back: reached only by a run no earlier stage (or the no-op-scope
+    # check above) already classified. Whether the parsed final reply matches
+    # the expected sentinel is the last thing design.md's ordering checks.
+    if isinstance(result, subprocess.CompletedProcess):
+        final_reply = extract_final_reply(result.stdout)
+        matched = (
+            final_reply is not None and final_reply.strip().lower() == EXPECTED_REPLY
+        )
+        result = ProbeReport(
+            stage=StageOutcome.REPORT_BACK,
+            success=matched,
+            diagnostic=(
+                "codex probe replied with the expected sentinel"
+                if matched
+                else (
+                    "codex probe's final reply did not match the expected "
+                    f"sentinel {EXPECTED_REPLY!r}"
+                )
+            ),
+            auth_usable=post_spawn_auth_usable,
+        )
     return result
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry point: run one probe against the real `codex` CLI and print
+    the structured report as JSON, mirroring `check_agent_contract.py`'s
+    `main()`.
+
+    Exits non-zero on any outcome other than a successful `report_back`, so
+    the exit code alone tells a scripted caller (e.g. a shell health check)
+    whether the probe passed.
+    """
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--codex-home",
+        default=None,
+        help=(
+            "Explicit parent CODEX_HOME to probe (read-only or writable). "
+            "Omit to use the ambient CODEX_HOME/default worktrail codex home."
+        ),
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        required=True,
+        help="Wall-clock bound in seconds for the nested codex run.",
+    )
+    args = parser.parse_args(argv)
+
+    prepared = prepare_environment(args.codex_home, inherit_auth=True)
+    if isinstance(prepared, ProbeReport):
+        report = prepared
+    else:
+        child_env, codex_home, automatic_home = prepared
+        cmd, scratch_dir = build_probe_command()
+        try:
+            outcome = run_probe_command(
+                cmd, scratch_dir, child_env, args.timeout, repo_dir=os.getcwd()
+            )
+        finally:
+            shutil.rmtree(scratch_dir, ignore_errors=True)
+        report = replace(outcome, codex_home=codex_home, automatic_home=automatic_home)
+
+    print(json.dumps(dataclasses.asdict(report)))
+    return 0 if report.stage == StageOutcome.REPORT_BACK and report.success else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
