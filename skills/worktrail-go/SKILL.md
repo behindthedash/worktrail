@@ -879,11 +879,14 @@ inspected and explicitly cleared:
 worktrail-agent-capacity status [--cache PATH]
 worktrail-agent-capacity clear PROVIDER_KEY [--reason TEXT] [--cache PATH]
 worktrail-agent-capacity clear --all [--reason TEXT] [--cache PATH]
+worktrail-agent-capacity clear --expired [--reason TEXT] [--cache PATH]
 ```
 
 - `status` prints provider keys, status, failure class, check time, and retry
-  window — no credentials or raw cache content.
-- `clear` removes a specific provider's gate or all gates (`--all`). Every clear
+  window — no credentials or raw cache content. Each gated entry is labelled
+  `(active)` or `(expired)` by its retry window.
+- `clear` removes a specific provider's gate, all gates (`--all`), or only expired
+  gates (`--expired`). `--expired` removes only the expired ones. Every clear
   requires `--reason` (non-empty, ≤500 characters). Unknown keys, blank reasons,
   and malformed cache on mutation fail without changing the file.
 - Normal dispatch never clears or retries around a persisted gate implicitly.
