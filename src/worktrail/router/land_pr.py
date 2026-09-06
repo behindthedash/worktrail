@@ -16,6 +16,15 @@ executable order differs from the request's own step numbering because
 `worktrail-preflight run` refuses on a dirty tree, and the compile marker
 itself is an uncommitted file until step 1 commits it):
 
+0. `_resume_state` -- resume probe: when the tree is clean, the remote
+   branch tip already equals `HEAD`, and the branch already has a pull
+   request, steps 1-4 have provably already run against this exact commit,
+   so they are skipped and the pipeline resumes at step 5 (an OPEN PR), or
+   short-circuits entirely (a MERGED PR lands; a CLOSED unmerged one is a
+   `ceiling`). Declines on anything unclear -- any nonzero exit, timeout, or
+   unparseable output makes it fall through to the full pipeline below,
+   because the only cost of a wrong decline is redoing work, while a wrong
+   hit would skip the gates.
 1. `_commit_pending` -- commit pending work if the tree is dirty (refuses
    without a `commit_message`; PR #902 shipped 112 files of gate-verified
    fixes that were never committed before `git push`).
@@ -1029,6 +1038,67 @@ def _finish_or_checkpoint(
     return exit_code == 0, detail
 
 
+def _resume_state(
+    repo: Path, request: LandRequest, runner: Runner
+) -> dict[str, Any] | None:
+    """Step 0 -- see module docstring. Detect the "this commit is already
+    pushed and already has a PR" shape, so a re-invocation after a crash or
+    a timeout resumes at step 5 instead of re-running steps 1-4 against work
+    that is already on the remote.
+
+    Every probe declines (returns None) on anything less than an
+    unambiguous hit -- nonzero exit, timeout/OSError (already folded into a
+    nonzero exit by `_git()`/`_gh()`), or output that does not parse. A
+    decline costs only the full pipeline running as it always did, whereas a
+    false hit would skip the commit/compile-marker/preflight gates on work
+    that never passed them."""
+    status = _git(repo, runner, "status", "--porcelain")
+    if status.returncode != 0 or status.stdout.strip():
+        return None
+    branch = _current_branch(repo, runner)
+    if not branch:
+        return None
+    push_remote, base_slug = _push_target(repo, runner)
+    ls_remote = _git(repo, runner, "ls-remote", push_remote, f"refs/heads/{branch}")
+    if ls_remote.returncode != 0:
+        return None
+    remote_line = (ls_remote.stdout or "").strip().splitlines()
+    if not remote_line:
+        return None
+    remote_sha = remote_line[0].split()[0] if remote_line[0].split() else ""
+    head = _git(repo, runner, "rev-parse", "HEAD")
+    if head.returncode != 0:
+        return None
+    head_sha = head.stdout.strip()
+    if not head_sha or not remote_sha or remote_sha != head_sha:
+        return None
+    view_args = ["pr", "view", branch, "--json", "url,number,state"]
+    if base_slug:
+        view_args += ["-R", base_slug]
+    view = _gh(repo, runner, *view_args)
+    if view.returncode != 0:
+        return None
+    try:
+        data = json.loads(view.stdout)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    pr_url = data.get("url")
+    pr_number = data.get("number")
+    state = data.get("state")
+    if not pr_url or not pr_number or not state:
+        return None
+    return {
+        "branch": branch,
+        "base_slug": base_slug,
+        "head_sha": head_sha,
+        "pr_url": pr_url,
+        "pr_number": pr_number,
+        "state": state,
+    }
+
+
 def land_pr(request: LandRequest) -> LandOutcome:
     """Run the full pipeline for `request`. See module docstring for the
     ordered steps this composes."""
@@ -1042,76 +1112,156 @@ def land_pr(request: LandRequest) -> LandOutcome:
             detail=f"route {request.route!r} is not one of {sorted(_VALID_ROUTES)}",
         )
 
-    refused = _commit_pending(repo, request.commit_message, runner)
-    if refused:
-        return LandOutcome(outcome="refused", refused_step=refused)
-
-    refused, detail = _ensure_compile_markers(repo, request.base_branch, runner)
-    if refused:
-        return LandOutcome(outcome="refused", refused_step=refused, detail=detail)
-
-    refused, labels = _run_preflight_and_labels(
-        repo,
-        request.base_branch,
-        request.risk,
-        request.gates,
-        request.route,
-        request.run,
-    )
-    if refused:
-        return LandOutcome(outcome="refused", refused_step=refused)
-
-    branch = _current_branch(repo, runner)
-    if not branch:
-        return LandOutcome(
-            outcome="refused", refused_step="push", detail="no current branch"
-        )
-    push_remote, base_slug = _push_target(repo, runner)
-    push_detail: list[str] = []
-    refused = _push(repo, branch, push_remote, runner, push_detail)
-    if refused == "push_ambiguous":
-        # A timeout/OSError mid-push means the server may already have
-        # accepted the ref update -- the remote's state cannot be trusted as
-        # untouched, so this cannot be reported as `refused` (see `_push`
-        # docstring). Needs reconciliation, not a clean retry.
-        #
-        # This fires before step 6 (`_ensure_run_record`), so only a
-        # CALLER-supplied `request.run` names an existing record to finish
-        # here -- `run=None` genuinely has nothing to finish yet (starting a
-        # fresh one here just to immediately fail it would misrepresent a
-        # run that never got past step 4).
-        merge_result = "push timed out or errored; remote state unknown"
-        if request.run:
-            _run_record_main(
-                [
-                    "finish",
-                    request.run,
-                    "--status",
-                    "failed_recoverable",
-                    "--merge-result",
-                    merge_result,
-                ]
+    resume = _resume_state(repo, request, runner)
+    if resume is not None:
+        if resume["state"] == "MERGED":
+            # Nothing left to gate, push, or watch: the work is on the base
+            # branch already. Record it and finish, never reaching
+            # `open_or_update_pull_request` (which would try to create a
+            # second PR for a branch whose PR is closed-by-merge).
+            run_path = _ensure_run_record(
+                repo, request.route, request.risk, request.request_summary, request.run
             )
-        return LandOutcome(
-            outcome="ceiling",
-            run=request.run,
-            refused_step=refused,
-            final_status="failed_recoverable",
-            merge_result=merge_result,
-            detail="push result ambiguous -- verify remote branch state before retrying",
+            if run_path is None:
+                return LandOutcome(
+                    outcome="ceiling",
+                    pr_url=resume["pr_url"],
+                    pr_number=resume["pr_number"],
+                    final_status="failed_recoverable",
+                    merge_result="run record could not be started; PR is already merged",
+                    detail="run_record start failed",
+                )
+            _run_record_main(["set", run_path, "pull_request", resume["pr_url"]])
+            merge_result = "pull request was already merged before this invocation"
+            recorded, detail = _finish_or_checkpoint(
+                run_path,
+                "completed_and_merged",
+                resume["pr_url"],
+                merge_result,
+                request.checkpoint,
+                request.run is None,
+                request.request_summary,
+                f"{resume['head_sha']} on {resume['branch']} -> {resume['pr_url']}",
+            )
+            if not recorded:
+                return LandOutcome(
+                    outcome="ceiling",
+                    pr_url=resume["pr_url"],
+                    pr_number=resume["pr_number"],
+                    run=run_path,
+                    final_status="failed_recoverable",
+                    merge_result="PR merged but run record could not be completed",
+                    detail=detail,
+                )
+            return LandOutcome(
+                outcome="landed",
+                pr_url=resume["pr_url"],
+                pr_number=resume["pr_number"],
+                run=run_path,
+                final_status="completed_and_merged",
+                merge_result=merge_result,
+            )
+        if resume["state"] != "OPEN":
+            # Closed without merging: re-opening or creating a replacement PR
+            # is a human decision, not something this pipeline may make.
+            return LandOutcome(
+                outcome="ceiling",
+                pr_url=resume["pr_url"],
+                pr_number=resume["pr_number"],
+                run=request.run,
+                refused_step="pr_closed",
+                detail=(
+                    f"pull request {resume['pr_url']} for branch "
+                    f"{resume['branch']} is CLOSED without being merged"
+                ),
+            )
+        branch = resume["branch"]
+        base_slug = resume["base_slug"]
+        labels, _eligible, _reason = pre_pr_gate.resolve_pr_labels(
+            repo,
+            load_policy(repo),
+            request.risk,
+            list(request.gates),
+            request.base_branch,
+            route=request.route or None,
         )
-    if refused:
-        return LandOutcome(
-            outcome="refused",
-            refused_step=refused,
-            detail=push_detail[0] if push_detail else None,
+        gate_evidence = (
+            "worktrail-preflight run: not re-run -- the commit under this "
+            "branch is already pushed and already has an open pull request "
+            "(resumed run); the gate ran before that push"
         )
+    else:
+        refused = _commit_pending(repo, request.commit_message, runner)
+        if refused:
+            return LandOutcome(outcome="refused", refused_step=refused)
+
+        refused, detail = _ensure_compile_markers(repo, request.base_branch, runner)
+        if refused:
+            return LandOutcome(outcome="refused", refused_step=refused, detail=detail)
+
+        refused, labels = _run_preflight_and_labels(
+            repo,
+            request.base_branch,
+            request.risk,
+            request.gates,
+            request.route,
+            request.run,
+        )
+        if refused:
+            return LandOutcome(outcome="refused", refused_step=refused)
+
+        branch = _current_branch(repo, runner)
+        if not branch:
+            return LandOutcome(
+                outcome="refused", refused_step="push", detail="no current branch"
+            )
+        push_remote, base_slug = _push_target(repo, runner)
+        push_detail: list[str] = []
+        refused = _push(repo, branch, push_remote, runner, push_detail)
+        if refused == "push_ambiguous":
+            # A timeout/OSError mid-push means the server may already have
+            # accepted the ref update -- the remote's state cannot be trusted as
+            # untouched, so this cannot be reported as `refused` (see `_push`
+            # docstring). Needs reconciliation, not a clean retry.
+            #
+            # This fires before step 6 (`_ensure_run_record`), so only a
+            # CALLER-supplied `request.run` names an existing record to finish
+            # here -- `run=None` genuinely has nothing to finish yet (starting a
+            # fresh one here just to immediately fail it would misrepresent a
+            # run that never got past step 4).
+            merge_result = "push timed out or errored; remote state unknown"
+            if request.run:
+                _run_record_main(
+                    [
+                        "finish",
+                        request.run,
+                        "--status",
+                        "failed_recoverable",
+                        "--merge-result",
+                        merge_result,
+                    ]
+                )
+            return LandOutcome(
+                outcome="ceiling",
+                run=request.run,
+                refused_step=refused,
+                final_status="failed_recoverable",
+                merge_result=merge_result,
+                detail="push result ambiguous -- verify remote branch state before retrying",
+            )
+        if refused:
+            return LandOutcome(
+                outcome="refused",
+                refused_step=refused,
+                detail=push_detail[0] if push_detail else None,
+            )
+        gate_evidence = "worktrail-preflight run: PASS"
 
     body = render_pr_body(
         summary=request.summary,
         route=request.route,
         epic_feature_spec=request.spec_lineage or "none",
-        gate_evidence="worktrail-preflight run: PASS",
+        gate_evidence=gate_evidence,
         risk=request.risk,
         labels=labels,
         automerge_recommendation="eligible"
