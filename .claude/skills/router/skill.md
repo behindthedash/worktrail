@@ -27,6 +27,8 @@ triggers:
     - LandRequest
     - LandOutcome
     - close_stale_openspec
+    - capacity-gate
+    - retry_after
 ---
 
 You are working on **worktrail's GO v2 front door**: loading repo policy, classifying free-text
@@ -127,6 +129,12 @@ agents or writes task files — that is `orchestrator/`'s job.
   (`different purpose:` / `user approved:`). `cmd_scope_review` rejects any other reason at write
   time with `SystemExit`, and `scope_review_failures()` re-checks the same tuple at gate time so a
   hand-edited record is still caught. Extend the tuple, never the two call sites separately.
+- **`capacity-gate --retry-after` is validated as ISO-8601 and stored verbatim, never slug-sanitized.**
+  `cmd_capacity_gate` runs it through `_iso_retry_after` (a `datetime.fromisoformat` check that
+  raises `SystemExit` on a non-ISO value) rather than `_safe_provider`, which is a slug sanitizer
+  and turned `+00:00` into `_00:00` — an offset every downstream `retry_after` consumer
+  (`orchestrator/agent_capacity._parse_time`) then failed to parse (fixed 2026-09-06). Only
+  `--provider` and `--failure-class` go through `_safe_provider`.
 - **`finish` best-effort-applies the `go:risk-*` PR label correction** (`pr_labels.
   ensure_pr_risk_label`) whenever the record carries a `pull_request` — a spawned headless agent's
   raw `gh pr create` is never reachable by the interactive Claude Code PreToolUse
@@ -196,7 +204,8 @@ agents or writes task files — that is `orchestrator/`'s job.
   `work_queue.resolve()` so nothing here becomes a second implementation
 - `router/policy.py` — `load_policy()`; the single source of truth for a repo's resolved GO policy
 - `router/run_record.py` — `finish()`'s ten-state enforcement and its two code-enforced gates;
-  `cmd_scope_review` write-time reason validation and `OUT_OF_SCOPE_REASON_PREFIXES`
+  `cmd_scope_review` write-time reason validation and `OUT_OF_SCOPE_REASON_PREFIXES`;
+  `cmd_capacity_gate`'s `_iso_retry_after` timestamp validation
 - `router/pre_pr_gate.py` — `scope_review_failures()`, the latest-entry-per-item scope gate
   that `finish` calls
 - `router/pr_labels.py` — the one place that issues the `go:risk-*` REST label correction; both
@@ -212,4 +221,4 @@ agents or writes task files — that is `orchestrator/`'s job.
   outcome→exit-code mapping for the `worktrail-close-stale-openspec` console script
 
 ---
-**Last Updated:** 2026-09-05
+**Last Updated:** 2026-09-06

@@ -262,5 +262,85 @@ class MarkerCommittedPushedAndPrOpenedTests(_LandPrIntegrationBase):
             self.assertIsNotNone(outcome.pr_url)
 
 
+class PipelineOwnedRunRecordTests(_LandPrIntegrationBase):
+    """A `run=None` landing against the REAL `run_record` module: the pipeline
+    starts the record itself, so it must also write the single scope-review
+    entry `finish`'s scope-completeness gate demands, and the record on disk
+    must end in a real terminal state (Requirement: run record is completed
+    with a real state)."""
+
+    def test_run_none_landing_writes_completed_record_with_scope_review(
+        self,
+    ) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="land-pr-d-") as d:
+            tmp_path = Path(d)
+            repo, remote = self._make_repo_and_remote(tmp_path)
+            self._install_fake_gh(tmp_path, remote)
+            home = tmp_path / "home"
+            with mock.patch.dict(os.environ, {"WORKTRAIL_HOME": str(home)}):
+                self._git(repo, "checkout", "-q", "-b", "feature")
+                self._write(repo / "src" / "thing.py", "x = 1\n")
+
+                runner = RecordingRunner()
+                request_summary = "queue-triage apply brief-1"
+                request = land_pr.LandRequest(
+                    repo=str(repo),
+                    base_branch="main",
+                    title="Add thing",
+                    summary="Adds the thing.",
+                    route="B",
+                    risk="low",
+                    gates=[],
+                    commit_message="feat(add-thing): add thing",
+                    run=None,
+                    request_summary=request_summary,
+                    watch_timeout_s=5,
+                    runner=runner,
+                )
+                # The fake `gh` has no `pr checks` and answers `api graphql`
+                # with `{}`, so the CI watch and the review-thread gate are
+                # the two seams stubbed to their all-clear results; every
+                # run_record write below is the real module.
+                with (
+                    mock.patch.object(
+                        land_pr,
+                        "_watch_ci",
+                        return_value={
+                            "settled": True,
+                            "failing_checks": [],
+                            "log_excerpt": "",
+                            "budget_exhausted": False,
+                        },
+                    ),
+                    mock.patch.object(
+                        land_pr,
+                        "_review_thread_gate",
+                        return_value={"checked": True, "blocking": False},
+                    ),
+                ):
+                    outcome = land_pr.land_pr(request)
+
+            self.assertEqual(outcome.outcome, "landed", outcome)
+            self.assertEqual(outcome.final_status, "completed_pr_open")
+            self.assertIsNotNone(outcome.run)
+            record_path = Path(outcome.run)
+            self.assertEqual(record_path.parent.parent, home / "runs")
+
+            record = land_pr._load_run_record(record_path)
+            self.assertEqual(record["status"], "done")
+            self.assertEqual(record["final_status"], "completed_pr_open")
+            self.assertEqual(record["pull_request"], outcome.pr_url)
+            self.assertTrue(outcome.pr_url)
+
+            review = record["scope_review"]
+            self.assertEqual(len(review), 1)
+            status, item, evidence = review[0].split(" | ", 2)
+            self.assertEqual(status, "complete")
+            self.assertEqual(item, request_summary)
+            self.assertIn(outcome.pr_url, evidence)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
