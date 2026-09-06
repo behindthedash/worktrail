@@ -22,7 +22,7 @@
 
 ## 2. Drain-side hygiene
 
-- [ ] 2.1 In `src/worktrail/drain/drain.py`'s `record_capacity_gate()`, inside the existing
+- [x] 2.1 In `src/worktrail/drain/drain.py`'s `record_capacity_gate()`, inside the existing
       `agent_capacity.write_lock()` block after `load()`, iterate the `providers` dict and delete
       every entry whose `source == "drain"` and whose `retry_after`/`reset_at` (parsed via
       `agent_capacity._parse_time`) is not `None` and is `<= now`, before writing the new gate
