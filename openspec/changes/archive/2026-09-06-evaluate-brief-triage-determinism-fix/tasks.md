@@ -1,6 +1,6 @@
 ## 1. fold-into-change requires and re-verifies a grounded target_quote
 
-- [ ] 1.1 Implement requirement: In `src/worktrail/workqueue/queue_triage.py`:
+- [x] 1.1 Implement requirement: In `src/worktrail/workqueue/queue_triage.py`:
       - Add `target_quote: str | None = None` to `Verdict` (beside `target_change`), with a
         docstring note mirroring `refuted_span`'s.
       - Update `EVALUATOR_PROMPT_TEMPLATE`'s Step 2a to require `fold-into-change` to include
