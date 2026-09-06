@@ -272,5 +272,72 @@ class TestCmdEvaluateExhaustedGroup(ExhaustionTestBase):
         )
 
 
+class TestDrainAppliesPartiallyEvaluatedRun(unittest.TestCase):
+    """A partially evaluated run must still be applied by the drain pre-pass.
+
+    `cmd_evaluate()` returns non-zero for a partial success (one group
+    capacity-blocked, the rest verdicted). `run_intake_triage_prepass()` used to
+    treat any non-zero evaluate exit as a hard failure, which would discard every
+    healthy group's verdicts -- the exact outcome design D3 exists to prevent.
+    Lives here rather than in `tests/drain/` because it is 2.1's own consumer
+    regression.
+    """
+
+    def test_non_zero_evaluate_exit_with_a_verdict_file_still_applies(self):
+        from worktrail.drain import drain as drain_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            calls: list[list[str]] = []
+
+            def fake_main(argv):
+                calls.append(argv)
+                if argv[0] == "evaluate":
+                    out_dir = Path(argv[argv.index("--out-dir") + 1])
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    (out_dir / "verdict.json").write_text(
+                        json.dumps(
+                            [
+                                {
+                                    "brief_id": "b1",
+                                    "verdict": "keep",
+                                    "duplicate_of": None,
+                                    "evidence": "still relevant",
+                                }
+                            ]
+                        ),
+                        encoding="utf-8",
+                    )
+                    return 1  # one group unevaluated, the rest verdicted
+                return 0
+
+            with mock.patch.object(drain_mod.queue_triage_mod, "main", fake_main):
+                result = drain_mod.run_intake_triage_prepass(
+                    Path(tmp) / "wq", log=lambda _l: None
+                )
+
+            self.assertEqual([c[0] for c in calls], ["evaluate", "apply"])
+            self.assertEqual(result["briefs_evaluated"], 1)
+
+    def test_non_zero_evaluate_exit_without_a_verdict_file_still_raises(self):
+        from worktrail.drain import drain as drain_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            calls: list[list[str]] = []
+
+            def fake_main(argv):
+                calls.append(argv)
+                return 1
+
+            with (
+                mock.patch.object(drain_mod.queue_triage_mod, "main", fake_main),
+                self.assertRaises(RuntimeError),
+            ):
+                drain_mod.run_intake_triage_prepass(
+                    Path(tmp) / "wq", log=lambda _l: None
+                )
+
+            self.assertEqual([c[0] for c in calls], ["evaluate"])
+
+
 if __name__ == "__main__":
     unittest.main()
