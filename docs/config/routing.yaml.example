@@ -26,6 +26,34 @@
 # capacity-gated. Two targets may share a harness (e.g. a subscription lane
 # and an API lane on the same CLI) -- names are free-form and are exactly
 # the keys the `tiers` rows below use.
+#
+# Two targets on one harness and one pool is also how you express an
+# INTRA-HARNESS MODEL LADDER -- "try model A on this CLI, then model B on
+# the same CLI, before leaving the harness at all". A tier row holds at
+# most one cell per target (`tiers.<row>.<target>`), so a single target
+# cannot list two models for the same row; declaring a second target is
+# what gives the row a second rung. Because the capacity cache is keyed
+# `provider_key(target, model)`, each rung is an independently gated cell,
+# so a per-MODEL quota cap (a subscription that meters one model separately
+# from the rest of the plan) gates only its own rung and select_cell() falls
+# through to the next one. There is no quota arithmetic and no fallback
+# code anywhere in this: the ladder is target file order.
+#
+#   targets:
+#     claude-premium:      # rung 1 -- metered separately by the provider
+#       harness: claude
+#       pool: subscription
+#     claude-sub:          # rung 2 -- same CLI, same plan, different model
+#       harness: claude
+#       pool: subscription
+#   tiers:
+#     t2-build:
+#       claude-premium: {model: <metered-model>, effort: low}
+#       claude-sub:     {model: <plan-model>,    effort: low}
+#
+# Order the rungs deliberately: the FIRST target in this file that has a
+# cell in the row and isn't gated wins, so put the constrained/preferred
+# model first and the always-available one after it.
 targets:
   claude-sub:
     harness: claude

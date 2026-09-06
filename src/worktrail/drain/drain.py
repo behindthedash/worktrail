@@ -2256,7 +2256,7 @@ def run_intake_triage_prepass(
     inventoried, rather than silently falling back to the process's real
     `$WORK_QUEUE_DIR`.
 
-    Raises on any evaluate/apply failure -- the caller (`drain()`) is
+    Raises on any hard evaluate/apply failure -- the caller (`drain()`) is
     responsible for catching it, logging it, and continuing, exactly like the
     seed-backlog pre-pass below: an intake-triage failure must never abort an
     otherwise-healthy drain run.
@@ -2287,9 +2287,21 @@ def run_intake_triage_prepass(
         out_dir = _intake_triage_out_dir()
         log(f"intake-triage: evaluating queued briefs (out-dir={out_dir})")
         exit_code = queue_triage_mod.main(["evaluate", "--out-dir", str(out_dir)])
-        if exit_code != 0:
-            raise RuntimeError(f"queue_triage evaluate exited {exit_code}")
         verdict_file = out_dir / "verdict.json"
+        if exit_code != 0:
+            # `cmd_evaluate()` exits non-zero for a *partial* success too: one
+            # repo group's evaluator spawn was capacity-exhausted, its briefs
+            # were omitted from the verdict file, and every other group's
+            # verdicts were still written (design D3). Aborting here would
+            # discard those healthy verdicts -- the exact outcome D3 exists to
+            # prevent -- so a written verdict file means "apply what we got",
+            # and only a missing one is a hard failure.
+            if not verdict_file.is_file():
+                raise RuntimeError(f"queue_triage evaluate exited {exit_code}")
+            log(
+                f"intake-triage: evaluate exited {exit_code} (at least one repo "
+                f"group was not evaluated); applying the groups that were"
+            )
         # Read back evaluate's own verdict file (rather than re-deriving
         # counts some other way) so this summary can never drift from the
         # verdict.json apply is about to act on -- same "computed once,

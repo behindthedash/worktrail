@@ -59,24 +59,29 @@ verdict of exactly one of `keep`, `stale-close`, `needs-update`, `duplicate-of`,
 `fold-into-change`, `propose-change`, `work-directly`, or `needs-decision`, and SHALL
 require non-empty `evidence` text for every verdict. `fold-into-change` SHALL additionally
 require a non-empty `target_change` (`<repo>:change:<id>` naming an active change presented
-as a candidate) and SHALL require `evidence` to cite at least one file-path-shaped token
-(the same path-probe extraction `run_premise_check()` already uses against a brief's `focus:`
-text) -- since `apply`'s fold action appends `evidence` verbatim as the target change's new
-task text, and that task must carry file scope for `worktrail-compile` to accept it;
-`propose-change` SHALL additionally require a non-empty `target_repo` and a kebab-case
-`proposed_change_name`; `needs-decision` SHALL additionally require a non-empty `question`.
-For a brief evaluated in the repo-less (`__none__`) group, the evaluator prompt SHALL list
-the known workspace repos (the directory basenames under the configured repos root),
-`propose-change` SHALL be valid only when `target_repo` is one of those listed names, and
-`fold-into-change` SHALL remain invalid since no candidate changes are presented. For a
-brief evaluated in a repo-bearing group, the evaluator prompt SHALL state `propose-change`'s
-`target_repo` as that group's own repo with no known-repos allowlist, rather than reusing the
-repo-less group's "valid only when `target_repo` is one of these known repos" wording with a
-placeholder value standing in for "no restriction" — since no such allowlist applies to a
-repo-bearing group, wording that implies one is misleading regardless of the placeholder used.
+as a candidate) and a non-empty `target_quote` of at least 12 characters (the same
+minimum-length floor `needs-update`'s `refuted_span` and `premise_check`'s quoted-needle
+extraction already use) copied verbatim from the *target change's own* `proposal.md` or
+`tasks.md` content -- read by the evaluator, not restated from the brief's own focus text --
+demonstrating specifically what in that change this brief folds into; `propose-change` SHALL
+additionally require a non-empty `target_repo` and a kebab-case `proposed_change_name`;
+`needs-decision` SHALL additionally require a non-empty `question`. For a brief evaluated in
+the repo-less (`__none__`) group, the evaluator prompt SHALL list the known workspace repos
+(the directory basenames under the configured repos root), `propose-change` SHALL be valid
+only when `target_repo` is one of those listed names, and `fold-into-change` SHALL remain
+invalid since no candidate changes are presented. For a brief evaluated in a repo-bearing
+group, the evaluator prompt SHALL state `propose-change`'s `target_repo` as that group's own
+repo with no known-repos allowlist, rather than reusing the repo-less group's "valid only
+when `target_repo` is one of these known repos" wording with a placeholder value standing in
+for "no restriction" — since no such allowlist applies to a repo-bearing group, wording that
+implies one is misleading regardless of the placeholder used.
 A verdict that is missing, malformed, or missing required evidence or required
 target fields SHALL be recorded as `keep` with the evaluator's raw output retained as
-evidence text, never silently dropped from the output. Every recorded verdict SHALL carry
+evidence text, never silently dropped from the output. That fail-open rule SHALL apply only
+to output an evaluator actually produced: when the group's evaluator spawn was exhausted
+without a model answer (see the `worker-exhaustion-non-result` capability), the `evaluate`
+step SHALL record no verdict at all for any brief in that group -- neither `keep` nor any
+other -- rather than retaining the spawn's error output as evidence. Every recorded verdict SHALL carry
 the brief's `premise_check` results (empty for a no-repo brief). For a brief in the no-repo
 group, any verdict that would be recorded as `keep` — including every fail-open fallback —
 SHALL instead be recorded as `needs-decision` with the question "which repo does this brief
@@ -107,18 +112,20 @@ needed must never also silently auto-rewrite the brief.
 
 #### Scenario: Well-formed fold verdict
 - **WHEN** an evaluator returns `{"brief_id": "X", "verdict": "fold-into-change",
-  "target_change": "worktrail:change:work-queue-dependency-diagnostics", "evidence":
-  "overlaps open tasks touching src/worktrail/router/land_pr.py", "confidence": "high"}`
-- **THEN** the verdict file records brief `X` as `fold-into-change` with that target
+  "target_change": "worktrail:change:work-queue-dependency-diagnostics", "target_quote":
+  "add per-dependency staleness diagnostics to the resolver", "evidence": "...", "confidence":
+  "high"}`
+- **THEN** the verdict file records brief `X` as `fold-into-change` with that target and
+  `target_quote`
 
 #### Scenario: Fold verdict names a change that was not a candidate
 - **WHEN** an evaluator returns `fold-into-change` with a `target_change` that is not an
   active change in the brief's repo
 - **THEN** the verdict is recorded as `keep` with the raw verdict retained as evidence
 
-#### Scenario: Fold verdict's evidence names no file
-- **WHEN** an evaluator returns `fold-into-change` naming a presented candidate but whose
-  `evidence` cites no file-path-shaped token
+#### Scenario: Fold verdict is missing or too short a target_quote
+- **WHEN** an evaluator returns `fold-into-change` naming a presented candidate but with
+  `target_quote` absent, empty, or shorter than 12 characters
 - **THEN** the verdict is recorded as `keep` with the raw verdict retained as evidence,
   exactly as for a `target_change` that was not a presented candidate
 
@@ -189,6 +196,12 @@ needed must never also silently auto-rewrite the brief.
   `judgment_reason` set
 - **THEN** the verdict file records only `judgment_reason` for that brief
 
+#### Scenario: The evaluator spawn was exhausted before any verdict
+- **WHEN** a group's evaluator spawn gives up on provider capacity, so its output text is the
+  provider's usage-limit message rather than any model's answer
+- **THEN** the verdict file records no verdict for any brief in that group, and no brief in it
+  gains a `keep` verdict carrying that text as evidence
+
 ### Requirement: Archived or renamed target repo short-circuits its group
 Before evaluating any brief in a repo group with a non-null `repo:` value, the evaluator SHALL
 check whether that repo is archived (via `gh repo view --json isArchived`). When the check
@@ -246,6 +259,16 @@ resolved to an on-disk checkout directory the same way the router/dashboard reso
 `~/projects`) before any worktree or git operation runs against it. A `repo` value that cannot
 be resolved to an existing directory SHALL fail with an error action-log entry and SHALL NOT
 attempt any worktree or git operation.
+
+Before editing the target change, `apply --confirm` for a `fold-into-change` verdict SHALL
+re-check that the verdict's `target_quote` (per "Evidence-required verdict per brief") still
+appears verbatim in the target change's current on-disk `proposal.md` or `tasks.md` content,
+read from the freshly checked-out worktree rather than trusted from evaluation time —
+mirroring how a `needs-update` verdict's `refuted_span` is re-checked against the brief's
+current focus text before being acted on. When the quote is not found verbatim in either
+file, `apply` SHALL fail that verdict closed with an error action-log entry (the same failure
+shape as the existing "target change has no proposal.md/tasks.md" case) and SHALL NOT edit
+the target change's files, commit, push, or open a pull request.
 
 For a `needs-update` verdict, `--confirm` execution branches deterministically on which of
 `refuted_span`/`judgment_reason` (per "Evidence-required verdict per brief") is present,
@@ -311,9 +334,17 @@ unrelated text coincidentally:
 
 #### Scenario: Apply with --confirm executes fold-into-change
 - **WHEN** `apply --confirm` runs against a verdict file containing a `fold-into-change`
-  verdict for brief `Z`
+  verdict for brief `Z` whose `target_quote` is found verbatim in the target change's current
+  `proposal.md` or `tasks.md`
 - **THEN** the fold is executed per the `intake-triage` capability's fail-closed
   pull-request semantics, and brief `Z` is closed only after the pull request exists
+
+#### Scenario: Fold-into-change fails closed when target_quote no longer verifies
+- **WHEN** `apply --confirm` runs against a verdict file containing a `fold-into-change`
+  verdict for brief `Z` whose `target_quote` is not found verbatim in the target change's
+  current `proposal.md` or `tasks.md`
+- **THEN** the action-log entry for `Z` reports an error status, brief `Z` remains queued and
+  unclaimed, and no edit, commit, push, or pull request is made against the target change
 
 #### Scenario: A stale refuted_span falls back to filing a decision
 - **WHEN** `apply --confirm` runs against a `needs-update` verdict whose `refuted_span` is

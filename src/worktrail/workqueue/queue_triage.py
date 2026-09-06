@@ -1138,6 +1138,27 @@ def _known_repos(repos_root: str | Path | None) -> list[str]:
     return sorted(p.name for p in root.iterdir() if p.is_dir())
 
 
+class EvaluatorUnavailable(Exception):
+    """No model evaluated a group -- the evaluator spawn gave up without output.
+
+    Raised by `evaluate_briefs()` when `evaluate_group()` reports an exhausted
+    spawn (design D2/D3). The distinction matters: an exhausted spawn returns
+    the provider's capacity/error stream, not evaluator output, so parsing it
+    would manufacture verdicts out of an error message. Callers must fail
+    closed -- leave the group's briefs untouched and surface the block.
+    """
+
+    def __init__(self, repo: str, brief_ids: list[str], failure_class: str):
+        self.repo = repo
+        self.brief_ids = list(brief_ids)
+        self.failure_class = failure_class
+        super().__init__(
+            f"evaluator unavailable for '{repo}' "
+            f"({failure_class or 'unknown'}): no verdict for "
+            f"{', '.join(self.brief_ids) or '(no briefs)'}"
+        )
+
+
 def evaluate_group(
     repo: str,
     briefs: list[Path],
@@ -1165,7 +1186,9 @@ def evaluate_group(
     inconclusive) falls through to the normal spawn unchanged.
 
     Returns a single-element list -- `[{"repo", "brief_ids", "raw_text",
-    "candidates_by_brief", "premise_by_brief", "known_repos_by_brief"}]` --
+    "candidates_by_brief", "premise_by_brief", "known_repos_by_brief"}]`, plus
+    `"exhausted": True` and `"failure_class"` when the spawn gave up without
+    ever producing a verdict (`raw_text` is `""` in that case) --
     rather than the raw string directly, so a caller fanning out across
     multiple groups can `.extend()` every call's result into one flat list,
     without a shape special-case for the archived short-circuit. `raw_text`
@@ -1264,6 +1287,22 @@ def evaluate_group(
     known_repos_by_brief = (
         {bid: known_repos for bid in brief_ids} if repo == NO_REPO_KEY else {}
     )
+    if result.exhausted:
+        # The spawn gave up (design D2): `result.text` is the provider's
+        # capacity/error stream, never evaluator output. Hand back an empty
+        # `raw_text` so no consumer can parse an error message into verdicts.
+        return [
+            {
+                "repo": repo,
+                "brief_ids": brief_ids,
+                "raw_text": "",
+                "exhausted": True,
+                "failure_class": result.failure_class,
+                "candidates_by_brief": candidates_by_brief,
+                "premise_by_brief": premise_by_brief,
+                "known_repos_by_brief": known_repos_by_brief,
+            }
+        ]
     return [
         {
             "repo": repo,
@@ -1634,6 +1673,10 @@ def evaluate_briefs(
     for result in evaluate_group(
         repo, briefs, agent=agent, cwd=cwd, repos_root=repos_root
     ):
+        if result.get("exhausted"):
+            raise EvaluatorUnavailable(
+                repo, result["brief_ids"], result.get("failure_class", "")
+            )
         group_verdicts = parse_verdicts(
             result["raw_text"],
             result["brief_ids"],
@@ -3462,17 +3505,25 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
     repos_root = args.repos_root or str(Path.home() / "projects")
 
     verdicts: list[Verdict] = []
+    groups_unevaluated = 0
     for repo, briefs in groups.items():
         cwd = repo if repo != NO_REPO_KEY else _worktrail_repo_root()
-        verdicts.extend(
-            evaluate_briefs(
-                repo,
-                briefs,
-                agent=args.agent,
-                cwd=cwd,
-                repos_root=repos_root,
+        try:
+            verdicts.extend(
+                evaluate_briefs(
+                    repo,
+                    briefs,
+                    agent=args.agent,
+                    cwd=cwd,
+                    repos_root=repos_root,
+                )
             )
-        )
+        except EvaluatorUnavailable as exc:
+            # Design D3: fail closed for this group only. Its briefs are omitted
+            # from the verdict file entirely (so `apply` can never act on them)
+            # while every other group's verdicts are kept.
+            groups_unevaluated += 1
+            logger.warning("group not evaluated: %s", exc)
 
     for path in escalate_without_evaluator:
         seed = Verdict(
@@ -3497,7 +3548,8 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         print(
             json.dumps(
                 {
-                    "groups_evaluated": len(groups),
+                    "groups_evaluated": len(groups) - groups_unevaluated,
+                    "groups_unevaluated": groups_unevaluated,
                     "briefs_skipped": len(skipped),
                     "verdict_counts": counts,
                     "pull_requests_opened": summary["pull_requests_opened"],
@@ -3516,7 +3568,9 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         )
         print(f"report: {report_path}")
         print(
-            f"groups evaluated: {len(groups)}, briefs skipped: {len(skipped)}, "
+            f"groups evaluated: {len(groups) - groups_unevaluated}, "
+            f"groups unevaluated: {groups_unevaluated}, "
+            f"briefs skipped: {len(skipped)}, "
             f"verdicts: {counts_str}"
         )
         print(
@@ -3527,7 +3581,7 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
             f"repos inferred: {summary['repos_inferred']}, "
             f"escalations: {summary['escalations']}"
         )
-    return 0
+    return 1 if groups_unevaluated else 0
 
 
 def cmd_apply(args: argparse.Namespace) -> int:
