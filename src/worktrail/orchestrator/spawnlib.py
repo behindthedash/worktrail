@@ -107,6 +107,14 @@ class SpawnResult(NamedTuple):
     served_target: str = ""
     served_model: str = ""
     served_harness: str = ""
+    # True when the spawn gave up without the worker ever producing a verdict --
+    # every cell in the row was capacity-gated or the wait budget ran out. `text`
+    # in that case is the provider's notice, not a result: consumers must fail
+    # closed rather than parse it. `failure_class` is the class the last give-up
+    # was classified as (`billing` for a provider usage cap, `rate_limit` for a
+    # session limit), empty on a successful spawn.
+    exhausted: bool = False
+    failure_class: str = ""
 
 
 # verified from `claude --help`: bypass perms so a headless worker can edit/commit
@@ -1065,7 +1073,9 @@ def spawn_agent(
         except OSError as exc:
             log(f"    WORKTRAIL_KEEP_TRANSCRIPTS write failed (non-fatal): {exc}")
 
-    def finish(raw: str) -> SpawnResult:
+    def finish(
+        raw: str, *, exhausted: bool = False, failure_class: str = ""
+    ) -> SpawnResult:
         """Parse the final raw output and return the SpawnResult, attaching the
         opencode diagnostics the report-back contract needs when the worker
         produced nothing parseable: the session id, whether headless permission
@@ -1100,11 +1110,14 @@ def spawn_agent(
             served_target=cell.target,
             served_model=cell.model,
             served_harness=cell.harness,
+            exhausted=exhausted,
+            failure_class=failure_class,
         )
 
     attempts = max(1, retries + 1)
     waits_left = max(0, session_limit_waits)
     last_raw = ""
+    last_failure_class = ""
     attempt = 0
     paused_s_total = 0.0  # cumulative session-limit sleep seconds this spawn
     while attempt < attempts:
@@ -1205,7 +1218,7 @@ def spawn_agent(
                 f"    session limit hit on {served.target}; no alternate cell and "
                 "wait budget exhausted, giving up to caller"
             )
-            return finish(last_raw)
+            return finish(last_raw, exhausted=True, failure_class="rate_limit")
 
         if cell.harness == "codex" and output_file:
             try:
@@ -1264,6 +1277,7 @@ def spawn_agent(
                 retry_after=explicit_reset or agent_capacity.retry_time(failure_class),
                 reset_source="provider" if explicit_reset else "cooldown",
             )
+            last_failure_class = failure_class
 
         if proc.returncode != 0:
             sys.stderr.write(
@@ -1284,7 +1298,9 @@ def spawn_agent(
                     f"    spawn still failing after {attempts} attempt(s) on "
                     f"{cell.target}; no alternate cell left in the row, giving up to caller"
                 )
-                return finish(last_raw)
+                return finish(
+                    last_raw, exhausted=True, failure_class=last_failure_class
+                )
             failed_cell = cell
             cell = next_cell
             output_file = None
@@ -1315,7 +1331,7 @@ def spawn_agent(
             f"    spawn infra failure (attempt {attempt}/{attempts}); retrying in {backoff:.0f}s"
         )
         sleep(backoff)
-    return finish(last_raw)
+    return finish(last_raw, exhausted=True, failure_class=last_failure_class)
 
 
 def spawn_claude_p(
