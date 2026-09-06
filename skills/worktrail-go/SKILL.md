@@ -284,9 +284,18 @@ repo token in the invocation itself) before doing anything else:
      A brief with no `repo:` frontmatter (`$BRIEF_REPO` empty) omits `--triage-repo`;
      the evaluator then runs it in the repo-less (`__none__`) group, exactly as a
      scheduled `evaluate` run does, and returns `needs-decision` asking which repo owns
-     it when the target cannot be told from the brief itself. Exit 1 with `VERDICT_JSON` printing `null` means the evaluator produced no
-     identifiable verdict for this brief id at all — report that and stop rather than
-     guessing one.
+     it when the target cannot be told from the brief itself.
+
+     Two non-zero exits are distinct cases, and neither one proceeds to step 2:
+     - **Exit 2** with a `blocked_no_capacity: <repo>/<failure_class>: <detail>` line on
+       stderr (`VERDICT_JSON` prints `null`) means no model ever evaluated the brief —
+       the evaluator spawn gave up on capacity (e.g. a provider usage cap). Report the
+       capacity block to the user, do **not** run the apply step below, and leave the
+       brief queued exactly as it is; nothing about it has changed, so re-running later
+       is the whole remedy.
+     - **Exit 1** with `VERDICT_JSON` printing `null` means a model did evaluate the
+       brief but produced no identifiable verdict for this brief id at all — report that
+       and stop rather than guessing one.
   2. Apply the verdict unconditionally via the same `queue_triage` apply path 3.x's
      scheduled runs use (`resolve_duplicate_targets()` + `apply_verdicts()`), scoped to
      this one verdict — no confirmation prompt first; the evidence-required verdict

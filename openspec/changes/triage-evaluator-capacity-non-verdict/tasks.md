@@ -76,7 +76,7 @@
 
 ## 3. Operator procedure
 
-- [ ] 3.1 In `skills/worktrail-go/SKILL.md`'s intake-triage step (the
+- [x] 3.1 In `skills/worktrail-go/SKILL.md`'s intake-triage step (the
       `--evaluate-brief-triage` block, ~lines 275-295): document that exit 2 with a
       `blocked_no_capacity:` stderr line means no model evaluated the brief -- report the
       capacity block, do NOT run the apply step, and leave the brief queued unchanged --
