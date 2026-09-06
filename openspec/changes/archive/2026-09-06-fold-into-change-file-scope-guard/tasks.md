@@ -1,6 +1,18 @@
 ## 1. fold-into-change requires evidence naming a file
 
-- [ ] 1.1 Implement the requirement: In `src/worktrail/workqueue/queue_triage.py`:
+- [ ] 1.1 NOT IMPLEMENTED — archived without landing. Verified 2026-09-06: no code matching
+      this task exists in `src/worktrail/workqueue/queue_triage.py` on `main` (no
+      `extract_needles` filter, no file-path check in `_has_valid_target()`'s
+      `fold-into-change` branch) and no test in `tests/workqueue/test_queue_triage.py`
+      covers it. This change is being archived as superseded, not completed: `main`'s
+      `evaluate-brief-triage-determinism-fix` change independently proposed the stronger
+      `target_quote` requirement for the same gap (queue-triage spec's "Evidence-required
+      verdict per brief"), but that change's own task 1.1 was *also* checked off and
+      archived without the code landing. Neither the file-path check nor `target_quote`
+      validation exists in `_has_valid_target()` today — see the `worktrail-handoff` filed
+      for implementing `target_quote` validation, which supersedes this task's approach.
+      Original task text, retained for history:
+      Implement the requirement: In `src/worktrail/workqueue/queue_triage.py`:
       - In `_has_valid_target()`'s `fold-into-change` branch, after confirming
         `target_change` is one of `presented_candidates`, additionally require `obj`'s
         `evidence` to be a string containing at least one needle of kind `"path"` per
