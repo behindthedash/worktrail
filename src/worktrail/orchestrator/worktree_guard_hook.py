@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """PreToolUse guard for spawned task workers: deny writes outside the worker's
 own worktree.
 
