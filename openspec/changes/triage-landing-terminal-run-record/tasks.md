@@ -1,6 +1,6 @@
 ## 1. Pipeline-owned scope review and failure detail
 
-- [ ] 1.1 In `src/worktrail/router/land_pr.py`: extend `_run_record_main` to also capture
+- [x] 1.1 In `src/worktrail/router/land_pr.py`: extend `_run_record_main` to also capture
       stderr and, on `SystemExit` with a string code, keep that string, returning
       `(exit_code, stdout, detail)`. Have `land_pr` remember whether `_ensure_run_record`
       started the record (`pipeline_owns_record = request.run is None and run_path is not
@@ -18,7 +18,7 @@
       files: src/worktrail/router/land_pr.py, tests/router/test_land_pr.py
       (Requirements: Run record is completed with a real state)
 
-- [ ] 1.2 In `tests/router/test_land_pr_integration.py` add a test that lands with
+- [x] 1.2 In `tests/router/test_land_pr_integration.py` add a test that lands with
       `run=None` against the real `run_record` module (`WORKTRAIL_HOME` pointed at a temp dir so the record lands under `<tmp>/runs/`,
       the file's existing fake-`gh` repo fixture, CI watch stubbed to all-pass) and asserts the written record has
       `status=done`, `final_status=completed_pr_open`, `pull_request` set, and a single
