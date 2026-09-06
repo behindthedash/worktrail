@@ -33,6 +33,9 @@ triggers:
     - _unrelated_test_failure
     - _rerun_failed_checks
     - rerun_attempted
+    - dependency_start_ref
+    - _branch_content_in_base
+    - merge-tree
 ---
 
 You are working on **worktrail's task-orchestration core**: compiling specs/changes into a
@@ -84,6 +87,21 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
   `full_real`/`_full_real_inner`/`_pipeline_scheduler` accept `int | None`. The fixed default of
   3 silently ran a width-7 plan as three serial ticks (2026-09-02); the effective value is printed
   next to the plan so the cap is visible.
+- **A retained dependency branch whose content is already in base is never a stacking point**
+  (`live._branch_content_in_base`, used by `dependency_start_ref`): a squash-merged dependency
+  is not an ancestor of base, so `_is_ancestor` alone reports it unmerged. The check falls back
+  to `git merge-tree --write-tree base branch`: a clean merge yielding exactly base's tree means
+  "in base", and a CONFLICTED merge-tree (exit 1) ALSO means "in base" — when a group PR
+  squash-merges with review fixups layered on a task's commits, the retained branch's verbatim
+  diff never lands and the three-way merge conflicts on exactly those hunks (seen on every
+  retained shared-pr-landing-pipeline branch 2.1/5.1/14.1/17.1, 2026-09-05). Stacking on such a
+  branch always fails the base carry with `WorktreeMissingDependencyFileError`, so the dependent
+  forks from base instead and `dependency_start_ref` prints a `!! ... Safe to prune: git branch
+  -D <branch>` line per stale branch. Only a merge-tree that FAILED to run (exit >1, e.g. an
+  unresolvable ref) stays "not in base" (fail-open to ancestry stacking). Do not narrow the
+  exit-1 case back to "not in base".
+  `tests/orchestrator/test_stacked_worktree_squash_merged_dependency_branch.py` pins both the
+  clean-squash and reviewed-squash-conflict shapes.
 - **A group entering QUARANTINED prints `!! QUARANTINED [<name>] <reason>` the moment it
   happens** (`_pipeline_scheduler`'s group-state recorder). Three groups sat quarantined for over
   an hour while the log showed only ticks and CI polls (2026-09-02); do not rely on the journal
@@ -186,11 +204,13 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
   `live_run_real` and `_pipeline_scheduler` drive, with its `on_completion` hand-off to
   `_dispatch_terminal_groups` and the integrate+verify pool; `precheck`: the OpenSpec-vs-devkit
   "all files exist" INFO/WARN split; `LiveSpawn.pre_commit_cmd`: the lazy policy-backed
-  property threaded into the worker ctx
+  property threaded into the worker ctx; `_branch_content_in_base`/`dependency_start_ref`:
+  ancestry + merge-tree (clean OR conflicted = in base) decision on whether a retained
+  dependency branch is a stacking point or already squash-merged
 - `orchestrator/verify.py` — `auto_merge()` and `_retry_auto_merge_methods`; the only place a
   merge-method rejection is turned into a method retry; `_salvage_uncommitted` and the
   per-strike `continue` in `wait_and_fix_ci`; `_unrelated_test_failure`/`_rerun_failed_checks`,
   the free-rerun probe `wait_and_fix_ci` tries once before spawning a ci-fix worker
 
 ---
-**Last Updated:** 2026-09-04
+**Last Updated:** 2026-09-06
