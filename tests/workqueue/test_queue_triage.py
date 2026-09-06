@@ -1997,6 +1997,50 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
         self.assertIn("- [ ] 2.1", tasks_text)
         self.assertIn(self.verdict.evidence, tasks_text)
 
+    def test_land_request_carries_no_run_and_triage_request_summary(self):
+        """The triage apply path lands with `run=None` (no run record of its
+        own) and a `queue-triage <verdict> <brief_id>` request summary, and
+        the landing entry reports land_pr's real terminal state
+        (`completed_pr_open`), never `failed_recoverable`."""
+        pr_url = "https://github.com/acme/widgets/pull/42"
+        run = self._dispatcher()
+        captured: list[Any] = []
+
+        def fake_land_pr(request):
+            captured.append(request)
+            return LandOutcome(
+                outcome="landed",
+                pr_url=pr_url,
+                pr_number=42,
+                labels=["go:risk-low"],
+                run=None,
+                final_status="completed_pr_open",
+                merge_result="auto-merge armed (squash) by bot",
+            )
+
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+            ),
+            mock.patch(
+                "worktrail.workqueue.queue_triage.land_pr", side_effect=fake_land_pr
+            ),
+        ):
+            log = qt.apply_verdicts([self.verdict], confirm=True)
+
+        self.assertEqual(len(captured), 1)
+        request = captured[0]
+        self.assertIsNone(request.run)
+        self.assertEqual(
+            request.request_summary,
+            f"queue-triage {self.verdict.verdict} {self.verdict.brief_id}",
+        )
+
+        entry = log[0]
+        self.assertEqual(entry["status"], "executed")
+        self.assertEqual(entry["landing"]["final_status"], "completed_pr_open")
+        self.assertNotEqual(entry["landing"]["final_status"], "failed_recoverable")
+
     def test_multiline_evidence_is_collapsed_in_the_tasks_checklist_line(self):
         """A `- [ ] N.1` item is one line: embedded newlines in the evidence
         would spill its tail out of the checklist item. The `proposal.md`
