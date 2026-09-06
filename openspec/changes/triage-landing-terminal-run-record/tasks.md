@@ -28,7 +28,7 @@
 
 ## 2. Risk-label correction without a working directory
 
-- [ ] 2.1 In `src/worktrail/router/pr_labels.py`'s `_run_gh_cmd`, pass
+- [x] 2.1 In `src/worktrail/router/pr_labels.py`'s `_run_gh_cmd`, pass
       `cwd=repo if repo and Path(repo).is_dir() else None`, leaving every other argument and
       the transient-TLS retry loop unchanged. In `tests/router/test_pr_labels.py` add:
       `ensure_pr_risk_label` with a nonexistent `repo` path and a full PR URL adds the label
