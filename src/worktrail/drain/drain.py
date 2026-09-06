@@ -691,10 +691,21 @@ def record_capacity_gate(
     """
     with agent_capacity.write_lock(cache_path):
         data = agent_capacity.load(cache_path)
-        data.setdefault("providers", {})[agent] = {
+        providers = data.setdefault("providers", {})
+        now = datetime.now(timezone.utc)
+        for key in list(providers):
+            entry = providers[key]
+            if not isinstance(entry, dict) or entry.get("source") != "drain":
+                continue
+            retry_at = agent_capacity._parse_time(
+                entry.get("retry_after")
+            ) or agent_capacity._parse_time(entry.get("reset_at"))
+            if retry_at is not None and retry_at <= now:
+                del providers[key]
+        providers[agent] = {
             "status": "unavailable",
             "failure_class": failure_class,
-            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "checked_at": now.isoformat(),
             "retry_after": retry_after.isoformat(),
             "source": "drain",
         }

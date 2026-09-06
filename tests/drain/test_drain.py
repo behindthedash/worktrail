@@ -5286,3 +5286,56 @@ def test_prune_stale_branch_raises_when_worktree_dirty():
         check=True,
     ).stdout.split()
     assert "topic" in remaining
+
+
+def _seed_capacity_cache(path: Path, providers: dict) -> None:
+    path.write_text(json.dumps({"providers": providers}), encoding="utf-8")
+
+
+def test_record_capacity_gate_prunes_expired_drain_entries(tmp_path):
+    cache_path = tmp_path / "agent-capacity.json"
+    now = datetime.now(timezone.utc)
+    _seed_capacity_cache(
+        cache_path,
+        {
+            "codex": {
+                "status": "unavailable",
+                "failure_class": "rate_limit",
+                "retry_after": (now - timedelta(hours=1)).isoformat(),
+                "source": "drain",
+            }
+        },
+    )
+    drain.record_capacity_gate(
+        cache_path, "claude", "rate_limit", now + timedelta(hours=1)
+    )
+    providers = json.loads(cache_path.read_text(encoding="utf-8"))["providers"]
+    assert "codex" not in providers
+    assert providers["claude"]["source"] == "drain"
+
+
+def test_record_capacity_gate_keeps_foreign_and_active_entries(tmp_path):
+    cache_path = tmp_path / "agent-capacity.json"
+    now = datetime.now(timezone.utc)
+    _seed_capacity_cache(
+        cache_path,
+        {
+            "claude-sub:opus": {
+                "status": "unavailable",
+                "retry_after": (now - timedelta(hours=1)).isoformat(),
+                "source": "spawn",
+            },
+            "codex": {
+                "status": "unavailable",
+                "retry_after": (now + timedelta(hours=1)).isoformat(),
+                "source": "drain",
+            },
+        },
+    )
+    drain.record_capacity_gate(
+        cache_path, "claude", "rate_limit", now + timedelta(hours=1)
+    )
+    providers = json.loads(cache_path.read_text(encoding="utf-8"))["providers"]
+    assert set(providers) == {"claude-sub:opus", "codex", "claude"}
+    assert providers["claude-sub:opus"]["source"] == "spawn"
+    assert providers["codex"]["source"] == "drain"
