@@ -76,6 +76,8 @@ def _semantic_slug_summary(focus: str, repo: str | None) -> str | None:
         )
     except Exception:  # noqa: BLE001
         return None
+    if getattr(result, "exhausted", False):
+        return None
     summary = result.text.strip()
     return summary or None
 

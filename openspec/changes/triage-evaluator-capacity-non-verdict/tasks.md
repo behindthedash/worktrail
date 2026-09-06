@@ -44,7 +44,7 @@
       verdict per brief; Capacity exhaustion exits non-zero and distinguishably).
       files: src/worktrail/workqueue/queue_triage.py, tests/workqueue/test_triage_evaluator_exhaustion.py
 
-- [ ] 2.2 In `src/worktrail/workqueue/create_handoff.py`: in `_semantic_slug_summary()`, return
+- [x] 2.2 In `src/worktrail/workqueue/create_handoff.py`: in `_semantic_slug_summary()`, return
       `None` when the spawn result has `exhausted` set, before reading `result.text`, so capture
       falls through to the existing `fallback_slugify()` path (design D5).
       In a new `tests/workqueue/test_handoff_slug_exhaustion.py`, assert: an exhausted summariser
@@ -55,7 +55,7 @@
       result value).
       files: src/worktrail/workqueue/create_handoff.py, tests/workqueue/test_handoff_slug_exhaustion.py
 
-- [ ] 2.3 In `src/worktrail/router/skill_dispatch.py`: let `EvaluatorUnavailable` propagate out
+- [x] 2.3 In `src/worktrail/router/skill_dispatch.py`: let `EvaluatorUnavailable` propagate out
       of `evaluate_single_brief()` (documenting it in the docstring alongside the existing
       `None` return), and in `main()`'s `--evaluate-brief-triage` branch catch it, print `null`
       on stdout, print `blocked_no_capacity: <repo>/<failure_class>: <detail>` on stderr, and
@@ -86,6 +86,6 @@
 
 ## 4. Verification
 
-- [ ] 4.1 [e2e] Run `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m
+- [x] 4.1 [e2e] Run `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m
       worktrail.orchestrator.orchestrate check` and confirm both repository gates pass;
       depends on 2.2, 2.3, and 3.1. Verification-only, no file changes expected.
