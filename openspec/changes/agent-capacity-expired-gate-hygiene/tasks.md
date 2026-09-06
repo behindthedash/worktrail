@@ -36,7 +36,7 @@
 
 ## 3. Documentation
 
-- [ ] 3.1 In `skills/worktrail-go/SKILL.md`'s "Capacity-cache operator commands" block (around
+- [x] 3.1 In `skills/worktrail-go/SKILL.md`'s "Capacity-cache operator commands" block (around
       line 879), add the `worktrail-agent-capacity clear --expired [--reason TEXT] [--cache PATH]`
       form to the command listing, and extend the `status` bullet to say each gated entry is
       labelled `(active)` or `(expired)` by its retry window and that `--expired` removes only
