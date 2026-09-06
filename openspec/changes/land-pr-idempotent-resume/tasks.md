@@ -1,6 +1,6 @@
 ## 1. Resume fast path in `land_pr()` (`land-pr-resume-fast-path`)
 
-- [ ] 1.1 Implement requirements: Already-pushed commit with an existing PR
+- [x] 1.1 Implement requirements: Already-pushed commit with an existing PR
       skips the pre-PR steps; Resume probe failures fall back to the full
       pipeline; A merged or closed pull request is never sent to PR
       creation. In `src/worktrail/router/land_pr.py`, add a module-level
