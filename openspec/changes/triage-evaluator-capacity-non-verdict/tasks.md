@@ -1,6 +1,6 @@
 ## 1. Signal exhaustion out of the spawn helper
 
-- [ ] 1.1 In `src/worktrail/orchestrator/spawnlib.py`: add `exhausted: bool = False` and
+- [x] 1.1 In `src/worktrail/orchestrator/spawnlib.py`: add `exhausted: bool = False` and
       `failure_class: str = ""` to `SpawnResult` (design D1), give the inner `finish()` helper
       keyword-only `exhausted`/`failure_class` parameters defaulting to `False`/`""` that it
       passes through to the `SpawnResult` it builds, and set them at all three give-up returns
@@ -76,7 +76,7 @@
 
 ## 3. Operator procedure
 
-- [ ] 3.1 In `skills/worktrail-go/SKILL.md`'s intake-triage step (the
+- [x] 3.1 In `skills/worktrail-go/SKILL.md`'s intake-triage step (the
       `--evaluate-brief-triage` block, ~lines 275-295): document that exit 2 with a
       `blocked_no_capacity:` stderr line means no model evaluated the brief -- report the
       capacity block, do NOT run the apply step, and leave the brief queued unchanged --
