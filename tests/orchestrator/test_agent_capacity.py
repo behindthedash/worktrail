@@ -1244,3 +1244,103 @@ def test_probe_interval_reads_env_var_at_import(monkeypatch):
     finally:
         monkeypatch.delenv("GO_AGENT_GATE_PROBE_INTERVAL", raising=False)
         importlib.reload(agent_capacity)
+
+
+_WEEKLY_NOTICE = "You've hit your weekly limit · resets 2pm (America/Los_Angeles)"
+
+
+def _pacific():
+    from zoneinfo import ZoneInfo
+
+    return ZoneInfo("America/Los_Angeles")
+
+
+def test_lenient_reset_resolves_next_occurrence_in_stated_zone():
+    tz = _pacific()
+    now = datetime(2026, 8, 5, 9, 0, tzinfo=tz)
+
+    reset = agent_capacity.parse_explicit_reset(_WEEKLY_NOTICE, now)
+
+    assert reset is not None and reset.tzinfo is not None
+    assert reset == datetime(2026, 8, 5, 14, 0, tzinfo=tz).astimezone(timezone.utc)
+
+
+def test_lenient_reset_rolls_to_tomorrow_when_time_has_passed():
+    tz = _pacific()
+    now = datetime(2026, 8, 5, 16, 0, tzinfo=tz)
+
+    reset = agent_capacity.parse_explicit_reset(_WEEKLY_NOTICE, now)
+
+    assert reset == datetime(2026, 8, 6, 14, 0, tzinfo=tz).astimezone(timezone.utc)
+
+
+def test_lenient_reset_accepts_at_and_minute_and_spaced_meridiem():
+    now = datetime(2026, 8, 5, 9, 0, tzinfo=timezone.utc)
+
+    a = agent_capacity.parse_explicit_reset("resets at 3:00pm", now)
+    b = agent_capacity.parse_explicit_reset("resets 3:00 PM", now)
+
+    assert a is not None and b is not None and a == b
+
+
+def test_lenient_reset_falls_back_to_local_time_without_usable_zone():
+    now = datetime(2026, 8, 5, 9, 0, tzinfo=timezone.utc)
+
+    unresolvable = agent_capacity.parse_explicit_reset("resets 2pm (PT)", now)
+    zoneless = agent_capacity.parse_explicit_reset("resets 2pm", now)
+
+    assert unresolvable is not None and zoneless is not None
+    assert unresolvable == zoneless
+    local_now = now.astimezone()
+    expected = local_now.replace(hour=14, minute=0, second=0, microsecond=0)
+    if expected <= local_now:
+        expected += timedelta(days=1)
+    assert zoneless == expected.astimezone(timezone.utc)
+
+
+def test_lenient_reset_is_ignored_in_text_longer_than_notice_bound():
+    filler = "x" * (agent_capacity._NOTICE_MAX_CHARS + 1)
+    assert agent_capacity.parse_explicit_reset(f"{filler} {_WEEKLY_NOTICE}") is None
+
+
+def test_dated_reset_still_parses_in_long_text_and_wins_over_lenient():
+    filler = "x" * (agent_capacity._NOTICE_MAX_CHARS + 1)
+    long_text = f"{filler} try again at Aug 8th, 2026 2:17 AM."
+
+    reset = agent_capacity.parse_explicit_reset(long_text)
+    assert reset is not None and (reset.year, reset.month, reset.day) == (2026, 8, 8)
+
+    both = agent_capacity.parse_explicit_reset(
+        f"{_WEEKLY_NOTICE} try again at Aug 8th, 2026 2:17 AM."
+    )
+    assert both == datetime(2026, 8, 8, 2, 17).astimezone(timezone.utc)
+
+
+def test_weekly_limit_spawn_records_provider_derived_gate(tmp_path, monkeypatch):
+    path = tmp_path / "capacity.json"
+    monkeypatch.setenv("GO_AGENT_CAPACITY_CACHE", str(path))
+    monkeypatch.setattr(
+        spawnlib, "resolve_routing", lambda *a, **kw: _preflight_routing()
+    )
+    monkeypatch.setattr(
+        spawnlib.subprocess,
+        "run",
+        lambda *args, **kwargs: type(
+            "Proc",
+            (),
+            {"returncode": 1, "stdout": "", "stderr": _WEEKLY_NOTICE},
+        )(),
+    )
+
+    try:
+        spawnlib.spawn_agent("prompt", tmp_path, tier="t2-build", sleep=lambda *_: None)
+    except Exception:
+        pass
+
+    state = agent_capacity.load(path)["providers"]["claude:sonnet"]
+    assert state["failure_class"] == "billing"
+    assert state["reset_source"] == "provider"
+    retry_after = datetime.fromisoformat(state["retry_after"])
+    # The billing cooldown is 1h; a parsed 2pm-Pacific reset is not that.
+    assert retry_after > datetime.now(timezone.utc)
+    assert retry_after.astimezone(_pacific()).hour == 14

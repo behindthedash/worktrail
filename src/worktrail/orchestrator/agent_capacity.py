@@ -369,7 +369,9 @@ def classify_failure(returncode: int, stdout: str, stderr: str) -> str:
     # 2026-08-05: "You've hit your weekly limit · resets 2pm (America/Los_Angeles)"
     # previously fell through to "transport" too, causing two consecutive
     # weekly-cap hits to trip worktrail-drain's circuit breaker as plain
-    # failures instead of a capacity gate).
+    # failures instead of a capacity gate). That notice's "resets ..." clause is
+    # itself parsed by parse_explicit_reset, so the gate carries the provider's
+    # own reset instant rather than the generic "billing" cooldown.
     if any(
         token in text
         for token in (
@@ -401,20 +403,40 @@ _EXPLICIT_RESET_RE = re.compile(
 )
 
 
-def parse_explicit_reset(text: str) -> datetime | None:
-    """Extract an explicit reset timestamp from a usage-cap notice, e.g. Codex's
-    "try again at Aug 8th, 2026 2:17 AM." Returns None when no such timestamp
+# Matches Claude's cap-notice wording: "... resets 2pm (America/Los_Angeles)",
+# "resets at 3:00pm", "resets 3:00 PM". Date-less and generic, so it is only
+# applied to notice-sized text (see _NOTICE_MAX_CHARS / design.md D2).
+_LENIENT_RESET_RE = re.compile(
+    r"resets(?:\s+at)?\s+(\d{1,2})(?::(\d{2}))?\s*([AaPp])\.?[Mm]\.?"
+    r"(?:\s*\(([^)]*)\))?",
+)
+
+# Same bound and value as spawnlib's _SESSION_LIMIT_NOTICE_MAX_CHARS: a genuine
+# cap notice IS the CLI's entire output, while longer text merely quotes the
+# wording (this repo's own source, tests and specs contain it).
+_NOTICE_MAX_CHARS = 600
+
+
+def parse_explicit_reset(text: str, now: datetime | None = None) -> datetime | None:
+    """Extract an explicit reset timestamp from a usage-cap notice: Codex's
+    dated "try again at Aug 8th, 2026 2:17 AM." or Claude's date-less
+    "resets 2pm (America/Los_Angeles)". Returns None when no such timestamp
     is present, so callers fall back to the generic per-failure-class cooldown
     (`retry_time`) instead of guessing.
 
-    The CLI reports the reset time in local wall-clock time (same convention as
-    Claude's own session-limit notice), so the naive parsed value is treated as
-    local time and converted to UTC-aware for storage/comparison consistency
-    with every other timestamp in this cache.
+    The dated pattern is tried first (it carries a real date) and is unbounded;
+    the lenient Claude wording is short and generic enough to appear incidentally,
+    so it is only matched in notice-sized text (design.md D1, D2).
+
+    Codex reports its reset time in local wall-clock time, so the naive parsed
+    value is treated as local time and converted to UTC-aware for storage/
+    comparison consistency with every other timestamp in this cache. A Claude
+    notice names its own zone; see `_parse_lenient_reset`.
     """
-    m = _EXPLICIT_RESET_RE.search(text or "")
+    text = text or ""
+    m = _EXPLICIT_RESET_RE.search(text)
     if not m:
-        return None
+        return _parse_lenient_reset(text, now)
     month, day, year, clock = m.groups()
     candidate = f"{month} {day} {year} {clock.replace(' ', '').upper()}"
     for fmt in ("%b %d %Y %I:%M%p", "%B %d %Y %I:%M%p"):
@@ -423,7 +445,43 @@ def parse_explicit_reset(text: str) -> datetime | None:
         except ValueError:
             continue
         return parsed.astimezone(timezone.utc)
-    return None
+    return _parse_lenient_reset(text, now)
+
+
+def _parse_lenient_reset(text: str, now: datetime | None) -> datetime | None:
+    """Resolve Claude's date-less "resets 2pm (America/Los_Angeles)" wording to
+    its next occurrence, judged in the stated zone (design.md D3, D4)."""
+    if len(text.strip()) > _NOTICE_MAX_CHARS:
+        return None
+    m = _LENIENT_RESET_RE.search(text)
+    if not m:
+        return None
+    hour_s, minute_s, meridiem, zone_label = m.groups()
+    hour = int(hour_s)
+    if not 1 <= hour <= 12:
+        return None
+    minute = int(minute_s or 0)
+    if minute > 59:
+        return None
+    hour = hour % 12 + (12 if meridiem.lower() == "p" else 0)
+
+    tz: object = None
+    if zone_label:
+        try:
+            from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+            tz = ZoneInfo(zone_label.strip())
+        except (ZoneInfoNotFoundError, ValueError, KeyError, ImportError):
+            tz = None
+
+    now = now or _now()
+    # No resolvable zone: fall back to the local wall-clock assumption the
+    # dated path already makes.
+    local_now = now.astimezone(tz) if tz is not None else now.astimezone()
+    candidate = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if candidate <= local_now:
+        candidate += timedelta(days=1)
+    return candidate.astimezone(timezone.utc)
 
 
 def retry_time(failure_class: str, now: datetime | None = None) -> datetime:
