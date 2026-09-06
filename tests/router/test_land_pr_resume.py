@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Tests for `land_pr()`'s step-0 resume fast path (`_resume_state`).
 
 Same fake-runner conventions as `test_land_pr.py` (`FakeRun`/`RunRecordSpy`
