@@ -250,6 +250,14 @@ def evaluate_single_brief(
     `Verdict` for `brief_path`, or `None` on the (should-not-happen) case that
     the evaluator produced no verdict at all for this brief's id -- callers
     must treat that as "nothing to present or apply", never guess a verdict.
+
+    `queue_triage.EvaluatorUnavailable` propagates out unchanged when the
+    evaluator spawn gave up without evaluating (capacity exhaustion, design
+    D3). That is distinct from the `None` return: no model looked at the
+    brief at all, so the block is the result and the brief stays queued
+    untouched. It is deliberately not swallowed into `None` here -- a caller
+    that cannot tell the two apart would report "no verdict" for a brief
+    that was never read.
     """
     from ..workqueue.queue_triage import (
         NO_REPO_KEY,
@@ -962,18 +970,56 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(envelope))
         return 0
     if parsed.evaluate_brief_triage is not None:
-        verdict = evaluate_single_brief(
-            parsed.evaluate_brief_triage,
-            repo=parsed.triage_repo,
-            agent=parsed.triage_agent,
-            repos_root=parsed.triage_repos_root,
-        )
+        from ..workqueue.queue_triage import EvaluatorUnavailable
+
+        try:
+            verdict = evaluate_single_brief(
+                parsed.evaluate_brief_triage,
+                repo=parsed.triage_repo,
+                agent=parsed.triage_agent,
+                repos_root=parsed.triage_repos_root,
+            )
+        except EvaluatorUnavailable as exc:
+            # No model evaluated the brief -- distinct from an exit-1 `null`
+            # verdict, which means a model looked and said nothing usable.
+            print(json.dumps(None))
+            print(
+                f"blocked_no_capacity: {exc.repo}/"
+                f"{exc.failure_class or 'unknown'}: {exc}",
+                file=sys.stderr,
+            )
+            return 2
         print(json.dumps(asdict(verdict) if verdict is not None else None))
         return 0 if verdict is not None else 1
     if parsed.apply_brief_triage is not None:
         from ..workqueue.queue_triage import Verdict
 
-        verdict = Verdict(**json.loads(parsed.apply_brief_triage))
+        payload = json.loads(parsed.apply_brief_triage)
+        reason = None
+        if payload is None:
+            reason = "payload is null -- no verdict to apply"
+        elif not isinstance(payload, dict):
+            reason = "payload is not a JSON object"
+        elif not payload.get("verdict"):
+            reason = "payload has no verdict field"
+        if reason is not None:
+            # Fail before `Verdict(**payload)` -- constructing one from a
+            # verdictless payload raises TypeError or applies a blank verdict.
+            print(
+                json.dumps(
+                    {
+                        "brief_id": payload.get("brief_id")
+                        if isinstance(payload, dict)
+                        else None,
+                        "verdict": None,
+                        "status": "error",
+                        "path": None,
+                        "error": reason,
+                    }
+                )
+            )
+            return 1
+        verdict = Verdict(**payload)
         entry = apply_single_brief_verdict(
             verdict,
             confirm=parsed.confirm,
