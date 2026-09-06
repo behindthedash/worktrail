@@ -72,6 +72,25 @@ def _squash_merge_dep_branch_upstream(tmp, bare, repo, dep_branch):
     _git(clone, "push", "-q", "origin", "main")
 
 
+def _squash_merge_reviewed_dep_branch_upstream(tmp, bare, repo, dep_branch, path):
+    """Land `dep_branch` on origin/main as a SQUASH whose content was REVISED
+    on the group branch first (a review fixup), plus an unrelated follow-up.
+    The retained task branch's verbatim diff therefore never appears in base:
+    a three-way merge of the branch into base CONFLICTS on `path` (brief
+    20260905-162859, live: shared-pr-landing-pipeline/{2.1,5.1,14.1,17.1})."""
+    clone = Path(tmp) / "clone"
+    subprocess.run(["git", "clone", "-q", str(bare), str(clone)], check=True)
+    _git(clone, "config", "user.email", "t@example.com")
+    _git(clone, "config", "user.name", "Test")
+    _git(clone, "fetch", "-q", str(repo), f"{dep_branch}:{dep_branch}")
+    _git(clone, "merge", "--squash", "-q", dep_branch)
+    (clone / path).write_text("dep content, reviewed\n")
+    _git(clone, "add", "-A")
+    _git(clone, "commit", "-q", "-m", f"squash {dep_branch} + review fixup")
+    _commit(clone, "other.txt", "landed later\n", "unrelated follow-up")
+    _git(clone, "push", "-q", "origin", "main")
+
+
 class SquashMergedSurvivingDependencyBranch(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -148,6 +167,81 @@ class SquashMergedSurvivingDependencyBranch(unittest.TestCase):
             f"{SPEC}/4.3",
         )
         self.assertTrue((self.wt / "dep.py").exists())
+
+
+class ReviewedSquashConflictingDependencyBranch(unittest.TestCase):
+    """The dependency branch's content landed in base only in a REVISED form
+    (group-level review fixups squashed with it), so the branch is neither an
+    ancestor of base nor cleanly re-mergeable into it. Stacking on it is
+    guaranteed to fail the base carry; the dependent must fork from base."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        tmp = self._tmp.name
+        self.bare, self.repo = _init(tmp)
+        self.dep_branch = f"{SPEC}/2.1"
+        _git(self.repo, "checkout", "-q", "-b", self.dep_branch)
+        _commit(self.repo, "dep.py", "dep content\n", "2.1 work")
+        _git(self.repo, "checkout", "-q", "main")
+        _squash_merge_reviewed_dep_branch_upstream(
+            tmp, self.bare, self.repo, self.dep_branch, "dep.py"
+        )
+        _git(self.repo, "fetch", "-q", "origin", "main")
+        self.by_id = {
+            "2.1": {"id": "2.1", "status": "done", "files": ["dep.py"]},
+            "4.3": {"id": "4.3", "deps": ["2.1"], "files": ["new.py"]},
+        }
+        self.task = self.by_id["4.3"]
+        self.wt = Path(tmp) / "wt-4.3"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_merge_tree_conflicts_for_the_fixture(self):
+        # Fixture sanity: this is the live shape -- not an ancestor, and the
+        # three-way merge into base conflicts (rc=1) rather than yielding base.
+        self.assertFalse(live._is_ancestor(self.repo, self.dep_branch, "origin/main"))
+        mt = _git(
+            self.repo,
+            "merge-tree",
+            "--write-tree",
+            "origin/main",
+            self.dep_branch,
+            check=False,
+        )
+        self.assertEqual(mt.returncode, 1, mt.stdout + mt.stderr)
+
+    def test_branch_content_in_base_detects_reviewed_squash(self):
+        self.assertTrue(
+            live._branch_content_in_base(self.repo, self.dep_branch, "origin/main")
+        )
+
+    def test_start_ref_prefers_base_over_conflicting_retained_branch(self):
+        start, extra = live.dependency_start_ref(
+            self.repo, SPEC, self.task, self.by_id, base_ref="origin/main"
+        )
+        self.assertEqual((start, extra), ("origin/main", []))
+
+    def test_fresh_worktree_forks_from_base_and_reports_stale_branch(self):
+        import contextlib
+        import io
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            live.add_stacked_worktree(
+                self.repo,
+                SPEC,
+                self.task,
+                self.by_id,
+                self.wt,
+                remote="origin",
+                base="main",
+            )
+        self.assertEqual((self.wt / "dep.py").read_text(), "dep content, reviewed\n")
+        self.assertTrue(live._is_ancestor(self.wt, "origin/main", "HEAD"))
+        out = buf.getvalue()
+        self.assertIn(self.dep_branch, out)
+        self.assertIn("git branch -D", out)
 
 
 if __name__ == "__main__":
