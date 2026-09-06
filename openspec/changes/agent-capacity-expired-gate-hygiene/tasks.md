@@ -1,6 +1,6 @@
 ## 1. Capacity-cache operator surface
 
-- [ ] 1.1 In `src/worktrail/orchestrator/agent_capacity.py`: in `cmd_status()`, replace the
+- [x] 1.1 In `src/worktrail/orchestrator/agent_capacity.py`: in `cmd_status()`, replace the
       `active` suffix computation so a gated status (`unavailable`/`gated`/`blocked`) with
       `retry_at > now` prints `  (active)` and one with `retry_at <= now` prints `  (expired)`;
       a gated status with no timestamp prints neither. Add a module-level helper (e.g.
