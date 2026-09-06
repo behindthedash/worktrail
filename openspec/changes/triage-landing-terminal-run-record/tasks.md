@@ -43,7 +43,7 @@
 
 ## 3. Triage apply path regression
 
-- [ ] 3.1 In `tests/workqueue/test_queue_triage.py`, alongside the existing
+- [x] 3.1 In `tests/workqueue/test_queue_triage.py`, alongside the existing
       `_worktree_pr_close` / apply coverage, add a test that patches `queue_triage.land_pr`
       to capture its `LandRequest` and return a `landed` outcome with
       `final_status="completed_pr_open"`, then asserts the captured request has `run=None`
@@ -54,6 +54,6 @@
 
 ## 4. Verification
 
-- [ ] 4.1 [e2e] Run `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m
+- [x] 4.1 [e2e] Run `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m
       worktrail.orchestrator.orchestrate check` and confirm both repository gates pass;
       depends on 1.1, 1.2, 2.1, 3.1.
