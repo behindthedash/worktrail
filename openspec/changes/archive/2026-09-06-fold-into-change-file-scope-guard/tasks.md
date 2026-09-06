@@ -1,6 +1,6 @@
 ## 1. fold-into-change requires evidence naming a file
 
-- [ ] 1.1 Implement the requirement: In `src/worktrail/workqueue/queue_triage.py`:
+- [x] 1.1 Implement the requirement: In `src/worktrail/workqueue/queue_triage.py`:
       - In `_has_valid_target()`'s `fold-into-change` branch, after confirming
         `target_change` is one of `presented_candidates`, additionally require `obj`'s
         `evidence` to be a string containing at least one needle of kind `"path"` per

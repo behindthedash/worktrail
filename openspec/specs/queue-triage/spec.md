@@ -59,12 +59,16 @@ verdict of exactly one of `keep`, `stale-close`, `needs-update`, `duplicate-of`,
 `fold-into-change`, `propose-change`, `work-directly`, or `needs-decision`, and SHALL
 require non-empty `evidence` text for every verdict. `fold-into-change` SHALL additionally
 require a non-empty `target_change` (`<repo>:change:<id>` naming an active change presented
-as a candidate); `propose-change` SHALL additionally require a non-empty `target_repo` and a
-kebab-case `proposed_change_name`; `needs-decision` SHALL additionally require a non-empty
-`question`. For a brief evaluated in the repo-less (`__none__`) group, the evaluator prompt
-SHALL list the known workspace repos (the directory basenames under the configured repos
-root), `propose-change` SHALL be valid only when `target_repo` is one of those listed names,
-and `fold-into-change` SHALL remain invalid since no candidate changes are presented. For a
+as a candidate) and SHALL require `evidence` to cite at least one file-path-shaped token
+(the same path-probe extraction `run_premise_check()` already uses against a brief's `focus:`
+text) -- since `apply`'s fold action appends `evidence` verbatim as the target change's new
+task text, and that task must carry file scope for `worktrail-compile` to accept it;
+`propose-change` SHALL additionally require a non-empty `target_repo` and a kebab-case
+`proposed_change_name`; `needs-decision` SHALL additionally require a non-empty `question`.
+For a brief evaluated in the repo-less (`__none__`) group, the evaluator prompt SHALL list
+the known workspace repos (the directory basenames under the configured repos root),
+`propose-change` SHALL be valid only when `target_repo` is one of those listed names, and
+`fold-into-change` SHALL remain invalid since no candidate changes are presented. For a
 brief evaluated in a repo-bearing group, the evaluator prompt SHALL state `propose-change`'s
 `target_repo` as that group's own repo with no known-repos allowlist, rather than reusing the
 repo-less group's "valid only when `target_repo` is one of these known repos" wording with a
@@ -103,14 +107,20 @@ needed must never also silently auto-rewrite the brief.
 
 #### Scenario: Well-formed fold verdict
 - **WHEN** an evaluator returns `{"brief_id": "X", "verdict": "fold-into-change",
-  "target_change": "worktrail:change:work-queue-dependency-diagnostics", "evidence": "...",
-  "confidence": "high"}`
+  "target_change": "worktrail:change:work-queue-dependency-diagnostics", "evidence":
+  "overlaps open tasks touching src/worktrail/router/land_pr.py", "confidence": "high"}`
 - **THEN** the verdict file records brief `X` as `fold-into-change` with that target
 
 #### Scenario: Fold verdict names a change that was not a candidate
 - **WHEN** an evaluator returns `fold-into-change` with a `target_change` that is not an
   active change in the brief's repo
 - **THEN** the verdict is recorded as `keep` with the raw verdict retained as evidence
+
+#### Scenario: Fold verdict's evidence names no file
+- **WHEN** an evaluator returns `fold-into-change` naming a presented candidate but whose
+  `evidence` cites no file-path-shaped token
+- **THEN** the verdict is recorded as `keep` with the raw verdict retained as evidence,
+  exactly as for a `target_change` that was not a presented candidate
 
 #### Scenario: Undecidable case fails open
 - **WHEN** an evaluator cannot find evidence to confirm or refute a repo-resolved brief's
