@@ -62,6 +62,7 @@ from __future__ import annotations
 import contextlib
 import datetime
 import json
+import math
 import os
 import re
 import subprocess
@@ -118,10 +119,36 @@ JSON_OUTPUT_FLAGS = ["--output-format", "stream-json", "--verbose"]
 # Retries for a transient (infra) spawn failure, on top of the first attempt.
 SPAWN_RETRIES_DEFAULT = int(os.environ.get("ORCH_SPAWN_RETRIES", "2"))
 
+# Longest a single "session limit" park may last before re-probing the cell,
+# whatever reset time the notice claims. A reset clock already past today rolls
+# to tomorrow and would otherwise park a spawn for ~24h on a notice that was
+# wrong, stale, or lifted early.
+SESSION_LIMIT_REPROBE_MAX_S = float(
+    os.environ.get("ORCH_SESSION_LIMIT_REPROBE_MAX_S", "900")
+)
+
+# Total wall-clock one spawn may spend parked on session limits, across every
+# park. The real safety bound for a persistently-capped account.
+SESSION_LIMIT_TOTAL_WAIT_MAX_S = float(
+    os.environ.get("ORCH_SESSION_LIMIT_TOTAL_WAIT_MAX_S", "14400")
+)
+
 # How many times a single spawn will wait out a "session limit" reset before
-# giving the limit message back to the caller as a task failure. Bounded so a
-# persistently-rate-limited account can never loop forever.
-SESSION_LIMIT_WAITS_DEFAULT = int(os.environ.get("ORCH_SESSION_LIMIT_WAITS", "3"))
+# giving the limit message back to the caller as a task failure. Derived from
+# the two bounds above so the probe count always covers the total budget: a
+# hardcoded low count would silently shorten patience the moment the per-park
+# cap shrinks, turning "probe more often" into "give up sooner".
+SESSION_LIMIT_WAITS_DEFAULT = int(
+    os.environ.get(
+        "ORCH_SESSION_LIMIT_WAITS",
+        str(
+            max(
+                1,
+                math.ceil(SESSION_LIMIT_TOTAL_WAIT_MAX_S / SESSION_LIMIT_REPROBE_MAX_S),
+            )
+        ),
+    )
+)
 
 # `claude -p` prints this when the account's usage window is exhausted, e.g.
 # "You've hit your session limit. Your limit resets at 3:00pm." The reset clock
@@ -1118,7 +1145,16 @@ def spawn_agent(
                 # wrong instant (or appear already-expired), breaking the re-select
                 # below's only mechanism for excluding it. astimezone() attaches the
                 # system's real local offset without perturbing the wall-clock value.
-                retry_after=reset_at.astimezone(),
+                # Clamped to the re-probe cadence: rate_limit is the one failure
+                # class whose retry_after comes from vendor text, so an unclamped
+                # value would gate every LATER spawn (and every concurrent worker)
+                # until the stated reset -- this spawn would wake early from its
+                # capped park only to be refused by its own cache entry.
+                retry_after=min(
+                    reset_at,
+                    datetime.datetime.now()  # noqa: DTZ005
+                    + datetime.timedelta(seconds=SESSION_LIMIT_REPROBE_MAX_S),
+                ).astimezone(),
             )
             cleanup_output_file()
             try:
@@ -1150,14 +1186,16 @@ def spawn_agent(
                 )
                 attempt -= 1
                 continue
-            if waits_left > 0:
+            budget_left = max(0.0, SESSION_LIMIT_TOTAL_WAIT_MAX_S - paused_s_total)
+            if waits_left > 0 and budget_left > 0:
                 waits_left -= 1
-                wait_s = (
+                until_reset = (
                     max(0.0, (reset_at - datetime.datetime.now()).total_seconds()) + 5.0  # noqa: DTZ005
                 )
+                wait_s = min(until_reset, SESSION_LIMIT_REPROBE_MAX_S, budget_left)
                 log(
-                    f"    session limit hit; sleeping {wait_s:.0f}s until "
-                    f"{reset_at:%H:%M} then retrying ({waits_left} wait(s) left)"
+                    f"    session limit hit; sleeping {wait_s:.0f}s (reset stated "
+                    f"{reset_at:%H:%M}) then re-probing ({waits_left} probe(s) left)"
                 )
                 sleep(wait_s)
                 paused_s_total += wait_s

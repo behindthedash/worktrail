@@ -39,6 +39,9 @@ triggers:
     - dependency_start_ref
     - _branch_content_in_base
     - merge-tree
+    - SESSION_LIMIT_REPROBE_MAX_S
+    - SESSION_LIMIT_TOTAL_WAIT_MAX_S
+    - session limit
 ---
 
 You are working on **worktrail's task-orchestration core**: compiling specs/changes into a
@@ -169,6 +172,22 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
   An explicit `--settings` in `extra_args` is respected and not overridden; non-`claude` agents
   get no guard. `tests/orchestrator/test_worktree_guard_hook.py` pins the decisions and the
   injection.
+- **A "session limit" park is bounded by a re-probe cadence and a total budget, never by the
+  notice's stated reset alone** (`spawnlib.spawn_agent`): each park is
+  `min(until_reset + 5s, SESSION_LIMIT_REPROBE_MAX_S, budget_left)` where the cadence defaults to
+  900s (`ORCH_SESSION_LIMIT_REPROBE_MAX_S`) and the total wall-clock across every park is capped at
+  `SESSION_LIMIT_TOTAL_WAIT_MAX_S`, default 14400s (`ORCH_SESSION_LIMIT_TOTAL_WAIT_MAX_S`). The
+  park used to be `until_reset + 5s` verbatim, so a reset clock already past today rolled to
+  tomorrow and parked a spawn ~24h on a notice that was wrong, stale, or lifted early.
+  `SESSION_LIMIT_WAITS_DEFAULT` (`ORCH_SESSION_LIMIT_WAITS`) is DERIVED as
+  `ceil(total / cadence)` so the probe count always covers the budget — a hardcoded low count
+  would turn "probe more often" into "give up sooner"
+  (`test_default_probe_count_covers_the_total_park_budget` pins this). The `agent_capacity`
+  `rate_limit` gate's `retry_after` is clamped to the same cadence: rate_limit is the one failure
+  class whose `retry_after` comes from vendor text, and an unclamped value would gate every later
+  spawn (and every concurrent worker) until the stated reset, so this spawn would wake early from
+  its capped park only to be refused by its own cache entry. The park log line now reads
+  `sleeping Ns (reset stated HH:MM) then re-probing (N probe(s) left)`.
 - **AddOns run after a task's own work, before commit** (`addons/runner.run_addons`,
   called from `orchestrator/integrate.py` and `router/preflight.py`). `install`/`configure`
   failures are swallowed (best-effort priming); `run()` failures propagate. An add-on config'd
@@ -228,7 +247,10 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
   dependency branch is a stacking point or already squash-merged
 - `orchestrator/spawnlib.py` — `_with_default_setting_sources`/`worker_guard_settings_json`:
   the per-`claude`-spawn defaults (`--setting-sources project,local` plus the `--settings`
-  guard-hook JSON) that `build_cmd` applies unless the caller passed them explicitly
+  guard-hook JSON) that `build_cmd` applies unless the caller passed them explicitly;
+  `SESSION_LIMIT_REPROBE_MAX_S`/`SESSION_LIMIT_TOTAL_WAIT_MAX_S`/`SESSION_LIMIT_WAITS_DEFAULT`
+  and the bounded session-limit park + clamped `rate_limit` capacity gate inside `spawn_agent`
+  (pinned by `SessionLimitRetry` in `tests/orchestrator/test_spawnlib.py`)
 - `orchestrator/worktree_guard_hook.py` — the PreToolUse guard itself (`decide`,
   `_canonical_root`, `HOOK_MATCHER`); runnable as `python -m`, reads the hook payload on stdin,
   prints a `deny` decision or nothing, always exits 0

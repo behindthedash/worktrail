@@ -442,6 +442,55 @@ class SessionLimitRetry(unittest.TestCase):
         self.assertEqual(fr.calls, 3)  # 2 bounded waits + 1 final fall-through
         self.assertIn("session limit", out.text)
 
+    def test_park_is_capped_at_reprobe_cadence_not_stated_reset(self):
+        # The park used to be `until_reset + 5s` verbatim from the CLI's notice, so
+        # a reset clock already past today rolls to tomorrow and parks for ~24h.
+        # Every park must now be <= the re-probe cadence, whatever the notice
+        # claims. Cadence is pinned tiny so the assertion is exact regardless of
+        # wall-clock time (until_reset is always >= the 5s grace).
+        limit = Proc(0, "hit your session limit resets 3:00pm", "")
+        with patch.object(spawnlib, "SESSION_LIMIT_REPROBE_MAX_S", 1.0):
+            out, _fr, slept = self._run([limit], session_limit_waits=3)
+        self.assertEqual(slept, [1.0, 1.0, 1.0])
+        self.assertIn("session limit", out.text)
+
+    def test_total_park_time_is_bounded_even_with_probes_remaining(self):
+        # A persistently-capped account stops costing wall-clock at
+        # SESSION_LIMIT_TOTAL_WAIT_MAX_S even when probes remain.
+        limit = Proc(0, "hit your session limit resets 3:00pm", "")
+        with (
+            patch.object(spawnlib, "SESSION_LIMIT_REPROBE_MAX_S", 1.0),
+            patch.object(spawnlib, "SESSION_LIMIT_TOTAL_WAIT_MAX_S", 2.5),
+        ):
+            out, _fr, slept = self._run([limit], session_limit_waits=99)
+        self.assertAlmostEqual(sum(slept), 2.5, places=6)
+        self.assertEqual(slept, [1.0, 1.0, 0.5])
+        self.assertIn("session limit", out.text)
+
+    def test_capacity_gate_is_clamped_to_reprobe_cadence(self):
+        # Without this clamp the cap is self-defeating: the spawn wakes early from
+        # a capped park, then agent_capacity refuses the provider for every other
+        # spawn because the SAME notice gated it until the stated reset.
+        limit = Proc(0, "hit your session limit resets 3:00pm", "")
+        before = datetime.datetime.now().astimezone()
+        with patch.object(spawnlib, "SESSION_LIMIT_REPROBE_MAX_S", 1.0):
+            self._run([limit], session_limit_waits=0)
+        state = spawnlib.agent_capacity.load()["providers"]
+        entry = next(iter(state.values()))
+        self.assertEqual(entry["failure_class"], "rate_limit")
+        retry_after = datetime.datetime.fromisoformat(entry["retry_after"])
+        self.assertLessEqual(
+            retry_after, before + datetime.timedelta(seconds=1.0 + 5.0)
+        )
+
+    def test_default_probe_count_covers_the_total_park_budget(self):
+        # Guards the derivation: the default probe count must never be the reason
+        # total patience falls below the declared budget.
+        self.assertGreaterEqual(
+            spawnlib.SESSION_LIMIT_WAITS_DEFAULT * spawnlib.SESSION_LIMIT_REPROBE_MAX_S,
+            spawnlib.SESSION_LIMIT_TOTAL_WAIT_MAX_S,
+        )
+
     def test_worker_transcript_quoting_notice_runs_to_success_without_wait(self):
         # End-to-end regression for the spec-023 false positive: a SUCCESSFUL worker
         # whose (long, plain-text) output quotes the cap wording must be treated as
