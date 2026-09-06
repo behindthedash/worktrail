@@ -115,7 +115,11 @@ a patch iteration, a bounded number of times. A code defect SHALL be reported to
 with the failing check names and failed-step log excerpt, leaving the PR open and the run
 record unfinished so the caller can repair and re-invoke; the pipeline SHALL persist the
 patch-iteration count on the run record and SHALL treat the fifth code-defect report as the
-iteration ceiling. The pipeline SHALL never leave a PR open with an unclassified outcome.
+iteration ceiling. When the watch budget is exhausted, the pipeline SHALL re-query the live
+PR's state once before finishing; if the PR is already merged, the pipeline SHALL continue into
+the all-pass completion flow (merge-state guard, review-thread gate, finish as merged) instead
+of finishing as recoverably failed. The re-query SHALL only read state -- it SHALL NOT rerun
+checks. The pipeline SHALL never leave a PR open with an unclassified outcome.
 
 #### Scenario: All checks pass
 - **WHEN** the watch settles with no failing check
@@ -139,9 +143,22 @@ iteration ceiling. The pipeline SHALL never leave a PR open with an unclassified
   and the pipeline stops
 
 #### Scenario: Watch budget exhausted
-- **WHEN** checks are still pending after the watch budget and its bounded re-issues
+- **WHEN** checks are still pending after the watch budget and its bounded re-issues, and the
+  re-queried PR state is not merged
 - **THEN** the run record is finished as recoverably failed noting that checks were still
   pending, and the result says so
+
+#### Scenario: PR merged by the time the watch budget is exhausted
+- **WHEN** the watch budget is exhausted and the re-queried PR state is merged
+- **THEN** the pipeline runs the review-thread gate and, when nothing blocks, finishes the run
+  record as merged with a merge result noting the external merge, and the outcome is landed,
+  not ceiling
+
+#### Scenario: Re-query fails at the watch budget
+- **WHEN** the watch budget is exhausted and the PR state re-query fails or returns malformed
+  data
+- **THEN** the pipeline treats the PR as not merged and finishes as recoverably failed exactly
+  as before
 
 ### Requirement: Merge-state guard and review-thread gate before completion
 
