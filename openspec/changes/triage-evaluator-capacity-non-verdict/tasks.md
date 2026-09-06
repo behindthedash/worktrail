@@ -22,7 +22,7 @@
 
 ## 2. Fail closed in the consumers
 
-- [ ] 2.1 In `src/worktrail/workqueue/queue_triage.py`: add an `EvaluatorUnavailable(Exception)`
+- [x] 2.1 In `src/worktrail/workqueue/queue_triage.py`: add an `EvaluatorUnavailable(Exception)`
       carrying `repo`, `brief_ids`, and `failure_class`. In `evaluate_group()`, when
       `spawnlib.spawn_agent()`'s result has `exhausted` set, return the group dict with
       `raw_text=""` plus `"exhausted": True` and `"failure_class": <result.failure_class>`
