@@ -247,6 +247,9 @@
           "dependency_start_ref",
           "_branch_content_in_base",
           "merge-tree",
+          "SESSION_LIMIT_REPROBE_MAX_S",
+          "SESSION_LIMIT_TOTAL_WAIT_MAX_S",
+          "session limit",
           "worktrail",
           "task",
           "orchestration",
@@ -259,7 +262,10 @@
           "workqueue",
           "router"
         ],
-        "intentPatterns": []
+        "intentPatterns": [
+          "(create|update|fix|add|modify|change|debug|refactor|implement|build).*session limit",
+          "session limit.*(create|update|fix|add|modify|change|debug|refactor|implement|build)"
+        ]
       }
     }
   }
