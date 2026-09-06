@@ -1,3 +1,4 @@
+import contextlib
 import json
 import threading
 import time
@@ -1349,10 +1350,8 @@ def test_weekly_limit_spawn_records_provider_derived_gate(tmp_path, monkeypatch)
         )(),
     )
 
-    try:
+    with contextlib.suppress(Exception):
         spawnlib.spawn_agent("prompt", tmp_path, tier="t2-build", sleep=lambda *_: None)
-    except Exception:
-        pass
 
     state = agent_capacity.load(path)["providers"]["claude:sonnet"]
     assert state["failure_class"] == "billing"
