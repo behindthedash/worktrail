@@ -549,6 +549,28 @@ class MergeStateGuardTests(unittest.TestCase):
         self.assertEqual(result, {})
 
 
+class PrIsMergedTests(unittest.TestCase):
+    def test_nonzero_exit_returns_false(self) -> None:
+        runner = FakeRun().script("gh", "pr", "view", "5", returncode=1)
+        self.assertFalse(land_pr._pr_is_merged(Path("/repo"), 5, runner))
+
+    def test_malformed_json_returns_false(self) -> None:
+        runner = FakeRun().script("gh", "pr", "view", "5", stdout="not json")
+        self.assertFalse(land_pr._pr_is_merged(Path("/repo"), 5, runner))
+
+    def test_open_state_returns_false(self) -> None:
+        runner = FakeRun().script(
+            "gh", "pr", "view", "5", stdout=json.dumps({"state": "OPEN"})
+        )
+        self.assertFalse(land_pr._pr_is_merged(Path("/repo"), 5, runner))
+
+    def test_merged_state_returns_true(self) -> None:
+        runner = FakeRun().script(
+            "gh", "pr", "view", "5", stdout=json.dumps({"state": "MERGED"})
+        )
+        self.assertTrue(land_pr._pr_is_merged(Path("/repo"), 5, runner))
+
+
 class EnsureRunRecordTests(unittest.TestCase):
     def test_existing_run_path_is_reused(self) -> None:
         spy = RunRecordSpy()
@@ -595,6 +617,7 @@ class LandPrOrchestrationTests(unittest.TestCase):
             },
             "_merge_state_guard": {"state": "OPEN", "mergeStateStatus": "CLEAN"},
             "_review_thread_gate": {"checked": True, "blocking": False},
+            "_pr_is_merged": False,
         }
         defaults.update(overrides)
         patchers = [
@@ -690,6 +713,67 @@ class LandPrOrchestrationTests(unittest.TestCase):
         finish_calls = spy.finish_calls()
         self.assertEqual(len(finish_calls), 1)
         self.assertIn("failed_recoverable", finish_calls[0])
+
+    def test_budget_exhausted_but_pr_merged_lands(self) -> None:
+        request = _land_request()
+        outcome, spy = self._run(
+            request,
+            _watch_ci={
+                "settled": False,
+                "failing_checks": ["unit-tests"],
+                "log_excerpt": "boom",
+                "budget_exhausted": True,
+            },
+            _pr_is_merged=True,
+            _merge_state_guard={"state": "MERGED", "mergeStateStatus": "CLEAN"},
+        )
+        self.assertEqual(outcome.outcome, "landed")
+        self.assertEqual(outcome.final_status, "completed_and_merged")
+        finish_calls = spy.finish_calls()
+        self.assertEqual(len(finish_calls), 1)
+        self.assertIn("completed_and_merged", finish_calls[0])
+        self.assertIn("merged externally", finish_calls[0])
+
+    def test_budget_exhausted_pr_merged_but_review_thread_blocks(self) -> None:
+        request = _land_request()
+        outcome, spy = self._run(
+            request,
+            _watch_ci={
+                "settled": False,
+                "failing_checks": ["unit-tests"],
+                "log_excerpt": "boom",
+                "budget_exhausted": True,
+            },
+            _pr_is_merged=True,
+            _merge_state_guard={"state": "MERGED", "mergeStateStatus": "CLEAN"},
+            _review_thread_gate={
+                "checked": True,
+                "blocking": True,
+                "unaddressed": ["thread-1"],
+            },
+        )
+        self.assertEqual(outcome.outcome, "review_threads_blocking")
+        self.assertEqual(spy.finish_calls(), [])
+
+    def test_budget_exhausted_pr_not_merged_still_finishes_failed_recoverable(
+        self,
+    ) -> None:
+        request = _land_request()
+        outcome, spy = self._run(
+            request,
+            _watch_ci={
+                "settled": False,
+                "failing_checks": ["unit-tests"],
+                "log_excerpt": "boom",
+                "budget_exhausted": True,
+            },
+            _pr_is_merged=False,
+        )
+        self.assertEqual(outcome.outcome, "ceiling")
+        self.assertEqual(outcome.final_status, "failed_recoverable")
+        finish_calls = spy.finish_calls()
+        self.assertEqual(len(finish_calls), 1)
+        self.assertIn("checks still pending at watch budget", finish_calls[0])
 
     def test_merged_state_finishes_completed_and_merged(self) -> None:
         request = _land_request()

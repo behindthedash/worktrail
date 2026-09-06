@@ -37,7 +37,7 @@
 
 ## 2. Ceiling-exit PR re-check in land_pr
 
-- [ ] 2.1 In `src/worktrail/router/land_pr.py`, add a module-level
+- [x] 2.1 In `src/worktrail/router/land_pr.py`, add a module-level
       `_pr_is_merged(repo, pr_number, runner) -> bool` that runs `gh pr view <n> --json state`
       via `_gh` and returns `True` only when the call succeeds, parses, and `state == "MERGED"`.
       In `land_pr()`'s `if watch["budget_exhausted"]:` branch, before finishing the run record,
