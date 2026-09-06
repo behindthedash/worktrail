@@ -1281,6 +1281,23 @@ def test_lenient_reset_accepts_at_and_minute_and_spaced_meridiem():
     b = agent_capacity.parse_explicit_reset("resets 3:00 PM", now)
 
     assert a is not None and b is not None and a == b
+    local_now = now.astimezone()
+    expected = local_now.replace(hour=15, minute=0, second=0, microsecond=0)
+    if expected <= local_now:
+        expected += timedelta(days=1)
+    assert a == expected.astimezone(timezone.utc)
+
+
+def test_lenient_reset_matches_capitalised_wording():
+    tz = _pacific()
+    now = datetime(2026, 8, 5, 9, 0, tzinfo=tz)
+
+    assert agent_capacity.parse_explicit_reset(
+        "Resets 2pm (America/Los_Angeles)", now
+    ) == datetime(2026, 8, 5, 14, 0, tzinfo=tz).astimezone(timezone.utc)
+    assert agent_capacity.parse_explicit_reset(
+        "RESETS AT 3:00PM (America/Los_Angeles)", now
+    ) == datetime(2026, 8, 5, 15, 0, tzinfo=tz).astimezone(timezone.utc)
 
 
 def test_lenient_reset_falls_back_to_local_time_without_usable_zone():

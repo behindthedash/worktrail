@@ -409,6 +409,7 @@ _EXPLICIT_RESET_RE = re.compile(
 _LENIENT_RESET_RE = re.compile(
     r"resets(?:\s+at)?\s+(\d{1,2})(?::(\d{2}))?\s*([AaPp])\.?[Mm]\.?"
     r"(?:\s*\(([^)]*)\))?",
+    re.IGNORECASE,
 )
 
 # Same bound and value as spawnlib's _SESSION_LIMIT_NOTICE_MAX_CHARS: a genuine
@@ -471,7 +472,7 @@ def _parse_lenient_reset(text: str, now: datetime | None) -> datetime | None:
             from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
             tz = ZoneInfo(zone_label.strip())
-        except (ZoneInfoNotFoundError, ValueError, KeyError, ImportError):
+        except (ZoneInfoNotFoundError, ValueError, KeyError):
             tz = None
 
     now = now or _now()
