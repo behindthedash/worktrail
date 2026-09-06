@@ -173,3 +173,48 @@ Next: file a Route F/G brief for Option B (behavior gap in an already-shipped
 mechanism — the existing gate silently drops fallback coverage it clearly
 intends to provide, per its own docstring's precedence rules) rather than
 continuing this Route A run into implementation.
+
+---
+
+## Addendum (2026-09-06) — both options overtaken by the target selector
+
+Re-read against current `main` while diagnosing a per-model subscription cap
+(Claude's Fable allowance metering separately from the rest of the plan).
+Two of this discovery's load-bearing findings no longer describe the code:
+
+- **Option B's premise is gone.** `effective_fallback = fallback if agent ==
+  self.agent else None` no longer exists — `grep -n effective_fallback
+  src/worktrail/orchestrator/live.py` returns nothing. The agent-level
+  fallback chain it gated was replaced wholesale by the target selector:
+  `select_cell()` (`src/worktrail/runtime/selection.py:339-411`) walks a tier
+  row across `routing.targets` in file order and serves the first cell that
+  isn't capacity-gated. Tier/role-pinned spawns therefore no longer have
+  "zero fallback of any kind" — the row itself *is* the fallback chain
+  (`spawnlib.py:953`).
+- **Option C's goal is reachable with zero new schema.** The deferred ask was
+  a `fallback_model` field so a spawn could "stay on the cheap agent, just
+  change model," preserving cost intent. Declaring two targets on the same
+  harness and pool does exactly that today: a tier row holds one cell per
+  *target*, so a second target is what gives the row a second rung on the
+  same CLI, and `provider_key(target, model)`
+  (`src/worktrail/orchestrator/agent_capacity.py:83`) makes each rung an
+  independently gated cell. `gate_for_agent()` (`:227-231`) already collects
+  *all* targets matching a harness, so the front door's adapter path handles
+  it too.
+
+Verified 2026-09-06 against the live operator config by simulating gates
+through `select_cell`: with both rungs healthy the first serves; with rung 1
+gated the same-harness rung 2 serves; with both gated selection leaves the
+harness for the next target in the row. No code path needed changing.
+
+**Status: superseded — no implementation to schedule.** The remaining real
+gap in this area is unrelated to fallback shape: `_EXPLICIT_RESET_RE`
+(`agent_capacity.py:352-357`) parses only Codex's `try again at <date>`
+wording, so a Claude cap's stated reset is lost and the gate falls back to
+`DEFAULT_COOLDOWNS['billing'] = 3600` — a week-long cap re-opens hourly and
+re-burns a spawn each time. Tracked in brief
+`20260905-222317-claude-capacity-reset-parsing-and`; the call site that
+consumes the parsed value is owned by the active change
+`agent-capacity-gate-liveness-reprobe`. The intra-harness ladder above
+limits the blast radius of that bug (each retry falls through to the next
+rung) but does not fix it.
