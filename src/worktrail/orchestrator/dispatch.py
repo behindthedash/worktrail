@@ -827,6 +827,13 @@ def build_group_prompt(role: str, group: dict[str, Any], ctx: dict[str, Any]) ->
                 "  2. Resolve every conflict MINIMALLY, preserving the intent of BOTH "
                 "sides (the base advanced; keep your group's changes and the base's)."
             ),
+            (
+                '     A path the base DELETED stays deleted -- "preserving both sides" '
+                "NEVER means restoring or recreating a file the base branch removed. That "
+                "is doubly true for a path outside this group's own declared task scope "
+                "(e.g. another OpenSpec/devkit change directory): if the base deleted it, "
+                "leave it deleted and do not re-add it in the merge commit."
+            ),
             "  3. Run the affected tests/build to confirm nothing regressed.",
             f"  4. Commit the merge and `git push {remote} {gb}`.",
         ]
