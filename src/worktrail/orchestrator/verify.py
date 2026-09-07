@@ -236,14 +236,20 @@ def _make_live_spawn(
 
     def spawn(prompt: str, worktree_path: Path) -> str:
         extra_args = ["--setting-sources", "project,local"] if agent == "claude" else []
-        return spawnlib.spawn_agent(
-            prompt,
-            worktree_path,
-            tier=DEFAULT_TIER,
-            prefer=agent,
-            timeout=timeout,
-            extra_args=extra_args,
-            log=lambda m: print(m, file=sys.stderr),
+        # An exhausted spawn's `.text` is the provider's capacity notice, not a
+        # worker answer: fail closed here rather than handing it to
+        # `parse_report_back` as if the worker had spoken (design D4).
+        return spawnlib.raise_if_exhausted(
+            spawnlib.spawn_agent(
+                prompt,
+                worktree_path,
+                tier=DEFAULT_TIER,
+                prefer=agent,
+                timeout=timeout,
+                extra_args=extra_args,
+                log=lambda m: print(m, file=sys.stderr),
+            ),
+            context="group worker",
         ).text
 
     return spawn
@@ -882,6 +888,14 @@ class Verifier:
         pre_status = self.pr_status(gb)
         try:
             raw = spawn_fn(prompt, wt)
+        except spawnlib.SpawnExhausted as e:
+            # NOT a strike (unlike the timeout below): no cell had capacity, so
+            # no worker ever ran and there is nothing to salvage or blame.
+            # Propagates to `ensure_mergeable`/`wait_and_fix_ci`, which report a
+            # capacity-blocked outcome; re-raised only to name the role.
+            raise spawnlib.SpawnExhausted(
+                f"{role} group worker", e.failure_class
+            ) from e
         except subprocess.TimeoutExpired:
             self.log(f"    {role} worker timed out — treating as strike failure")
             self._salvage_uncommitted(role, wt, gb)
@@ -1031,6 +1045,20 @@ class Verifier:
     # waiting" from an ordinary still-pending-checks poll or a genuine timeout.
     _CONFLICTING_MID_CI_WAIT = "__conflicting_mid_ci_wait__"
 
+    def _capacity_blocked(
+        self, group: dict[str, Any], e: spawnlib.SpawnExhausted
+    ) -> str:
+        """Log a group-worker capacity block and return its outcome reason.
+
+        Deliberately not worded as a worker failure: no strike is spent and no
+        worker is blamed, so a later reader can tell "we ran out of capacity"
+        apart from "a worker could not do the job" (design D4)."""
+        self.log(
+            f"    [{group['name']}] capacity blocked "
+            f"({e.failure_class or 'unknown'}) -- {e}; no strike spent"
+        )
+        return f"capacity blocked: {e}"
+
     def ensure_mergeable(self, group: dict[str, Any], gb: str) -> tuple[bool, str]:
         """Drive the resolve loop until the PR is mergeable or strikes run out."""
         for strike in range(self.max_strikes):
@@ -1044,7 +1072,13 @@ class Verifier:
                     f"-- spawning resolve worker (strike {strike + 1}/"
                     f"{self.max_strikes})"
                 )
-                if not self._spawn_group_worker(dispatch.ROLE_RESOLVE, group, gb, {}):
+                try:
+                    ok_resolve = self._spawn_group_worker(
+                        dispatch.ROLE_RESOLVE, group, gb, {}
+                    )
+                except spawnlib.SpawnExhausted as e:
+                    return False, self._capacity_blocked(group, e)
+                if not ok_resolve:
                     return False, "resolve worker failed"
                 continue
             # MERGEABLE or UNKNOWN (GitHub still computing) -> proceed; CI gate and
@@ -1071,7 +1105,13 @@ class Verifier:
                     f"mid-CI-wait -- spawning resolve worker (strike {strike + 1}/"
                     f"{self.max_strikes})"
                 )
-                if not self._spawn_group_worker(dispatch.ROLE_RESOLVE, group, gb, {}):
+                try:
+                    ok_resolve = self._spawn_group_worker(
+                        dispatch.ROLE_RESOLVE, group, gb, {}
+                    )
+                except spawnlib.SpawnExhausted as e:
+                    return False, self._capacity_blocked(group, e)
+                if not ok_resolve:
                     return False, "resolve worker failed"
                 continue
             if failing is None:
@@ -1108,16 +1148,19 @@ class Verifier:
                 f"-- spawning ci-fix worker (strike {strike + 1}/"
                 f"{self.max_strikes})"
             )
-            ok_fix = self._spawn_group_worker(
-                dispatch.ROLE_CI_FIX,
-                group,
-                gb,
-                {
-                    "failing_checks": names,
-                    "failure_log": log,
-                    "pre_commit_cmd": self.pre_commit_cmd,
-                },
-            )
+            try:
+                ok_fix = self._spawn_group_worker(
+                    dispatch.ROLE_CI_FIX,
+                    group,
+                    gb,
+                    {
+                        "failing_checks": names,
+                        "failure_log": log,
+                        "pre_commit_cmd": self.pre_commit_cmd,
+                    },
+                )
+            except spawnlib.SpawnExhausted as e:
+                return False, self._capacity_blocked(group, e)
             if not ok_fix:
                 # A failed or timed-out ci-fix attempt is one strike, not the end
                 # of the loop: re-poll CI (a salvaged partial commit may already
