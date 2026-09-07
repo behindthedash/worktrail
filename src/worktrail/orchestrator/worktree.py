@@ -153,8 +153,53 @@ class WorktreeManager:
         )
         return path
 
+    def _git_in(self, cwd: Path, *args: str) -> str:
+        """Run a git command inside `cwd` (a task worktree), same semantics as `_git`."""
+        cmd = ["git", "-C", str(cwd), *args]
+        printable = " ".join(cmd)
+        self.log.append(printable)
+        if self.dry_run:
+            print(f"DRY-RUN $ {printable}")
+            return ""
+        proc = (
+            self.runner(cmd)
+            if self.runner
+            else subprocess.run(cmd, check=False, capture_output=True, text=True)
+        )
+        if proc.returncode != 0:
+            raise WorktreeError(f"`{printable}` failed: {(proc.stderr or '').strip()}")
+        return (proc.stdout or "").strip()
+
+    def _salvage(self, task_id: str, path: Path) -> None:
+        """Best-effort commit of uncommitted tracked work before teardown.
+
+        Untracked files are deliberately ignored (`--untracked-files=no`): they
+        are usually build output, not work worth carrying on the task branch.
+        Any failure here is logged and swallowed -- teardown must proceed.
+        """
+        try:
+            status = self._git_in(path, "status", "--porcelain", "--untracked-files=no")
+            if not status.strip():
+                return
+            branch = task_branch(self.spec_id, task_id)
+            self._git_in(path, "add", "-u")
+            self._git_in(
+                path, "commit", "-m", f"wip: salvage uncommitted work for {task_id}"
+            )
+            note = (
+                f"salvage: worktree for {task_id} held uncommitted work; "
+                f"committed onto branch {branch}"
+            )
+            self.log.append(note)
+            print(note)
+        except Exception as exc:  # noqa: BLE001 -- salvage must never block teardown
+            note = f"salvage: failed for {task_id}: {exc}"
+            self.log.append(note)
+            print(note)
+
     def remove(self, task_id: str, force: bool = True) -> None:
         path = worktree_path(self.worktree_base, self.spec_id, task_id)
+        self._salvage(task_id, path)
         args = ["worktree", "remove", str(path)]
         if force:
             args.append("--force")
