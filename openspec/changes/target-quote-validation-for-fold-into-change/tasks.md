@@ -1,6 +1,6 @@
 ## 1. fold-into-change requires and re-verifies a grounded target_quote (`Evidence-required verdict per brief`)
 
-- [ ] 1.1 Implement requirement: In `src/worktrail/workqueue/queue_triage.py`:
+- [x] 1.1 Implement requirement: In `src/worktrail/workqueue/queue_triage.py`:
       - Add `target_quote: str | None = None` to `Verdict` (beside `target_change`), with a
         docstring note mirroring `refuted_span`'s.
       - Add module-level `_MIN_TARGET_QUOTE_LEN = 12` beside `_MIN_REFUTED_SPAN_LEN`, with a

@@ -15,7 +15,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from unittest import mock
 
 from worktrail.router.land_pr import LandOutcome
@@ -400,6 +400,7 @@ class TestParseVerdicts(unittest.TestCase):
         raw = (
             '{"brief_id": "a", "verdict": "fold-into-change", "duplicate_of": null, '
             '"target_change": "widget-export-pipeline", '
+            '"target_quote": "serializer for downstream reporting", '
             '"evidence": "overlaps open tasks in widget-export-pipeline", '
             '"confidence": "high"}'
         )
@@ -410,12 +411,14 @@ class TestParseVerdicts(unittest.TestCase):
         v = verdicts[0]
         self.assertEqual(v.verdict, "fold-into-change")
         self.assertEqual(v.target_change, "widget-export-pipeline")
+        self.assertEqual(v.target_quote, "serializer for downstream reporting")
         self.assertEqual(v.evidence, "overlaps open tasks in widget-export-pipeline")
 
     def test_fold_into_change_target_outside_candidate_list_downgrades_to_keep(self):
         snippet = (
             '{"brief_id": "a", "verdict": "fold-into-change", "duplicate_of": null, '
             '"target_change": "not-a-presented-candidate", '
+            '"target_quote": "serializer for downstream reporting", '
             '"evidence": "looks related", "confidence": "medium"}'
         )
         raw = f"analysis before verdict\n{snippet}\nanalysis after verdict"
@@ -432,6 +435,7 @@ class TestParseVerdicts(unittest.TestCase):
         snippet = (
             '{"brief_id": "a", "verdict": "fold-into-change", "duplicate_of": null, '
             '"target_change": "widget-export-pipeline", '
+            '"target_quote": "serializer for downstream reporting", '
             '"evidence": "looks related", "confidence": "medium"}'
         )
         raw = f"analysis before verdict\n{snippet}\nanalysis after verdict"
@@ -635,6 +639,7 @@ class TestParseVerdicts(unittest.TestCase):
         snippet = (
             '{"brief_id": "a", "verdict": "fold-into-change", "duplicate_of": null, '
             '"target_change": "widget-export-pipeline", '
+            '"target_quote": "serializer for downstream reporting", '
             '"evidence": "looks related", "confidence": "medium"}'
         )
         raw = f"analysis before verdict\n{snippet}\nanalysis after verdict"
@@ -1853,6 +1858,7 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
             evidence="overlaps open tasks in widget-export-pipeline",
             confidence="high",
             target_change=self.target_change,
+            target_quote="Existing rationale.",
             repo=str(self.repo),
         )
         self.branch = qt._planned_fold_propose_branch(self.verdict)
@@ -2056,6 +2062,7 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
             ),
             confidence="high",
             target_change=self.target_change,
+            target_quote="Existing rationale.",
             repo=str(self.repo),
         )
         run = self._dispatcher()
@@ -2094,6 +2101,94 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
         proposal_text = (change_dir / "proposal.md").read_text(encoding="utf-8")
         self.assertIn(multiline.evidence, proposal_text)
 
+    # 1.1: apply-time `target_quote` re-check -- `prepare()` verifies the quote
+    # against the target change's live `proposal.md`/`tasks.md` and fails closed
+    # (no edits, no commit/push/PR) when it is absent.
+
+    def _fold_with_quote(self, quote: str | None) -> list[dict]:
+        verdict = qt.Verdict(
+            brief_id="a",
+            verdict="fold-into-change",
+            duplicate_of=None,
+            evidence="overlaps open tasks in widget-export-pipeline",
+            confidence="high",
+            target_change=self.target_change,
+            target_quote=quote,
+            repo=str(self.repo),
+        )
+        run = self._dispatcher()
+        land_outcome = LandOutcome(
+            outcome="landed",
+            pr_url="https://github.com/acme/widgets/pull/42",
+            pr_number=42,
+            labels=["go:risk-low"],
+            run=None,
+            final_status="completed_pr_open",
+        )
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+            ),
+            mock.patch(
+                "worktrail.workqueue.queue_triage.land_pr", return_value=land_outcome
+            ),
+        ):
+            return qt.apply_verdicts([verdict], confirm=True)
+
+    def test_target_quote_found_in_proposal_md_edits_the_change(self):
+        log = self._fold_with_quote("Existing rationale.")
+
+        self.assertEqual(log[0]["status"], "executed", log[0])
+        change_dir = self.worktree_dir / "openspec" / "changes" / self.target_change
+        self.assertIn(
+            "## Folded from a",
+            (change_dir / "proposal.md").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "## 2. Folded from a",
+            (change_dir / "tasks.md").read_text(encoding="utf-8"),
+        )
+
+    def test_target_quote_found_only_in_tasks_md_edits_the_change(self):
+        log = self._fold_with_quote("1.1 Existing task")
+
+        self.assertEqual(log[0]["status"], "executed", log[0])
+
+    def test_target_quote_absent_from_both_files_fails_closed(self):
+        log = self._fold_with_quote("nowhere in either of those files")
+
+        entry = log[0]
+        self.assertEqual(entry["status"], "error")
+        self.assertIn("target_quote", entry["error"])
+        self.assertIn("not found verbatim", entry["error"])
+
+        change_dir = self.worktree_dir / "openspec" / "changes" / self.target_change
+        self.assertNotIn(
+            "Folded from a", (change_dir / "proposal.md").read_text(encoding="utf-8")
+        )
+        self.assertNotIn(
+            "Folded from a", (change_dir / "tasks.md").read_text(encoding="utf-8")
+        )
+        self.assertFalse(
+            any(cmd[:2] == ["git", "commit"] for cmd in self.seen), self.seen
+        )
+        # the brief itself is untouched -- still queued
+        self.assertIn("status: queued", self.brief_path.read_text(encoding="utf-8"))
+
+    def test_missing_target_quote_fails_closed_at_apply(self):
+        log = self._fold_with_quote(None)
+
+        self.assertEqual(log[0]["status"], "error")
+        self.assertIn("target_quote", log[0]["error"])
+
+    def test_short_target_quote_fails_closed_even_if_present_verbatim(self):
+        """`prepare()` re-applies the length floor, not just the substring
+        check -- a 6-character quote really is in `proposal.md`."""
+        log = self._fold_with_quote("Widget")
+
+        self.assertEqual(log[0]["status"], "error")
+        self.assertIn("target_quote", log[0]["error"])
+
     def _fold_with_evidence(self, evidence: str, *, seed_files: list[str]) -> str:
         """Run one fold whose `git worktree add` also seeds `seed_files` in the
         worktree, returning the resulting `tasks.md` text."""
@@ -2105,6 +2200,7 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
             evidence=evidence,
             confidence="high",
             target_change=self.target_change,
+            target_quote="Existing rationale.",
             repo=str(self.repo),
         )
         run = self._dispatcher()
@@ -2766,6 +2862,7 @@ class TestApplyRepoResolution(QueueTriageTestBase):
             evidence="overlaps open tasks in widget-export-pipeline",
             confidence="high",
             target_change=self.target_change,
+            target_quote="Existing rationale.",
             repo=repo,
         )
 
@@ -5733,3 +5830,111 @@ class TestApplyNeedsUpdateRewrite(QueueTriageTestBase):
         self.assertEqual(preview["status"], "planned")
         self.assertNotIn("routed_to", preview)
         self.assertNotIn("planned_rewrite", preview)
+
+
+class TestFoldTargetQuoteValidation(QueueTriageTestBase):
+    """1.1: `fold-into-change` must carry a `target_quote` -- at least
+    `_MIN_TARGET_QUOTE_LEN` characters -- gated at parse time by
+    `_has_valid_target()` and re-checked verbatim against the target's live
+    `proposal.md`/`tasks.md` before `_apply_fold_into_change()` writes anything.
+    """
+
+    CANDIDATES: ClassVar[list[str]] = ["widget-export-pipeline"]
+
+    def _valid_target(self, obj: dict) -> bool:
+        return qt._has_valid_target(
+            "fold-into-change", obj, None, self.CANDIDATES, None
+        )
+
+    def test_missing_target_quote_is_not_a_valid_target(self):
+        self.assertFalse(self._valid_target({"target_change": self.CANDIDATES[0]}))
+
+    def test_empty_target_quote_is_not_a_valid_target(self):
+        self.assertFalse(
+            self._valid_target(
+                {"target_change": self.CANDIDATES[0], "target_quote": ""}
+            )
+        )
+
+    def test_short_target_quote_is_not_a_valid_target(self):
+        short = "x" * (qt._MIN_TARGET_QUOTE_LEN - 1)
+        self.assertFalse(
+            self._valid_target(
+                {"target_change": self.CANDIDATES[0], "target_quote": short}
+            )
+        )
+
+    def test_target_quote_at_the_floor_is_a_valid_target(self):
+        """The floor is inclusive: exactly `_MIN_TARGET_QUOTE_LEN` passes."""
+        self.assertTrue(
+            self._valid_target(
+                {
+                    "target_change": self.CANDIDATES[0],
+                    "target_quote": "x" * qt._MIN_TARGET_QUOTE_LEN,
+                }
+            )
+        )
+
+    def test_quote_without_a_presented_candidate_is_still_invalid(self):
+        self.assertFalse(
+            self._valid_target(
+                {
+                    "target_change": "not-a-presented-candidate",
+                    "target_quote": "serializer for downstream reporting",
+                }
+            )
+        )
+
+    def test_parse_verdicts_populates_target_quote(self):
+        raw = (
+            '{"brief_id": "a", "verdict": "fold-into-change", "duplicate_of": null, '
+            '"target_change": "widget-export-pipeline", '
+            '"target_quote": "serializer for downstream reporting", '
+            '"evidence": "overlaps its serializer task", "confidence": "high"}'
+        )
+        v = qt.parse_verdicts(raw, ["a"], candidates_by_brief={"a": self.CANDIDATES})[0]
+
+        self.assertEqual(v.verdict, "fold-into-change")
+        self.assertEqual(v.target_quote, "serializer for downstream reporting")
+
+    def test_parse_verdicts_downgrades_missing_target_quote_to_keep(self):
+        snippet = (
+            '{"brief_id": "a", "verdict": "fold-into-change", "duplicate_of": null, '
+            '"target_change": "widget-export-pipeline", '
+            '"evidence": "overlaps its serializer task", "confidence": "high"}'
+        )
+        raw = f"analysis before verdict\n{snippet}\nanalysis after verdict"
+        v = qt.parse_verdicts(raw, ["a"], candidates_by_brief={"a": self.CANDIDATES})[0]
+
+        self.assertEqual(v.verdict, "keep")
+        self.assertIsNone(v.target_quote)
+        self.assertEqual(v.evidence, snippet)
+
+    def test_parse_verdicts_downgrades_short_target_quote_to_keep(self):
+        snippet = (
+            '{"brief_id": "a", "verdict": "fold-into-change", "duplicate_of": null, '
+            '"target_change": "widget-export-pipeline", '
+            '"target_quote": "too short", '
+            '"evidence": "overlaps its serializer task", "confidence": "high"}'
+        )
+        raw = f"analysis before verdict\n{snippet}\nanalysis after verdict"
+        v = qt.parse_verdicts(raw, ["a"], candidates_by_brief={"a": self.CANDIDATES})[0]
+
+        self.assertEqual(v.verdict, "keep")
+        self.assertIsNone(v.target_quote)
+        self.assertEqual(v.evidence, snippet)
+
+    def test_prompt_step_2a_requires_a_verbatim_target_quote(self):
+        prompt = qt.EVALUATOR_PROMPT_TEMPLATE.format(
+            repo="widgets",
+            briefs="",
+            no_repo_key=qt.NO_REPO_KEY,
+            memory_index="MEMORY.md",
+            propose_target_rule="",
+        )
+        self.assertIn("must also set `target_quote`", prompt)
+        self.assertIn("at least 12 characters copied", prompt)
+        self.assertIn("*verbatim*", prompt)
+        self.assertIn("proposal.md`/`tasks.md`, which you", prompt)
+        # the per-brief JSON output shape lists it too
+        self.assertIn('"target_quote": "<>=12 characters copied', prompt)
