@@ -885,3 +885,104 @@ def test_openspec_propose_tasks_artifact_documents_decomposition_rules():
 
     assert "review: skip" in text
     assert "executable behavior never" in text
+
+
+def test_compile_gate_documents_failure_recovery():
+    """`worktrail-compile` is a hard pre-launch gate, but its failure sites used
+    to say only "inspect the error above before retrying full-real" (or, in
+    sdd-workflow, name the scope-gap remedy alone). Neither is an action for a
+    plan-shape or coverage rejection, and an unchanged re-run cannot resolve
+    those -- so the documented recovery was "retry", which is guaranteed to fail
+    again. This pins the `#compile-gate` section that replaced it: it lives
+    under `#orchestrator-gates` beside the other gates, names a recovery per
+    failure class, carries the unattended `$AUTO_MODE` branch, and is cited from
+    every site that actually runs `worktrail-compile`.
+    """
+    subagent_doc = SKILLS_DIR / "worktrail-go" / "references" / "subagent-prompts.md"
+    pipeline_doc = (
+        SKILLS_DIR / "worktrail-sdd-workflow" / "references" / "pipeline-details.md"
+    )
+    subagent = subagent_doc.read_text()
+    pipeline = pipeline_doc.read_text()
+
+    # 1. The anchor exists, and inside the gates section -- not loose elsewhere.
+    assert "{#compile-gate}" in subagent, (
+        "subagent-prompts.md has no `{#compile-gate}` section for compile "
+        "failure recovery"
+    )
+    sections = _h2_sections(subagent)
+    gates_heading = "## Orchestrator pre-launch gates {#orchestrator-gates}"
+    gates = sections[gates_heading]
+    assert "{#compile-gate}" in gates, (
+        "`{#compile-gate}` is defined outside the `#orchestrator-gates` h2 "
+        "section -- it is a pre-launch gate and must sit with the others"
+    )
+
+    # The gate's own body: from its heading to the next h3 (or end of section).
+    start = gates.index("{#compile-gate}")
+    rest = gates[start:]
+    next_h3 = re.search(r"\n### ", rest)
+    gate = rest[: next_h3.start()] if next_h3 else rest
+
+    # 2. Every D1 failure class names a recovery in that body.
+    classes = {
+        "plan shape": ["plan shape", "plan-shape"],
+        "no file scope": ["file scope"],
+        "unordered file collision": ["unordered", "collision"],
+        "uncovered requirement": ["uncovered", "requirement"],
+        "bad spec path / not a git repo": ["git repo"],
+        "refused --force over active worktrees": ["--force"],
+        "exit-0 degraded plan": ["note:"],
+    }
+    missing = [
+        name for name, needles in classes.items() if not all(n in gate for n in needles)
+    ]
+    assert not missing, (
+        f"`#compile-gate` documents no recovery for failure classes: {missing}"
+    )
+
+    # 3. The unattended branch, matching the PR #290 pattern.
+    assert "$AUTO_MODE" in gate and "blocked_product_decision" in gate, (
+        "`#compile-gate` has no `$AUTO_MODE=true` branch blocking with "
+        "`blocked_product_decision`"
+    )
+    assert "picked/" in gate, (
+        "the `#compile-gate` auto-mode branch must leave the brief claimed in "
+        "`picked/`, like the other route-execution fallbacks"
+    )
+
+    # 4. The shared fallback contract indexes this site.
+    fallbacks = sections[
+        "## Auto-mode ask fallbacks (route execution) {#auto-mode-ask-fallbacks}"
+    ]
+    assert "#compile-gate" in fallbacks, (
+        "`#auto-mode-ask-fallbacks` has no `#compile-gate` bullet beside the "
+        "`#precheck-gate` one"
+    )
+
+    # 5. The retry-shaped guidance is gone from the whole skill bundle.
+    offenders = [
+        str(p.relative_to(SKILLS_DIR))
+        for p in SKILLS_DIR.rglob("*.md")
+        if "inspect the error above before retrying" in p.read_text()
+    ]
+    assert not offenders, (
+        "'inspect the error above before retrying' still appears in "
+        f"{offenders} -- an unchanged re-run cannot resolve a plan-shape or "
+        "coverage rejection"
+    )
+
+    # 6. Every site that actually runs the compile cites the gate.
+    invocation = re.compile(r"^\s*worktrail-compile ", re.MULTILINE)
+    uncited = []
+    for name, text in (
+        ("worktrail-go/references/subagent-prompts.md", subagent),
+        ("worktrail-sdd-workflow/references/pipeline-details.md", pipeline),
+    ):
+        for heading, body in _h2_sections(text).items():
+            if invocation.search(body) and "#compile-gate" not in body:
+                uncited.append(f"{name} :: {heading}")
+    assert not uncited, (
+        "sections running `worktrail-compile` with no `#compile-gate` citation "
+        f"for what to do when it fails: {uncited}"
+    )
