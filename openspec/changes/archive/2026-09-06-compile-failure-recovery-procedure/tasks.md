@@ -35,7 +35,7 @@
 
 ## 2. Enforcement
 
-- [ ] 2.1 In `tests/test_plugin_surface.py`, add
+- [x] 2.1 In `tests/test_plugin_surface.py`, add
       `test_compile_gate_documents_failure_recovery` beside
       `test_route_execution_ask_sites_carry_auto_mode_fallbacks`, reusing that module's
       `_h2_sections` helper (design D5). Assert: `{#compile-gate}` exists and its heading falls
@@ -53,6 +53,6 @@
 
 ## 3. Verification
 
-- [ ] 3.1 [e2e] Run `PYTHONPATH=src pytest -q` and `openspec validate
+- [x] 3.1 [e2e] Run `PYTHONPATH=src pytest -q` and `openspec validate
       compile-failure-recovery-procedure --strict`, and confirm both pass; depends on 2.1.
       Verification-only, no file changes expected.
