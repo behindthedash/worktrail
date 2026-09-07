@@ -1,6 +1,6 @@
 ## 1. Resolve-worker prompt: don't resurrect base deletions
 
-- [ ] 1.1 In `src/worktrail/orchestrator/dispatch.py`, in `build_group_prompt()`'s `ROLE_RESOLVE`
+- [x] 1.1 In `src/worktrail/orchestrator/dispatch.py`, in `build_group_prompt()`'s `ROLE_RESOLVE`
       branch (the `action` list around lines 818-832), add a new bullet after step 2's "Resolve
       every conflict MINIMALLY, preserving the intent of BOTH sides" line, stating explicitly
       that a path the base branch DELETED stays deleted — the worker must not restore or recreate
