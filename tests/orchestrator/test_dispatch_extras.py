@@ -84,6 +84,17 @@ class BuildGroupPromptTests(unittest.TestCase):
         self.assertIn("git fetch", prompt)
         self.assertIn("git push", prompt)
 
+    def test_resolve_prompt_forbids_resurrecting_base_deletions(self):
+        """The resolve brief must say a base-deleted path stays deleted.
+
+        Guards against a resolve worker reading "preserve the intent of BOTH
+        sides" as license to re-add files the base branch deleted -- typically
+        a change directory outside its own task scope.
+        """
+        prompt = dispatch.build_group_prompt(dispatch.ROLE_RESOLVE, _group(), _ctx())
+        self.assertIn("base DELETED stays deleted", prompt)
+        self.assertIn("outside this group's own declared task scope", prompt)
+
     def test_ci_fix_prompt_contains_failing_checks(self):
         ctx = _ctx(
             failing_checks="lint, typecheck",
