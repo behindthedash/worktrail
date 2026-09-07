@@ -20,9 +20,7 @@ actively working that repo — stale lock files probe as free).
 
 1. Read `$DASHBOARD_JSON.auto_pick`. If `auto_pick.pick` is null, report the queue state
    and every `skipped` entry with its reason (see **Skip reasons** below for the full
-   enumeration: `intake-untriaged`, `blocked`, `blocked:malformed-dependency`,
-   `blocked:ambiguous-dependency`, `no-repo`, `repo-missing`, `repo-filter`,
-   `orchestrator-run-active:<lock>`, `release-gate:<name>`), then STOP. Never invent work and never fall back to resuming an in-flight brief — stalled
+   enumeration), then STOP. Never invent work and never fall back to resuming an in-flight brief — stalled
    resumes require judging what a dead session already landed, which stays human-selected.
    `intake-untriaged` briefs (those with `kind: intake` — see work_queue.py's `brief_kind()`)
    are skipped because they require triage evaluation and verdict application via
@@ -43,7 +41,19 @@ actively working that repo — stale lock files probe as free).
    `--auto` and take the fresh pick. After 3 lost primary races, stop and report rather
    than spinning.
 
-### Skip reasons (Phase 2)
+4. If the PRIMARY brief's frontmatter carries `awaiting-decision:` (it re-entered the
+   queue because a human answered a decision an earlier one-shot filed), consume the
+   answer first per `references/decision-queue.md#resume-from-decision` — the `## Answer`
+   is binding, continue the route from the original block point, and `worktrail-decision
+   resolve` the record.
+
+5. Continue Phases 3–8 exactly as for an interactive claim: one classification fed the
+   PRIMARY brief's `recommended-route` via `--handoff-route` (Phase 5) — at low/medium
+   classifier confidence this wins outright over a low-signal organic guess, since auto
+   mode has no human present to catch a bad one — one run record listing every claimed
+   brief id in `handoffs_consumed`, dispatch, CI watch, and per-brief `done`/`release`.
+
+## Skip reasons (Phase 2)
 
 When `auto_pick.pick` is null, report the queue state and every `skipped` entry with one of
 these reasons:
@@ -57,13 +67,13 @@ these reasons:
   decision to be answered.
 
 - `blocked:malformed-dependency` — brief's `blocked-by` list contains a dependency reference
-  with syntax errors (not a string, contains commas, non-empty after stripping whitespace).
+  with syntax errors (not a string, blank after stripping whitespace, or containing a comma).
   **Operator action**: Edit the brief's frontmatter and repair the reference — spell each
   prerequisite as its own `blocked-by` list item.
 
 - `blocked:ambiguous-dependency` — brief's `blocked-by` list contains a reference that
-  matches multiple candidate briefs (e.g., `dep` matches both `20260701-dep-a.md` and
-  `20260701-dep-b.md`). **Operator action**: Edit the brief's frontmatter and disambiguate by
+  matches multiple candidate briefs (e.g., `dep` matches both `dep-autosave.md` and
+  `dep-cleanup.md`). **Operator action**: Edit the brief's frontmatter and disambiguate by
   using the exact brief ID (full filename stem without `.md`), or fix the reference to be
   more specific.
 
@@ -76,24 +86,26 @@ these reasons:
 - `repo-filter` — brief's repo does not match the `--auto-repo` filter. Run `worktrail-go auto`
   for a different repo or without the filter.
 
+- `unparsable-frontmatter` — brief's frontmatter syntax is invalid and cannot be parsed.
+  Repair the frontmatter YAML syntax.
+
+- `not-yet-due` — brief's `start-date` is in the future (if present). Wait until the
+  start date passes.
+
+- `recently-released` — brief was recently completed and released, and is still in the
+  grace period before being removed from the queue. Check the queue again after the grace
+  period expires.
+
+- `remote-spec-branch:<branch>` — brief's spec is stored on a remote branch (not the local
+  default branch). Check out the required spec branch locally or update the brief's spec
+  location.
+
 - `orchestrator-run-active:<lock>` — another session is actively orchestrating this repo (run
   lock held). Wait for the run to complete or investigate the session if it is stalled.
 
 - `release-gate:<name>` — repo's policy sets `release_gate: <name>`, imposing a release freeze.
   Only `triage: blocker` briefs are eligible during the freeze. Handle non-blocker briefs after
   the freeze ends or escalate.
-
-4. If the PRIMARY brief's frontmatter carries `awaiting-decision:` (it re-entered the
-   queue because a human answered a decision an earlier one-shot filed), consume the
-   answer first per `references/decision-queue.md#resume-from-decision` — the `## Answer`
-   is binding, continue the route from the original block point, and `worktrail-decision
-   resolve` the record.
-
-5. Continue Phases 3–8 exactly as for an interactive claim: one classification fed the
-   PRIMARY brief's `recommended-route` via `--handoff-route` (Phase 5) — at low/medium
-   classifier confidence this wins outright over a low-signal organic guess, since auto
-   mode has no human present to catch a bad one — one run record listing every claimed
-   brief id in `handoffs_consumed`, dispatch, CI watch, and per-brief `done`/`release`.
 
 ## Phase 5.5 — collision / already-implemented checks have no ask
 
