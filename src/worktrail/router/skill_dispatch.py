@@ -634,6 +634,11 @@ def inherit_codex_chatgpt_auth(parent_home: Path, child_home: Path) -> None:
         raise OSError("parent CODEX_HOME must not be a symlink")
     if child_home.is_symlink():
         raise OSError("Codex child home must not be a symlink")
+    if parent_home.resolve() == child_home.resolve():
+        raise OSError(
+            "parent and child CODEX_HOME must not be the same directory "
+            "(would unlink and self-symlink the real auth.json)"
+        )
     status = subprocess.run(
         ["codex", "login", "status"],
         cwd=parent_home,

@@ -611,6 +611,30 @@ class CodexHomePreflightTests(unittest.TestCase):
             self.assertEqual((parent / "auth.json").read_bytes(), b'{"tokens":"live"}')
 
     @patch("worktrail.router.skill_dispatch.subprocess.run")
+    def test_auth_inheritance_rejects_identical_parent_and_child_home(self, run):
+        # When the resolved parent and child CODEX_HOME collide, `link` and
+        # `source` are the same path: unlink() deletes the real auth.json and
+        # symlink_to() then replaces it with a symlink pointing at itself,
+        # destroying the credential outright ("Too many levels of symbolic
+        # links" on next read). Confirmed live 2026-09-06. Must raise before
+        # touching the file, never unlink.
+        run.return_value = subprocess.CompletedProcess(
+            [], 0, "Logged in using ChatGPT\n", ""
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            home.mkdir(mode=0o700)
+            secret = b'{"tokens":{"access_token":"do-not-destroy"}}'
+            (home / "auth.json").write_bytes(secret)
+            (home / "auth.json").chmod(0o600)
+
+            with self.assertRaises(OSError):
+                skill_dispatch.inherit_codex_chatgpt_auth(home, home)
+
+            self.assertFalse((home / "auth.json").is_symlink())
+            self.assertEqual((home / "auth.json").read_bytes(), secret)
+
+    @patch("worktrail.router.skill_dispatch.subprocess.run")
     def test_explicit_isolated_mode_does_not_read_or_copy_parent_auth(self, run):
         run.return_value.returncode = 0
         with tempfile.TemporaryDirectory() as tmp:
