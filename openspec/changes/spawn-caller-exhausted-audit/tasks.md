@@ -78,7 +78,7 @@
 
 ## 3. Keep the audit closed
 
-- [ ] 3.1 Add `tests/orchestrator/test_spawn_exhausted_callers.py`: an AST walk over every
+- [x] 3.1 Add `tests/orchestrator/test_spawn_exhausted_callers.py`: an AST walk over every
       `.py` file under `src/worktrail/` collecting every call to `spawn_agent` or
       `spawn_claude_p`, asserting each one's enclosing function either references `exhausted` or
       calls `raise_if_exhausted`, or that the `<module>:<qualname>` site appears in an in-test
@@ -93,6 +93,6 @@
 
 ## 4. Verification
 
-- [ ] 4.1 [e2e] Run `PYTHONPATH=src pytest -q` and
+- [x] 4.1 [e2e] Run `PYTHONPATH=src pytest -q` and
       `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`, and confirm both
       repository gates pass; depends on 3.1. Verification-only, no file changes expected.
