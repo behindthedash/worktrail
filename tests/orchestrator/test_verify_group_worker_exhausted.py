@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """A capacity block costs no group-worker strike (spawn-caller-exhausted-audit 2.2).
 
 An exhausted spawn's text is the provider's capacity notice, not a worker
