@@ -759,8 +759,13 @@ def _pending_impl_stale(
 
 def _pending_openspec_stale(
     change_dir: Path, spec_id: str, tasks: list[dict[str, Any]]
-) -> list[str]:
-    """Ids of pending OpenSpec impl tasks whose cached plan files shipped.
+) -> list[tuple[str, bool]]:
+    """Pending OpenSpec impl tasks whose cached plan files shipped.
+
+    Each entry is `(task_id, symbol_verified)`, where `symbol_verified` is True
+    when the task claimed identifiers and every one of them was found in the
+    declared files -- i.e. the verdict rests on behavior evidence, not just on
+    the files having been touched.
 
     OpenSpec task artifacts do not carry file scope, so this check only trusts a
     RunPlan cached for the change's current fingerprint. A cache miss or a
@@ -790,13 +795,14 @@ def _pending_openspec_stale(
     all_files = sorted({file for task in candidates for file in task["files"]})
     tracked = _git_tracked(repo, all_files)
     since_ts = _dir_creation_timestamp(str(repo), str(change_dir))
-    stale: list[str] = []
+    stale: list[tuple[str, bool]] = []
     for task in candidates:
         if not _task_files_are_shipped(repo, task["files"], tracked, since_ts):
             continue
-        if not _identifiers_present(repo, task["files"], _task_identifiers(task)):
+        identifiers = _task_identifiers(task)
+        if not _identifiers_present(repo, task["files"], identifiers):
             continue
-        stale.append(task["id"])
+        stale.append((task["id"], bool(identifiers)))
     return stale
 
 
@@ -1437,10 +1443,12 @@ def _safe_detect_openspec(change_dir: Path) -> dict[str, Any]:
         spec_id, tasks = _taskformats.load_spec(change_dir)
         pending = [t for t in tasks if t.get("status") != "completed"]
         stale_ids: list[str] = []
+        stale_evidence: str | None = None
         if not tasks:
             stage, next_action = "needs-tasks", "create tasks"
         elif pending:
-            stale_ids = _pending_openspec_stale(change_dir, spec_id, tasks)
+            stale_entries = _pending_openspec_stale(change_dir, spec_id, tasks)
+            stale_ids = [task_id for task_id, _verified in stale_entries]
             pending_impl = [
                 t for t in pending if t.get("kind", "impl") not in _TAIL_KINDS
             ]
@@ -1449,13 +1457,20 @@ def _safe_detect_openspec(change_dir: Path) -> dict[str, Any]:
             )
             if pending_impl and pending_impl_real == 0:
                 suffix = f" ({', '.join(stale_ids)})" if stale_ids else ""
-                stage, next_action = (
-                    "stale-bookkeeping",
-                    (
+                symbol_verified = all(verified for _task_id, verified in stale_entries)
+                stale_evidence = "behavior" if symbol_verified else "files-only"
+                if symbol_verified:
+                    next_action = (
                         f"confirm & close{suffix} (files already merged on base; "
                         "flip task status → completed, no orchestrator)"
-                    ),
-                )
+                    )
+                else:
+                    next_action = (
+                        f"confirm & close{suffix} (file-level evidence only; confirm "
+                        "the behavior actually shipped before flipping task status "
+                        "→ completed, no orchestrator)"
+                    )
+                stage = "stale-bookkeeping"
             else:
                 stage, next_action = "ready-to-implement", "orchestrator"
         elif _journal_verify_pending(change_dir):
@@ -1492,6 +1507,8 @@ def _safe_detect_openspec(change_dir: Path) -> dict[str, Any]:
         }
         if pending and stale_ids:
             info["stale_task_ids"] = stale_ids
+        if stale_evidence is not None:
+            info["stale_evidence"] = stale_evidence
         repo = change_dir.parent.parent.parent
         delta_drift = _openspec_delta_drift(change_dir, repo)
         if delta_drift:
