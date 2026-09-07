@@ -34,7 +34,7 @@ import json
 import re
 import subprocess
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -131,11 +131,107 @@ def _git_repo_root(path: Path) -> Path | None:
 
 
 # --------------------------------------------------------------------------- #
+# Authored prose dependency references
+# --------------------------------------------------------------------------- #
+# A task's authored text can state an ordering constraint the format itself has
+# no field for -- OpenSpec's `tasks.md` in particular, where "; depends on 2.1."
+# at the end of a checklist line is the only place the edge exists. Nothing
+# downstream reads prose, so without this the edge is simply lost: two tasks
+# that share no file look independent to `runnable_frontier` and fan out
+# together. Extraction is deterministic and additive -- it never removes an
+# edge the format or the model already declared.
+_DEPENDS_ON_RE = re.compile(r"\bdepends?\s+on\b", re.IGNORECASE)
+_REF_TOKEN_RE = re.compile(r"\s*([A-Za-z0-9][\w.-]*)")
+# Authors join ids with a comma, an "and", an Oxford ", and", or a slash; each
+# is unambiguous between two id-shaped tokens, so all four advance the scan.
+_REF_SEP_RE = re.compile(r"\s*(?:,\s*(?:and\s+)?|\s+and\s+|\s*/\s*)")
+# A bare "Task"/"Tasks" label in front of an id is not itself a reference.
+_REF_PREFIX_WORDS = frozenset({"task", "tasks"})
+
+
+def extract_prose_dep_refs(text: str) -> list[str]:
+    """Ids named by a "depends on <ids>" sentence in `text`, in authored order.
+
+    Ids may be joined by a comma, an "and", an Oxford ", and", or a slash, and
+    may carry a "Task " label. Otherwise only id-shaped tokens are collected: a
+    token carrying no digit ends the list, so ordinary prose ("depends on the
+    parser landing") yields nothing rather than a bogus reference that would
+    then be reported as unresolvable. A trailing sentence period is stripped --
+    ids contain dots, so the scan cannot simply stop at the first one.
+    """
+    match = _DEPENDS_ON_RE.search(text or "")
+    if not match:
+        return []
+    refs: list[str] = []
+    pos = match.end()
+    while True:
+        token = _REF_TOKEN_RE.match(text, pos)
+        if token and token.group(1).lower() in _REF_PREFIX_WORDS:
+            token = _REF_TOKEN_RE.match(text, token.end())
+        if not token:
+            break
+        ref = token.group(1).rstrip(".")
+        if not ref or not any(c.isdigit() for c in ref):
+            break
+        if ref not in refs:
+            refs.append(ref)
+        pos = token.end()
+        sep = _REF_SEP_RE.match(text, pos)
+        if not sep:
+            break
+        pos = sep.end()
+    return refs
+
+
+def _task_prose(task: Mapping[str, Any]) -> str:
+    return " ".join(
+        str(task.get(field) or "") for field in ("title", "text", "body", "description")
+    )
+
+
+def prose_dep_edges(
+    tasks: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, list[str]], list[str]]:
+    """`{task id: referenced ids}` plus a problem per reference matching no task.
+
+    A self-reference is dropped silently (it is not an edge, and adding one
+    would deadlock the frontier); a reference to an id that is not in the change
+    is a compile problem naming both the referring task and the identifier.
+    """
+    ids = {str(t.get("id")) for t in tasks}
+    edges: dict[str, list[str]] = {}
+    problems: list[str] = []
+    for task in tasks:
+        tid = str(task.get("id"))
+        for ref in extract_prose_dep_refs(_task_prose(task)):
+            if ref == tid:
+                continue
+            if ref not in ids:
+                problems.append(
+                    f"{tid}: prose dependency reference {ref!r} matches no task "
+                    "in the change"
+                )
+                continue
+            edges.setdefault(tid, []).append(ref)
+    return edges, problems
+
+
+def _union_deps(deps: Sequence[str], extra: Sequence[str]) -> tuple[str, ...]:
+    """`deps` plus any of `extra` it does not already carry -- additive only."""
+    merged = list(deps)
+    for d in extra:
+        if d not in merged:
+            merged.append(d)
+    return tuple(merged)
+
+
+# --------------------------------------------------------------------------- #
 # Plans that need no model
 # --------------------------------------------------------------------------- #
 def _plan_from_tasks(
     spec_id: str, fp: str, tasks: Sequence[dict[str, Any]], source: str
 ) -> RunPlan:
+    prose_deps, _ = prose_dep_edges(tasks)
     return RunPlan(
         spec_id=spec_id,
         fingerprint=fp,
@@ -144,7 +240,10 @@ def _plan_from_tasks(
             TaskPlan(
                 id=t["id"],
                 files=tuple(runplan._norm_str_list(t.get("files"))),
-                deps=tuple(runplan._norm_str_list(t.get("deps"))),
+                deps=_union_deps(
+                    runplan._norm_str_list(t.get("deps")),
+                    prose_deps.get(str(t["id"]), ()),
+                ),
                 kind=str(t.get("kind") or ""),
                 complexity=str(t.get("complexity") or ""),
                 review=str(t.get("review") or ""),
@@ -216,6 +315,13 @@ compile-time failure, not a style nit. Where no order exists yet, add a \
 `deps` edge between them -- the later task in authored order depending on \
 the earlier one, unless the tasks' own descriptions demand the opposite \
 order.
+
+Files are not the only source of ordering. Where a task's own text states \
+that it depends on another task -- "depends on 1.2", "after 2.1", or the \
+same in prose -- that stated dependency is a real ordering constraint and \
+must appear in its `deps`, even when the two tasks share no file at all. Do \
+not drop such an edge on the grounds that the tasks touch disjoint files; an \
+authored dependency outranks anything you infer from `files`.
 
 Rules:
 - Every task id above must appear exactly once. Invent no ids.
@@ -306,7 +412,10 @@ def _extract_json(text: str) -> dict[str, Any] | None:
 
 
 def _validate(
-    payload: dict[str, Any], ids: set, purpose_tiers: dict[str, str] | None = None
+    payload: dict[str, Any],
+    ids: set,
+    purpose_tiers: dict[str, str] | None = None,
+    tasks: Sequence[Mapping[str, Any]] | None = None,
 ) -> tuple[list[TaskPlan] | None, list[str], list[str]]:
     """Turn a raw model payload into TaskPlans, or explain why it cannot be trusted.
 
@@ -322,9 +431,15 @@ def _validate(
     Returns `(planned, problems, warnings)`. `problems` non-empty means the
     whole payload is rejected; `warnings` is purely informational and never
     affects the return value of `planned`.
+
+    `tasks` (the authored rows) is what lets the model's `deps` be unioned with
+    the edges stated in each task's prose. Compile is a second path to a plan,
+    so an authored "depends on 2.1" has to survive it exactly as it survives
+    the seed path -- a model that never saw the sentence as a constraint would
+    otherwise silently drop the edge.
     """
     valid_purposes = set(purpose_tiers or {})
-    problems: list[str] = []
+    prose_deps, problems = prose_dep_edges(tasks or [])
     warnings: list[str] = []
     rows = payload.get("tasks")
     if not isinstance(rows, list):
@@ -366,10 +481,13 @@ def _validate(
         seen[tid] = TaskPlan(
             id=tid,
             files=tuple(sorted(set(files))),
-            deps=tuple(
-                d
-                for d in runplan._norm_str_list(row.get("deps"))
-                if d in ids and d != tid
+            deps=_union_deps(
+                [
+                    d
+                    for d in runplan._norm_str_list(row.get("deps"))
+                    if d in ids and d != tid
+                ],
+                prose_deps.get(tid, ()),
             ),
             complexity=str(row.get("complexity") or ""),
             review=str(row.get("review") or ""),
@@ -624,7 +742,7 @@ def compile_run_plan(
         return give_up("compile returned no JSON object; using the artifact's own deps")
 
     planned, problems, purpose_warnings = _validate(
-        payload, {t["id"] for t in tasks}, purpose_tiers
+        payload, {t["id"] for t in tasks}, purpose_tiers, tasks
     )
     for w in purpose_warnings:
         log(f"run plan: {w}")
