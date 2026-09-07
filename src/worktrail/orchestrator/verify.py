@@ -404,6 +404,12 @@ class Verifier:
         # `quarantined`) rather than folding it into the ordinary strike-failure
         # reason -- a landed merge can't be undone by another strike or retry.
         self._self_merge_violations: dict[str, str] = {}
+        # Group name -> violation detail, populated by `_spawn_group_worker`
+        # when a worker's actual pushed diff touches a deny-listed path
+        # (see `_forbidden_paths_touched`). Tracked separately from the
+        # strike-failure return so `verify_one` can surface a confirmed
+        # violation as its own outcome instead of a generic strike reason.
+        self._forbidden_path_violations: dict[str, str] = {}
         # Group name -> structured evidence that a post-spawn auto-merge explains
         # an otherwise suspicious mid-turn MERGED flip.
         self._automerge_evidence: dict[str, dict[str, str]] = {}
@@ -896,6 +902,10 @@ class Verifier:
             self.log(
                 f"    {role} worker touched forbidden path(s) despite "
                 f"status=success — treating as strike failure: {forbidden}"
+            )
+            self._forbidden_path_violations[group["name"]] = (
+                f"{role} worker touched forbidden path(s) despite "
+                f"status=success: {', '.join(forbidden)}"
             )
             return False
         return True

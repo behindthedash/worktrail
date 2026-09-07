@@ -2517,6 +2517,32 @@ class WorkerScopeViolation(unittest.TestCase):
         self.assertEqual(res["merged"], [])
         self.assertIn("resolve worker failed", res["quarantined"]["feature-1"])
 
+    def test_forbidden_path_violation_is_recorded_per_group(self):
+        """The strike-failure return alone loses *why* the worker failed. A
+        confirmed deny-list touch is recorded per group so `verify_one` can
+        surface it as its own outcome (task 3.1) rather than a generic reason."""
+        run = self.ScopeCheckRun(
+            {"run/feature-1": [view(mergeable="CONFLICTING")]},
+            touched=[".github/workflows/ci.yml"],
+        )
+        v = mk(run, FakeSpawn(), "/tmp/x")  # FakeSpawn reports status: "success"
+        v.run_all([FEATURE], {"feature-1": "run/feature-1"})
+
+        self.assertIn("feature-1", v._forbidden_path_violations)
+        detail = v._forbidden_path_violations["feature-1"]
+        self.assertIn(".github/workflows/ci.yml", detail)
+        self.assertIn("resolve", detail)
+
+    def test_no_forbidden_path_violation_recorded_when_diff_in_scope(self):
+        run = self.ScopeCheckRun(
+            {"run/feature-1": [view(mergeable="CONFLICTING"), view()]},
+            touched=["src/app.py"],
+        )
+        v = mk(run, FakeSpawn(), "/tmp/x")
+        v.run_all([FEATURE], {"feature-1": "run/feature-1"})
+
+        self.assertEqual(v._forbidden_path_violations, {})
+
     def test_forbidden_docs_specs_edit_also_fails(self):
         run = self.ScopeCheckRun(
             {"run/feature-1": [view(mergeable="CONFLICTING")]},
