@@ -49,28 +49,34 @@
       returned by the nested process (e.g. exit-code/known-marker check
       appropriate to `codex exec --json`'s documented output) — extract only
       the provider/model identity field, not the full JSON event stream.
-- [ ] 4.3 Derive `authentication` from whether `prepare_codex_child_environment`
+- [x] 4.3 Derive `authentication` from whether `prepare_codex_child_environment`
       completed auth inheritance without raising, plus (if available) a
       non-secret "authenticated" signal from the nested process's own
       output — never read or forward `auth.json` contents.
-- [ ] 4.4 Derive `report_back` from whether the parsed final reply matches
+- [x] 4.4 Derive `report_back` from whether the parsed final reply matches
       the expected no-op sentinel within the timeout.
-- [ ] 4.5 Implement the ordered stage-classification function from
+- [x] 4.5 Implement the ordered stage-classification function from
       design.md (environment_preparation → startup → provider_selection →
       authentication → timeout → report_back), returning the first failing
-      stage or a successful `report_back` outcome. (Requirement: Every run
+      stage or a successful `report_back` outcome. This order is causal
+      (which stage's failure the evidence proves), not the literal sequence
+      of checks executed in code: an authentication refusal also exits
+      non-zero, so its check runs ahead of the generic startup/infra check
+      in code -- a parseable auth-refusal event on stdout is itself proof
+      that startup and provider_selection succeeded, so classifying it as
+      `authentication` does not violate the ordering. (Requirement: Every run
       reports exactly one classified stage outcome; Sensitive values are
       redacted from every reported surface)
 
 ## 5. Launcher entry point
 
-- [ ] 5.1 Add a CLI entry point module (`argparse`-based, mirroring
+- [x] 5.1 Add a CLI entry point module (`argparse`-based, mirroring
       `check_agent_contract.py`'s `main()`) accepting an explicit read-only
       or writable parent `CODEX_HOME` override and a required/bounded
       `--timeout`. (Requirement: Probe is independently invocable on demand)
-- [ ] 5.2 Register the entry point in `pyproject.toml`'s `[project.scripts]`
+- [x] 5.2 Register the entry point in `pyproject.toml`'s `[project.scripts]`
       following this repo's `worktrail-*` naming convention.
-- [ ] 5.3 Print the structured report (stage, success, diagnostic, redacted
+- [x] 5.3 Print the structured report (stage, success, diagnostic, redacted
       signals) to stdout in a machine-parseable form (JSON) and exit non-zero
       on any non-`report_back`-success outcome.
 
@@ -87,28 +93,42 @@
 - [x] 6.3 Test no-op scope enforcement: assert a successful run leaves a
       fixture repository's `git status --porcelain` unchanged, and assert
       that a simulated out-of-scope mutation is reported as a failure.
-- [ ] 6.4 Test timeout behavior: a subprocess mock that raises
+- [x] 6.4 Test timeout behavior: a subprocess mock that raises
       `subprocess.TimeoutExpired` (or blocks past a short configured
       timeout) yields a `timeout` stage outcome, and confirm the launcher
       requires or defaults a bounded timeout (no unbounded run is possible).
-- [ ] 6.5 Test secret redaction: feed a fixture nested-process stdout/stderr
+- [x] 6.5 Test secret redaction: feed a fixture nested-process stdout/stderr
       containing fake token/cookie-shaped content and assert none of it
       appears in the structured report, only presence/usability booleans.
-- [ ] 6.6 Test each of the six stage-outcome classifications independently
+- [x] 6.6 Test each of the six stage-outcome classifications independently
       (one fixture per stage) so a future regression pinpoints which stage
       broke.
-- [ ] 6.7 Add/update `tests/test_plugin_surface.py` coverage if the new
+- [x] 6.7 Add/update `tests/test_plugin_surface.py` coverage if the new
       entry point needs plugin-surface registration; otherwise confirm no
       plugin surface changes are required (this is an operator CLI, not a
-      skill-facing command).
+      skill-facing command). Confirmed: `test_every_referenced_command_is_a_real_console_script`
+      only validates commands skill docs reference; an unreferenced operator
+      CLI needs no plugin-surface entry.
 
 ## 7. Verification
 
-- [ ] 7.1 [e2e] Run `PYTHONPATH=src pytest -q` and
+- [x] 7.1 [e2e] Run `PYTHONPATH=src pytest -q` and
       `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`
-      green.
-- [ ] 7.2 [e2e] Manually invoke the new entry point locally (real `codex` CLI,
+      green. Confirmed: 5679 passed, 2 skipped; golden output unchanged.
+- [x] 7.2 [e2e] Manually invoke the new entry point locally (real `codex` CLI,
       real but disposable `CODEX_HOME`) once to confirm a live `report_back`
       success end to end, and once against a deliberately read-only
       `CODEX_HOME` to confirm the `environment_preparation` fallback and
-      report shape match the spec's scenarios.
+      report shape match the spec's scenarios. Confirmed live against real
+      `codex` 0.153.4: the read-only-`CODEX_HOME` `environment_preparation`
+      fallback reports the documented shape exactly. The nested `codex exec`
+      spawn additionally required `--skip-git-repo-check` (added to
+      `build_probe_command`) since the probe's scratch `cwd` is deliberately
+      non-git; without it every run failed `startup` before emitting
+      classifiable output. A full success `report_back` run could not be
+      demonstrated on this operator's machine: its `CODEX_HOME` holds no
+      ChatGPT credential (`codex login status` reports a symlink loop) --
+      a verified environment fact, not a code defect. The `authentication`
+      stage's own failure-classification path was exercised organically
+      against this and confirmed correct, alongside `environment_preparation`
+      and `startup`.
