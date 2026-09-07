@@ -59,7 +59,7 @@
       (Requirements: A capacity block costs no group-worker strike).
       files: src/worktrail/orchestrator/verify.py, tests/orchestrator/test_verify_group_worker_exhausted.py
 
-- [ ] 2.3 In `src/worktrail/orchestrator/live.py`: at the end of `LiveSpawn.__call__` (~line
+- [x] 2.3 In `src/worktrail/orchestrator/live.py`: at the end of `LiveSpawn.__call__` (~line
       2986), after the existing `served_harness` label correction and before `return result`,
       pass the result through `spawnlib.raise_if_exhausted(result, context=f"{role} worker
       {task_id}")` so an exhausted spawn raises instead of handing the provider's error stream
