@@ -19,9 +19,8 @@ actively working that repo — stale lock files probe as free).
 ## Phase 2 — selection and claim
 
 1. Read `$DASHBOARD_JSON.auto_pick`. If `auto_pick.pick` is null, report the queue state
-   and every `skipped` entry with its reason (`intake-untriaged`, `blocked`, `no-repo`,
-   `repo-missing`, `repo-filter`, `orchestrator-run-active:<lock>`, `release-gate:<name>`),
-   then STOP. Never invent work and never fall back to resuming an in-flight brief — stalled
+   and every `skipped` entry with its reason (see **Skip reasons** below for the full
+   enumeration), then STOP. Never invent work and never fall back to resuming an in-flight brief — stalled
    resumes require judging what a dead session already landed, which stays human-selected.
    `intake-untriaged` briefs (those with `kind: intake` — see work_queue.py's `brief_kind()`)
    are skipped because they require triage evaluation and verdict application via
@@ -53,6 +52,60 @@ actively working that repo — stale lock files probe as free).
    classifier confidence this wins outright over a low-signal organic guess, since auto
    mode has no human present to catch a bad one — one run record listing every claimed
    brief id in `handoffs_consumed`, dispatch, CI watch, and per-brief `done`/`release`.
+
+## Skip reasons (Phase 2)
+
+When `auto_pick.pick` is null, report the queue state and every `skipped` entry with one of
+these reasons:
+
+- `intake-untriaged` — brief carries `kind: intake` and requires triage evaluation via
+  `queue_triage`, not auto execution. Handle through `--intake-triage` pre-pass or manually
+  via `worktrail-handoff` + triage.
+
+- `blocked` — brief is blocked by an active prerequisite (still queued or in-flight) or by an
+  open product decision awaiting human answer. Wait for the prerequisite to complete or the
+  decision to be answered.
+
+- `blocked:malformed-dependency` — brief's `blocked-by` list contains a dependency reference
+  with syntax errors (not a string, blank after stripping whitespace, or containing a comma).
+  **Operator action**: Edit the brief's frontmatter and repair the reference — spell each
+  prerequisite as its own `blocked-by` list item.
+
+- `blocked:ambiguous-dependency` — brief's `blocked-by` list contains a reference that
+  matches multiple candidate briefs (e.g., `dep` matches both `dep-autosave.md` and
+  `dep-cleanup.md`). **Operator action**: Edit the brief's frontmatter and disambiguate by
+  using the exact brief ID (full filename stem without `.md`), or fix the reference to be
+  more specific.
+
+- `no-repo` — brief's `repo:` field is missing or empty. The brief cannot be dispatched
+  without a repo. Set a repo.
+
+- `repo-missing` — brief's `repo:` names a repository that does not exist on this machine.
+  Clone the repo or correct the field.
+
+- `repo-filter` — brief's repo does not match the `--auto-repo` filter. Run `worktrail-go auto`
+  for a different repo or without the filter.
+
+- `unparsable-frontmatter` — brief's frontmatter syntax is invalid and cannot be parsed.
+  Repair the frontmatter YAML syntax.
+
+- `not-yet-due` — brief's `next-check-after` timestamp is in the future (if present). Wait
+  until the `next-check-after` time passes.
+
+- `recently-released` — brief was recently released (returned to the queue unfinished),
+  and is still in the grace period before becoming eligible for re-pick. Check the queue
+  again after the grace period (20 minutes) expires.
+
+- `remote-spec-branch:<branch>` — another session already has a branch for this brief's
+  spec on origin (duplicate work in progress elsewhere). Wait for that branch to land or
+  coordinate with the session holding it.
+
+- `orchestrator-run-active:<lock>` — another session is actively orchestrating this repo (run
+  lock held). Wait for the run to complete or investigate the session if it is stalled.
+
+- `release-gate:<name>` — repo's policy sets `release_gate: <name>`, imposing a release freeze.
+  Only `triage: blocker` briefs are eligible during the freeze. Handle non-blocker briefs after
+  the freeze ends or escalate.
 
 ## Phase 5.5 — collision / already-implemented checks have no ask
 
