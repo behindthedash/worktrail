@@ -286,6 +286,17 @@ def classify_checks(
     pending = False
     failing: list[str] = []
     seen: set = set()
+    # Compute set of check names that have at least one non-CANCELLED entry.
+    # A CANCELLED entry for a name can be skipped if that name also has a
+    # superseding entry (either a settled non-cancelled conclusion like SUCCESS,
+    # or a still-pending entry with no conclusion yet like IN_PROGRESS).
+    superseded_names: set[str] = set()
+    for c in rollup or []:
+        if "conclusion" in c or "status" in c:  # CheckRun
+            name = c.get("name") or c.get("context") or "(check)"
+            conclusion = (c.get("conclusion") or "").upper()
+            if conclusion != "CANCELLED":
+                superseded_names.add(name)
     for c in rollup or []:
         name = c.get("name") or c.get("context") or "(check)"
         seen.add(name)
@@ -296,6 +307,8 @@ def classify_checks(
             conclusion = (c.get("conclusion") or "").upper()
             if status in _PENDING_CHECK_STATUS:
                 pending = True
+                continue
+            if conclusion == "CANCELLED" and name in superseded_names:
                 continue
             if conclusion in _FAIL_CONCLUSIONS:
                 failing.append(name)
