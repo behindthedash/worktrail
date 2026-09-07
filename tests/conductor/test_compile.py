@@ -2146,3 +2146,101 @@ def test_validate_reports_an_unresolvable_prose_reference():
     planned, problems, _ = conductor_compile._validate(payload, {"1.1"}, None, tasks)
     assert planned is None
     assert any("1.1" in p and "4.2" in p for p in problems)
+
+
+# --------------------------------------------------------------------------- #
+# The "after <ids>" phrasing
+# --------------------------------------------------------------------------- #
+def test_extract_prose_dep_refs_bare_after():
+    assert conductor_compile.extract_prose_dep_refs("Second; after 1.1.") == ["1.1"]
+    assert conductor_compile.extract_prose_dep_refs("after Task 1.1") == ["1.1"]
+
+
+def test_extract_prose_dep_refs_comma_joined_ids_after_after():
+    assert conductor_compile.extract_prose_dep_refs("Third; after 1.1, 1.2.") == [
+        "1.1",
+        "1.2",
+    ]
+    assert conductor_compile.extract_prose_dep_refs("after 1.1, and 2.1") == [
+        "1.1",
+        "2.1",
+    ]
+
+
+def test_extract_prose_dep_refs_both_phrasings_in_one_text():
+    assert conductor_compile.extract_prose_dep_refs(
+        "Third; depends on 1.1. Run after 2.1."
+    ) == ["1.1", "2.1"]
+
+
+def test_extract_prose_dep_refs_after_a_self_reference_is_kept_for_edges_to_drop():
+    # Extraction is phrasing-level; `prose_dep_edges` owns the self-reference
+    # drop, so a task naming its own id still surfaces here.
+    assert conductor_compile.extract_prose_dep_refs("2.1; after 2.1.") == ["2.1"]
+
+
+def test_extract_prose_dep_refs_after_a_non_id_token():
+    assert (
+        conductor_compile.extract_prose_dep_refs("retry after the parser lands") == []
+    )
+    assert conductor_compile.extract_prose_dep_refs("shortly after landing") == []
+
+
+def test_prose_dep_edges_drops_a_self_reference_from_after():
+    tasks = [{"id": "2.1", "title": "Second; after 2.1."}]
+    edges, problems = conductor_compile.prose_dep_edges(tasks)
+    assert edges == {}
+    assert problems == []
+
+
+def test_prose_dep_edges_drops_an_unresolvable_after_reference_silently():
+    tasks = [{"id": "1.1", "title": "First; after 4.2."}]
+    edges, problems = conductor_compile.prose_dep_edges(tasks)
+    assert edges == {}
+    assert problems == []
+
+
+def test_prose_dep_edges_still_reports_an_unresolvable_depends_on_reference():
+    tasks = [{"id": "1.1", "title": "First; depends on 4.2."}]
+    edges, problems = conductor_compile.prose_dep_edges(tasks)
+    assert edges == {}
+    assert any("1.1" in p and "4.2" in p for p in problems)
+
+
+def test_plan_from_tasks_unions_after_deps_for_a_file_disjoint_pair():
+    tasks = [
+        {"id": "1.1", "title": "First", "files": ["a.py"], "deps": []},
+        {"id": "2.1", "title": "Second; after 1.1.", "files": ["b.py"], "deps": []},
+    ]
+    plan = conductor_compile._plan_from_tasks(
+        "spec", "fp", tasks, conductor_compile.SOURCE_SEED
+    )
+    by_id = {t.id: t for t in plan.tasks}
+    assert by_id["2.1"].deps == ("1.1",)
+    assert by_id["1.1"].deps == ()
+
+
+def test_validate_unions_after_deps_into_the_model_payload():
+    tasks = [
+        {"id": "1.1", "title": "First"},
+        {"id": "2.1", "title": "Second; after 1.1."},
+    ]
+    payload = {
+        "tasks": [
+            {"id": "1.1", "files": ["a.py"], "deps": []},
+            {"id": "2.1", "files": ["b.py"], "deps": []},
+        ]
+    }
+    planned, problems, _ = conductor_compile._validate(
+        payload, {"1.1", "2.1"}, None, tasks
+    )
+    assert problems == []
+    assert {t.id: t.deps for t in planned} == {"1.1": (), "2.1": ("1.1",)}
+
+
+def test_validate_does_not_report_an_unresolvable_after_reference():
+    tasks = [{"id": "1.1", "title": "First; after 4.2."}]
+    payload = {"tasks": [{"id": "1.1", "files": ["a.py"], "deps": []}]}
+    planned, problems, _ = conductor_compile._validate(payload, {"1.1"}, None, tasks)
+    assert problems == []
+    assert {t.id: t.deps for t in planned} == {"1.1": ()}
