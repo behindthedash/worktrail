@@ -799,13 +799,35 @@ def _blocked_by_refs(fm: dict[str, Any]) -> list[Any]:
     return [deps]
 
 
+def _dependency_diagnostics(path: Path) -> list[dict[str, Any]]:
+    """One entry per *unsatisfied* `blocked-by` reference of `path`.
+
+    Each entry carries the reference's `raw` stored value, its normalized
+    `reference` (None when the value is malformed), its `state`
+    (`active` / `ambiguous` / `malformed`) and the `candidates` that matched.
+    Satisfied references (`done`, and valid-but-stale IDs that match nothing)
+    contribute no entry, so an empty list means "nothing to repair here".
+    """
+    fm = _read_frontmatter(path)
+    entries: list[dict[str, Any]] = []
+    for dep in _blocked_by_refs(fm):
+        resolution = classify_dependency_reference(dep)
+        if resolution["satisfied"]:
+            continue
+        entries.append(
+            {
+                "raw": resolution["raw"],
+                "reference": resolution["reference"],
+                "state": resolution["state"],
+                "candidates": list(resolution["candidates"]),
+            }
+        )
+    return entries
+
+
 def _is_blocked(path: Path) -> bool:
     """Return True if any `blocked-by` prerequisite is not yet satisfied."""
-    fm = _read_frontmatter(path)
-    return any(
-        not classify_dependency_reference(dep)["satisfied"]
-        for dep in _blocked_by_refs(fm)
-    )
+    return bool(_dependency_diagnostics(path))
 
 
 def _is_not_yet_due(path: Path) -> bool:
@@ -929,7 +951,13 @@ def list_queue() -> dict[str, Any]:
 
     {"briefs": [{filename, path, focus, repo, blocked, not_yet_due,
     recently_released, recently_released_by, recently_released_at, related,
-    awaiting_decision, decision_status, unparsable, kind}, ...]}.
+    awaiting_decision, decision_status, unparsable, kind,
+    dependency_diagnostics}, ...]}.
+
+    `dependency_diagnostics` is one entry per unsatisfied `blocked-by`
+    reference (see `_dependency_diagnostics()`); it is empty for a brief whose
+    prerequisites are all satisfied, and for one blocked only by an open
+    decision.
 
     `kind` is `"execution"` for a seeded brief, `"intake"` for everything
     else (handoff and consolidated briefs) -- see `brief_kind()`.
@@ -945,12 +973,14 @@ def list_queue() -> dict[str, Any]:
         related = fm.get("related")
         released = _recently_released_info(f)
         awaiting = _awaiting_decision_info(f)
+        diagnostics = _dependency_diagnostics(f)
         return {
             "filename": f.name,
             "path": str(f),
             "focus": _focus_of(f),
             "repo": fm.get("repo"),
-            "blocked": _is_blocked(f) or awaiting["decision_status"] == "open",
+            "blocked": bool(diagnostics) or awaiting["decision_status"] == "open",
+            "dependency_diagnostics": diagnostics,
             "not_yet_due": _is_not_yet_due(f),
             "awaiting_decision": awaiting["awaiting_decision"],
             "decision_status": awaiting["decision_status"],
@@ -2105,6 +2135,33 @@ def main(argv=None) -> int:
     return 0
 
 
+def _dependency_repair_warnings(brief: dict[str, Any]) -> list[str]:
+    """Operator-facing repair warnings for one `list_queue()` brief entry.
+
+    Only unresolvable references produce a warning: a `malformed` value can
+    never be satisfied by waiting, and an `ambiguous` one resolves to more than
+    one brief. An `active` prerequisite is ordinary blocking, so it emits
+    nothing. The malformed warning quotes the raw stored value with `repr()` so
+    embedded commas and trailing whitespace stay visible and unambiguous.
+    """
+    warnings: list[str] = []
+    for entry in brief.get("dependency_diagnostics") or []:
+        state = entry.get("state")
+        if state == "malformed":
+            warnings.append(
+                f"⚠ {brief['filename']}: malformed blocked-by reference "
+                f"{entry['raw']!r} -- repair the brief's frontmatter "
+                "(one prerequisite per list item)"
+            )
+        elif state == "ambiguous":
+            warnings.append(
+                f"⚠ {brief['filename']}: ambiguous blocked-by reference "
+                f"{entry['raw']!r} -- matches "
+                f"{', '.join(entry.get('candidates') or [])}"
+            )
+    return warnings
+
+
 def _print_human(cmd: str, result: dict[str, Any]) -> None:
     if cmd == "list":
         ready = [
@@ -2124,6 +2181,8 @@ def _print_human(cmd: str, result: dict[str, Any]) -> None:
             print("\n[blocked — waiting on prerequisites]")
             for b in blocked:
                 print(f"  {b['filename']}  focus: {b['focus']}")
+                for entry in _dependency_repair_warnings(b):
+                    print(f"    {entry}")
         if not_yet_due:
             print("\n[watching — not due for recheck yet]")
             for b in not_yet_due:
