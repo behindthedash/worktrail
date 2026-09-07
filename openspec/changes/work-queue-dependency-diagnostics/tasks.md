@@ -4,7 +4,7 @@
 
 ## 2. Documentation
 
-- [ ] 2.1 Update the auto-mode skip-reason enumeration in `skills/worktrail-go/references/auto-mode.md` to include the two dependency-qualified reasons and what an operator should do about them; depends on 1.1.
+- [x] 2.1 Update the auto-mode skip-reason enumeration in `skills/worktrail-go/references/auto-mode.md` to include the two dependency-qualified reasons and what an operator should do about them; depends on 1.1.
 
 ## 3. End-to-End Regression and Verification
 
