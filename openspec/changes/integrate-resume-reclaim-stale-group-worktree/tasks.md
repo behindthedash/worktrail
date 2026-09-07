@@ -1,6 +1,6 @@
 ## 1. Reclaim leftover integrate checkouts (`integrate-stale-group-worktree-reclaim`)
 
-- [ ] 1.1 Implement requirement: Leftover integrate checkout is reclaimed before group branch add.
+- [x] 1.1 Implement requirement: Leftover integrate checkout is reclaimed before group branch add.
       In `src/worktrail/orchestrator/integrate.py:_integration_worktree`,
       inside the `with lock:` block and before the first `worktree prune`,
       call `live._worktree_checkouts_on_branch(repo, branch)` and, for each
