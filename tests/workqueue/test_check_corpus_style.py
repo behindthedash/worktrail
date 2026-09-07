@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -127,3 +128,62 @@ def test_cli_defaults_to_work_queue_dir_env(
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["findings"] == [{"path": str(bad), "classification": "malformed"}]
+
+
+def _snapshot(base: Path) -> dict[str, tuple[str, int]]:
+    """Map each file under `base` to its content hash and mtime_ns."""
+    return {
+        str(path.relative_to(base)): (
+            hashlib.sha256(path.read_bytes()).hexdigest(),
+            path.stat().st_mtime_ns,
+        )
+        for path in sorted(base.rglob("*"))
+        if path.is_file()
+    }
+
+
+def test_scan_never_mutates_the_corpus(
+    queue_base: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    expected = []
+    for subdir in ("queue", "picked"):
+        _write(queue_base, subdir, "clean.md", _canonical_brief())
+        styled = _write(
+            queue_base,
+            subdir,
+            "styled.md",
+            '---\nid: b-1\nstatus: queued\nfocus: "Do the thing"\n---\n\n# Brief\n',
+        )
+        nofence = _write(queue_base, subdir, "nofence.md", "# Brief\n\nno fence\n")
+        broken = _write(
+            queue_base,
+            subdir,
+            "broken.md",
+            "---\nid: b-1\n  status: [unclosed\n---\n\n# Brief\n",
+        )
+        expected.extend(
+            [
+                {"path": str(broken), "classification": "malformed"},
+                {"path": str(nofence), "classification": "malformed"},
+                {"path": str(styled), "classification": "style-mismatch"},
+            ]
+        )
+
+    before = _snapshot(queue_base)
+    assert len(before) == 8
+
+    findings = scan_corpus(queue_base)
+    assert main(["--queue-dir", str(queue_base), "--json"]) == 1
+    json_findings = json.loads(capsys.readouterr().out)["findings"]
+    assert main(["--queue-dir", str(queue_base)]) == 1
+    human_out = capsys.readouterr().out
+
+    assert _snapshot(queue_base) == before
+
+    # Both queue/ and picked/ findings are reported, by every surface.
+    assert findings == expected
+    assert json_findings == expected
+    for finding in expected:
+        assert f"{finding['classification']}: {finding['path']}" in human_out
+    assert any("/queue/" in f["path"] for f in findings)
+    assert any("/picked/" in f["path"] for f in findings)
