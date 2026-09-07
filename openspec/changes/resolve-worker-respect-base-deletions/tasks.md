@@ -13,7 +13,7 @@
 
 ## 2. Track a confirmed forbidden-path violation per group
 
-- [ ] 2.1 In `src/worktrail/orchestrator/verify.py`, add `self._forbidden_path_violations:
+- [x] 2.1 In `src/worktrail/orchestrator/verify.py`, add `self._forbidden_path_violations:
       dict[str, str] = {}` next to the existing `self._self_merge_violations: dict[str, str] = {}`
       init (line 406). In `_spawn_group_worker()` (around lines 894-900), when
       `_forbidden_paths_touched()` returns a non-empty list, in addition to the existing log line
@@ -27,7 +27,7 @@
 
 ## 3. Gate the live-merge recheck off a confirmed forbidden-path violation
 
-- [ ] 3.1 In `src/worktrail/orchestrator/verify.py`, thread a new `forbidden_path_violations:
+- [x] 3.1 In `src/worktrail/orchestrator/verify.py`, thread a new `forbidden_path_violations:
       dict[str, str]` parameter through `verify_one()` (alongside the existing `self_merged`
       parameter) and `run_all()` (alongside a new `forbidden_path_violations: dict[str, str] = {}`
       local next to the existing `self_merged: dict[str, str] = {}` at line 1853, passed through
