@@ -88,6 +88,15 @@ SHALL instead be recorded as `needs-decision` with the question "which repo does
 belong to?" and the would-be `keep` evidence retained as evidence, so a brief with no repo is
 never left idle.
 
+The evaluator prompt SHALL itself instruct the evaluator to supply `target_quote` for a
+`fold-into-change` verdict: its fold-vs-propose guidance SHALL state that the quote must be
+copied verbatim, at least 12 characters long, and taken from the candidate change's own
+`proposal.md`/`tasks.md` content the evaluator opened and read -- not restated from the
+brief's own focus text or from the candidate summary already shown in the prompt -- and the
+prompt's per-brief JSON output shape SHALL list `target_quote` alongside `target_change`. A
+required field the prompt never asks for would otherwise downgrade every `fold-into-change`
+verdict to `keep`.
+
 `needs-update` MAY additionally carry `refuted_span` (the exact verbatim substring of the
 brief's `focus:` text that the evidence refutes) and, only alongside `refuted_span`, an
 optional `corrected_span` (replacement text; empty or absent means the span is removed
@@ -201,6 +210,13 @@ needed must never also silently auto-rewrite the brief.
   provider's usage-limit message rather than any model's answer
 - **THEN** the verdict file records no verdict for any brief in that group, and no brief in it
   gains a `keep` verdict carrying that text as evidence
+
+#### Scenario: Evaluator prompt asks for target_quote
+- **WHEN** `_evaluate_group()` formats `EVALUATOR_PROMPT_TEMPLATE` for a repo-bearing group
+  whose briefs have candidate changes
+- **THEN** the formatted prompt's fold-vs-propose guidance names `target_quote`, states its
+  12-character minimum and that it must be quoted verbatim from the candidate change's own
+  `proposal.md`/`tasks.md`, and the prompt's per-brief JSON output shape lists `target_quote`
 
 ### Requirement: Archived or renamed target repo short-circuits its group
 Before evaluating any brief in a repo group with a non-null `repo:` value, the evaluator SHALL
