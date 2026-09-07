@@ -167,8 +167,13 @@ Step 2a — fold vs. propose vs. decide:
 Each brief above lists its ranked candidate target changes (from the repo's \
 active OpenSpec changes), if any were found. `fold-into-change` may only name \
 `target_change` as one of *that brief's own* listed candidate ids — never a \
-change that wasn't presented to you, even a plausible-looking one. If none of \
-the listed candidates are a good fit but the brief still clearly belongs in \
+change that wasn't presented to you, even a plausible-looking one. A \
+`fold-into-change` must also set `target_quote`: at least 12 characters copied \
+*verbatim* from that candidate change's own `proposal.md`/`tasks.md`, which you \
+must open and read first. Do not infer it from the candidate summary or score \
+shown above, and do not restate the brief's own focus text -- apply re-checks \
+the quote against those two files and refuses the fold if it is not found. If \
+none of the listed candidates are a good fit but the brief still clearly belongs in \
 this repo, use `propose-change` with a `target_repo` and a kebab-case \
 `proposed_change_name` instead. If `{repo}` is `{no_repo_key}` (no target \
 repo), `fold-into-change` is never valid for these briefs. {propose_target_rule} \
@@ -216,7 +221,9 @@ that don't apply to your chosen verdict, or set them null):
 {{"brief_id": "...", "verdict": "keep|stale-close|needs-update|duplicate-of|\
 fold-into-change|propose-change|work-directly|needs-decision", "duplicate_of": \
 "<brief-id or null>", "target_change": "<one of the brief's listed candidate \
-ids, for fold-into-change only>", "target_repo": "<repo, for propose-change \
+ids, for fold-into-change only>", "target_quote": "<>=12 characters copied \
+verbatim from that candidate change's own proposal.md/tasks.md, for \
+fold-into-change only>", "target_repo": "<repo, for propose-change \
 only>", "proposed_change_name": "<kebab-case id, for propose-change only>", \
 "question": "<for needs-decision only>", "refuted_span": "<verbatim span of \
 the brief's focus text your evidence refutes, for a mechanical needs-update \
@@ -1341,6 +1348,12 @@ class Verdict:
     this verdict from a stalled `keep`, or `None` for every verdict escalation
     never touched.
 
+    `target_quote` is `fold-into-change`'s grounding evidence, mirroring
+    `refuted_span`: a span copied verbatim from the target change's own
+    `proposal.md`/`tasks.md`, which `_has_valid_target()` length-checks at
+    parse time and `_apply_fold_into_change()` re-checks against the live
+    files before writing any fold edit. `None` for every other verdict type.
+
     `refuted_span`/`corrected_span`/`judgment_reason` are `needs-update`'s
     mechanical-vs-judgment split: `refuted_span` is the span of the brief's own
     focus text the evaluator refuted (quoted verbatim), optionally with the
@@ -1357,6 +1370,7 @@ class Verdict:
     evidence: str
     confidence: str | None = None
     target_change: str | None = None
+    target_quote: str | None = None
     target_repo: str | None = None
     proposed_change_name: str | None = None
     question: str | None = None
@@ -1376,6 +1390,14 @@ class Verdict:
 # A span this short is too generic to locate unambiguously in a brief's focus
 # text, so it is routed to a human decision instead of rewritten blind.
 _MIN_REFUTED_SPAN_LEN = 12
+
+
+# Shortest `target_quote` a `fold-into-change` verdict may carry. Mirrors
+# `_MIN_REFUTED_SPAN_LEN`'s floor for the same reason: a quote this short is
+# too generic to prove the evaluator actually opened the target change's
+# `proposal.md`/`tasks.md`, and too generic to re-locate unambiguously in them
+# at apply time.
+_MIN_TARGET_QUOTE_LEN = 12
 
 
 def _extract_json_objects(text: str) -> list[str]:
@@ -1440,7 +1462,10 @@ def _has_valid_target(
     change ids actually offered to the evaluator for this brief (per 2.1's
     `rank_change_candidates()`) -- a `fold-into-change` naming anything else,
     including a plausible-looking id, is invalid, since accepting it would let the
-    evaluator fold into a change it was never shown. `known_repos`, when not
+    evaluator fold into a change it was never shown. A `fold-into-change` must
+    also carry a `target_quote` of at least `_MIN_TARGET_QUOTE_LEN` characters --
+    evidence the evaluator opened the target's own `proposal.md`/`tasks.md`,
+    re-checked verbatim against those files at apply time. `known_repos`, when not
     `None`, is the set of repos offered to a `{no_repo_key}` group's brief (per
     `evaluate_group()`'s `known_repos_by_brief`) -- a `propose-change` for such a
     brief is only valid when its `target_repo` is one of those; `None` (a
@@ -1451,7 +1476,13 @@ def _has_valid_target(
         return duplicate_of is not None
     if verdict_type == "fold-into-change":
         target_change = obj.get("target_change")
-        return isinstance(target_change, str) and target_change in presented_candidates
+        target_quote = obj.get("target_quote")
+        return (
+            isinstance(target_change, str)
+            and target_change in presented_candidates
+            and isinstance(target_quote, str)
+            and len(target_quote) >= _MIN_TARGET_QUOTE_LEN
+        )
     if verdict_type == "propose-change":
         target_repo = obj.get("target_repo")
         proposed_change_name = obj.get("proposed_change_name")
@@ -1578,6 +1609,7 @@ def parse_verdicts(
 
             if has_verdict and has_evidence and has_valid_target:
                 target_change = obj.get("target_change")
+                target_quote = obj.get("target_quote")
                 target_repo = obj.get("target_repo")
                 proposed_change_name = obj.get("proposed_change_name")
                 question = obj.get("question")
@@ -1592,6 +1624,9 @@ def parse_verdicts(
                     confidence=confidence if isinstance(confidence, str) else None,
                     target_change=target_change
                     if isinstance(target_change, str)
+                    else None,
+                    target_quote=target_quote
+                    if isinstance(target_quote, str)
                     else None,
                     target_repo=target_repo if isinstance(target_repo, str) else None,
                     proposed_change_name=proposed_change_name
@@ -2824,12 +2859,27 @@ def _apply_fold_into_change(
 
         try:
             proposal_text = proposal_path.read_text(encoding="utf-8")
+            tasks_text = tasks_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return f"failed to read proposal.md/tasks.md: {exc}"
+
+        quote = v.target_quote
+        if (
+            not isinstance(quote, str)
+            or len(quote) < _MIN_TARGET_QUOTE_LEN
+            or (quote not in proposal_text and quote not in tasks_text)
+        ):
+            return (
+                f"target_quote {quote!r} was not found verbatim in target change "
+                f"'{v.target_change}' proposal.md/tasks.md under {change_dir}"
+            )
+
+        try:
             proposal_path.write_text(
                 proposal_text.rstrip("\n")
                 + f"\n\n## Folded from {v.brief_id}\n\n{v.evidence}\n",
                 encoding="utf-8",
             )
-            tasks_text = tasks_path.read_text(encoding="utf-8")
             group_number = _next_task_group_number(tasks_text)
             # A checklist item is one line: multi-line evidence would spill its
             # tail out of the `- [ ]` item and stop parsing as a task at all.
