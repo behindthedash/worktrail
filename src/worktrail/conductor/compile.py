@@ -584,8 +584,11 @@ def _default_spawn(
 
     if model is None:
         log(f"run plan: spawn policy resolved tier={tier} prefer={prefer or '-'}")
-        return spawnlib.spawn_agent(
-            prompt, cwd, tier=tier, prefer=prefer, timeout=timeout, log=log
+        return spawnlib.raise_if_exhausted(
+            spawnlib.spawn_agent(
+                prompt, cwd, tier=tier, prefer=prefer, timeout=timeout, log=log
+            ),
+            context="compile",
         ).text
 
     if not prefer:
@@ -611,8 +614,11 @@ def _spawn_with_explicit_cell(
 
     log(f"run plan: spawn policy resolved explicit cell target={target} model={model}")
     with spawnlib.explicit_cell_override(target, model):
-        return spawnlib.spawn_agent(
-            prompt, cwd, tier="explicit", timeout=timeout, log=log
+        return spawnlib.raise_if_exhausted(
+            spawnlib.spawn_agent(
+                prompt, cwd, tier="explicit", timeout=timeout, log=log
+            ),
+            context="compile",
         ).text
 
 
@@ -627,6 +633,13 @@ def _parse_fallback_chain(value: str | None) -> list[str] | None:
 # --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
+# A `give_up()` note carrying this prefix means the compile spawn never reached a
+# worker: every cell was capacity-gated. Distinct from a bad answer, and the one
+# note `main()` turns into a `blocked_no_capacity:` exit-2 rather than a degraded
+# plan printed as success.
+CAPACITY_NOTE_PREFIX = "compile blocked: no execution target had capacity"
+
+
 def _check_shape(plan: RunPlan, tasks: Sequence[dict[str, Any]], repo: Path) -> None:
     """Raise `PlanShapeError` if the settled *plan* fails D2's rules.
 
@@ -755,8 +768,18 @@ def compile_run_plan(
         )
     )
     runner = spawn or _default_spawn
+    from worktrail.orchestrator.spawnlib import SpawnExhausted
+
     try:
         text = runner(prompt, repo, timeout, log)
+    except SpawnExhausted as exc:
+        # Still a `give_up()` (a blocked compile must not fail the run) and still
+        # uncached, but named as capacity rather than as a bad model answer --
+        # nothing was ever asked, so there is nothing to blame the worker for.
+        return give_up(
+            f"{CAPACITY_NOTE_PREFIX} ({exc.failure_class or 'unclassified'}); "
+            "using the artifact's own deps"
+        )
     except Exception as exc:  # noqa: BLE001 -- a failed compile must not fail the run
         return give_up(
             f"compile failed ({type(exc).__name__}: {exc}); using the artifact's own deps"
@@ -876,6 +899,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         for line in exc.problems:
             print(line, file=sys.stderr)
         return 1
+
+    # `compile_run_plan` degrades rather than raising, so a capacity block arrives
+    # as a note on a baseline-source plan, not as an exception around the call.
+    capacity = next((n for n in plan.notes if n.startswith(CAPACITY_NOTE_PREFIX)), None)
+    if capacity is not None:
+        print(f"blocked_no_capacity: {capacity}", file=sys.stderr)
+        return 2
 
     merged, notes = runplan.apply_to_tasks(tasks, plan)
     gaps = needs_compile(merged)
