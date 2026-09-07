@@ -807,6 +807,10 @@ def _dependency_diagnostics(path: Path) -> list[dict[str, Any]]:
     (`active` / `ambiguous` / `malformed`) and the `candidates` that matched.
     Satisfied references (`done`, and valid-but-stale IDs that match nothing)
     contribute no entry, so an empty list means "nothing to repair here".
+
+    `raw` is coerced to `str` for non-string YAML scalars (a bare `2026-08-18`
+    parses as a `datetime.date`), so the whole listing stays JSON-serializable
+    for `list --json` even when one brief holds a malformed reference.
     """
     fm = _read_frontmatter(path)
     entries: list[dict[str, Any]] = []
@@ -814,9 +818,10 @@ def _dependency_diagnostics(path: Path) -> list[dict[str, Any]]:
         resolution = classify_dependency_reference(dep)
         if resolution["satisfied"]:
             continue
+        raw = resolution["raw"]
         entries.append(
             {
-                "raw": resolution["raw"],
+                "raw": raw if isinstance(raw, str) else str(raw),
                 "reference": resolution["reference"],
                 "state": resolution["state"],
                 "candidates": list(resolution["candidates"]),

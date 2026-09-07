@@ -2607,6 +2607,20 @@ class TestDependencyDiagnostics(QueueTestBase):
         self.assertEqual(brief["related"], [])
         self.assertEqual(brief["kind"], "intake")
 
+    def test_listing_stays_json_serializable_for_non_string_reference(self):
+        """A bare `2026-08-18` parses as a `datetime.date`; the raw value must
+        not reach `json.dumps()` unserialized and take the whole listing down."""
+        self.write(
+            "20260101-000001-main.md",
+            focus="needs dep",
+            blocked_by=["2026-08-18"],
+        )
+        entries = self._entries("20260101-000001-main.md")
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["state"], "malformed")
+        self.assertEqual(entries[0]["raw"], "2026-08-18")
+        json.dumps(q.list_queue())
+
     def test_human_list_warns_about_malformed_raw_value(self):
         """The raw value is quoted, so an embedded comma and a trailing space
         stay unambiguous to the operator repairing the file."""
