@@ -2136,6 +2136,33 @@ def _dashboard_task_candidates(
     return _overlap_check.task_candidates(specs_root, str(target_spec))
 
 
+def _dependency_problem_states(brief: dict[str, Any]) -> set[str]:
+    """States in a brief's `dependency_diagnostics` that no amount of waiting fixes."""
+    return {
+        str(e.get("state"))
+        for e in (brief.get("dependency_diagnostics") or [])
+        if e.get("state") in ("malformed", "ambiguous")
+    }
+
+
+def _blocked_skip_reason(brief: dict[str, Any]) -> str:
+    """Qualify the coarse `blocked` skip reason with the dependency problem, if any.
+
+    A brief blocked by a still-active prerequisite or an open decision is
+    working as designed and keeps the bare `blocked` reason. A malformed or
+    ambiguous `blocked-by` reference never resolves on its own, so it names
+    itself -- `log_auto_pick_miss()` splits on `:` and still buckets both under
+    the coarse `blocked` category. Malformed outranks ambiguous when both are
+    present: it is the strictly more broken value.
+    """
+    states = _dependency_problem_states(brief)
+    if "malformed" in states:
+        return "blocked:malformed-dependency"
+    if "ambiguous" in states:
+        return "blocked:ambiguous-dependency"
+    return "blocked"
+
+
 def auto_pick_brief(
     queue_briefs: list[dict[str, Any]],
     repo_filter: str | None = None,
@@ -2213,7 +2240,7 @@ def auto_pick_brief(
             skipped.append({"id": stem, "reason": "unparsable-frontmatter"})
             continue
         if b.get("blocked"):
-            skipped.append({"id": stem, "reason": "blocked"})
+            skipped.append({"id": stem, "reason": _blocked_skip_reason(b)})
             continue
         if b.get("not_yet_due"):
             skipped.append({"id": stem, "reason": "not-yet-due"})
@@ -3304,7 +3331,9 @@ def render_dashboard(
         )
         for b in ordered_q[:3]:
             label = _clip(b.get("focus") or b["filename"].replace(".md", ""))
-            if b.get("blocked"):
+            if b.get("blocked") and _dependency_problem_states(b):
+                tag = " [dep-ref?]"
+            elif b.get("blocked"):
                 tag = " [blocked]"
             elif b.get("not_yet_due"):
                 tag = " [watching]"

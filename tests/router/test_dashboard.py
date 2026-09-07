@@ -5942,3 +5942,168 @@ class EpicsSectionInRenderDashboard(unittest.TestCase):
         ]
         out = dashboard.render_dashboard(repo_rows, None, [], [])
         self.assertNotIn("Outstanding epics", out)
+
+
+class AutoPickDependencyDiagnostics(unittest.TestCase):
+    """auto_pick_brief() qualifies its `blocked` skip reason from
+    `list_queue()`'s `dependency_diagnostics`, and the rendered queue block
+    flags the affected brief distinctly.
+
+    Regression for the 2026-08-18 incident: a brief with a comma-joined
+    `blocked-by` value was skipped as plainly `blocked`, indistinguishable
+    from one legitimately waiting on a live prerequisite.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name) / "repo"
+        self.repo.mkdir(parents=True)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _brief(self, filename: str, diagnostics=None) -> dict:
+        path = Path(self._tmp.name) / filename
+        path.write_text(
+            f"---\nid: {filename.replace('.md', '')}\nrepo: {self.repo}\n"
+            "status: queued\n---\n\n## Focus\n\nwork\n"
+        )
+        return {
+            "filename": filename,
+            "path": str(path),
+            "focus": "work",
+            "blocked": True,
+            "not_yet_due": False,
+            "recently_released": False,
+            "related": [],
+            "kind": "execution",
+            "dependency_diagnostics": diagnostics or [],
+        }
+
+    def _reason(self, brief: dict) -> str:
+        return dashboard.auto_pick_brief([brief])["skipped"][0]["reason"]
+
+    def test_malformed_dependency_qualifies_the_reason(self):
+        brief = self._brief(
+            "20260701-000000-malformed.md",
+            [
+                {
+                    "raw": "a, b",
+                    "reference": None,
+                    "state": "malformed",
+                    "candidates": [],
+                }
+            ],
+        )
+        self.assertEqual(self._reason(brief), "blocked:malformed-dependency")
+
+    def test_ambiguous_dependency_qualifies_the_reason(self):
+        brief = self._brief(
+            "20260701-000000-ambiguous.md",
+            [
+                {
+                    "raw": "dep",
+                    "reference": "dep",
+                    "state": "ambiguous",
+                    "candidates": ["/q/a.md", "/q/b.md"],
+                }
+            ],
+        )
+        self.assertEqual(self._reason(brief), "blocked:ambiguous-dependency")
+
+    def test_malformed_outranks_ambiguous(self):
+        brief = self._brief(
+            "20260701-000000-both.md",
+            [
+                {
+                    "raw": "dep",
+                    "reference": "dep",
+                    "state": "ambiguous",
+                    "candidates": ["/q/a.md", "/q/b.md"],
+                },
+                {
+                    "raw": "a, b",
+                    "reference": None,
+                    "state": "malformed",
+                    "candidates": [],
+                },
+            ],
+        )
+        self.assertEqual(self._reason(brief), "blocked:malformed-dependency")
+
+    def test_active_dependency_keeps_the_bare_reason(self):
+        brief = self._brief(
+            "20260701-000000-active.md",
+            [
+                {
+                    "raw": "dep",
+                    "reference": "dep",
+                    "state": "active",
+                    "candidates": ["/q/dep.md"],
+                }
+            ],
+        )
+        self.assertEqual(self._reason(brief), "blocked")
+
+    def test_open_decision_blocking_keeps_the_bare_reason(self):
+        """No dependency entries at all -- e.g. blocked on an open decision."""
+        self.assertEqual(self._reason(self._brief("20260701-000000-dec.md")), "blocked")
+
+    def test_unparsable_frontmatter_still_wins_over_the_qualified_reason(self):
+        brief = self._brief(
+            "20260701-000000-broken.md",
+            [
+                {
+                    "raw": "a, b",
+                    "reference": None,
+                    "state": "malformed",
+                    "candidates": [],
+                }
+            ],
+        )
+        brief["unparsable"] = True
+        self.assertEqual(self._reason(brief), "unparsable-frontmatter")
+
+    def test_miss_log_buckets_qualified_reasons_under_blocked(self):
+        with tempfile.TemporaryDirectory() as td:
+            log_path = Path(td) / "misses.jsonl"
+            dashboard.log_auto_pick_miss(
+                {
+                    "pick": None,
+                    "skipped": [
+                        {"id": "a", "reason": "blocked:malformed-dependency"},
+                        {"id": "b", "reason": "blocked:ambiguous-dependency"},
+                        {"id": "c", "reason": "blocked"},
+                    ],
+                },
+                total_briefs=3,
+                path=log_path,
+            )
+            record = json.loads(log_path.read_text().splitlines()[0])
+        self.assertEqual(record["reasons"], {"blocked": 3})
+
+    def test_render_tags_dependency_reference_problem_distinctly(self):
+        out = dashboard.render_dashboard(
+            None,
+            [],
+            inflight=[],
+            queue_briefs=[
+                {
+                    "filename": "a.md",
+                    "focus": "bad ref",
+                    "blocked": True,
+                    "dependency_diagnostics": [
+                        {
+                            "raw": "a, b",
+                            "reference": None,
+                            "state": "malformed",
+                            "candidates": [],
+                        }
+                    ],
+                },
+                {"filename": "b.md", "focus": "plain wait", "blocked": True},
+            ],
+        )
+        self.assertIn("bad ref [dep-ref?]", out)
+        self.assertNotIn("bad ref [blocked]", out)
+        self.assertIn("plain wait [blocked]", out)
