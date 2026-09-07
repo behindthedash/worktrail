@@ -20,6 +20,6 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [e2e] Run `PYTHONPATH=src pytest -q tests/orchestrator` and
+- [x] 2.1 [e2e] Run `PYTHONPATH=src pytest -q tests/orchestrator` and
       `PYTHONPATH=src pytest -q tests/orchestrator/lifecycle/test_lifecycle_harness.py -k KillAndResume`
       and confirm both are green. Verification-only — no file changes expected.
