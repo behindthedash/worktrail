@@ -27,5 +27,5 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [e2e] Run `pytest -q` and
+- [x] 2.1 [e2e] Run `pytest -q` and
       `python3 -m worktrail.orchestrator.orchestrate check` green.
