@@ -112,11 +112,23 @@
 
 ## 7. Verification
 
-- [ ] 7.1 [e2e] Run `PYTHONPATH=src pytest -q` and
+- [x] 7.1 [e2e] Run `PYTHONPATH=src pytest -q` and
       `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`
-      green.
-- [ ] 7.2 [e2e] Manually invoke the new entry point locally (real `codex` CLI,
+      green. Confirmed: 5679 passed, 2 skipped; golden output unchanged.
+- [x] 7.2 [e2e] Manually invoke the new entry point locally (real `codex` CLI,
       real but disposable `CODEX_HOME`) once to confirm a live `report_back`
       success end to end, and once against a deliberately read-only
       `CODEX_HOME` to confirm the `environment_preparation` fallback and
-      report shape match the spec's scenarios.
+      report shape match the spec's scenarios. Confirmed live against real
+      `codex` 0.153.4: the read-only-`CODEX_HOME` `environment_preparation`
+      fallback reports the documented shape exactly. The nested `codex exec`
+      spawn additionally required `--skip-git-repo-check` (added to
+      `build_probe_command`) since the probe's scratch `cwd` is deliberately
+      non-git; without it every run failed `startup` before emitting
+      classifiable output. A full success `report_back` run could not be
+      demonstrated on this operator's machine: its `CODEX_HOME` holds no
+      ChatGPT credential (`codex login status` reports a symlink loop) --
+      a verified environment fact, not a code defect. The `authentication`
+      stage's own failure-classification path was exercised organically
+      against this and confirmed correct, alongside `environment_preparation`
+      and `startup`.

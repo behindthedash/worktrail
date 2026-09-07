@@ -165,6 +165,13 @@ def build_probe_command() -> tuple[list[str], str]:
     scratch directory is created fresh under `tempfile.mkdtemp`, for the
     caller to run the command with as `cwd`: never the invoking repository's
     working tree, so the nested process has no repository state to mutate.
+
+    `--skip-git-repo-check` is added on top of `build_cmd`'s own args (not
+    inside `spawnlib.build_cmd` itself): every other `codex` spawn on this
+    path runs inside a real task-worktree git checkout, so only the probe's
+    deliberately non-git scratch `cwd` needs it -- `codex exec` otherwise
+    refuses outright ("Not inside a trusted directory") before emitting any
+    classifiable output.
     """
     cell = Cell(
         target="codex-probe",
@@ -173,7 +180,7 @@ def build_probe_command() -> tuple[list[str], str]:
         effort=None,
         pool="subscription",
     )
-    cmd = build_cmd(PROBE_PROMPT, cell)
+    cmd = build_cmd(PROBE_PROMPT, cell, extra_args=["--skip-git-repo-check"])
     scratch_dir = tempfile.mkdtemp(prefix="codex-probe-")
     return cmd, scratch_dir
 
