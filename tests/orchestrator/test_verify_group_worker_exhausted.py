@@ -18,7 +18,13 @@ from pathlib import Path
 from worktrail.orchestrator import spawnlib, verify
 from worktrail.runtime.selection import NoExecutionTarget
 
-from .test_verify import FEATURE, GREEN, RED, FakeRun, mk, view
+# tests/orchestrator suites are also executed as standalone scripts (cwd=this
+# dir) by test_pipeline_e2e's AC-019 regression sweep, where the relative form
+# has no parent package; under pytest only the relative form resolves.
+try:
+    from test_verify import FEATURE, GREEN, RED, FakeRun, mk, view
+except ImportError:  # pragma: no cover - depends on how this file is invoked
+    from .test_verify import FEATURE, GREEN, RED, FakeRun, mk, view
 
 
 class _Result:
