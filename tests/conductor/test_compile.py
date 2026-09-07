@@ -1966,3 +1966,118 @@ def test_compile_run_plan_raises_plan_shape_error_on_a_cache_hit(tmp_path):
         compile_run_plan(
             d, tasks, spec_id=spec_id, repo=repo, cache_dir=cache_dir, allow_llm=False
         )
+
+
+# --------------------------------------------------------------------------- #
+# Authored prose dependency references
+# --------------------------------------------------------------------------- #
+def test_extract_prose_dep_refs_single_id():
+    assert conductor_compile.extract_prose_dep_refs(
+        "Wire up the parser; depends on 2.1."
+    ) == ["2.1"]
+
+
+def test_extract_prose_dep_refs_comma_joined_ids():
+    assert conductor_compile.extract_prose_dep_refs(
+        "Verification pass; depends on 1.1, 1.2, 2.1."
+    ) == ["1.1", "1.2", "2.1"]
+
+
+def test_extract_prose_dep_refs_none_when_no_reference():
+    assert conductor_compile.extract_prose_dep_refs("Plain task with no edges.") == []
+    # Prose that says "depends on" without naming an id yields nothing rather
+    # than a bogus reference that would be reported as unresolvable.
+    assert (
+        conductor_compile.extract_prose_dep_refs("depends on the parser landing") == []
+    )
+
+
+def test_prose_dep_edges_drops_a_self_reference():
+    tasks = [{"id": "1.1", "title": "Do the thing; depends on 1.1."}]
+    edges, problems = conductor_compile.prose_dep_edges(tasks)
+    assert edges == {}
+    assert problems == []
+
+
+def test_prose_dep_edges_reports_an_unresolvable_reference():
+    tasks = [
+        {"id": "1.1", "title": "First"},
+        {"id": "2.1", "title": "Second; depends on 9.9."},
+    ]
+    edges, problems = conductor_compile.prose_dep_edges(tasks)
+    assert edges == {}
+    assert len(problems) == 1
+    assert "2.1" in problems[0] and "9.9" in problems[0]
+
+
+def test_prose_dep_edges_reports_no_problem_when_fully_resolvable():
+    tasks = [
+        {"id": "1.1", "title": "First"},
+        {"id": "1.2", "title": "Second"},
+        {"id": "2.1", "title": "Third; depends on 1.1, 1.2."},
+    ]
+    edges, problems = conductor_compile.prose_dep_edges(tasks)
+    assert edges == {"2.1": ["1.1", "1.2"]}
+    assert problems == []
+
+
+def test_plan_from_tasks_unions_prose_deps_for_a_file_disjoint_pair():
+    tasks = [
+        {"id": "1.1", "title": "First", "files": ["a.py"], "deps": []},
+        {
+            "id": "2.1",
+            "title": "Second; depends on 1.1.",
+            "files": ["b.py"],
+            "deps": [],
+        },
+    ]
+    plan = conductor_compile._plan_from_tasks(
+        "spec", "fp", tasks, conductor_compile.SOURCE_SEED
+    )
+    by_id = {t.id: t for t in plan.tasks}
+    assert by_id["2.1"].deps == ("1.1",)
+    assert by_id["1.1"].deps == ()
+
+
+def test_plan_from_tasks_prose_union_is_additive():
+    tasks = [
+        {"id": "1.1", "title": "First", "files": ["a.py"]},
+        {"id": "1.2", "title": "Other", "files": ["c.py"]},
+        {
+            "id": "2.1",
+            "title": "Second; depends on 1.1.",
+            "files": ["b.py"],
+            "deps": ["1.2"],
+        },
+    ]
+    plan = conductor_compile._plan_from_tasks(
+        "spec", "fp", tasks, conductor_compile.SOURCE_SEED
+    )
+    deps = {t.id: t.deps for t in plan.tasks}["2.1"]
+    assert deps == ("1.2", "1.1")
+
+
+def test_validate_unions_prose_deps_into_the_model_payload():
+    tasks = [
+        {"id": "1.1", "title": "First"},
+        {"id": "2.1", "title": "Second; depends on 1.1."},
+    ]
+    payload = {
+        "tasks": [
+            {"id": "1.1", "files": ["a.py"], "deps": []},
+            {"id": "2.1", "files": ["b.py"], "deps": []},
+        ]
+    }
+    planned, problems, _ = conductor_compile._validate(
+        payload, {"1.1", "2.1"}, None, tasks
+    )
+    assert problems == []
+    assert {t.id: t.deps for t in planned} == {"1.1": (), "2.1": ("1.1",)}
+
+
+def test_validate_reports_an_unresolvable_prose_reference():
+    tasks = [{"id": "1.1", "title": "First; depends on 4.2."}]
+    payload = {"tasks": [{"id": "1.1", "files": ["a.py"], "deps": []}]}
+    planned, problems, _ = conductor_compile._validate(payload, {"1.1"}, None, tasks)
+    assert planned is None
+    assert any("1.1" in p and "4.2" in p for p in problems)
