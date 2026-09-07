@@ -664,6 +664,55 @@ def _task_files_are_shipped(
     return True
 
 
+_BACKTICK_SPAN_RE = re.compile(r"`([^`]+)`")
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{2,}$")
+
+
+def _task_identifiers(task: dict[str, Any]) -> list[str]:
+    """Code-like identifiers a task's own text claims, deterministically.
+
+    Backtick-quoted spans only; a token keeps its place if it matches
+    `[A-Za-z_][A-Za-z0-9_]{2,}` after a trailing `()` is stripped. Tokens
+    containing `/` or `.` (paths, dotted attributes) and tokens that merely
+    name one of the task's declared files are dropped. Never calls a model.
+    """
+    declared = {str(f) for f in task.get("files") or []}
+    declared |= {Path(f).name for f in declared}
+    text = " ".join(str(task.get(key) or "") for key in ("title", "group_title"))
+    found: list[str] = []
+    for span in _BACKTICK_SPAN_RE.findall(text):
+        for raw in span.split():
+            token = raw.strip().strip(",;:()[]{}\"'")
+            token = token.removesuffix("()")
+            if not token or "/" in token or "." in token:
+                continue
+            if token in declared or not _IDENTIFIER_RE.match(token):
+                continue
+            if token not in found:
+                found.append(token)
+    return found
+
+
+def _identifiers_present(repo: Path, files: list[str], identifiers: list[str]) -> bool:
+    """Whether every identifier appears in the current on-disk text of `files`.
+
+    An unreadable (or missing, or binary) file contributes nothing, so a task
+    whose identifiers live only in such a file is not confirmed -- the
+    conservative direction, which keeps the task orchestrator-eligible.
+    """
+    if not identifiers:
+        return True
+    blob: list[str] = []
+    for declared in files:
+        path = Path(repo) / declared
+        try:
+            blob.append(path.read_text())
+        except (OSError, UnicodeDecodeError):
+            continue
+    haystack = "\n".join(blob)
+    return all(identifier in haystack for identifier in identifiers)
+
+
 def _pending_impl_stale(
     spec_dir: Path, tasks: list[dict[str, Any]] | None = None
 ) -> list[str]:
@@ -741,11 +790,14 @@ def _pending_openspec_stale(
     all_files = sorted({file for task in candidates for file in task["files"]})
     tracked = _git_tracked(repo, all_files)
     since_ts = _dir_creation_timestamp(str(repo), str(change_dir))
-    return [
-        task["id"]
-        for task in candidates
-        if _task_files_are_shipped(repo, task["files"], tracked, since_ts)
-    ]
+    stale: list[str] = []
+    for task in candidates:
+        if not _task_files_are_shipped(repo, task["files"], tracked, since_ts):
+            continue
+        if not _identifiers_present(repo, task["files"], _task_identifiers(task)):
+            continue
+        stale.append(task["id"])
+    return stale
 
 
 def _pending_tail_stale(
