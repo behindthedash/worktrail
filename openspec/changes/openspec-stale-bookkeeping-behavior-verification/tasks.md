@@ -33,8 +33,8 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [e2e] Run `PYTHONPATH=src pytest -q` and confirm it is green, including the new tests
+- [x] 2.1 [e2e] Run `PYTHONPATH=src pytest -q` and confirm it is green, including the new tests
       from section 1. Verification-only — no file changes expected.
-- [ ] 2.2 [e2e] Run `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` (golden
+- [x] 2.2 [e2e] Run `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` (golden
       record/replay regression) and confirm it is green. Verification-only — no file changes
       expected.
