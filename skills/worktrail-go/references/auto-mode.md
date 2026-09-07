@@ -19,9 +19,10 @@ actively working that repo — stale lock files probe as free).
 ## Phase 2 — selection and claim
 
 1. Read `$DASHBOARD_JSON.auto_pick`. If `auto_pick.pick` is null, report the queue state
-   and every `skipped` entry with its reason (`intake-untriaged`, `blocked`, `no-repo`,
-   `repo-missing`, `repo-filter`, `orchestrator-run-active:<lock>`, `release-gate:<name>`),
-   then STOP. Never invent work and never fall back to resuming an in-flight brief — stalled
+   and every `skipped` entry with its reason (see **Skip reasons** below for the full
+   enumeration: `intake-untriaged`, `blocked`, `blocked:malformed-dependency`,
+   `blocked:ambiguous-dependency`, `no-repo`, `repo-missing`, `repo-filter`,
+   `orchestrator-run-active:<lock>`, `release-gate:<name>`), then STOP. Never invent work and never fall back to resuming an in-flight brief — stalled
    resumes require judging what a dead session already landed, which stays human-selected.
    `intake-untriaged` briefs (those with `kind: intake` — see work_queue.py's `brief_kind()`)
    are skipped because they require triage evaluation and verdict application via
@@ -41,6 +42,46 @@ actively working that repo — stale lock files probe as free).
    agent won the race between dashboard render and claim), re-run dashboard.py with
    `--auto` and take the fresh pick. After 3 lost primary races, stop and report rather
    than spinning.
+
+### Skip reasons (Phase 2)
+
+When `auto_pick.pick` is null, report the queue state and every `skipped` entry with one of
+these reasons:
+
+- `intake-untriaged` — brief carries `kind: intake` and requires triage evaluation via
+  `queue_triage`, not auto execution. Handle through `--intake-triage` pre-pass or manually
+  via `worktrail-handoff` + triage.
+
+- `blocked` — brief is blocked by an active prerequisite (still queued or in-flight) or by an
+  open product decision awaiting human answer. Wait for the prerequisite to complete or the
+  decision to be answered.
+
+- `blocked:malformed-dependency` — brief's `blocked-by` list contains a dependency reference
+  with syntax errors (not a string, contains commas, non-empty after stripping whitespace).
+  **Operator action**: Edit the brief's frontmatter and repair the reference — spell each
+  prerequisite as its own `blocked-by` list item.
+
+- `blocked:ambiguous-dependency` — brief's `blocked-by` list contains a reference that
+  matches multiple candidate briefs (e.g., `dep` matches both `20260701-dep-a.md` and
+  `20260701-dep-b.md`). **Operator action**: Edit the brief's frontmatter and disambiguate by
+  using the exact brief ID (full filename stem without `.md`), or fix the reference to be
+  more specific.
+
+- `no-repo` — brief's `repo:` field is missing or empty. The brief cannot be dispatched
+  without a repo. Set a repo.
+
+- `repo-missing` — brief's `repo:` names a repository that does not exist on this machine.
+  Clone the repo or correct the field.
+
+- `repo-filter` — brief's repo does not match the `--auto-repo` filter. Run `worktrail-go auto`
+  for a different repo or without the filter.
+
+- `orchestrator-run-active:<lock>` — another session is actively orchestrating this repo (run
+  lock held). Wait for the run to complete or investigate the session if it is stalled.
+
+- `release-gate:<name>` — repo's policy sets `release_gate: <name>`, imposing a release freeze.
+  Only `triage: blocker` briefs are eligible during the freeze. Handle non-blocker briefs after
+  the freeze ends or escalate.
 
 4. If the PRIMARY brief's frontmatter carries `awaiting-decision:` (it re-entered the
    queue because a human answered a decision an earlier one-shot filed), consume the
