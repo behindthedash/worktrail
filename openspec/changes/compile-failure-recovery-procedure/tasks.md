@@ -1,6 +1,6 @@
 ## 1. The gate section and its callers
 
-- [ ] 1.1 In `skills/worktrail-go/references/subagent-prompts.md`, add
+- [x] 1.1 In `skills/worktrail-go/references/subagent-prompts.md`, add
       `### Compile gate {#compile-gate}` under `## Orchestrator pre-launch gates
       {#orchestrator-gates}` (after `#precheck-gate`, so the section order matches the order the
       gates run in), carrying the failure-class → recovery table from design D1 -- plan-shape
@@ -21,7 +21,7 @@
       names an action per failure class, A compile failure has an unattended fallback).
       files: skills/worktrail-go/references/subagent-prompts.md
 
-- [ ] 1.2 In `skills/worktrail-sdd-workflow/references/pipeline-details.md`, point both
+- [x] 1.2 In `skills/worktrail-sdd-workflow/references/pipeline-details.md`, point both
       scope-check steps at the new anchor: the `new` pipeline's step 3 (~lines 34-47) and the
       `implement` pipeline's step 3 (~lines 193-208). Each currently carries its own one-line
       `echo "ERROR: worktrail-compile found scope gaps ..."` naming only the scope-gap remedy,

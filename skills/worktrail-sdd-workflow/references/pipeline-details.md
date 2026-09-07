@@ -44,7 +44,7 @@ Route C (feature-planning), and Route D when no spec exists.
 
    ```bash
    worktrail-compile "$WT/openspec/changes/$SPEC_ID" || {
-     echo "ERROR: worktrail-compile found scope gaps in $SPEC_ID -- fix tasks.md in $WT (add explicit files: scope, a tail kind for investigation/verification-only steps, or a deps edge for an unordered file collision) and re-run before pushing the spec PR." >&2
+     echo "ERROR: worktrail-compile failed for $SPEC_ID -- classify the failure and recover per ../../worktrail-go/references/subagent-prompts.md#compile-gate; a bare retry does not resolve a plan-shape or coverage rejection. Stop before pushing the spec PR." >&2
      exit 1
    }
    ```
@@ -205,7 +205,7 @@ launching the orchestrator — never launch with uncommitted output sitting in `
 
    ```bash
    worktrail-compile "$CHANGE_DIR" || {
-     echo "ERROR: worktrail-compile found scope gaps in $CHANGE_ID -- fix tasks.md in $WT (add explicit files: scope, a tail kind for investigation/verification-only steps, or a deps edge for an unordered file collision) and re-run before continuing." >&2
+     echo "ERROR: worktrail-compile failed for $CHANGE_ID -- classify the failure and recover per ../../worktrail-go/references/subagent-prompts.md#compile-gate; a bare retry does not resolve a plan-shape or coverage rejection. Stop before continuing." >&2
      exit 1
    }
    ```

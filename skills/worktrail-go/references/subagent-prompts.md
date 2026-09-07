@@ -349,6 +349,11 @@ Per-site branches (`$AUTO_MODE=true`):
   → finish `blocked_product_decision` quoting MARKERS + SUMMARY.
 - `#precheck-gate`: no ask — never flip task statuses or proceed-anyway
   unattended; finish `blocked_product_decision` quoting the precheck output.
+- `#compile-gate`: no ask — a compile failure over a change the run did not
+  author is a call about prior work; finish `blocked_product_decision` quoting
+  the compile output, brief stays claimed. Exception: the exit-0 degraded plan
+  has a safe default — proceed on the baseline plan and
+  `worktrail-run-record append` the degrade.
 - Route C implementation-intent question (routes.md §C): safe default — take
   the planning-only stop (`planned_ready_for_implementation`); the brief stays
   claimed, never marked done without an explicit completion mode.
@@ -746,10 +751,28 @@ for label in $PR_LABELS; do PR_LABEL_ARGS+=(--pr-label "$label"); done
 # compile's free seed path (no model call), so this is a no-op there.
 if [ -d "$SPEC_ROOT/openspec/changes/$SPEC_ID" ]; then
   SPEC_REF="openspec/changes/$SPEC_ID"
-  worktrail-compile "$SPEC_ROOT/openspec/changes/$SPEC_ID" || {
-    echo "ERROR: worktrail-compile failed for $SPEC_ID — inspect the error above before retrying full-real." >&2
+  # `tee` on stdout only, never `$(... 2>&1)`: compile spawns a headless model and
+  # logs progress to stderr for minutes, so capturing the streams would replace all
+  # of it with silence, and merging them would break compile's deliberate split that
+  # keeps `--json` stdout parseable. stderr flows straight through; stdout streams
+  # and is teed so the exit-0 `note:` check below has something to read.
+  COMPILE_LOG=$(mktemp)
+  worktrail-compile "$SPEC_ROOT/openspec/changes/$SPEC_ID" | tee "$COMPILE_LOG"
+  COMPILE_RC=${PIPESTATUS[0]}
+  if [ "$COMPILE_RC" -ne 0 ]; then
+    rm -f "$COMPILE_LOG"
+    echo "ERROR: worktrail-compile failed for $SPEC_ID — classify the failure and recover per #compile-gate (Orchestrator pre-launch gates); a bare retry does not resolve a plan-shape or coverage rejection." >&2
     exit 1
-  }
+  fi
+  # Exit 0 can still mean a degraded (baseline) plan — compile prints the reason as
+  # a `note:` line (indented two spaces, so no `^note:` anchor) that no `||` branch
+  # can see. Surface it and record the degrade per #compile-gate.
+  if grep -q '^ *note:' "$COMPILE_LOG"; then
+    COMPILE_NOTE=$(grep -m1 '^ *note:' "$COMPILE_LOG" | sed 's/^ *//')
+    echo "WARNING: worktrail-compile degraded to the baseline plan for $SPEC_ID — $COMPILE_NOTE — see #compile-gate." >&2
+    worktrail-run-record append "$RUN" decisions "compile degraded to baseline plan: $COMPILE_NOTE"
+  fi
+  rm -f "$COMPILE_LOG"
 else
   SPEC_REF="docs/specs/$SPEC_ID"
 fi
@@ -1790,6 +1813,47 @@ precheck output, per `#auto-mode-ask-fallbacks`.
 `live.py precheck` also checks `run-<spec>.status.json`. If the prior run is
 `fanout_failed`, do not silently re-launch `full-real`: surface the failed or
 blocked task ids from the sidecar/journal and recover that stuck run first.
+
+### Compile gate {#compile-gate}
+
+```bash
+worktrail-compile "$SPEC_ROOT/openspec/changes/$SPEC_ID"
+```
+
+Runs for OpenSpec changes only (devkit specs declare file scope in task frontmatter and take
+compile's free seed path). A non-zero exit is a gate failure, not a transient one — pick the
+row, then act. **An unchanged re-run cannot resolve a plan-shape or coverage rejection**: the
+compile step is deterministic over the same inputs, so it reproduces the same rejection. Retry
+is only ever the answer for the scope-gap and unordered-collision classes, and only after
+adding context the model can actually use.
+
+*Defects in the change* (edit the change, then recompile):
+
+| Failure class | Recovery |
+|---|---|
+| plan shape rejected (`PlanShapeError`) | edit `tasks.md` exactly as the problem line says — consolidate the tasks, declare disjoint file scope, add the test file, retag `[cleanup]` → `[e2e]`. Never a bare retry. |
+| scope gaps — task has no file scope | add `files:` to the named task ids, or the tail kind matching what the task executes; `--force` only after `proposal.md`/`design.md` carry enough context to infer scope. |
+| unordered file collision | two tasks write the same file with no ordering — add an explicit `deps` edge in either direction. |
+| uncovered requirement | add or extend a task that cites the uncovered requirement. |
+
+*Defects in the invocation* (nothing in the change to fix):
+
+| Failure class | Recovery |
+|---|---|
+| bad spec path / not a git repo | operator error in the command — correct the path or run from the repo. |
+| refused `--force` over active worktrees | fan-out is already in flight against the cached plan. Do **not** recompile: resume or tear that run down first (`worktree-cleanup.md`). |
+
+*Exit 0, degraded plan*: `compile_run_plan` can give up and fall back to the baseline plan
+while still exiting 0, printing its reason as a `note:` line. A `||` branch cannot see this —
+read the `note:` line in the compile output. The run proceeds on the baseline plan; expect
+`validate_task_metadata()` to refuse to fan scope-less tasks out later.
+
+`$AUTO_MODE=true`: no ask. A compile failure over a change the run did not author is a call
+about prior work, exactly like `#precheck-gate` — finish `blocked_product_decision` quoting the
+compile output, per `#auto-mode-ask-fallbacks`; the brief stays claimed in `picked/`. The one
+exception is the exit-0 degraded plan, which has a safe documented default: proceed on the
+baseline plan and record it with
+`worktrail-run-record append "$RUN" decisions "compile degraded to baseline plan: <note:>"`.
 
 ---
 
