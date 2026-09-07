@@ -751,17 +751,28 @@ for label in $PR_LABELS; do PR_LABEL_ARGS+=(--pr-label "$label"); done
 # compile's free seed path (no model call), so this is a no-op there.
 if [ -d "$SPEC_ROOT/openspec/changes/$SPEC_ID" ]; then
   SPEC_REF="openspec/changes/$SPEC_ID"
-  COMPILE_OUT=$(worktrail-compile "$SPEC_ROOT/openspec/changes/$SPEC_ID" 2>&1) || {
-    echo "$COMPILE_OUT" >&2
+  # `tee` on stdout only, never `$(... 2>&1)`: compile spawns a headless model and
+  # logs progress to stderr for minutes, so capturing the streams would replace all
+  # of it with silence, and merging them would break compile's deliberate split that
+  # keeps `--json` stdout parseable. stderr flows straight through; stdout streams
+  # and is teed so the exit-0 `note:` check below has something to read.
+  COMPILE_LOG=$(mktemp)
+  worktrail-compile "$SPEC_ROOT/openspec/changes/$SPEC_ID" | tee "$COMPILE_LOG"
+  COMPILE_RC=${PIPESTATUS[0]}
+  if [ "$COMPILE_RC" -ne 0 ]; then
+    rm -f "$COMPILE_LOG"
     echo "ERROR: worktrail-compile failed for $SPEC_ID — classify the failure and recover per #compile-gate (Orchestrator pre-launch gates); a bare retry does not resolve a plan-shape or coverage rejection." >&2
     exit 1
-  }
-  echo "$COMPILE_OUT"
-  # Exit 0 can still mean a degraded (baseline) plan — compile prints the reason
-  # as a `note:` line that no `||` branch can see. Surface it per #compile-gate.
-  if printf '%s' "$COMPILE_OUT" | grep -q '^note:'; then
-    echo "WARNING: worktrail-compile degraded to the baseline plan for $SPEC_ID — see the note: line above and #compile-gate." >&2
   fi
+  # Exit 0 can still mean a degraded (baseline) plan — compile prints the reason as
+  # a `note:` line (indented two spaces, so no `^note:` anchor) that no `||` branch
+  # can see. Surface it and record the degrade per #compile-gate.
+  if grep -q '^ *note:' "$COMPILE_LOG"; then
+    COMPILE_NOTE=$(grep -m1 '^ *note:' "$COMPILE_LOG" | sed 's/^ *//')
+    echo "WARNING: worktrail-compile degraded to the baseline plan for $SPEC_ID — $COMPILE_NOTE — see #compile-gate." >&2
+    worktrail-run-record append "$RUN" decisions "compile degraded to baseline plan: $COMPILE_NOTE"
+  fi
+  rm -f "$COMPILE_LOG"
 else
   SPEC_REF="docs/specs/$SPEC_ID"
 fi
