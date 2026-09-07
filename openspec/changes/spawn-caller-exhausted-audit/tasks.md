@@ -41,7 +41,7 @@
       (Requirements: A capacity-blocked compile is reported as capacity, not as a bad answer).
       files: src/worktrail/conductor/compile.py, tests/conductor/test_compile_spawn_exhausted.py
 
-- [ ] 2.2 In `src/worktrail/orchestrator/verify.py`: in `_make_live_spawn()`'s inner `spawn()`
+- [x] 2.2 In `src/worktrail/orchestrator/verify.py`: in `_make_live_spawn()`'s inner `spawn()`
       (~line 239), pass the result through `spawnlib.raise_if_exhausted(..., context="<role>
       group worker")` before returning `.text`. In `_spawn_group_worker()`, let `SpawnExhausted`
       propagate (documenting it beside the existing `subprocess.TimeoutExpired` handling, which
