@@ -1,6 +1,6 @@
 ## 1. The shared fail-closed boundary
 
-- [ ] 1.1 In `src/worktrail/orchestrator/spawnlib.py`: add
+- [x] 1.1 In `src/worktrail/orchestrator/spawnlib.py`: add
       `class SpawnExhausted(NoExecutionTarget)` (importing `NoExecutionTarget` from
       `worktrail.runtime.selection` the same way the module already reaches selection) carrying
       `failure_class` and a `context` string, and a module-level

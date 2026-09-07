@@ -117,6 +117,39 @@ class SpawnResult(NamedTuple):
     failure_class: str = ""
 
 
+class SpawnExhausted(NoExecutionTarget):
+    """A spawn gave up without a verdict: every cell was capacity-gated.
+
+    Subclasses `NoExecutionTarget` so a call site that already handles "nothing
+    has capacity" catches this too. `context` names the call site that raised
+    (e.g. `"compile"`, `"impl worker 1.1"`) so the message says which spawn was
+    blocked, and `failure_class` carries the result's own classification
+    (`billing`, `rate_limit`, or empty).
+    """
+
+    def __init__(self, context: str, failure_class: str = ""):
+        self.context = context
+        self.failure_class = failure_class
+        self.attempted = ()
+        detail = f" ({failure_class})" if failure_class else ""
+        ValueError.__init__(
+            self,
+            f"spawn exhausted{detail}: no execution target had capacity for {context}",
+        )
+
+
+def raise_if_exhausted(result, *, context: str):
+    """Fail closed on an exhausted `SpawnResult`, else return it unchanged.
+
+    An exhausted result's `text` is the provider's notice, not a worker answer,
+    so every caller that reads the payload must route through this first. A
+    result object without the attribute (a test double) is passed through.
+    """
+    if getattr(result, "exhausted", False):
+        raise SpawnExhausted(context, getattr(result, "failure_class", "") or "")
+    return result
+
+
 # verified from `claude --help`: bypass perms so a headless worker can edit/commit
 PERM_FLAGS = ["--permission-mode", "bypassPermissions"]
 
