@@ -1087,6 +1087,43 @@ def test_the_rescan_instruction_reaches_the_formatted_prompt(change, tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# Authored prose dependency references (a task that says "depends on 1.2" is
+# ordered by that sentence, not by any file it happens to share)
+# --------------------------------------------------------------------------- #
+def test_the_prompt_instructs_honoring_authored_prose_dependencies():
+    """A stated dependency is an ordering constraint on its own. Without this
+    instruction the model reads `deps` as a file-derived notion and drops the
+    edge whenever the two tasks touch disjoint files -- which is precisely the
+    case where nothing else in the pipeline can recover it."""
+    prompt = conductor_compile.PROMPT
+    assert "Files are not the only source of ordering" in prompt
+    assert "even when the two tasks share no file at all" in prompt
+    assert "an authored dependency outranks anything you infer from `files`" in prompt
+
+
+def test_the_prose_dependency_instruction_reaches_the_formatted_prompt(
+    change, tmp_path
+):
+    """Same guarantee as the final-pass pin: static text is worthless if
+    `.format()` mangles or truncates it on the way into the sent prompt."""
+    spec_id, tasks = _load(change)
+    spawn = RecordingSpawn(
+        _reply(**{t["id"]: {"files": [f"src/{t['id']}.py"], "deps": []} for t in tasks})
+    )
+    conductor_compile.compile_run_plan(
+        change,
+        tasks,
+        spec_id=spec_id,
+        repo=change.parents[2],
+        cache_dir=tmp_path / "plans",
+        spawn=spawn,
+    )
+    sent = spawn.prompts[0]
+    assert "Files are not the only source of ordering" in sent
+    assert "even when the two tasks share no file at all" in sent
+
+
+# --------------------------------------------------------------------------- #
 # The CLI must not exit 0 on a plan that leaves impl tasks scope-less
 # --------------------------------------------------------------------------- #
 def test_the_cli_fails_loudly_when_impl_tasks_stay_scope_less(tmp_path, capsys):

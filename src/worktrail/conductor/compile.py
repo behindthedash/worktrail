@@ -316,6 +316,13 @@ compile-time failure, not a style nit. Where no order exists yet, add a \
 the earlier one, unless the tasks' own descriptions demand the opposite \
 order.
 
+Files are not the only source of ordering. Where a task's own text states \
+that it depends on another task -- "depends on 1.2", "after 2.1", or the \
+same in prose -- that stated dependency is a real ordering constraint and \
+must appear in its `deps`, even when the two tasks share no file at all. Do \
+not drop such an edge on the grounds that the tasks touch disjoint files; an \
+authored dependency outranks anything you infer from `files`.
+
 Rules:
 - Every task id above must appear exactly once. Invent no ids.
 - `deps` may only contain ids from the list above.
