@@ -132,6 +132,26 @@ def test_weekly_limit_wording_also_classifies_as_billing():
     )
 
 
+def test_fable_limit_wording_also_classifies_as_billing():
+    # Live reproduction 2026-09-07 (worktrail-drain-nightly, drain-logs/
+    # 2026-09-07T09-17-01Z.json): Claude Fable's own weekly-cap refusal used
+    # different wording than "weekly limit" ("You've reached your Fable
+    # limit. Switch to another model, or manage usage credits at
+    # claude.ai/settings/usage?from=cc_cli_limit_message, to continue."),
+    # so it fell through to "transport" and tripped the drain's
+    # 2-consecutive-failure circuit breaker after ~33s instead of gating.
+    assert (
+        agent_capacity.classify_failure(
+            1,
+            "You've reached your Fable limit. Switch to another model, or "
+            "manage usage credits at "
+            "claude.ai/settings/usage?from=cc_cli_limit_message, to continue.",
+            "",
+        )
+        == "billing"
+    )
+
+
 def test_parse_explicit_reset_extracts_codex_notice():
     stdout = (
         "ERROR: You've hit your usage limit. Upgrade to Pro "
