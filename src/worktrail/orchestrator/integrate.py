@@ -219,6 +219,16 @@ def _integration_worktree(repo: Path, branch: str, start_ref: str, git_lock=None
         / f"{branch.replace('/', '-')}-{uuid.uuid4().hex[:8]}"
     )
     with lock:
+        # A crashed/killed earlier integration can leave its own throwaway checkout
+        # registered with the group branch still checked out; `worktree add -B` then
+        # fails outright because the branch is in use elsewhere. Reclaim only our own
+        # leftovers (anything under `<repo>-integrate/`) -- a checkout of the same
+        # branch anywhere else is the operator's, and stays untouched.
+        for stale in live._worktree_checkouts_on_branch(repo, branch):
+            if stale.parent.resolve() != wt.parent.resolve():
+                continue
+            _git(repo, "worktree", "remove", "--force", str(stale), check=False)
+            shutil.rmtree(stale, ignore_errors=True)
         _git(
             repo, "worktree", "prune", check=False
         )  # clear stale registrations from crashes
