@@ -899,6 +899,110 @@ class OpenSpecStaleBookkeeping(unittest.TestCase):
         self.assertEqual(result["stale_task_ids"], ["1.1"])
         self.assertIn("confirm & close", result["next_action"])
 
+    def test_identifier_absent_from_shipped_file_is_not_stale(self):
+        change = self._change("- [ ] 1.1 Add `superseded_names` handling\n")
+        self._cache(change, {"1.1": ["src/export.py"]})
+        self._commit(["src/export.py"])
+
+        result = dashboard._safe_detect_openspec(change)
+
+        self.assertEqual(result["stage"], "ready-to-implement")
+        self.assertEqual(result["next_action"], "orchestrator")
+
+    def test_identifier_present_in_shipped_file_is_stale(self):
+        change = self._change("- [ ] 1.1 Add `superseded_names` handling\n")
+        self._cache(change, {"1.1": ["src/export.py"]})
+        path = self.repo / "src" / "export.py"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("superseded_names = []\n")
+        subprocess.run(
+            ["git", "-C", str(self.repo), "add", "src/export.py"], check=True
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repo), "commit", "-qm", "ship"], check=True
+        )
+
+        result = dashboard._safe_detect_openspec(change)
+
+        self.assertEqual(result["stage"], "stale-bookkeeping")
+        self.assertEqual(result["stale_task_ids"], ["1.1"])
+
+    def test_one_absent_identifier_of_several_is_not_stale(self):
+        change = self._change(
+            "- [ ] 1.1 Add `superseded_names` and `CANCELLED` handling\n"
+        )
+        self._cache(change, {"1.1": ["src/export.py"]})
+        path = self.repo / "src" / "export.py"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("superseded_names = []\n")
+        subprocess.run(
+            ["git", "-C", str(self.repo), "add", "src/export.py"], check=True
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repo), "commit", "-qm", "ship"], check=True
+        )
+
+        result = dashboard._safe_detect_openspec(change)
+
+        self.assertEqual(result["stage"], "ready-to-implement")
+
+    def test_prose_only_task_keeps_file_level_verdict(self):
+        change = self._change("- [ ] 1.1 Implement the exporter end to end\n")
+        self._cache(change, {"1.1": ["src/export.py"]})
+        self._commit(["src/export.py"])
+
+        result = dashboard._safe_detect_openspec(change)
+
+        self.assertEqual(result["stage"], "stale-bookkeeping")
+        self.assertEqual(result["stale_task_ids"], ["1.1"])
+
+    def _ship(self, path_rel: str, text: str) -> None:
+        path = self.repo / path_rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        subprocess.run(["git", "-C", str(self.repo), "add", path_rel], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo), "commit", "-qm", "ship"], check=True
+        )
+
+    def test_symbol_verified_stale_reports_behavior_evidence(self):
+        change = self._change("- [ ] 1.1 Add `superseded_names` handling\n")
+        self._cache(change, {"1.1": ["src/export.py"]})
+        self._ship("src/export.py", "superseded_names = []\n")
+
+        result = dashboard._safe_detect_openspec(change)
+
+        self.assertEqual(result["stage"], "stale-bookkeeping")
+        self.assertEqual(result["stale_evidence"], "behavior")
+        self.assertIn("files already merged on base", result["next_action"])
+
+    def test_unverified_stale_reports_files_only_evidence(self):
+        change = self._change(
+            "- [ ] 1.1 Add `superseded_names` handling\n"
+            "- [ ] 1.2 Implement the exporter end to end\n"
+        )
+        self._cache(change, {"1.1": ["src/export.py"], "1.2": ["src/render.py"]})
+        self._ship("src/export.py", "superseded_names = []\n")
+        self._ship("src/render.py", "shipped\n")
+
+        result = dashboard._safe_detect_openspec(change)
+
+        self.assertEqual(result["stage"], "stale-bookkeeping")
+        self.assertEqual(result["stale_evidence"], "files-only")
+        self.assertEqual(result["stale_task_ids"], ["1.1", "1.2"])
+        self.assertIn("file-level evidence only", result["next_action"])
+        self.assertIn("confirm the behavior actually shipped", result["next_action"])
+
+    def test_ready_to_implement_emits_no_stale_evidence(self):
+        change = self._change("- [ ] 1.1 Add `superseded_names` handling\n")
+        self._cache(change, {"1.1": ["src/export.py"]})
+        self._commit(["src/export.py"])
+
+        result = dashboard._safe_detect_openspec(change)
+
+        self.assertEqual(result["stage"], "ready-to-implement")
+        self.assertNotIn("stale_evidence", result)
+
     def test_cached_missing_scope_stays_ready_to_implement(self):
         change = self._change()
         self._cache(change, {"1.1": ["src/missing.py"]})

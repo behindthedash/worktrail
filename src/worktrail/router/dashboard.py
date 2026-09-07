@@ -664,6 +664,55 @@ def _task_files_are_shipped(
     return True
 
 
+_BACKTICK_SPAN_RE = re.compile(r"`([^`]+)`")
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{2,}$")
+
+
+def _task_identifiers(task: dict[str, Any]) -> list[str]:
+    """Code-like identifiers a task's own text claims, deterministically.
+
+    Backtick-quoted spans only; a token keeps its place if it matches
+    `[A-Za-z_][A-Za-z0-9_]{2,}` after a trailing `()` is stripped. Tokens
+    containing `/` or `.` (paths, dotted attributes) and tokens that merely
+    name one of the task's declared files are dropped. Never calls a model.
+    """
+    declared = {str(f) for f in task.get("files") or []}
+    declared |= {Path(f).name for f in declared}
+    text = " ".join(str(task.get(key) or "") for key in ("title", "group_title"))
+    found: list[str] = []
+    for span in _BACKTICK_SPAN_RE.findall(text):
+        for raw in span.split():
+            token = raw.strip().strip(",;:()[]{}\"'")
+            token = token.removesuffix("()")
+            if not token or "/" in token or "." in token:
+                continue
+            if token in declared or not _IDENTIFIER_RE.match(token):
+                continue
+            if token not in found:
+                found.append(token)
+    return found
+
+
+def _identifiers_present(repo: Path, files: list[str], identifiers: list[str]) -> bool:
+    """Whether every identifier appears in the current on-disk text of `files`.
+
+    An unreadable (or missing, or binary) file contributes nothing, so a task
+    whose identifiers live only in such a file is not confirmed -- the
+    conservative direction, which keeps the task orchestrator-eligible.
+    """
+    if not identifiers:
+        return True
+    blob: list[str] = []
+    for declared in files:
+        path = Path(repo) / declared
+        try:
+            blob.append(path.read_text())
+        except (OSError, UnicodeDecodeError):
+            continue
+    haystack = "\n".join(blob)
+    return all(identifier in haystack for identifier in identifiers)
+
+
 def _pending_impl_stale(
     spec_dir: Path, tasks: list[dict[str, Any]] | None = None
 ) -> list[str]:
@@ -710,8 +759,13 @@ def _pending_impl_stale(
 
 def _pending_openspec_stale(
     change_dir: Path, spec_id: str, tasks: list[dict[str, Any]]
-) -> list[str]:
-    """Ids of pending OpenSpec impl tasks whose cached plan files shipped.
+) -> list[tuple[str, bool]]:
+    """Pending OpenSpec impl tasks whose cached plan files shipped.
+
+    Each entry is `(task_id, symbol_verified)`, where `symbol_verified` is True
+    when the task claimed identifiers and every one of them was found in the
+    declared files -- i.e. the verdict rests on behavior evidence, not just on
+    the files having been touched.
 
     OpenSpec task artifacts do not carry file scope, so this check only trusts a
     RunPlan cached for the change's current fingerprint. A cache miss or a
@@ -741,11 +795,15 @@ def _pending_openspec_stale(
     all_files = sorted({file for task in candidates for file in task["files"]})
     tracked = _git_tracked(repo, all_files)
     since_ts = _dir_creation_timestamp(str(repo), str(change_dir))
-    return [
-        task["id"]
-        for task in candidates
-        if _task_files_are_shipped(repo, task["files"], tracked, since_ts)
-    ]
+    stale: list[tuple[str, bool]] = []
+    for task in candidates:
+        if not _task_files_are_shipped(repo, task["files"], tracked, since_ts):
+            continue
+        identifiers = _task_identifiers(task)
+        if not _identifiers_present(repo, task["files"], identifiers):
+            continue
+        stale.append((task["id"], bool(identifiers)))
+    return stale
 
 
 def _pending_tail_stale(
@@ -1385,10 +1443,12 @@ def _safe_detect_openspec(change_dir: Path) -> dict[str, Any]:
         spec_id, tasks = _taskformats.load_spec(change_dir)
         pending = [t for t in tasks if t.get("status") != "completed"]
         stale_ids: list[str] = []
+        stale_evidence: str | None = None
         if not tasks:
             stage, next_action = "needs-tasks", "create tasks"
         elif pending:
-            stale_ids = _pending_openspec_stale(change_dir, spec_id, tasks)
+            stale_entries = _pending_openspec_stale(change_dir, spec_id, tasks)
+            stale_ids = [task_id for task_id, _verified in stale_entries]
             pending_impl = [
                 t for t in pending if t.get("kind", "impl") not in _TAIL_KINDS
             ]
@@ -1397,13 +1457,20 @@ def _safe_detect_openspec(change_dir: Path) -> dict[str, Any]:
             )
             if pending_impl and pending_impl_real == 0:
                 suffix = f" ({', '.join(stale_ids)})" if stale_ids else ""
-                stage, next_action = (
-                    "stale-bookkeeping",
-                    (
+                symbol_verified = all(verified for _task_id, verified in stale_entries)
+                stale_evidence = "behavior" if symbol_verified else "files-only"
+                if symbol_verified:
+                    next_action = (
                         f"confirm & close{suffix} (files already merged on base; "
                         "flip task status → completed, no orchestrator)"
-                    ),
-                )
+                    )
+                else:
+                    next_action = (
+                        f"confirm & close{suffix} (file-level evidence only; confirm "
+                        "the behavior actually shipped before flipping task status "
+                        "→ completed, no orchestrator)"
+                    )
+                stage = "stale-bookkeeping"
             else:
                 stage, next_action = "ready-to-implement", "orchestrator"
         elif _journal_verify_pending(change_dir):
@@ -1440,6 +1507,8 @@ def _safe_detect_openspec(change_dir: Path) -> dict[str, Any]:
         }
         if pending and stale_ids:
             info["stale_task_ids"] = stale_ids
+        if stale_evidence is not None:
+            info["stale_evidence"] = stale_evidence
         repo = change_dir.parent.parent.parent
         delta_drift = _openspec_delta_drift(change_dir, repo)
         if delta_drift:
