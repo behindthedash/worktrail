@@ -1728,6 +1728,57 @@ def test_drain_weekly_limit_persists_gate_and_stops_as_capacity_gated(
         assert cache["providers"][agent]["failure_class"] == "billing"
 
 
+def test_drain_fable_limit_persists_gate_and_stops_as_capacity_gated(
+    tmp_path, monkeypatch
+):
+    """Live reproduction 2026-09-07 (worktrail-drain-nightly, drain-logs/
+    2026-09-07T09-17-01Z.json): Claude Fable's own weekly-cap refusal ("You've
+    reached your Fable limit...") used different wording than "weekly limit",
+    so it previously fell through to "transport" and tripped the drain's
+    2-consecutive-failure circuit breaker as plain failures after ~33s instead
+    of gating as capacity-exhausted.
+    """
+    fake = FakeQueue([2, 2, 2, 0])
+    install_fake_queue(monkeypatch, fake)
+    config = make_config(tmp_path, agent="claude", fallback_agents=["codex"])
+    config.capacity_cache.write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "claude:sonnet": {"status": "available"},
+                    "codex:gpt-5": {"status": "available"},
+                }
+            }
+        )
+    )
+    seen_agents = []
+
+    def spawner(cmd, timeout):
+        seen_agents.append(cmd[0])
+        return SpawnOutcome(
+            1,
+            "You've reached your Fable limit. Switch to another model, or "
+            "manage usage credits at "
+            "claude.ai/settings/usage?from=cc_cli_limit_message, to continue.",
+            "",
+        )
+
+    summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
+
+    assert seen_agents == ["claude", "codex"]
+    assert len(summary["iterations"]) == 2
+    assert all(item["kind"] == "blocked" for item in summary["iterations"])
+    assert all(
+        item["state"] == "blocked_capacity_billing" for item in summary["iterations"]
+    )
+    assert summary["stopped"].startswith("capacity_gated")
+
+    cache = json.loads(config.capacity_cache.read_text())
+    for agent in ("claude", "codex"):
+        assert cache["providers"][agent]["status"] == "unavailable"
+        assert cache["providers"][agent]["failure_class"] == "billing"
+
+
 def test_drain_writes_transcript_when_transcript_dir_configured(tmp_path, monkeypatch):
     # End-to-end regression for the live incident (2026-08-03): a no_pick
     # iteration left no trace of what the one-shot actually did, so answering

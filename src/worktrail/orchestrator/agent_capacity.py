@@ -372,6 +372,14 @@ def classify_failure(returncode: int, stdout: str, stderr: str) -> str:
     # failures instead of a capacity gate). That notice's "resets ..." clause is
     # itself parsed by parse_explicit_reset, so the gate carries the provider's
     # own reset instant rather than the generic "billing" cooldown.
+    # "fable limit"/"reached your" cover Claude Fable's own wording (confirmed
+    # live 2026-09-07: "You've reached your Fable limit. Switch to another
+    # model, or manage usage credits at claude.ai/settings/usage?..." previously
+    # fell through to "transport", tripping worktrail-drain's circuit breaker
+    # after only two hits). This notice carries no reset timestamp, so
+    # parse_explicit_reset returns nothing and the gate falls back to the
+    # generic "billing" cooldown (DEFAULT_COOLDOWNS["billing"]) instead of a
+    # provider-derived reset.
     if any(
         token in text
         for token in (
@@ -381,6 +389,8 @@ def classify_failure(returncode: int, stdout: str, stderr: str) -> str:
             "usage limit",
             "session limit",
             "weekly limit",
+            "fable limit",
+            "reached your",
         )
     ):
         return "billing"
