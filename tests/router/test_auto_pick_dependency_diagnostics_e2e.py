@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """End-to-end regression for the 2026-08-18 comma-joined `blocked-by` incident.
 
 A brief whose single `blocked-by` item comma-joined three prerequisite IDs read
