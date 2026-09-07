@@ -42,9 +42,13 @@ construction — nothing accumulates across iterations.
   plain `failed` iteration.
 - **A record-less iteration that classifies as an account-level failure**
   (`agent_capacity.classify_failure`: auth/billing, the latter also covering "usage limit"/
-  "session limit" wording) is `blocked`, not `failed` — it does not count toward
-  `circuit_breaker`, and persists a bare-agent-keyed capacity gate with a `retry_after` parsed
-  from the notice when present, else the class's generic cooldown.
+  "session limit"/"weekly limit"/"fable limit" wording — the last confirmed live 2026-09-07
+  against Claude Fable's "You've reached your Fable limit..." refusal, which previously fell
+  through to "transport" and tripped the circuit breaker after only two hits) is `blocked`, not
+  `failed` — it does not count toward `circuit_breaker`, and persists a bare-agent-keyed capacity
+  gate with a `retry_after` parsed from the notice when present, else the class's generic
+  cooldown (the Fable notice carries no reset timestamp, so it always falls back to the generic
+  billing cooldown).
 - **Agent selection re-runs every iteration** in fixed priority order (`[--agent] +
   --fallback-agent...`, `select_available_agent`) — a gated primary is skipped in favor of a
   fallback automatically and picked back up automatically once its gate expires. Only
@@ -70,4 +74,4 @@ construction — nothing accumulates across iterations.
   fallback selection, and `_land_remediation_pr` (the single `land_pr` seam for remediation PRs)
 
 ---
-**Last Updated:** 2026-09-05
+**Last Updated:** 2026-09-07
