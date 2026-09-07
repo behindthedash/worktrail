@@ -1,6 +1,6 @@
 ## 1. Behavior-evidence gate on OpenSpec stale detection
 
-- [ ] 1.1 Implement requirement: A task's claimed identifiers must be present before it is
+- [x] 1.1 Implement requirement: A task's claimed identifiers must be present before it is
       classified stale. In `src/worktrail/router/dashboard.py`, add a module-level helper that
       extracts identifier evidence from a task's own text (backticked code-like tokens matching
       `[A-Za-z_][A-Za-z0-9_]{2,}` after stripping a trailing `()`, dropping tokens containing `/`
@@ -18,7 +18,7 @@
       identifiers with one absent is NOT stale; (d) a prose-only task with no extractable
       identifiers keeps the file-level verdict.
 
-- [ ] 1.2 Implement requirement: OpenSpec stale-bookkeeping reporting matches the devkit path's
+- [x] 1.2 Implement requirement: OpenSpec stale-bookkeeping reporting matches the devkit path's
       shape. Have `_pending_openspec_stale` also report, per stale task, whether its verdict
       carried identifier evidence, and in `_safe_detect_openspec` set `stale_evidence` to
       `"behavior"` when every stale task was symbol-verified and `"files-only"` otherwise, using
