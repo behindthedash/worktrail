@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """capacity-crash-resume-retryable 1.1: a drive() crash caused by capacity
 exhaustion (`NoExecutionTarget` -- every routing cell gated) says nothing about
 the task, so it must be journaled `terminal_status: "retryable"`. Replay then
