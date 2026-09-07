@@ -1,6 +1,6 @@
 ## 1. Classify drive crashes before journaling
 
-- [ ] 1.1 In `src/worktrail/orchestrator/live.py`: add a module-level
+- [x] 1.1 In `src/worktrail/orchestrator/live.py`: add a module-level
       `_crash_terminal_status(exc: BaseException) -> str` that lazily imports
       `NoExecutionTarget` from `..runtime.selection` (matching the existing lazy import at
       line ~2908) and returns `"retryable"` for an `isinstance` match, `"failed"` otherwise
