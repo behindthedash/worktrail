@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """A capacity-blocked task worker raises instead of reporting back (2.3).
 
 `LiveSpawn.__call__` now routes its result through `spawnlib.raise_if_exhausted`
