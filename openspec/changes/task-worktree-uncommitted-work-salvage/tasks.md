@@ -1,6 +1,6 @@
 ## 1. Preserve and report uncommitted task-worktree work
 
-- [ ] 1.1 In `src/worktrail/orchestrator/worktree.py`, add a best-effort
+- [x] 1.1 In `src/worktrail/orchestrator/worktree.py`, add a best-effort
       salvage step to `WorktreeManager.remove` that runs before the
       `git worktree remove` call: check `git -C <worktree> status --porcelain
       --untracked-files=no` and, when non-empty, `add -u` and commit the
