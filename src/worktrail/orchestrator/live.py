@@ -1368,6 +1368,18 @@ def _planned_tasks_without_llm(
     return merged
 
 
+def _crash_terminal_status(exc: BaseException) -> str:
+    """Classify an unexpected drive() crash for the journal.
+
+    A capacity-exhaustion crash (`NoExecutionTarget`: every routing cell gated)
+    says nothing about the task itself, so it is journaled "retryable" -- replay
+    leaves the task pending and resume re-dispatches it without `--fresh`. Any
+    other crash keeps today's non-retryable "failed"."""
+    from ..runtime.selection import NoExecutionTarget
+
+    return "retryable" if isinstance(exc, NoExecutionTarget) else "failed"
+
+
 def _journal_failure_entry(
     task: dict,
     role: str,
@@ -4616,12 +4628,26 @@ def live_run_real(
             drive(task)
         except Exception as e:  # noqa: BLE001 -- isolate one worker's failure
             now = time.time()
-            print(f"{_ts()}   !! {task['id']} drive crashed: {e!r} -- marking failed")
+            terminal_status = _crash_terminal_status(e)
+            if terminal_status == "retryable":
+                print(
+                    f"{_ts()}   !! {task['id']} no capacity: {e} "
+                    f"-- will re-dispatch on resume"
+                )
+            else:
+                print(
+                    f"{_ts()}   !! {task['id']} drive crashed: {e!r} -- marking failed"
+                )
             with state_lock:
                 task["status"] = "failed"
                 entries.append(
                     _journal_failure_entry(
-                        task, "drive", f"drive crashed: {e!r}", now, now
+                        task,
+                        "drive",
+                        f"drive crashed: {e!r}",
+                        now,
+                        now,
+                        terminal_status=terminal_status,
                     )
                 )
                 record()
@@ -5853,12 +5879,26 @@ def _pipeline_scheduler(
             _drive(task)
         except Exception as exc:  # noqa: BLE001
             now = time.time()
-            print(f"{_ts()}   !! {task['id']} drive crashed: {exc!r} -- marking failed")
+            terminal_status = _crash_terminal_status(exc)
+            if terminal_status == "retryable":
+                print(
+                    f"{_ts()}   !! {task['id']} no capacity: {exc} "
+                    f"-- will re-dispatch on resume"
+                )
+            else:
+                print(
+                    f"{_ts()}   !! {task['id']} drive crashed: {exc!r} -- marking failed"
+                )
             with state_lock:
                 task["status"] = "failed"
                 entries.append(
                     _journal_failure_entry(
-                        task, "drive", f"drive crashed: {exc!r}", now, now
+                        task,
+                        "drive",
+                        f"drive crashed: {exc!r}",
+                        now,
+                        now,
+                        terminal_status=terminal_status,
                     )
                 )
                 _record()
