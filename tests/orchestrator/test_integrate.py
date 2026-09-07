@@ -2003,6 +2003,36 @@ class IntegrationWorktreeIsolation(unittest.TestCase):
                 pass
             self.assertIn("unable to create worktree registration", str(ctx.exception))
 
+    def test_leftover_integrate_checkout_is_reclaimed(self):
+        """A crashed earlier integration leaves its throwaway checkout registered
+        with the group branch still checked out; the next run must reclaim it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, base = self._init_repo(tmp)
+            leftover = repo.parent / f"{repo.name}-integrate" / "run-1-base-deadbeef"
+            _run(repo, "worktree", "add", "-f", "-B", "run-1/base", str(leftover), base)
+
+            with integrate._integration_worktree(repo, "run-1/base", base) as iw:
+                self.assertTrue(Path(iw).exists())
+                self.assertNotEqual(Path(iw), leftover)
+                self.assertFalse(
+                    leftover.exists(), "leftover integrate checkout must be reclaimed"
+                )
+
+    def test_group_branch_checkout_outside_integrate_dir_is_left_alone(self):
+        """A checkout of the group branch that is NOT one of our throwaway
+        integrate trees belongs to the operator -- never reclaim it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, base = self._init_repo(tmp)
+            outside = repo.parent / "operator-tree"
+            _run(repo, "worktree", "add", "-f", "-B", "run-1/base", str(outside), base)
+
+            with (
+                self.assertRaises(integrate.live.WorktreeAddError),
+                integrate._integration_worktree(repo, "run-1/base", base),
+            ):
+                pass
+            self.assertTrue(outside.exists(), "outside checkout must survive")
+
 
 class SpecFolderOwnership(unittest.TestCase):
     """Fix 1: only the spec-carrier group carries docs/specs/<spec_id>/.
