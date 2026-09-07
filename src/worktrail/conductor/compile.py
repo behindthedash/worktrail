@@ -141,6 +141,12 @@ def _git_repo_root(path: Path) -> Path | None:
 # together. Extraction is deterministic and additive -- it never removes an
 # edge the format or the model already declared.
 _DEPENDS_ON_RE = re.compile(r"\bdepends?\s+on\b", re.IGNORECASE)
+# "after <ids>" states the same edge in the other direction of phrasing and is
+# just as common in authored checklists. It is looser than "depends on",
+# though: "after" also introduces ordinary prose ("after 2 retries"), so an id
+# it names that matches no task is dropped rather than reported.
+_AFTER_RE = re.compile(r"\bafter\b", re.IGNORECASE)
+_DEP_PHRASE_RE = re.compile(r"\bdepends?\s+on\b|\bafter\b", re.IGNORECASE)
 _REF_TOKEN_RE = re.compile(r"\s*([A-Za-z0-9][\w.-]*)")
 # Authors join ids with a comma, an "and", an Oxford ", and", or a slash; each
 # is unambiguous between two id-shaped tokens, so all four advance the scan.
@@ -149,38 +155,53 @@ _REF_SEP_RE = re.compile(r"\s*(?:,\s*(?:and\s+)?|\s+and\s+|\s*/\s*)")
 _REF_PREFIX_WORDS = frozenset({"task", "tasks"})
 
 
-def extract_prose_dep_refs(text: str) -> list[str]:
-    """Ids named by a "depends on <ids>" sentence in `text`, in authored order.
+def _scan_prose_dep_refs(text: str) -> list[tuple[str, bool]]:
+    """`(id, strict)` per reference, in authored order, de-duplicated by id.
 
-    Ids may be joined by a comma, an "and", an Oxford ", and", or a slash, and
-    may carry a "Task " label. Otherwise only id-shaped tokens are collected: a
-    token carrying no digit ends the list, so ordinary prose ("depends on the
-    parser landing") yields nothing rather than a bogus reference that would
-    then be reported as unresolvable. A trailing sentence period is stripped --
-    ids contain dots, so the scan cannot simply stop at the first one.
+    `strict` is True when the id was named by a "depends on" phrase -- the
+    phrasing whose unresolvable ids are reported. Every dependency phrase in
+    the text is scanned, not only the first, so a line may state edges in both
+    phrasings; an id named by both is strict.
     """
-    match = _DEPENDS_ON_RE.search(text or "")
-    if not match:
-        return []
     refs: list[str] = []
-    pos = match.end()
-    while True:
-        token = _REF_TOKEN_RE.match(text, pos)
-        if token and token.group(1).lower() in _REF_PREFIX_WORDS:
-            token = _REF_TOKEN_RE.match(text, token.end())
-        if not token:
-            break
-        ref = token.group(1).rstrip(".")
-        if not ref or not any(c.isdigit() for c in ref):
-            break
-        if ref not in refs:
-            refs.append(ref)
-        pos = token.end()
-        sep = _REF_SEP_RE.match(text, pos)
-        if not sep:
-            break
-        pos = sep.end()
-    return refs
+    strict: dict[str, bool] = {}
+    for match in _DEP_PHRASE_RE.finditer(text or ""):
+        is_strict = _DEPENDS_ON_RE.match(text, match.start()) is not None
+        pos = match.end()
+        while True:
+            token = _REF_TOKEN_RE.match(text, pos)
+            if token and token.group(1).lower() in _REF_PREFIX_WORDS:
+                token = _REF_TOKEN_RE.match(text, token.end())
+            if not token:
+                break
+            ref = token.group(1).rstrip(".")
+            if not ref or not any(c.isdigit() for c in ref):
+                break
+            if ref not in strict:
+                refs.append(ref)
+                strict[ref] = is_strict
+            elif is_strict:
+                strict[ref] = True
+            pos = token.end()
+            sep = _REF_SEP_RE.match(text, pos)
+            if not sep:
+                break
+            pos = sep.end()
+    return [(ref, strict[ref]) for ref in refs]
+
+
+def extract_prose_dep_refs(text: str) -> list[str]:
+    """Ids named by a "depends on <ids>" or "after <ids>" phrase in `text`.
+
+    Returned in authored order and de-duplicated. Ids may be joined by a comma,
+    an "and", an Oxford ", and", or a slash, and may carry a "Task " label.
+    Otherwise only id-shaped tokens are collected: a token carrying no digit
+    ends the list, so ordinary prose ("depends on the parser landing") yields
+    nothing rather than a bogus reference that would then be reported as
+    unresolvable. A trailing sentence period is stripped -- ids contain dots, so
+    the scan cannot simply stop at the first one.
+    """
+    return [ref for ref, _ in _scan_prose_dep_refs(text)]
 
 
 def _task_prose(task: Mapping[str, Any]) -> str:
@@ -195,22 +216,26 @@ def prose_dep_edges(
     """`{task id: referenced ids}` plus a problem per reference matching no task.
 
     A self-reference is dropped silently (it is not an edge, and adding one
-    would deadlock the frontier); a reference to an id that is not in the change
-    is a compile problem naming both the referring task and the identifier.
+    would deadlock the frontier); a "depends on" reference to an id that is not
+    in the change is a compile problem naming both the referring task and the
+    identifier. An unmatched "after" identifier is dropped silently instead --
+    "after" reads as ordinary prose far more often than "depends on" does, so
+    reporting it would fail compiles over sentences that state no edge at all.
     """
     ids = {str(t.get("id")) for t in tasks}
     edges: dict[str, list[str]] = {}
     problems: list[str] = []
     for task in tasks:
         tid = str(task.get("id"))
-        for ref in extract_prose_dep_refs(_task_prose(task)):
+        for ref, strict in _scan_prose_dep_refs(_task_prose(task)):
             if ref == tid:
                 continue
             if ref not in ids:
-                problems.append(
-                    f"{tid}: prose dependency reference {ref!r} matches no task "
-                    "in the change"
-                )
+                if strict:
+                    problems.append(
+                        f"{tid}: prose dependency reference {ref!r} matches no task "
+                        "in the change"
+                    )
                 continue
             edges.setdefault(tid, []).append(ref)
     return edges, problems
