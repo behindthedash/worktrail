@@ -142,17 +142,22 @@ def _git_repo_root(path: Path) -> Path | None:
 # edge the format or the model already declared.
 _DEPENDS_ON_RE = re.compile(r"\bdepends?\s+on\b", re.IGNORECASE)
 _REF_TOKEN_RE = re.compile(r"\s*([A-Za-z0-9][\w.-]*)")
-_REF_SEP_RE = re.compile(r"\s*,\s*")
+# Authors join ids with a comma, an "and", an Oxford ", and", or a slash; each
+# is unambiguous between two id-shaped tokens, so all four advance the scan.
+_REF_SEP_RE = re.compile(r"\s*(?:,\s*(?:and\s+)?|\s+and\s+|\s*/\s*)")
+# A bare "Task"/"Tasks" label in front of an id is not itself a reference.
+_REF_PREFIX_WORDS = frozenset({"task", "tasks"})
 
 
 def extract_prose_dep_refs(text: str) -> list[str]:
     """Ids named by a "depends on <ids>" sentence in `text`, in authored order.
 
-    Only comma-joined, id-shaped tokens are collected: a token carrying no
-    digit ends the list, so ordinary prose ("depends on the parser landing")
-    yields nothing rather than a bogus reference that would then be reported as
-    unresolvable. A trailing sentence period is stripped -- ids contain dots, so
-    the scan cannot simply stop at the first one.
+    Ids may be joined by a comma, an "and", an Oxford ", and", or a slash, and
+    may carry a "Task " label. Otherwise only id-shaped tokens are collected: a
+    token carrying no digit ends the list, so ordinary prose ("depends on the
+    parser landing") yields nothing rather than a bogus reference that would
+    then be reported as unresolvable. A trailing sentence period is stripped --
+    ids contain dots, so the scan cannot simply stop at the first one.
     """
     match = _DEPENDS_ON_RE.search(text or "")
     if not match:
@@ -161,6 +166,8 @@ def extract_prose_dep_refs(text: str) -> list[str]:
     pos = match.end()
     while True:
         token = _REF_TOKEN_RE.match(text, pos)
+        if token and token.group(1).lower() in _REF_PREFIX_WORDS:
+            token = _REF_TOKEN_RE.match(text, token.end())
         if not token:
             break
         ref = token.group(1).rstrip(".")

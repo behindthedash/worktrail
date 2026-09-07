@@ -1992,6 +1992,34 @@ def test_extract_prose_dep_refs_none_when_no_reference():
     )
 
 
+def test_extract_prose_dep_refs_and_joined_and_prefixed_ids():
+    # An "and", an Oxford ", and", a slash, and a "Task " label are all
+    # unambiguous between id-shaped tokens; stopping at any of them would drop
+    # an authored edge silently, which is the failure this extraction exists to
+    # remove.
+    assert conductor_compile.extract_prose_dep_refs(
+        "Verification pass; depends on 2.1, 3.1, and 3.2."
+    ) == ["2.1", "3.1", "3.2"]
+    assert conductor_compile.extract_prose_dep_refs("depends on 1.1 and 3.6") == [
+        "1.1",
+        "3.6",
+    ]
+    assert conductor_compile.extract_prose_dep_refs("depends on 4.1/4.2") == [
+        "4.1",
+        "4.2",
+    ]
+    assert conductor_compile.extract_prose_dep_refs("depends on Task 1.1") == ["1.1"]
+    assert conductor_compile.extract_prose_dep_refs("depends on tasks 1.1, 1.2") == [
+        "1.1",
+        "1.2",
+    ]
+    # The false-positive guard survives the wider separators: an "and" followed
+    # by ordinary prose still ends the list.
+    assert conductor_compile.extract_prose_dep_refs(
+        "depends on 2.1 and the parser landing"
+    ) == ["2.1"]
+
+
 def test_prose_dep_edges_drops_a_self_reference():
     tasks = [{"id": "1.1", "title": "Do the thing; depends on 1.1."}]
     edges, problems = conductor_compile.prose_dep_edges(tasks)
