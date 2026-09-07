@@ -89,16 +89,16 @@ these reasons:
 - `unparsable-frontmatter` — brief's frontmatter syntax is invalid and cannot be parsed.
   Repair the frontmatter YAML syntax.
 
-- `not-yet-due` — brief's `start-date` is in the future (if present). Wait until the
-  start date passes.
+- `not-yet-due` — brief's `next-check-after` timestamp is in the future (if present). Wait
+  until the `next-check-after` time passes.
 
-- `recently-released` — brief was recently completed and released, and is still in the
-  grace period before being removed from the queue. Check the queue again after the grace
-  period expires.
+- `recently-released` — brief was recently released (returned to the queue unfinished),
+  and is still in the grace period before becoming eligible for re-pick. Check the queue
+  again after the grace period (20 minutes) expires.
 
-- `remote-spec-branch:<branch>` — brief's spec is stored on a remote branch (not the local
-  default branch). Check out the required spec branch locally or update the brief's spec
-  location.
+- `remote-spec-branch:<branch>` — another session already has a branch for this brief's
+  spec on origin (duplicate work in progress elsewhere). Wait for that branch to land or
+  coordinate with the session holding it.
 
 - `orchestrator-run-active:<lock>` — another session is actively orchestrating this repo (run
   lock held). Wait for the run to complete or investigate the session if it is stalled.
