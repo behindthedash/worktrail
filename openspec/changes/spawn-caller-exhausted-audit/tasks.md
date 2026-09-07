@@ -19,7 +19,7 @@
 
 ## 2. Fix the three deciding callers
 
-- [ ] 2.1 In `src/worktrail/conductor/compile.py`: wrap both compile spawns --
+- [x] 2.1 In `src/worktrail/conductor/compile.py`: wrap both compile spawns --
       `_default_spawn()`'s `spawnlib.spawn_agent(...)` (~line 444) and
       `_spawn_with_explicit_cell()`'s (~line 471) -- in `spawnlib.raise_if_exhausted(...,
       context="compile")` before `.text` is read, so no payload is ever extracted from a
