@@ -2515,7 +2515,36 @@ class WorkerScopeViolation(unittest.TestCase):
         res = v.run_all([FEATURE], {"feature-1": "run/feature-1"})
 
         self.assertEqual(res["merged"], [])
-        self.assertIn("resolve worker failed", res["quarantined"]["feature-1"])
+        self.assertEqual(res["quarantined"], {})
+        self.assertIn(
+            ".github/workflows/ci.yml", res["forbidden_path_violations"]["feature-1"]
+        )
+
+    def test_forbidden_path_violation_is_recorded_per_group(self):
+        """The strike-failure return alone loses *why* the worker failed. A
+        confirmed deny-list touch is recorded per group so `verify_one` can
+        surface it as its own outcome (task 3.1) rather than a generic reason."""
+        run = self.ScopeCheckRun(
+            {"run/feature-1": [view(mergeable="CONFLICTING")]},
+            touched=[".github/workflows/ci.yml"],
+        )
+        v = mk(run, FakeSpawn(), "/tmp/x")  # FakeSpawn reports status: "success"
+        v.run_all([FEATURE], {"feature-1": "run/feature-1"})
+
+        self.assertIn("feature-1", v._forbidden_path_violations)
+        detail = v._forbidden_path_violations["feature-1"]
+        self.assertIn(".github/workflows/ci.yml", detail)
+        self.assertIn("resolve", detail)
+
+    def test_no_forbidden_path_violation_recorded_when_diff_in_scope(self):
+        run = self.ScopeCheckRun(
+            {"run/feature-1": [view(mergeable="CONFLICTING"), view()]},
+            touched=["src/app.py"],
+        )
+        v = mk(run, FakeSpawn(), "/tmp/x")
+        v.run_all([FEATURE], {"feature-1": "run/feature-1"})
+
+        self.assertEqual(v._forbidden_path_violations, {})
 
     def test_forbidden_docs_specs_edit_also_fails(self):
         run = self.ScopeCheckRun(
@@ -2526,7 +2555,65 @@ class WorkerScopeViolation(unittest.TestCase):
         res = v.run_all([FEATURE], {"feature-1": "run/feature-1"})
 
         self.assertEqual(res["merged"], [])
-        self.assertIn("resolve worker failed", res["quarantined"]["feature-1"])
+        self.assertEqual(res["quarantined"], {})
+        self.assertIn(
+            "docs/specs/001-x/tasks/TASK-001.md",
+            res["forbidden_path_violations"]["feature-1"],
+        )
+
+    def test_forbidden_path_violation_surfaces_distinctly_not_merged(self):
+        """End-to-end through run_all, mirroring the self-merge case: a resolve
+        worker spawned to fix a CONFLICTING PR touches a deny-listed path and
+        still reports status=success, and the PR is then observed MERGED on the
+        final live recheck. That recheck must be gated off for a CONFIRMED
+        forbidden-path violation -- otherwise the group lands in `merged` and
+        the violation is silently lost."""
+        run = self.ScopeCheckRun(
+            {
+                "run/feature-1": [
+                    view(mergeable="CONFLICTING"),  # ensure_mergeable's initial check
+                    view(state="OPEN"),  # _spawn_group_worker's pre-spawn status
+                    view(state="OPEN"),  # _detect_self_merge's post-spawn status
+                    view(state="MERGED"),  # what the final live recheck would see
+                ]
+            },
+            touched=[".github/workflows/ci.yml"],
+        )
+        v = mk(run, FakeSpawn(), "/tmp/x")  # FakeSpawn reports status: "success"
+        res = v.run_all([FEATURE], {"feature-1": "run/feature-1"})
+
+        self.assertEqual(res["merged"], [])
+        self.assertEqual(res["quarantined"], {})
+        self.assertIn("feature-1", res["forbidden_path_violations"])
+        self.assertIn(
+            ".github/workflows/ci.yml", res["forbidden_path_violations"]["feature-1"]
+        )
+        # the orchestrator itself never attempted a merge
+        self.assertFalse(run.find("gh", "pr", "merge", "run/feature-1"))
+
+    def test_no_violation_still_merges_via_live_recheck(self):
+        """Negative regression: with an in-scope diff there is no confirmed
+        violation, so the final live recheck stays armed and a PR that GitHub
+        merged out-of-band is still reported as merged (unchanged behavior)."""
+        run = self.ScopeCheckRun(
+            {
+                "run/feature-1": [
+                    view(mergeable="CONFLICTING"),  # ensure_mergeable's initial check
+                    view(state="OPEN"),  # _spawn_group_worker's pre-spawn status
+                    view(state="OPEN"),  # _detect_self_merge's post-spawn status
+                    view(state="MERGED"),  # the final live recheck
+                ]
+            },
+            touched=["src/app.py"],
+        )
+        # one strike: the resolve worker runs once, the loop then gives up
+        # ("still CONFLICTING after resolve attempts") and the recheck decides.
+        v = mk(run, FakeSpawn(), "/tmp/x", max_strikes=1)
+        res = v.run_all([FEATURE], {"feature-1": "run/feature-1"})
+
+        self.assertEqual(res["merged"], ["feature-1"])
+        self.assertEqual(res["quarantined"], {})
+        self.assertEqual(res["forbidden_path_violations"], {})
 
     def test_forbidden_paths_touched_helper_filters_deny_list_only(self):
         run = self.ScopeCheckRun({}, touched=[".github/workflows/x.yml", "src/ok.py"])
