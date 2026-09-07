@@ -2498,3 +2498,158 @@ class TriageSubcommand(unittest.TestCase):
         q.set_triage("20260801-000000-triage-me", "blocker")
         after_body = self.brief.read_text().split("---", 2)[2]
         self.assertEqual(before_body, after_body)
+
+
+class TestDependencyDiagnostics(QueueTestBase):
+    """`list_queue()`'s per-brief `dependency_diagnostics` field and the
+    `list` human-output repair warnings it feeds.
+
+    Regression for the 2026-08-18 incident: a brief whose single `blocked-by`
+    item comma-joined three IDs read as an ordinary `blocked: True` with no
+    signal anywhere that the value could never resolve.
+    """
+
+    def _entries(self, filename: str) -> list[dict]:
+        briefs = {b["filename"]: b for b in q.list_queue()["briefs"]}
+        return briefs[filename]["dependency_diagnostics"]
+
+    def _list_output(self) -> str:
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            self.assertEqual(q.main(["list"]), 0)
+        return out.getvalue()
+
+    def test_malformed_reference_reported(self):
+        self.write(
+            "20260101-000001-main.md",
+            focus="needs dep",
+            blocked_by=["dep-id, other-dep"],
+        )
+        entries = self._entries("20260101-000001-main.md")
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["raw"], "dep-id, other-dep")
+        self.assertIsNone(entries[0]["reference"])
+        self.assertEqual(entries[0]["state"], "malformed")
+        self.assertEqual(entries[0]["candidates"], [])
+
+    def test_ambiguous_reference_reported_with_candidates(self):
+        self.write("20260604-100000-handoff-autodetect.md", focus="ambiguous a")
+        self.write("20260604-110000-handoff-autodetect.md", focus="ambiguous b")
+        self.write(
+            "20260101-000001-main.md",
+            focus="needs dep",
+            blocked_by=["handoff-autodetect"],
+        )
+        entries = self._entries("20260101-000001-main.md")
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["state"], "ambiguous")
+        self.assertEqual(entries[0]["reference"], "handoff-autodetect")
+        self.assertEqual(len(entries[0]["candidates"]), 2)
+
+    def test_active_reference_reported(self):
+        self.write("20260101-000000-dep.md", focus="the prereq", brief_id="dep-id")
+        self.write("20260101-000001-main.md", focus="needs dep", blocked_by=["dep-id"])
+        entries = self._entries("20260101-000001-main.md")
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["state"], "active")
+        self.assertEqual(entries[0]["reference"], "dep-id")
+
+    def test_satisfied_references_emit_nothing(self):
+        """Done and valid-but-stale references contribute no entry."""
+        self.picked.mkdir(parents=True, exist_ok=True)
+        (self.picked / "dep.md").write_text(
+            _picked_brief("dep", status="done"), encoding="utf-8"
+        )
+        self.write(
+            "20260101-000001-main.md",
+            focus="needs dep",
+            blocked_by=["dep", "stale-id-xyz"],
+        )
+        briefs = q.list_queue()["briefs"]
+        self.assertEqual(briefs[0]["dependency_diagnostics"], [])
+        self.assertFalse(briefs[0]["blocked"])
+
+    def test_open_decision_blocks_without_dependency_entries(self):
+        self.write("20260101-000001-main.md", focus="awaiting an answer")
+        with patch.object(
+            q,
+            "_awaiting_decision_info",
+            return_value={"awaiting_decision": "dec-1", "decision_status": "open"},
+        ):
+            briefs = q.list_queue()["briefs"]
+        self.assertTrue(briefs[0]["blocked"])
+        self.assertEqual(briefs[0]["dependency_diagnostics"], [])
+
+    def test_existing_fields_preserved(self):
+        self.write("20260101-000001-main.md", focus="needs dep", blocked_by=["a, b"])
+        brief = q.list_queue()["briefs"][0]
+        for key in (
+            "filename",
+            "path",
+            "focus",
+            "repo",
+            "blocked",
+            "not_yet_due",
+            "awaiting_decision",
+            "decision_status",
+            "recently_released",
+            "recently_released_by",
+            "recently_released_at",
+            "related",
+            "triage",
+            "unparsable",
+            "kind",
+        ):
+            self.assertIn(key, brief)
+        self.assertTrue(brief["blocked"])
+        self.assertEqual(brief["focus"], "needs dep")
+        self.assertFalse(brief["not_yet_due"])
+        self.assertEqual(brief["related"], [])
+        self.assertEqual(brief["kind"], "intake")
+
+    def test_listing_stays_json_serializable_for_non_string_reference(self):
+        """A bare `2026-08-18` parses as a `datetime.date`; the raw value must
+        not reach `json.dumps()` unserialized and take the whole listing down."""
+        self.write(
+            "20260101-000001-main.md",
+            focus="needs dep",
+            blocked_by=["2026-08-18"],
+        )
+        entries = self._entries("20260101-000001-main.md")
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["state"], "malformed")
+        self.assertEqual(entries[0]["raw"], "2026-08-18")
+        json.dumps(q.list_queue())
+
+    def test_human_list_warns_about_malformed_raw_value(self):
+        """The raw value is quoted, so an embedded comma and a trailing space
+        stay unambiguous to the operator repairing the file."""
+        self.write(
+            "20260101-000001-main.md",
+            focus="needs dep",
+            blocked_by=['"dep-id, other-dep "'],
+        )
+        printed = self._list_output()
+        self.assertIn("20260101-000001-main.md", printed)
+        self.assertIn("malformed blocked-by reference", printed)
+        self.assertIn("'dep-id, other-dep '", printed)
+
+    def test_human_list_warns_about_ambiguous_reference(self):
+        self.write("20260604-100000-handoff-autodetect.md", focus="ambiguous a")
+        self.write("20260604-110000-handoff-autodetect.md", focus="ambiguous b")
+        self.write(
+            "20260101-000001-main.md",
+            focus="needs dep",
+            blocked_by=["handoff-autodetect"],
+        )
+        printed = self._list_output()
+        self.assertIn("ambiguous blocked-by reference", printed)
+        self.assertIn("'handoff-autodetect'", printed)
+
+    def test_human_list_silent_for_ordinary_blocking(self):
+        """A still-active prerequisite is working as designed -- no warning."""
+        self.write("20260101-000000-dep.md", focus="the prereq", brief_id="dep-id")
+        self.write("20260101-000001-main.md", focus="needs dep", blocked_by=["dep-id"])
+        printed = self._list_output()
+        self.assertIn("[blocked — waiting on prerequisites]", printed)
+        self.assertNotIn("blocked-by reference", printed)
