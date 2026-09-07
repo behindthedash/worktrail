@@ -1731,6 +1731,7 @@ class Verifier:
         self_merged: dict[str, str] | None = None,
         armed: dict[str, str] | None = None,
         post_merge_regressed: dict[str, str] | None = None,
+        forbidden_path_violations: dict[str, str] | None = None,
     ) -> None:
         """Verify exactly one group's PR: retarget (if dependent) →
         ensure_mergeable → wait_and_fix_ci → resolve_review_threads →
@@ -1771,6 +1772,15 @@ class Verifier:
         Optional for backward compatibility; when omitted the group still
         lands in `quarantined` (not `merged`) so the failure is never silently
         dropped.
+
+        `forbidden_path_violations`: a distinct accumulator (not folded into
+        `quarantined`) for a group whose worker's actual pushed diff touched a
+        deny-listed path (`_forbidden_paths_touched`). Like a self-merge, this
+        is a CONFIRMED violation rather than an ordinary strike failure, so the
+        final live-merge recheck is gated off for it -- a PR that GitHub merged
+        anyway must never be reported as a clean `merged`. Optional for
+        backward compatibility; when omitted the group still lands in
+        `quarantined` so the failure is never silently dropped.
         """
         name = group["name"]
         self.log(f"  VERIFY [{name}] {group_branch}")
@@ -1801,10 +1811,12 @@ class Verifier:
             ok, reason = self._merge_with_cumulative_gate(group, group_branch)
         if not ok:
             violation = self._self_merge_violations.get(name)
+            forbidden_violation = self._forbidden_path_violations.get(name)
             is_regression = reason.startswith(self._POST_MERGE_SMOKE_PREFIX)
             if (
                 not is_regression
                 and not violation
+                and not forbidden_violation
                 and self._recheck_merged_before_quarantine(group, group_branch)
             ):
                 with lock:
@@ -1820,6 +1832,8 @@ class Verifier:
                     post_merge_regressed[name] = reason
                 elif violation and self_merged is not None:
                     self_merged[name] = violation
+                elif forbidden_violation and forbidden_path_violations is not None:
+                    forbidden_path_violations[name] = forbidden_violation
                 else:
                     quarantined[name] = reason
             if is_regression and post_merge_regressed is not None:
@@ -1827,6 +1841,11 @@ class Verifier:
             elif violation and self_merged is not None:
                 self.log(
                     f"  SELF-MERGE VIOLATION [{name}] -- {violation} (worktree kept)"
+                )
+            elif forbidden_violation and forbidden_path_violations is not None:
+                self.log(
+                    f"  FORBIDDEN-PATH VIOLATION [{name}] -- {forbidden_violation} "
+                    "(worktree kept)"
                 )
             else:
                 self.log(f"  QUARANTINE [{name}] -- {reason} (worktree kept)")
@@ -1863,6 +1882,7 @@ class Verifier:
         self_merged: dict[str, str] = {}
         armed: dict[str, str] = {}
         post_merge_regressed: dict[str, str] = {}
+        forbidden_path_violations: dict[str, str] = {}
         lock = threading.Lock()
 
         # Verify in dependency WAVES (base before its dependents). Within a wave
@@ -1877,7 +1897,14 @@ class Verifier:
             for g in pending:
                 deps = g.get("depends_on", [])
                 dep_q = next(
-                    (d for d in deps if d in quarantined or d in self_merged), None
+                    (
+                        d
+                        for d in deps
+                        if d in quarantined
+                        or d in self_merged
+                        or d in forbidden_path_violations
+                    ),
+                    None,
                 )
                 if (
                     dep_q
@@ -1913,6 +1940,7 @@ class Verifier:
                     self_merged,
                     armed,
                     post_merge_regressed,
+                    forbidden_path_violations,
                 )
             else:
                 self.log(
@@ -1932,6 +1960,7 @@ class Verifier:
                             self_merged,
                             armed,
                             post_merge_regressed,
+                            forbidden_path_violations,
                         )
                         for g in ready
                     ]
@@ -1947,6 +1976,12 @@ class Verifier:
             self.log("VERIFY: SELF-MERGE VIOLATIONS (worktrees kept for inspection):")
             for n, r in self_merged.items():
                 self.log(f"  - {n}: {r}")
+        if forbidden_path_violations:
+            self.log(
+                "VERIFY: FORBIDDEN-PATH VIOLATIONS (worktrees kept for inspection):"
+            )
+            for n, r in forbidden_path_violations.items():
+                self.log(f"  - {n}: {r}")
         if post_merge_regressed:
             self.log(
                 "VERIFY: POST-MERGE REGRESSIONS (merged, but broke the cumulative "
@@ -1959,6 +1994,7 @@ class Verifier:
             f"{len(armed)} auto-merge armed (unconfirmed), "
             f"{len(quarantined)} quarantined, "
             f"{len(self_merged)} self-merge violation(s), "
+            f"{len(forbidden_path_violations)} forbidden-path violation(s), "
             f"{len(post_merge_regressed)} post-merge regression(s)."
         )
         return {
@@ -1966,6 +2002,7 @@ class Verifier:
             "automerge_armed": armed,
             "quarantined": quarantined,
             "self_merged": self_merged,
+            "forbidden_path_violations": forbidden_path_violations,
             "post_merge_regressed": post_merge_regressed,
             "automerge_evidence": dict(self._automerge_evidence),
             "preflight_fallbacks": dict(self._preflight_fallbacks),
