@@ -1,6 +1,6 @@
 ## 1. Exempt a superseded CANCELLED run from classify_checks
 
-- [ ] 1.1 In `src/worktrail/orchestrator/verify.py`'s `classify_checks()` (around lines 267-304),
+- [x] 1.1 In `src/worktrail/orchestrator/verify.py`'s `classify_checks()` (around lines 267-304),
       before the main loop, compute a `superseded_names` set of check names that have at least
       one entry in the rollup that is CheckRun-shaped (`"conclusion" in c or "status" in c`) and
       whose conclusion is not `CANCELLED` (this covers both a settled non-cancelled conclusion

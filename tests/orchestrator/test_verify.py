@@ -858,6 +858,33 @@ class ClassifyChecks(unittest.TestCase):
         self.assertEqual(verify.classify_checks(None, required=None), (False, []))
         self.assertEqual(verify.classify_checks(None, required=[]), (False, []))
 
+    def test_cancelled_superseded_by_success_skipped(self):
+        rollup = [
+            {"name": "build", "status": "COMPLETED", "conclusion": "CANCELLED"},
+            {"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS"},
+        ]
+        self.assertEqual(verify.classify_checks(rollup), (False, []))
+
+    def test_cancelled_superseded_by_in_progress_skipped(self):
+        rollup = [
+            {"name": "build", "status": "COMPLETED", "conclusion": "CANCELLED"},
+            {"name": "build", "status": "IN_PROGRESS"},
+        ]
+        self.assertEqual(verify.classify_checks(rollup), (True, []))
+
+    def test_cancelled_without_superseding_entry_still_fails(self):
+        rollup = [
+            {"name": "build", "status": "COMPLETED", "conclusion": "CANCELLED"},
+        ]
+        self.assertEqual(verify.classify_checks(rollup), (False, ["build"]))
+
+    def test_multiple_cancelled_different_names_both_fail(self):
+        rollup = [
+            {"name": "build", "status": "COMPLETED", "conclusion": "CANCELLED"},
+            {"name": "deploy", "status": "COMPLETED", "conclusion": "CANCELLED"},
+        ]
+        self.assertEqual(verify.classify_checks(rollup), (False, ["build", "deploy"]))
+
 
 class MergedPRTreatedAsSuccess(unittest.TestCase):
     def test_auto_merge_skipped_for_merged_pr(self):
