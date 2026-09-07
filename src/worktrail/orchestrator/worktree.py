@@ -178,9 +178,7 @@ class WorktreeManager:
         Any failure here is logged and swallowed -- teardown must proceed.
         """
         try:
-            status = self._git_in(
-                path, "status", "--porcelain", "--untracked-files=no"
-            )
+            status = self._git_in(path, "status", "--porcelain", "--untracked-files=no")
             if not status.strip():
                 return
             branch = task_branch(self.spec_id, task_id)

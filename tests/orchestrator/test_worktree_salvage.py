@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Salvage of uncommitted task-worktree work during teardown."""
 
 import io
@@ -90,9 +89,7 @@ class SalvageTests(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             wm.remove("TASK-001")
         self.assertEqual(len(_removals(runner)), 1)
-        self.assertTrue(
-            any(entry.startswith("salvage: failed") for entry in wm.log)
-        )
+        self.assertTrue(any(entry.startswith("salvage: failed") for entry in wm.log))
 
     def test_status_failure_still_issues_removal(self):
         runner = RecordingRunner(fail_on=("status",))
@@ -104,9 +101,8 @@ class SalvageTests(unittest.TestCase):
     def test_removal_failure_still_raises_worktree_error(self):
         runner = RecordingRunner(status_out=" M src/app.py\n", fail_on=("worktree",))
         wm = _wm(runner)
-        with redirect_stdout(io.StringIO()):
-            with self.assertRaises(worktree.WorktreeError):
-                wm.remove("TASK-001")
+        with redirect_stdout(io.StringIO()), self.assertRaises(worktree.WorktreeError):
+            wm.remove("TASK-001")
 
     def test_dry_run_issues_no_salvage_effects(self):
         wm = worktree.WorktreeManager(
