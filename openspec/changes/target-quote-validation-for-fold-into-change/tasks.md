@@ -41,7 +41,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [e2e] Run `PYTHONPATH=src pytest -q` and confirm it is green, including the new
+- [x] 2.1 [e2e] Run `PYTHONPATH=src pytest -q` and confirm it is green, including the new
       tests from section 1. Verification-only — no file changes expected.
-- [ ] 2.2 [e2e] Run `openspec validate target-quote-validation-for-fold-into-change
+- [x] 2.2 [e2e] Run `openspec validate target-quote-validation-for-fold-into-change
       --strict` and confirm it passes. Verification-only — no file changes expected.
