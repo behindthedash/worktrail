@@ -3004,7 +3004,15 @@ class LiveSpawn:
         served_harness = getattr(result, "served_harness", None)
         if served_harness:
             self.last_agent = served_harness
-        return result
+        # Fail closed on an exhausted spawn: its text is the provider's capacity
+        # notice, not a worker's report-back, and handing it to the drive loop
+        # would be parsed as a malformed answer and blamed on the worker. Placed
+        # on the single shared return path so all four spawn branches above are
+        # covered, and after the label correction so the journal still names the
+        # cell that was actually attempted.
+        return spawnlib.raise_if_exhausted(
+            result, context=f"{role} worker {task.get('id')}"
+        )
 
 
 def spawn_one(
