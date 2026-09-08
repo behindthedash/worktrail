@@ -16,7 +16,8 @@ CLI subcommands, invoked as a subprocess -- the same cross-skill-boundary
 pattern `test_cluster_dashboard_e2e.py` already uses to drive `work_queue.py`
 from this directory; there is no cross-skill Python import of
 `work_queue.py` as a module), stamps a `## Superseded` note referencing the
-new brief's id on each successfully-claimed member, marks it done, and
+new brief's id on each successfully-claimed member, marks it superseded (not
+shipped -- see `work_queue.py`'s `superseded_by` closure mode), and
 finally writes the consolidated brief into `queue/` as a direct file write
 (no new `work_queue.py` subcommand). A member that loses the execute-time
 claim race is recorded as skipped, not fatal to the batch.
@@ -548,20 +549,21 @@ def _consolidated_member_ids(body: str) -> list[str]:
 
 
 def _build_nested_consolidation_note(member_text: str) -> str | None:
-    """Closure note for `_mark_member_done` when the member being closed is
-    itself a consolidation-batch brief (carries its own `## Consolidated
-    from` section, e.g. cluster A was consolidated into member X, and X is
-    now itself being re-consolidated into a larger cluster).
+    """Closure note for `_mark_member_superseded` when the member being
+    closed is itself a consolidation-batch brief (carries its own `##
+    Consolidated from` section, e.g. cluster A was consolidated into member
+    X, and X is now itself being re-consolidated into a larger cluster).
 
     `work_queue.py done()`'s consolidation-closure evidence gate
     (`_consolidation_closure_missing_evidence`) rejects a plain
-    `--planning-only` close of such a member with no mutation
-    (`unverified_consolidation_closure`), because it cannot tell the member's
-    own sub-items were already shipped. They were: `execute_consolidation()`
-    stamps every sub-item `done` + `## Superseded` at the moment the member
-    itself was authored, so that evidence already exists on disk -- this just
-    cites it. Returns None when `member_text` is not itself a consolidation
-    batch (the common case), so `_mark_member_done` passes no `--note`.
+    `--superseded-by` close of such a member with no mutation
+    (`unverified_consolidation_closure`) only when `superseded_by` is absent;
+    `--superseded-by` itself already waives that gate (design.md Decision 2),
+    but this note documents for a future reader that the member's own
+    sub-items were already stamped `superseded` + `## Superseded` at the
+    moment the member itself was authored. Returns None when `member_text`
+    is not itself a consolidation batch (the common case), so
+    `_mark_member_superseded` passes no `--note`.
     """
     sub_ids = _consolidated_member_ids(member_text)
     if not sub_ids:
@@ -581,25 +583,28 @@ def _build_nested_consolidation_note(member_text: str) -> str | None:
     return "\n".join(lines)
 
 
-def _mark_member_done(
+def _mark_member_superseded(
     member_id: str,
+    new_brief_id: str,
     work_queue_script: Path,
     work_queue_base_dir: Path,
     note: str | None = None,
 ) -> bool:
-    """Mark one already-claimed member done via `work_queue.py done`.
+    """Mark one already-claimed member superseded via `work_queue.py done
+    --superseded-by`.
 
-    `note`, when given, is passed through as `--note` -- required when the
-    member being closed is itself a nested consolidation-batch brief (see
-    `_build_nested_consolidation_note`), otherwise `work_queue.py done`'s own
-    consolidation-closure evidence gate rejects the plain `--planning-only`
-    call.
+    A member absorbed into a consolidated wrapper is carried by that
+    wrapper's own later evidence-gated closure, not shipped by this one --
+    `--superseded-by` stamps `status: superseded` instead of `status: done`
+    and waives the consolidation-closure evidence gate accordingly. `note`,
+    when given, is passed through as `--note` (e.g. the nested-batch note
+    from `_build_nested_consolidation_note`).
     """
-    args = ["done", member_id, "--planning-only", "--json"]
+    args = ["done", member_id, "--superseded-by", new_brief_id, "--json"]
     if note:
         args += ["--note", note]
     data = _run_work_queue_cli(args, work_queue_script, work_queue_base_dir)
-    return bool(data and data.get("status") == "done")
+    return bool(data and data.get("status") == "superseded")
 
 
 def _stamp_superseded(path: Path, new_brief_id: str) -> str:
@@ -644,7 +649,7 @@ def execute_consolidation(
     broken draft never leaves claimed members stranded with nothing to
     supersede them. Only once that content is confirmed well-formed does it
     claim each id via `work_queue.py claim` (subprocess), stamp
-    `## Superseded` + mark it `done` on every successfully-claimed member,
+    `## Superseded` + mark it `superseded` on every successfully-claimed member,
     then write the consolidated brief into `queue_dir`. A member whose claim
     fails (raced, subprocess error) is recorded in `members_skipped`, not
     `members_completed`; the rest of the batch is still processed. Returns
@@ -707,7 +712,9 @@ def execute_consolidation(
         try:
             member_text = _stamp_superseded(picked_path, new_brief_id)
             nested_note = _build_nested_consolidation_note(member_text)
-            if not _mark_member_done(member_id, wq_script, wq_base_dir, nested_note):
+            if not _mark_member_superseded(
+                member_id, new_brief_id, wq_script, wq_base_dir, nested_note
+            ):
                 members_skipped.append(member_id)
                 continue
         except OSError:

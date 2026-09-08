@@ -354,8 +354,9 @@ class ExecuteConsolidationConfirm(ConsolidateClusterTestCase):
     def test_confirmed_writes_one_brief_and_stamps_superseded(self):
         """AC-003: confirmed=True with N resolvable members results in
         exactly one new brief in queue_dir; each member ends up in picked_dir
-        with status: done, carries a ## Superseded note referencing the new
-        brief's id, and is not deleted."""
+        with status: superseded (not done -- it was absorbed, not shipped),
+        carries a ## Superseded note referencing the new brief's id, and is
+        not deleted."""
         m1 = _write_brief(
             self.queue_dir,
             "20260701-100000-alpha.md",
@@ -393,7 +394,8 @@ class ExecuteConsolidationConfirm(ConsolidateClusterTestCase):
                 picked_path.exists(), msg=f"{member_id} missing from picked/"
             )
             fm = self._frontmatter(picked_path)
-            self.assertEqual(fm.get("status"), "done")
+            self.assertEqual(fm.get("status"), "superseded")
+            self.assertEqual(fm.get("superseded-by"), new_brief_id)
             body = picked_path.read_text(encoding="utf-8")
             self.assertIn("## Superseded", body)
             self.assertIn(new_brief_id, body)
@@ -426,7 +428,7 @@ class ExecuteConsolidationConfirm(ConsolidateClusterTestCase):
 
         m2_picked = self.picked_dir / f"{m2}.md"
         self.assertTrue(m2_picked.exists())
-        self.assertEqual(self._frontmatter(m2_picked).get("status"), "done")
+        self.assertEqual(self._frontmatter(m2_picked).get("status"), "superseded")
 
     def test_empty_resolvable_ids_no_zero_provenance_brief(self):
         """Edge case: confirmed=True with an empty resolvable_ids list does
@@ -836,7 +838,7 @@ class NestedConsolidationClosureEvidence(ConsolidateClusterTestCase):
 
     def test_nested_consolidation_member_closes_instead_of_sticking_at_picked(self):
         """A member that is itself a nested consolidation-batch brief must
-        close (status: done) like its siblings, not get stuck at
+        close (status: superseded) like its siblings, not get stuck at
         status: picked on work_queue.py's unverified_consolidation_closure
         gate."""
         nested = self._write_nested_batch_member(
@@ -856,7 +858,7 @@ class NestedConsolidationClosureEvidence(ConsolidateClusterTestCase):
         self.assertEqual(result["members_skipped"], [])
 
         nested_fm = self._frontmatter(self.picked_dir / f"{nested}.md")
-        self.assertEqual(nested_fm.get("status"), "done")
+        self.assertEqual(nested_fm.get("status"), "superseded")
 
     def test_ordinary_member_gets_no_closure_note(self):
         """An ordinary (non-nested-batch) member is marked done with no

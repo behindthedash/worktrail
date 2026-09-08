@@ -1,6 +1,6 @@
 ## 1. Superseded closure mode in `work_queue.py` (`folded-brief-superseded-status`)
 
-- [ ] 1.1 Implement requirements: Superseded closure mode stamps a distinct terminal
+- [x] 1.1 Implement requirements: Superseded closure mode stamps a distinct terminal
       status; Superseded closure is a non-shipping closure; Superseded briefs are
       terminal (the two `work_queue.py` sites).
       In `src/worktrail/workqueue/work_queue.py`: add a `superseded_by: str | None
@@ -38,7 +38,7 @@
 
 ## 2. Consolidation closes absorbed members as superseded (`folded-brief-superseded-status`)
 
-- [ ] 2.1 Implement requirement: Cluster consolidation closes absorbed members as
+- [x] 2.1 Implement requirement: Cluster consolidation closes absorbed members as
       superseded. In `src/worktrail/router/consolidate_cluster.py`, rename
       `_mark_member_done` to `_mark_member_superseded` and give it a
       `new_brief_id` parameter; build its argv as
@@ -64,7 +64,7 @@
 
 ## 3. Terminal-status treatment in the remaining brief consumers (`folded-brief-superseded-status`)
 
-- [ ] 3.1 Implement requirement: Superseded briefs are terminal (the non-`work_queue`
+- [x] 3.1 Implement requirement: Superseded briefs are terminal (the non-`work_queue`
       sites). In `src/worktrail/workqueue/score_candidates.py`, extend the
       `cand_fm.get("status") == "done"` exclusion to also exclude `"superseded"`,
       and add a regression test in `tests/workqueue/test_score_candidates.py`
@@ -72,7 +72,7 @@
       `status: superseded` candidate is excluded from scoring.
       No other `status == "done"` site changes here — `dashboard.py`'s `done`
       constants are task stages, not brief statuses (design.md Decision 2).
-- [ ] 3.2 In `src/worktrail/router/spec_sync_sweep_dedup.py`, extend the
+- [x] 3.2 In `src/worktrail/router/spec_sync_sweep_dedup.py`, extend the
       `fm.get("status") == "done"` skip in the `picked/` scan to also skip
       `"superseded"`, and add a regression test in
       `tests/router/test_spec_sync_sweep_dedup.py` asserting a `status: superseded`
@@ -80,7 +80,7 @@
 
 ## 4. Verification
 
-- [ ] 4.1 [e2e] Run `PYTHONPATH=src pytest -q` and confirm it is green, including
+- [x] 4.1 [e2e] Run `PYTHONPATH=src pytest -q` and confirm it is green, including
       the new tests from sections 1-3.
-- [ ] 4.2 [e2e] Run `openspec validate distinguish-folded-briefs-from-done --strict`
+- [x] 4.2 [e2e] Run `openspec validate distinguish-folded-briefs-from-done --strict`
       and confirm it passes.

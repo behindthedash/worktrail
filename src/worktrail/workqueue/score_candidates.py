@@ -195,8 +195,8 @@ def _score_against_queue(
             if cand_fm is None:
                 continue  # malformed — skip leniently (AC-017)
 
-            if cand_fm.get("status") == "done":
-                continue  # exclude done briefs (AC-012)
+            if cand_fm.get("status") in ("done", "superseded"):
+                continue  # exclude done/superseded briefs (AC-012)
 
             if (
                 new_fm is not None

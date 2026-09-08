@@ -747,7 +747,7 @@ class HappyPathConsolidation(ConsolidateClusterE2E):
                 picked_path.exists(), msg=f"{member_id} missing from picked/"
             )
             body = picked_path.read_text(encoding="utf-8")
-            self.assertIn("status: done", body)
+            self.assertIn("status: superseded", body)
             self.assertIn("## Superseded", body)
             self.assertIn(new_brief_id, body)
 

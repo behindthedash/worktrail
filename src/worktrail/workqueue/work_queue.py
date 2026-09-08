@@ -780,7 +780,9 @@ def classify_dependency_reference(raw: Any) -> dict[str, Any]:
         picked_path = Path(candidates[0])
         picked_fm = _read_frontmatter(picked_path)
         state = (
-            "done" if str(picked_fm.get("status") or "").strip() == "done" else "active"
+            "done"
+            if str(picked_fm.get("status") or "").strip() in ("done", "superseded")
+            else "active"
         )
 
     result["reference"] = ref
@@ -1428,7 +1430,7 @@ def _related_still_open(fm: dict[str, Any], own_stem: str) -> list[dict[str, Any
                 continue
             cand_fm = _read_frontmatter(candidate)
             status = cand_fm.get("status")
-            if status == "done":
+            if status in ("done", "superseded"):
                 continue
             seen_stems.add(candidate.stem)
             open_siblings.append(
@@ -1450,8 +1452,17 @@ def done(
     triaged_to: str | None = None,
     triaged: bool = False,
     duplicate_of: str | None = None,
+    superseded_by: str | None = None,
 ) -> dict[str, Any]:
     """Stamp a picked brief as completed.
+
+    ``superseded_by``, given a brief id, closes the brief as absorbed into
+    that other brief rather than shipped: stamps ``status: superseded`` +
+    ``superseded-by:`` instead of ``status: done``, is itself a triage
+    closure (the Route-C gate does not apply), and waives the
+    consolidation-evidence gate exactly as ``duplicate_of`` does -- a member
+    folded into a consolidated wrapper is carried by that wrapper's own
+    later evidence-gated closure, not shipped by this one.
 
     ``triaged`` / ``triaged_to`` / ``duplicate_of`` mark a *triage closure*
     (`queue_triage.py`'s stale-close, fold-into-change, propose-change and
@@ -1520,7 +1531,8 @@ def done(
     work actually went. Omitted (every existing caller before 3.5) leaves the
     field absent, unaffected.
     """
-    if planning_only and implementation_complete:
+    superseded_by_stripped = (superseded_by or "").strip()
+    if sum([planning_only, implementation_complete, bool(superseded_by_stripped)]) > 1:
         return {
             "status": "error",
             "path": None,
@@ -1543,7 +1555,12 @@ def done(
     route = str(fm.get("recommended-route") or "").strip().upper()
     triaged_to_stripped = (triaged_to or "").strip()
     duplicate_of_stripped = (duplicate_of or "").strip()
-    triage_closure = triaged or bool(triaged_to_stripped) or bool(duplicate_of_stripped)
+    triage_closure = (
+        triaged
+        or bool(triaged_to_stripped)
+        or bool(duplicate_of_stripped)
+        or bool(superseded_by_stripped)
+    )
     if route == "C" and not (
         planning_only or implementation_complete or triage_closure
     ):
@@ -1602,7 +1619,11 @@ def done(
             "error": str(exc),
         }
     consolidation_missing = _consolidation_closure_missing_evidence(original, note)
-    if consolidation_missing and not duplicate_of_stripped:
+    if (
+        consolidation_missing
+        and not duplicate_of_stripped
+        and not superseded_by_stripped
+    ):
         return {
             "status": "unverified_consolidation_closure",
             "path": str(path),
@@ -1650,7 +1671,14 @@ def done(
                 "candidates": [],
                 "error": str(exc),
             }
-    fields = {"status": "done", "completed-at": _now_iso()}
+    if superseded_by_stripped:
+        fields = {
+            "status": "superseded",
+            "superseded-by": superseded_by_stripped,
+            "completed-at": _now_iso(),
+        }
+    else:
+        fields = {"status": "done", "completed-at": _now_iso()}
     if triaged_to_stripped:
         fields["triaged-to"] = triaged_to_stripped
     if duplicate_of_stripped:
@@ -1682,7 +1710,12 @@ def done(
             "error": verr,
         }
 
-    result = {"status": "done", "path": str(path), "candidates": [], "error": None}
+    result = {
+        "status": "superseded" if superseded_by_stripped else "done",
+        "path": str(path),
+        "candidates": [],
+        "error": None,
+    }
     if checkbox_out_of_sync:
         result["checkbox_out_of_sync"] = True
     related_open = _related_still_open(fm, path.stem)
@@ -1941,14 +1974,14 @@ def _git_backup(reason: str) -> None:
     _git("push")
 
 
-# Status that means a mutation actually changed disk, so a backup is warranted.
+# Status(es) that mean a mutation actually changed disk, so a backup is warranted.
 _BACKUP_ON = {
-    "claim": "claimed",
-    "claim-batch": "claimed",
-    "done": "done",
-    "release": "released",
-    "link": "linked",
-    "triage": "triaged",
+    "claim": ("claimed",),
+    "claim-batch": ("claimed",),
+    "done": ("done", "superseded"),
+    "release": ("released",),
+    "link": ("linked",),
+    "triage": ("triaged",),
 }
 
 
@@ -2003,6 +2036,15 @@ def main(argv=None) -> int:
         "--implementation-complete",
         action="store_true",
         help="mark a Route-C brief done after inline Route-D implementation",
+    )
+    mode.add_argument(
+        "--superseded-by",
+        default=None,
+        dest="superseded_by",
+        help="close as superseded by BRIEF-ID (e.g. absorbed into a consolidated "
+        "wrapper): stamps status: superseded + superseded-by:, not a shipping "
+        "closure -- neither the Route-C gate nor the consolidation-evidence gate "
+        "applies",
     )
     dp.add_argument(
         "--note",
@@ -2102,6 +2144,7 @@ def main(argv=None) -> int:
             triaged_to=args.triaged_to,
             triaged=args.triaged,
             duplicate_of=args.duplicate_of,
+            superseded_by=args.superseded_by,
         )
     elif args.cmd == "link":
         result = link(args.id_a, args.id_b)
@@ -2120,7 +2163,7 @@ def main(argv=None) -> int:
     else:
         _print_human(args.cmd, result)
 
-    if result.get("status") == _BACKUP_ON.get(args.cmd):
+    if result.get("status") in _BACKUP_ON.get(args.cmd, ()):
         target = result.get("path") or (result.get("paths") or [None])[0]
         _git_backup(f"{args.cmd} {Path(target).stem}".strip() if target else args.cmd)
 
@@ -2194,7 +2237,7 @@ def _print_human(cmd: str, result: dict[str, Any]) -> None:
                 print(f"  {b['filename']}  focus: {b['focus']}")
         return
     status = result["status"]
-    if status in ("match", "claimed", "done", "released", "triaged"):
+    if status in ("match", "claimed", "done", "superseded", "released", "triaged"):
         print(f"{status}: {result.get('path') or result['candidates'][0]}")
         for comp in result.get("companions") or []:
             print(

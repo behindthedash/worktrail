@@ -285,6 +285,25 @@ class TestDoneExclusion(ScoreCandidatesTestBase):
         all_ids = [c["id"] for c in result["auto_link"] + result["confirm"]]
         self.assertNotIn("20260604-112107-done-brief", all_ids)
 
+    def test_superseded_brief_in_picked_excluded(self):
+        """A brief absorbed into a consolidated wrapper (status: superseded)
+        is excluded from scoring the same as a done brief."""
+        repo = "/home/user/projects/myapp"
+        new = self.write_new_brief(
+            "20260604-160000-new.md",
+            focus="sharp cloudinary migration bake slot",
+            repo=repo,
+        )
+        self.write_picked(
+            "20260604-112107-superseded-brief.md",
+            focus="sharp cloudinary migration bake slot",
+            repo=repo,
+            status="superseded",
+        )
+        result = self.score(new)
+        all_ids = [c["id"] for c in result["auto_link"] + result["confirm"]]
+        self.assertNotIn("20260604-112107-superseded-brief", all_ids)
+
 
 class TestHighConfidenceAutoLink(ScoreCandidatesTestBase):
     """AC-014: same-repo + high-confidence candidates appear in auto_link."""
