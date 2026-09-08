@@ -66,6 +66,14 @@ class FindUnresolvedDriftBriefTest(unittest.TestCase):
         result = find_unresolved_drift_brief(Path(self.repo), self.queue_base)
         self.assertIsNone(result)
 
+    def test_not_found_when_picked_is_superseded(self) -> None:
+        write(
+            self.queue_base / "picked" / "c2.md",
+            brief(repo=self.repo, drift_source="spec-sync-sweep", status="superseded"),
+        )
+        result = find_unresolved_drift_brief(Path(self.repo), self.queue_base)
+        self.assertIsNone(result)
+
     def test_not_found_when_no_drift_source(self) -> None:
         write(
             self.queue_base / "queue" / "d.md",

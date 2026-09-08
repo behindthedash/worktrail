@@ -48,7 +48,8 @@ def find_unresolved_drift_brief(
     """Return the path of an unresolved Drift Brief for `repo`, or None.
 
     Scans `queue_base/queue/` (any status counts as unresolved) and
-    `queue_base/picked/` (unresolved unless `status: done`) for a brief
+    `queue_base/picked/` (unresolved unless `status: done` or `status:
+    superseded`) for a brief
     whose `repo` frontmatter equals `str(repo)` and whose `drift-source`
     frontmatter equals `drift_source` (defaults to `spec-sync-sweep` for
     backward compatibility with the original call site).
@@ -63,7 +64,7 @@ def find_unresolved_drift_brief(
         if not _is_match(path, repo_str, drift_source):
             continue
         fm = read_frontmatter(path)
-        if fm.get("status") == "done":
+        if fm.get("status") in ("done", "superseded"):
             continue
         return path
 

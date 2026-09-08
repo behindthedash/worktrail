@@ -657,6 +657,112 @@ class TestDoneRelease(QueueTestBase):
         self.assertNotIn("next-check-after", fm)
 
 
+class TestDoneSupersededBy(QueueTestBase):
+    """`superseded_by=` closes a brief as absorbed elsewhere, not shipped:
+    stamps `status: superseded` + `superseded-by:` instead of `status: done`."""
+
+    def test_superseded_by_stamps_status_and_field(self):
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth")
+        res = q.done("20260531-141200-auth", superseded_by="20260601-000000-wrapper")
+        self.assertEqual(res["status"], "superseded")
+        fm = q._read_frontmatter(self.picked / "20260531-141200-auth.md")
+        self.assertEqual(fm["status"], "superseded")
+        self.assertEqual(fm["superseded-by"], "20260601-000000-wrapper")
+        self.assertNotEqual(fm["status"], "done")
+        self.assertIn("completed-at", fm)
+
+    def test_superseded_by_combined_with_planning_only_refused(self):
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth")
+        res = q.done(
+            "20260531-141200-auth",
+            superseded_by="20260601-000000-wrapper",
+            planning_only=True,
+        )
+        self.assertEqual(res["status"], "error")
+        fm = q._read_frontmatter(self.picked / "20260531-141200-auth.md")
+        self.assertEqual(fm["status"], "picked")
+
+    def test_superseded_by_combined_with_implementation_complete_refused(self):
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth")
+        res = q.done(
+            "20260531-141200-auth",
+            superseded_by="20260601-000000-wrapper",
+            implementation_complete=True,
+        )
+        self.assertEqual(res["status"], "error")
+        fm = q._read_frontmatter(self.picked / "20260531-141200-auth.md")
+        self.assertEqual(fm["status"], "picked")
+
+    def _write_route_c_picked(self, name="20260531-141200-feature.md"):
+        self.picked.mkdir(parents=True, exist_ok=True)
+        path = self.picked / name
+        path.write_text(
+            _picked_brief("add the feature").replace(
+                "status: picked", "status: picked\nrecommended-route: C"
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    def test_superseded_by_bypasses_route_c_gate(self):
+        path = self._write_route_c_picked()
+        res = q.done("20260531-141200-feature", superseded_by="20260601-000000-wrapper")
+        self.assertEqual(res["status"], "superseded")
+        self.assertEqual(q._read_frontmatter(path)["status"], "superseded")
+
+    def test_superseded_by_waives_consolidation_evidence_gate(self):
+        self.picked.mkdir(parents=True, exist_ok=True)
+        path = self.picked / "20260531-141200-batch.md"
+        path.write_text(
+            _consolidated_brief("batch", ["member-a", "member-b"]), encoding="utf-8"
+        )
+        blocked = q.done("20260531-141200-batch")
+        self.assertEqual(blocked["status"], "unverified_consolidation_closure")
+
+        res = q.done(
+            "20260531-141200-batch", superseded_by="20260601-000000-newer-batch"
+        )
+        self.assertEqual(res["status"], "superseded")
+        fm = q._read_frontmatter(path)
+        self.assertEqual(fm["status"], "superseded")
+        self.assertEqual(fm["superseded-by"], "20260601-000000-newer-batch")
+
+    def test_superseded_sibling_not_reported_in_related_still_open(self):
+        self.write(
+            "20260824-164124-alpha.md",
+            focus="alpha",
+            related=["20260825-152530-beta"],
+        )
+        self.write("20260825-152530-beta.md", focus="beta")
+        q.claim("20260825-152530-beta")
+        q.done("20260825-152530-beta", superseded_by="20260601-000000-wrapper")
+        q.claim("20260824-164124-alpha")
+        res = q.done("20260824-164124-alpha")
+        self.assertEqual(res["status"], "done")
+        self.assertNotIn("related_still_open", res)
+
+    def test_superseded_dependency_reference_resolves_like_done(self):
+        self.picked.mkdir(parents=True, exist_ok=True)
+        dep = self.picked / "dep.md"
+        dep.write_text(_picked_brief("dep", status="superseded"), encoding="utf-8")
+
+        res = q.classify_dependency_reference("dep")
+
+        self.assertEqual(res["state"], "done")
+        self.assertTrue(res["satisfied"])
+
+    def test_plain_planning_only_unaffected(self):
+        path = self._write_route_c_picked()
+        res = q.done("20260531-141200-feature", planning_only=True)
+        self.assertEqual(res["status"], "done")
+        fm = q._read_frontmatter(path)
+        self.assertEqual(fm["status"], "done")
+        self.assertNotIn("superseded-by", fm)
+
+
 class TestDoneTriagedTo(QueueTestBase):
     """`triaged_to=` (3.5): stamps `triaged-to:` frontmatter alongside `status: done`."""
 
