@@ -41,11 +41,11 @@
 
 ## 3. Verification
 
-- [ ] 3.1 [e2e] Run `pytest -q tests/router/test_close_stale_openspec.py
+- [x] 3.1 [e2e] Run `pytest -q tests/router/test_close_stale_openspec.py
       tests/test_plugin_surface.py`, then `pytest -q` and `python3 -m
       worktrail.orchestrator.orchestrate check`; confirm all pass.
       depends on 1.1, 2.1. Verification-only; no file changes expected.
-- [ ] 3.2 [e2e] Run `openspec validate close-stale-archive-delta-precheck
+- [x] 3.2 [e2e] Run `openspec validate close-stale-archive-delta-precheck
       --strict` and `worktrail-compile
       openspec/changes/close-stale-archive-delta-precheck`; confirm both pass.
       depends on 1.1, 2.1. Verification-only; no file changes expected.
