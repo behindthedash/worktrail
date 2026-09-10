@@ -13,6 +13,7 @@ triggers:
     - automerge_eligible
     - risk label
     - classify
+    - RISK_SIGNALS
     - scope_review
     - parse_invocation
     - noun-verb grammar
@@ -63,6 +64,15 @@ agents or writes task files — that is `orchestrator/`'s job.
   lands on the wrong route silently. `handoff new` must also never reach the intent branch as
   `repo=handoff, intent=new` — the noun-verb match runs above the bare intent words on purpose.
   `pr` is the one exception: bare `pr` (and `pr <text>`) still means the old `pr` intent.
+- **`RISK_SIGNALS`' `authz` pattern carries a `(?<![-@])` guard so it cannot fire inside a
+  compound token.** `\b` treats the hyphen in a package name like `better-auth` (or the `@` in
+  `@auth/core`) as a word boundary, so merely naming the dependency scored `high:authz`.
+  Confirmed live 2026-09-10 (run `go-20260910-085556`, devops PR #366): a config-only PR
+  classified `risk=high`, exceeded that repo's policy `max_risk=medium`, and was labeled
+  `go:no-automerge`, forcing a hand merge. This is a word-boundary artifact inside one token,
+  **not** the diff-blindness the `RISK_SIGNALS` table comment deliberately fails loud on.
+  Underscore-joined identifiers (`require_auth`) were already excluded (`_` is a word character);
+  `auth-related` still matches, because the guard looks only at what *precedes* the word.
 - **The parser translates into the executor's vocabulary, not the user's.** `worktrail-sdd-workflow`
   still speaks `handoff:<id>`, `route:<X>`, and the v1 intent words (`V1_INTENTS`); so `spec
   explore` yields `intent: brainstorm`, and `spec fix` yields `route: F` (the executor has no `fix`
@@ -209,6 +219,8 @@ agents or writes task files — that is `orchestrator/`'s job.
   `NOUNS`, `MODES`, `render_forms`); never shells out or writes, reads `queue/` only when a folder
   is supplied, and delegates repo names to the caller (`--repos`) and brief-id resolution to
   `work_queue.resolve()` so nothing here becomes a second implementation
+- `router/classify.py` — `classify_risk()` and the `RISK_SIGNALS` table; the `authz` pattern's
+  `(?<![-@])` compound-token guard lives here
 - `router/policy.py` — `load_policy()`; the single source of truth for a repo's resolved GO policy
 - `router/run_record.py` — `finish()`'s ten-state enforcement and its two code-enforced gates;
   `cmd_scope_review` write-time reason validation and `OUT_OF_SCOPE_REASON_PREFIXES`;
