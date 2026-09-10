@@ -65,6 +65,27 @@ class DefaultSmokeCmdResolutionTests(unittest.TestCase):
         self.assertIsNone(live._default_smoke_cmd(Path(repo)))
 
 
+class DefaultSmokeRetriesResolutionTests(unittest.TestCase):
+    """`live._default_smoke_retries()`: policy `integrate_smoke_retries` reaches
+    the orchestrator (design D1: policy only, no CLI flag); unset = 0."""
+
+    def _repo(self, policy_yaml: str | None) -> str:
+        d = tempfile.mkdtemp(prefix="default-smoke-retries-")
+        if policy_yaml is not None:
+            spec = Path(d) / ".worktrail"
+            spec.mkdir(parents=True)
+            (spec / "policy.yaml").write_text(policy_yaml, encoding="utf-8")
+        return d
+
+    def test_resolves_configured_retry_count(self):
+        repo = self._repo("integrate_smoke_retries: 1\n")
+        self.assertEqual(live._default_smoke_retries(Path(repo)), 1)
+
+    def test_unconfigured_repo_resolves_zero(self):
+        repo = self._repo(None)
+        self.assertEqual(live._default_smoke_retries(Path(repo)), 0)
+
+
 class DefaultPostMergeSmokeCmdResolutionTests(unittest.TestCase):
     """Sibling of DefaultSmokeCmdResolutionTests for the cumulative post-merge
     gate (worktrail PR #167 follow-up): post_merge_smoke_cmd wins,
@@ -176,6 +197,16 @@ class FullRealCLIAutoResolveTests(unittest.TestCase):
         repo = self._repo(None)
         captured = self._run(repo)
         self.assertIsNone(captured.get("smoke_cmd"))
+
+    def test_smoke_retries_resolved_from_policy(self):
+        repo = self._repo("integrate_smoke_retries: 1\n")
+        captured = self._run(repo)
+        self.assertEqual(captured.get("smoke_retries"), 1)
+
+    def test_smoke_retries_unconfigured_passes_zero(self):
+        repo = self._repo(None)
+        captured = self._run(repo)
+        self.assertEqual(captured.get("smoke_retries"), 0)
 
     def test_post_merge_smoke_cmd_omitted_auto_resolves_from_policy(self):
         repo = self._repo('post_merge_smoke_cmd: "pytest -q -k smoke"\n')

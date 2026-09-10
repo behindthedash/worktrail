@@ -129,6 +129,16 @@ def _default_smoke_cmd(repo: Path) -> str | None:
     return cmd
 
 
+def _default_smoke_retries(repo: Path) -> int:
+    """Resolve `integrate_smoke_retries` from policy (default 0). Policy only,
+    no CLI flag (design D1): the retry count is a per-repo property of the
+    suite's known flakiness, not a per-launch choice.
+    """
+    from ..router.policy import load_policy
+
+    return load_policy(repo).get("integrate_smoke_retries", 0) or 0
+
+
 def _default_post_merge_smoke_cmd(repo: Path) -> str | None:
     """Auto-resolve verify.py's cumulative post-merge gate command from policy
     when `--post-merge-smoke-cmd` was not passed explicitly.
@@ -4864,6 +4874,7 @@ def full_real(
     run_budget: int | None = None,
     re_integrate: bool = False,
     smoke_cmd: str | None = None,
+    smoke_retries: int = 0,
     post_merge_smoke_cmd: str | None = None,
     bootstrap_cmd: str | None = None,
     merge_method: str | None = None,
@@ -4920,6 +4931,7 @@ def full_real(
             effort=effort,
             re_integrate=re_integrate,
             smoke_cmd=smoke_cmd,
+            smoke_retries=smoke_retries,
             post_merge_smoke_cmd=post_merge_smoke_cmd,
             bootstrap_cmd=bootstrap_cmd,
             merge_method=merge_method,
@@ -5030,6 +5042,7 @@ def _pipeline_scheduler(
     journal_path: str,
     run_id: str,
     smoke_cmd: str | None = None,
+    smoke_retries: int = 0,
     post_merge_smoke_cmd: str | None = None,
     bootstrap_cmd: str | None = None,
     merge_method: str | None = None,
@@ -5356,6 +5369,7 @@ def _pipeline_scheduler(
                         "strip_spec_folder": not g.get("depends_on")
                         and g["name"] != _spec_carrier,
                         "smoke_cmd": smoke_cmd,
+                        "smoke_retries": smoke_retries,
                         "assembly_resolve_spawn": assembly_resolve_spawn_fn,
                     }
                     if pr_labels is not None:
@@ -6228,6 +6242,7 @@ def _full_real_inner(
     effort: str | None = None,
     re_integrate: bool = False,
     smoke_cmd: str | None = None,
+    smoke_retries: int = 0,
     post_merge_smoke_cmd: str | None = None,
     bootstrap_cmd: str | None = None,
     merge_method: str | None = None,
@@ -6513,6 +6528,7 @@ def _full_real_inner(
         journal_path=journal_path,
         run_id=run_id,
         smoke_cmd=smoke_cmd,
+        smoke_retries=smoke_retries,
         post_merge_smoke_cmd=post_merge_smoke_cmd,
         bootstrap_cmd=bootstrap_cmd,
         merge_method=merge_method,
@@ -7174,6 +7190,7 @@ def main(argv=None) -> int:
         smoke_cmd = args.smoke_cmd
         if smoke_cmd is None:
             smoke_cmd = _default_smoke_cmd(Path(args.repo))
+        smoke_retries = _default_smoke_retries(Path(args.repo))
         post_merge_smoke_cmd = args.post_merge_smoke_cmd
         if post_merge_smoke_cmd is None:
             post_merge_smoke_cmd = _default_post_merge_smoke_cmd(Path(args.repo))
@@ -7202,6 +7219,7 @@ def main(argv=None) -> int:
             run_budget=args.run_budget * 60 if args.run_budget else args.run_budget,
             re_integrate=args.re_integrate,
             smoke_cmd=smoke_cmd,
+            smoke_retries=smoke_retries,
             post_merge_smoke_cmd=post_merge_smoke_cmd,
             bootstrap_cmd=args.bootstrap_cmd,
             merge_method=merge_method,
