@@ -378,6 +378,26 @@ RISK_SIGNALS = [
     # already excluded, since `_` is a word character and `\b` never fires
     # mid-token. `auth-related` still matches: the guard looks only at what
     # PRECEDES the word.
+    #
+    # AUDIT 2026-09-10 (brief 20260910-110957, run go-20260910-120111): the
+    # sibling bare-word entries in this table were swept for the SAME shape
+    # over 13,626 real texts -- 2,095 run-record `request_summary` fields plus
+    # 11,531 commit subjects across 19 repos -- by computing, per entry, which
+    # live matches this lookbehind would suppress. Result: ZERO confirmed
+    # false positives. Every suppressed match was a genuine slug-form mention
+    # of the concept, not a package proper noun: `015-cloudinary-to-sharp-
+    # migration`, `subscriber-registration-api`, `forgot-password`,
+    # `mask-auth0-management-credentials-in-logs`, `bearer-credential`,
+    # `journal-wipe-on-resume`. Widening the guard to those entries would turn
+    # those true positives into false negatives -- the inverse of the authz
+    # case, where `better-auth`/`@auth/core` name a dependency rather than
+    # mention authorization. So the guard stays scoped to `authz` ALONE; do
+    # not widen another entry without its own live false-positive evidence.
+    # (`stripe-node`/`json-schema` remain theoretically matchable but occur
+    # nowhere in the corpus. `@atproto/api` does occur, twice, in Dependabot
+    # bump titles -- harmlessly: no `go:risk-*` label, automerge disabled in
+    # that repo -- and its `/` separator falls outside this lookbehind anyway;
+    # adding `/` would break genuine `POST /api/v1` and `src/api` mentions.)
     (
         "high",
         _sig(
