@@ -228,18 +228,49 @@ def _check_path(repo_path: Path, needle: str) -> dict[str, Any]:
     }
 
 
-def _check_command(
-    repo_path: Path, needle: str, timeout_s: int, already_ran: bool
-) -> dict[str, Any]:
-    if needle not in _ALLOWED_COMMANDS and not any(
+def _is_allow_listed(needle: str) -> bool:
+    return needle in _ALLOWED_COMMANDS or any(
         needle.startswith(allowed + " ") for allowed in _ALLOWED_COMMANDS
-    ):
+    )
+
+
+def _stale_npm_roots(dependency_freshness: list[dict[str, Any]] | None) -> str:
+    """Describe every non-fresh npm root, or "" when all roots are fresh."""
+    parts: list[str] = []
+    for entry in dependency_freshness or []:
+        status = entry.get("status", "unknown")
+        if status == "fresh":
+            continue
+        names = ", ".join(
+            f"{m.get('name')} (locked {m.get('locked')}, installed {m.get('installed')})"
+            for m in entry.get("mismatches", [])
+        )
+        root = entry.get("app_dir") or "."
+        parts.append(f"{root} is {status}" + (f": {names}" if names else ""))
+    return "; ".join(parts)
+
+
+def _check_command(
+    repo_path: Path,
+    needle: str,
+    timeout_s: int,
+    already_ran: bool,
+    dependency_freshness: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    if not _is_allow_listed(needle):
         return {"confirmed": False, "detail": "command not allow-listed; not run"}
     if already_ran:
         return {
             "confirmed": False,
             "detail": "skipped: another command needle already ran",
         }
+    if needle == "npm test" or needle.startswith("npm test "):
+        stale = _stale_npm_roots(dependency_freshness)
+        if stale:
+            return {
+                "confirmed": False,
+                "detail": f"skipped: npm dependencies not fresh ({stale}); not run",
+            }
     try:
         result = subprocess.run(
             shlex.split(needle),
@@ -260,13 +291,20 @@ def _check_command(
 
 
 def run_premise_check(
-    focus: str, repo_path: str | Path, *, timeout_s: int = 120
+    focus: str,
+    repo_path: str | Path,
+    *,
+    timeout_s: int = 120,
+    dependency_freshness: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Confirm or refute each needle extracted from `focus` against `repo_path`.
 
     Returns a list of `{kind, needle, confirmed, detail}` in extraction order.
     At most one `command` needle is actually executed; any additional command
-    needles are recorded unconfirmed without running.
+    needles are recorded unconfirmed without running. An `npm test` needle is
+    skipped (but still consumes the command slot) when any entry in
+    `dependency_freshness` -- the `check_dependency_freshness` result contract
+    -- has a status other than `fresh`.
     """
     repo_path = Path(repo_path)
     needles = extract_needles(focus)
@@ -278,10 +316,10 @@ def run_premise_check(
         elif n.kind == "path":
             outcome = _check_path(repo_path, n.needle)
         elif n.kind == "command":
-            outcome = _check_command(repo_path, n.needle, timeout_s, command_ran)
-            if n.needle in _ALLOWED_COMMANDS or any(
-                n.needle.startswith(a + " ") for a in _ALLOWED_COMMANDS
-            ):
+            outcome = _check_command(
+                repo_path, n.needle, timeout_s, command_ran, dependency_freshness
+            )
+            if _is_allow_listed(n.needle):
                 command_ran = True
         else:
             outcome = {"confirmed": False, "detail": "unknown needle kind"}

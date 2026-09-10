@@ -221,6 +221,92 @@ def test_timeout_expired_is_unconfirmed_with_timeout_detail(
     assert "timed out after 5s" in command_result["detail"]
 
 
+STALE_FRESHNESS = [
+    {
+        "app_dir": "app",
+        "lockfile": "app/package-lock.json",
+        "status": "stale",
+        "mismatches": [{"name": "vitest", "locked": "5.0.0", "installed": "4.1.11"}],
+        "detail": "1 mismatch",
+    }
+]
+
+FRESH_FRESHNESS = [
+    {
+        "app_dir": ".",
+        "lockfile": "package-lock.json",
+        "status": "fresh",
+        "mismatches": [],
+        "detail": "ok",
+    }
+]
+
+
+def _git_only_run(monkeypatch: pytest.MonkeyPatch) -> dict:
+    """Let git through; record any other subprocess call in the returned dict."""
+    real_run = subprocess.run
+    captured: dict = {"calls": []}
+
+    def fake_run(args, **kwargs):
+        if isinstance(args, list) and args[0] == "git":
+            return real_run(args, **kwargs)
+        captured["calls"].append(args)
+        return subprocess.CompletedProcess(
+            args, returncode=1, stdout="fail\n", stderr=""
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    return captured
+
+
+def test_npm_test_skipped_when_root_stale_and_consumes_command_slot(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    focus = "Reproduce with `npm test -- --run` then `pytest tests/x.py`."
+    captured = _git_only_run(monkeypatch)
+
+    results = run_premise_check(focus, repo, dependency_freshness=STALE_FRESHNESS)
+    commands = [r for r in results if r["kind"] == "command"]
+
+    assert [c["needle"] for c in commands] == ["npm test -- --run", "pytest tests/x.py"]
+    assert commands[0]["confirmed"] is False
+    assert "not fresh" in commands[0]["detail"]
+    assert "app is stale" in commands[0]["detail"]
+    assert "vitest" in commands[0]["detail"]
+    assert commands[1]["confirmed"] is False
+    assert "another command needle already ran" in commands[1]["detail"]
+    assert captured["calls"] == []
+
+
+def test_pytest_still_runs_with_stale_root_present(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    focus = "Reproduce with `pytest tests/x.py`."
+    captured = _git_only_run(monkeypatch)
+
+    results = run_premise_check(focus, repo, dependency_freshness=STALE_FRESHNESS)
+    command_result = next(r for r in results if r["kind"] == "command")
+
+    assert command_result["confirmed"] is True
+    assert captured["calls"] == [["pytest", "tests/x.py"]]
+
+
+@pytest.mark.parametrize("freshness", [FRESH_FRESHNESS, None])
+def test_npm_test_runs_when_fresh_or_argument_omitted(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, freshness
+) -> None:
+    focus = "Reproduce with `npm test`."
+    captured = _git_only_run(monkeypatch)
+
+    kwargs = {} if freshness is None else {"dependency_freshness": freshness}
+    results = run_premise_check(focus, repo, **kwargs)
+    command_result = next(r for r in results if r["kind"] == "command")
+
+    assert command_result["confirmed"] is True
+    assert "exit code 1" in command_result["detail"]
+    assert captured["calls"] == [["npm", "test"]]
+
+
 def test_empty_focus_returns_empty_list(repo: Path) -> None:
     assert run_premise_check("", repo) == []
     assert extract_needles("") == []
