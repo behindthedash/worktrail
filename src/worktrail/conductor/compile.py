@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any
 
 from worktrail.conductor import parallelism, req_coverage, runplan
+from worktrail.conductor.import_deps import import_dep_edges
 from worktrail.conductor.runplan import (
     COMPILE_MARKER_NAME,
     SOURCE_BASELINE,
@@ -241,12 +242,13 @@ def prose_dep_edges(
     return edges, problems
 
 
-def _union_deps(deps: Sequence[str], extra: Sequence[str]) -> tuple[str, ...]:
-    """`deps` plus any of `extra` it does not already carry -- additive only."""
+def _union_deps(deps: Sequence[str], *extras: Sequence[str]) -> tuple[str, ...]:
+    """`deps` plus any of `extras` it does not already carry -- additive only."""
     merged = list(deps)
-    for d in extra:
-        if d not in merged:
-            merged.append(d)
+    for extra in extras:
+        for d in extra:
+            if d not in merged:
+                merged.append(d)
     return tuple(merged)
 
 
@@ -254,9 +256,23 @@ def _union_deps(deps: Sequence[str], extra: Sequence[str]) -> tuple[str, ...]:
 # Plans that need no model
 # --------------------------------------------------------------------------- #
 def _plan_from_tasks(
-    spec_id: str, fp: str, tasks: Sequence[dict[str, Any]], source: str
-) -> RunPlan:
+    spec_id: str,
+    fp: str,
+    tasks: Sequence[dict[str, Any]],
+    source: str,
+    repo: str | Path | None = None,
+) -> tuple[RunPlan, list[str]]:
+    """The plan implied by the artifact alone, plus any inference warnings.
+
+    `repo` enables import inference (`import_dep_edges`); without it only the
+    authored and prose edges are unioned, which is what a caller with no repo
+    on hand (a unit test, a pre-resolution probe) gets.
+    """
     prose_deps, _ = prose_dep_edges(tasks)
+    import_deps: dict[str, list[str]] = {}
+    warnings: list[str] = []
+    if repo is not None:
+        import_deps, warnings = import_dep_edges(tasks, Path(repo))
     return RunPlan(
         spec_id=spec_id,
         fingerprint=fp,
@@ -268,6 +284,7 @@ def _plan_from_tasks(
                 deps=_union_deps(
                     runplan._norm_str_list(t.get("deps")),
                     prose_deps.get(str(t["id"]), ()),
+                    import_deps.get(str(t["id"]), ()),
                 ),
                 kind=str(t.get("kind") or ""),
                 complexity=str(t.get("complexity") or ""),
@@ -275,7 +292,7 @@ def _plan_from_tasks(
             )
             for t in tasks
         ),
-    )
+    ), warnings
 
 
 def needs_compile(tasks: Sequence[dict[str, Any]]) -> list[str]:
@@ -347,6 +364,11 @@ same in prose -- that stated dependency is a real ordering constraint and \
 must appear in its `deps`, even when the two tasks share no file at all. Do \
 not drop such an edge on the grounds that the tasks touch disjoint files; an \
 authored dependency outranks anything you infer from `files`.
+
+An import relationship is an ordering constraint too. Where one task's file \
+imports a module another task's `files` owns -- a new module and its first \
+consumer being the common shape -- the importing task depends on the owning \
+task, again regardless of the two file sets being disjoint.
 
 Rules:
 - Every task id above must appear exactly once. Invent no ids.
@@ -441,6 +463,7 @@ def _validate(
     ids: set,
     purpose_tiers: dict[str, str] | None = None,
     tasks: Sequence[Mapping[str, Any]] | None = None,
+    repo: str | Path | None = None,
 ) -> tuple[list[TaskPlan] | None, list[str], list[str]]:
     """Turn a raw model payload into TaskPlans, or explain why it cannot be trusted.
 
@@ -461,11 +484,17 @@ def _validate(
     the edges stated in each task's prose. Compile is a second path to a plan,
     so an authored "depends on 2.1" has to survive it exactly as it survives
     the seed path -- a model that never saw the sentence as a constraint would
-    otherwise silently drop the edge.
+    otherwise silently drop the edge. `repo` does the same for the edges implied
+    by a Python import between two tasks' declared files, which the model cannot
+    be relied on to see either.
     """
     valid_purposes = set(purpose_tiers or {})
     prose_deps, problems = prose_dep_edges(tasks or [])
     warnings: list[str] = []
+    import_deps: dict[str, list[str]] = {}
+    if repo is not None:
+        import_deps, import_warnings = import_dep_edges(tasks or [], Path(repo))
+        warnings.extend(import_warnings)
     rows = payload.get("tasks")
     if not isinstance(rows, list):
         return None, ["payload has no `tasks` list"], warnings
@@ -513,6 +542,7 @@ def _validate(
                     if d in ids and d != tid
                 ],
                 prose_deps.get(tid, ()),
+                import_deps.get(tid, ()),
             ),
             complexity=str(row.get("complexity") or ""),
             review=str(row.get("review") or ""),
@@ -715,13 +745,19 @@ def compile_run_plan(
 
     gaps = needs_compile(tasks)
     if not gaps:
-        plan = _plan_from_tasks(spec_id, fp, tasks, SOURCE_SEED)
+        plan, import_warnings = _plan_from_tasks(spec_id, fp, tasks, SOURCE_SEED, repo)
+        for w in import_warnings:
+            log(f"run plan: {w}")
         runplan.store(cache_dir, plan)
         log(f"run plan: seeded from the artifact, no model needed ({fp[:12]})")
         _check_shape(plan, tasks, repo)
         return plan
 
-    baseline = _plan_from_tasks(spec_id, fp, tasks, SOURCE_BASELINE)
+    baseline, import_warnings = _plan_from_tasks(
+        spec_id, fp, tasks, SOURCE_BASELINE, repo
+    )
+    for w in import_warnings:
+        log(f"run plan: {w}")
     if not allow_llm:
         log(f"run plan: {len(gaps)} task(s) lack file scope and compiling is disabled")
         _check_shape(baseline, tasks, repo)
@@ -790,7 +826,7 @@ def compile_run_plan(
         return give_up("compile returned no JSON object; using the artifact's own deps")
 
     planned, problems, purpose_warnings = _validate(
-        payload, {t["id"] for t in tasks}, purpose_tiers, tasks
+        payload, {t["id"] for t in tasks}, purpose_tiers, tasks, repo
     )
     for w in purpose_warnings:
         log(f"run plan: {w}")
