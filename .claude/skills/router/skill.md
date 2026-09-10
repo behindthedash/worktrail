@@ -30,6 +30,9 @@ triggers:
     - flip_and_archive
     - capacity-gate
     - retry_after
+    - smoke_flakes
+    - smoke_flake_aggregate
+    - smoke_flake_selfcheck
 ---
 
 You are working on **worktrail's GO v2 front door**: loading repo policy, classifying free-text
@@ -150,6 +153,16 @@ agents or writes task files — that is `orchestrator/`'s job.
   spec doc, with a dated filename winning when several exist. A `## Clarifications` heading is
   NOT the resolution-gate signal — only ~22/46 real specs carry one; the gate keys on unresolved
   `[NEEDS CLARIFICATION: ...]` markers in the spec body instead.
+- **The dashboard JSON payload's `smoke_flakes` key is always present, never absent.**
+  `smoke_flake_aggregate(repos)` calls `smoke_flake_selfcheck.check_repo()` once per in-scope repo
+  (both `--root` single-repo and `--repos` multi-repo mode), tags each entry with its repo name,
+  and merges them into one `{"entries": [...]}` keeping the detector's ordering (count desc, suite
+  asc), so a consumer can read the key without an existence check. The aggregate is passive: any
+  failure yields `{"entries": []}` and the `rendered` smoke-flake section is simply omitted — it
+  never breaks the dashboard. `smoke_flake_selfcheck` is imported unconditionally (the
+  detector-not-yet-shipped `try/except ImportError` fallback is gone now that the module ships).
+  The entry shape and the recency window are documented in
+  `skills/worktrail-go/references/dashboard-render.md`.
 - **`skill_dispatch.evaluate_single_brief()`/`apply_single_brief_verdict()` resolve a bare `repo:`
   value to an on-disk checkout before using it as `cwd`.** A brief's `repo:` frontmatter is almost
   always a short name (e.g. `"worktrail"`), not a path. `evaluate_single_brief` runs it through
@@ -219,7 +232,11 @@ agents or writes task files — that is `orchestrator/`'s job.
   `drain.py` and sdd-workflow's Phase 8 call into it rather than reimplementing it
 - `router/dashboard.py` — pure file inspection (no git, network, or agents); spec lifecycle stage
   and next-action detection; also the source of `_resolve_repo_dir()`, which `skill_dispatch.py`'s
-  single-brief-triage path uses to resolve a bare `repo:` value to an on-disk checkout
+  single-brief-triage path uses to resolve a bare `repo:` value to an on-disk checkout, and of
+  `smoke_flake_aggregate()`, which builds the always-present `smoke_flakes` payload key
+- `router/smoke_flake_selfcheck.py` — `check_repo()`, the per-repo smoke-flake detector that reads
+  recorded flakes out of a repo's run journals (recency-windowed) and that
+  `dashboard.smoke_flake_aggregate()` calls once per in-scope repo
 - `router/land_pr.py` — `land_pr()`, `LandRequest`/`LandOutcome`; the shared
   commit/compile-marker/preflight/push/PR/CI-watch/merge-guard/review-thread-gate/finish pipeline
   every PR-opening call site should compose with instead of reimplementing a subset; `_push()`'s
