@@ -65,7 +65,7 @@
 
 ## 4. Verification
 
-- [ ] 4.1 [e2e] Run `PYTHONPATH=src pytest -q` and
+- [x] 4.1 [e2e] Run `PYTHONPATH=src pytest -q` and
       `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` and confirm both
       pass. Then run `worktrail-compile --no-llm` against the archived
       `openspec/changes/archive/2026-09-10-smoke-flake-dashboard-surface` tasks.md and
