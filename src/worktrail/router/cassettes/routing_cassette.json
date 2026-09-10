@@ -228,6 +228,12 @@
       "id": "hyphenated-pr-citation-is-not-a-spec-id-signal",
       "request": "Update the changelog to mention PR #617-related work; no code changes needed.",
       "expect": {"route": "E", "confidence": "low", "route_source": "no-signal-default"}
+    },
+    {
+      "id": "ci-config-promotion-cites-classify-py-as-evidence-not-target",
+      "request": "Promote the 'Classifier Coverage Ratchet' CI job to a required status check in .github/rulesets/protect-main.json once its baseline has proven stable across PRs touching classify.py (#620, #623, #819).",
+      "handoff_route": "F",
+      "expect": {"route": "F", "confidence": "medium", "route_source": "handoff-recommended-override"}
     }
   ]
 }

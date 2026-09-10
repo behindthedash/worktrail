@@ -3,7 +3,7 @@
     "description": "Bounded, redacted sample of the operator's personal work-queue corpus (~/work-queue), used by tests/router/test_classifier_coverage_ratchet.py as a CI-visible input to classify.py's route classifier. Each item is focus text (the same field the classifier reads live) plus the route expected for it -- the brief's actual selected_route when a run record consumed it, else its own recommended-route frontmatter. No repo paths, PR/issue links, commit shas, emails, or operator/product names -- see redaction step in the regeneration script referenced below.",
     "sampling": "Stratified: up to 24 items per route (A-J), evenly spaced picks across each route's available pool from the live corpus at generation time, so every route is represented regardless of its natural frequency.",
     "generated": "2026-08-21",
-    "item_count": 235
+    "item_count": 236
   },
   "items": [
     {
@@ -945,6 +945,10 @@
     {
       "focus": "`dashboard.py`'s orientation output (Phase 1 of `/go`) shows active specs, in-flight\nbriefs, and the handoff queue — but nothing about past `/go` run outcomes. Every\ndispatched run writes a durable YAML record to `<path>`\n(`run_record.py`) with route, risk, decisions, scope-review, PR link, and final\ncompletion state — but the only way to see it today is manually finding and `cat`ing\nthe file. There is no \"what happened in recent runs against this repo\" view.",
       "expected_route": "J"
+    },
+    {
+      "focus": "Promote the 'Classifier Coverage Ratchet' CI job (worktrail, .github/workflows/ci.yml, added in PR #592) to a required status check in .github/rulesets/protect-main.json once its baseline has proven stable across a PR or two touching classify.py. This is the deferred phase 2 explicitly named in brief 20260820-024527's suggested approach ('keep the ratchet advisory for one or two PRs before making it a required check so the threshold can be calibrated') -- now actionable: the ratchet has passed on three post-#592 PRs touching classify.py (#620, #623, #819 via `gh pr checks`). Note the job is conditionally skipped for bookkeeping PRs (`if: needs.changes.outputs.bookkeeping == 'false'` in ci.yml), so promoting it to required must either drop that skip or add an always-run no-op leg, or bookkeeping PRs will be blocked by a skipped required check.",
+      "expected_route": "F"
     }
   ]
 }

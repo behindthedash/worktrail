@@ -43,11 +43,15 @@ FIXTURE_PATH = (
     Path(__file__).resolve().parent.parent / "fixtures" / "classifier_corpus.json"
 )
 
-# Pinned to tests/fixtures/classifier_corpus.json (235 items) as of 2026-08-21.
+# Pinned to tests/fixtures/classifier_corpus.json (236 items) as of
+# 2026-09-10 (added the incidental-filename-mention regression item, expected
+# route F -- classify() without a handoff-route hint organically picks C for
+# it, same "disagreed" bucket as the corpus's other hint-dependent items, so
+# agreed stays 68 while compared moves 235 -> 236).
 # classify() is pure and regex-only, and the fixture and replay inputs below
 # are all fixed, so this is an exact reproducible count, not a tolerance band.
 BASELINE_AGREED = 68
-BASELINE_COMPARED = 235
+BASELINE_COMPARED = 236
 
 
 def _materialize(items: list, queue_root: Path) -> None:
