@@ -21,7 +21,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [e2e] Run `PYTHONPATH=src pytest -q tests/orchestrator/test_live_extras.py`, then
+- [x] 2.1 [e2e] Run `PYTHONPATH=src pytest -q tests/orchestrator/test_live_extras.py`, then
       `PYTHONPATH=src pytest -q` and
       `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`, and confirm all
       pass. Depends on 1.1.
