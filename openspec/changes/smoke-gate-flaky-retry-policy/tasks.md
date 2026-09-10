@@ -77,13 +77,13 @@
 
 ## 5. Verification
 
-- [ ] 5.1 [e2e] Run `pytest -q tests/router/test_policy.py
+- [x] 5.1 [e2e] Run `pytest -q tests/router/test_policy.py
       tests/orchestrator/test_integrate_complete.py
       tests/orchestrator/test_default_smoke_cmd.py tests/test_plugin_surface.py`,
       then `pytest -q` and `python3 -m worktrail.orchestrator.orchestrate
       check`; confirm all pass.
       depends on 1.1, 2.1, 3.1, 4.1. Verification-only; no file changes expected.
-- [ ] 5.2 [e2e] Run `openspec validate smoke-gate-flaky-retry-policy --strict`
+- [x] 5.2 [e2e] Run `openspec validate smoke-gate-flaky-retry-policy --strict`
       and `worktrail-compile openspec/changes/smoke-gate-flaky-retry-policy`;
       confirm both pass.
       depends on 1.1, 2.1, 3.1, 4.1. Verification-only; no file changes expected.
