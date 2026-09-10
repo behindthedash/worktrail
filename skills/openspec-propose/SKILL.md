@@ -132,6 +132,12 @@ per the calling worktrail-sdd-workflow pipeline instead.
           a prose edit, a single constant) carries an indented `review: skip` continuation line,
           the same way `files:` is declared above. A task producing executable behavior never
           carries `review: skip`.
+        - **`depends:` for imports of files another task creates**: when a task's `files:`
+          names a path that does not exist on the base branch and another task will import
+          it, the importing task carries an indented `depends: <creator id>` continuation
+          line (e.g. `depends: 1.1`), declared the same way as `files:` and `review: skip`.
+          `worktrail-compile` infers that edge on its own only when the import is already on
+          disk — a not-yet-created module is invisible to it, so declare the edge explicitly.
       - Show brief progress: "Created <artifact-id>"
 
    b. **Continue until all `applyRequires` artifacts are complete**
