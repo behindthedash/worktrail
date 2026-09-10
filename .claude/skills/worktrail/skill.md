@@ -217,6 +217,11 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
   squash-only `dev` and quarantined each on a green tree (2026-09-01). Never add a new
   policy-backed `full-real` flag that relies on the agent remembering to pass it.
   `_resolve_max_workers` is the same pattern for `--max-workers`.
+- **Smoke-gate flaky retry is policy-driven, and a flake is a signal, not a knob.**
+  `integrate_smoke_retries` (default `0`, recommend `1`) re-runs the smoke command on a non-zero
+  exit before quarantining the group. A pass-after-retry is logged as `FLAKY` and recorded under
+  the run journal's `smoke_flakes` map, so a repeated entry for the same suite is a signal to fix
+  the flake, not to raise the count.
 - **`auto_merge()` treats a GitHub METHOD rejection as retryable, not a quarantine.** When the
   direct `gh pr merge` fails with an `_AUTO_MERGE_METHOD_SIGNALS` match (e.g. "Merge commits are
   not allowed on this repository"), `_retry_auto_merge_methods(..., auto=False)` retries the

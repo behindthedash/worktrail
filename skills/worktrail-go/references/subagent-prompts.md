@@ -845,7 +845,10 @@ a role pinned to a different agent falls back to that agent's own default model.
   `integrate_smoke_cmd`) when `--smoke-cmd` is omitted on a repo that has either key
   configured, as a code-level safety net for exactly the case this note used to leave to the
   calling agent's memory — but an explicit flag is still clearer and always wins over the
-  auto-resolved value.
+  auto-resolved value. `integrate_smoke_retries` (default `0`, recommend `1`) re-runs the
+  command on a non-zero exit before quarantining the group. A pass-after-retry is logged as
+  `FLAKY` and recorded under the run journal's `smoke_flakes` map, so a repeated entry for the
+  same suite is a signal to fix the flake, not to raise the count.
 - **Task-worktree dependency bootstrap (opt-in, from policy):** when
   `worktree_bootstrap_cmd` is set in `docs/specs/worktrail-go-policy.yaml` (loaded in Phase 4), pass
   it through as `--bootstrap-cmd "<command>"`. The orchestrator runs it in each fanned-out
