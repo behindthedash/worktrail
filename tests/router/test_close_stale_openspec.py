@@ -28,6 +28,16 @@ TASKS_MD = """## 1. Setup
 """
 
 
+ALL_CHECKED_TASKS_MD = """## 1. Setup
+
+- [x] 1.1 Already done
+
+## 2. Tests
+
+- [x] 2.1 Also already done
+"""
+
+
 def _write_change(wt: Path, change_id: str, tasks_md: str = TASKS_MD) -> Path:
     change_dir = wt / "openspec" / "changes" / change_id
     change_dir.mkdir(parents=True)
@@ -68,12 +78,35 @@ class TestDefaultFlipsAllPending(unittest.TestCase):
 
             self.assertTrue(res["checked"])
             self.assertEqual(sorted(res["flipped"]), ["2.1", "3.1"])
-            self.assertEqual(res["already_checked"], [])
+            # The default targets every id, so a task that was already `[x]`
+            # is reported in `already_checked` rather than being skipped.
+            self.assertEqual(res["already_checked"], ["1.1"])
             self.assertTrue(res["archived"])
             self.assertIsNone(res["error"])
 
             text = (change_dir / "tasks.md").read_text()
             self.assertNotIn("[ ]", text)
+
+
+class TestDefaultOnFullyCheckedChange(unittest.TestCase):
+    """A change whose tasks.md is already 100% `[x]` -- pure bookkeeping drift,
+    the exact case this module exists for -- must still archive on the default
+    (no `task_ids`) path, landing every id in `already_checked`.
+    """
+
+    def test_zero_pending_tasks_still_archives(self):
+        with tempfile.TemporaryDirectory() as t:
+            wt = Path(t)
+            _write_change(wt, "add-export", tasks_md=ALL_CHECKED_TASKS_MD)
+
+            with _patch_openspec_archive(0):
+                res = cso.flip_and_archive(wt, "add-export")
+
+            self.assertTrue(res["checked"])
+            self.assertEqual(res["flipped"], [])
+            self.assertEqual(sorted(res["already_checked"]), ["1.1", "2.1"])
+            self.assertTrue(res["archived"])
+            self.assertIsNone(res["error"])
 
 
 class TestExplicitTaskIds(unittest.TestCase):
