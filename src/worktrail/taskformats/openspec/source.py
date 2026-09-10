@@ -105,6 +105,9 @@ class OpenSpecTaskSource:
                 non_tail_ids.append(t.id)
                 prev_non_tail_in_group[t.group] = t.id
             prev_in_group[t.group] = t.id
+            # An authored `depends:` line is additive to the baseline: it may
+            # only add edges, never drop the within-group predecessor.
+            deps = sorted(set(deps) | set(t.depends))
             task_dict = {
                 "id": t.id,
                 "title": t.title,

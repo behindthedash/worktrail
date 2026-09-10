@@ -540,3 +540,79 @@ def test_impl_task_baseline_dep_skips_a_tail_kind_predecessor(tmp_path):
     assert by_id["1.2"]["deps"] == []
     # the next impl task still chains off the nearest non-tail sibling
     assert by_id["1.3"]["deps"] == ["1.2"]
+
+
+# --------------------------------------------------------------------------- #
+# inline `depends:` declarations
+# --------------------------------------------------------------------------- #
+DECLARED_DEPENDS = textwrap.dedent(
+    """\
+    ## 1. Schema
+
+    - [ ] 1.1 Parse depends line
+    - [ ] 1.2 Union depends into deps
+      depends: 1.1
+
+    ## 2. Compile
+
+    - [ ] 2.1 Infer import edges
+      depends: 1.2
+    - [ ] 2.2 Wire inference into compile
+      depends: 1.1, 2.1
+    """
+)
+
+
+def test_load_unions_cross_group_depends_with_baseline_predecessor(tmp_path):
+    _, tasks = OpenSpecTaskSource(_change(tmp_path, tasks=DECLARED_DEPENDS)).load(
+        "add-export"
+    )
+    by_id = {t["id"]: t for t in tasks}
+    # cross-group declaration alongside the baseline within-group predecessor
+    assert by_id["2.2"]["deps"] == ["1.1", "2.1"]
+    # a first-in-group task has no baseline; its declaration stands alone
+    assert by_id["2.1"]["deps"] == ["1.2"]
+    # a declaration that repeats the baseline predecessor does not duplicate it
+    assert by_id["1.2"]["deps"] == ["1.1"]
+
+
+def test_load_tail_task_keeps_declared_extra_dependency(tmp_path):
+    md = textwrap.dedent(
+        """\
+        ## 1. Impl
+
+        - [ ] 1.1 Build it
+
+        ## 2. Verify
+
+        - [ ] 2.1 Something else
+        - [ ] 2.2 [e2e] Check it
+          depends: 1.1, 3.1
+
+        ## 3. Docs
+
+        - [ ] 3.1 Write docs
+        """
+    )
+    _, tasks = OpenSpecTaskSource(_change(tmp_path, tasks=md)).load("add-export")
+    by_id = {t["id"]: t for t in tasks}
+    assert by_id["2.2"]["kind"] == "e2e"
+    # baseline: preceding non-tail tasks (1.1, 2.1) plus the declared 3.1, no dupes
+    assert by_id["2.2"]["deps"] == ["1.1", "2.1", "3.1"]
+
+
+def test_validate_dependencies_reports_declared_id_naming_no_task(tmp_path):
+    md = textwrap.dedent(
+        """\
+        ## 1. Impl
+
+        - [ ] 1.1 Build it
+          depends: 9.9
+        """
+    )
+    src = OpenSpecTaskSource(_change(tmp_path, tasks=md))
+    _, tasks = src.load("add-export")
+    assert tasks[0]["deps"] == ["9.9"]
+    diagnostics = src.validate_dependencies("add-export", tasks)
+    assert len(diagnostics) == 1
+    assert diagnostics[0].startswith("1.1 — unresolved same-spec dependency '9.9'")

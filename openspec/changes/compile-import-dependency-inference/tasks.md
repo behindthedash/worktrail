@@ -2,7 +2,7 @@
 
 ## 1. `depends:` continuation line
 
-- [ ] 1.1 Parse an indented `depends:` continuation line in `parse_tasks_md`, in the same
+- [x] 1.1 Parse an indented `depends:` continuation line in `parse_tasks_md`, in the same
       window as `files:`/`review:`, into a new `ParsedTask.depends` list of task ids
       (comma/whitespace separated, backticks stripped, self-reference dropped); warn on a
       duplicate line or an empty value like `files:` does. Tests cover: a single id, several
@@ -11,7 +11,7 @@
       (Requirement: Inline dependency declaration parsing)
   files: src/worktrail/taskformats/openspec/schema.py tests/taskformats/openspec/test_openspec_schema.py
 
-- [ ] 1.2 Union `ParsedTask.depends` into the loaded task's `deps` in
+- [x] 1.2 Union `ParsedTask.depends` into the loaded task's `deps` in
       `OpenSpecTaskSource.load()` (additive to the baseline within-group predecessor, no
       duplicates) and prove `validate_dependencies()` reports a declared id that names no
       task. Tests cover: cross-group declaration alongside a baseline predecessor, a tail task

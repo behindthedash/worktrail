@@ -73,6 +73,15 @@ FILES_TOKEN_SPLIT_RE = re.compile(r"[,\s]+")
 # Must be indented -- a top-level `review:` line is not a declaration.
 REVIEW_RE = re.compile(r"^[ \t]+review:\s*(.*?)\s*$", re.IGNORECASE)
 
+# An indented `depends:` continuation line, matched in the same window as
+# `FILES_RE`, naming the ids of tasks this one must run after, e.g.
+#   - [ ] 2.1 Wire the widget into the dashboard
+#     depends: 1.1, 1.2
+# The only explicit dependency edge the authoring format carries: needed when
+# a task imports a module another task *creates*, which no on-disk inference
+# can see until that file exists.
+DEPENDS_RE = re.compile(r"^[ \t]+depends:\s*(.*?)\s*$", re.IGNORECASE)
+
 
 def split_tags(title: str) -> tuple[str, list[str]]:
     """Peel leading `[tag]` markers off a task title.
@@ -115,6 +124,9 @@ class ParsedTask:
         default_factory=list
     )  # paths from an indented `files:` line, if any
     review: str = ""  # value of an indented `review:` line, if any (e.g. "skip")
+    depends: list[str] = field(
+        default_factory=list
+    )  # task ids from an indented `depends:` line, if any
 
 
 @dataclass
@@ -172,6 +184,8 @@ def parse_tasks_md(text: str) -> ParsedTasks:
             files_declared = False
             review = ""
             review_declared = False
+            depends: list[str] = []
+            depends_declared = False
             for j, follow in enumerate(lines[i + 1 :], start=i + 1):
                 if not follow.strip():
                     break
@@ -206,6 +220,21 @@ def parse_tasks_md(text: str) -> ParsedTasks:
                         result.warnings.append(
                             f"line {j + 1}: task {tid}'s 'review:' line names no value"
                         )
+                    continue
+                dm = DEPENDS_RE.match(follow)
+                if dm:
+                    if depends_declared:
+                        result.warnings.append(
+                            f"line {j + 1}: task {tid} has more than one 'depends:' line; "
+                            "using the first declaration"
+                        )
+                        continue
+                    depends_declared = True
+                    depends = [d for d in split_files(dm.group(1)) if d != tid]
+                    if not depends:
+                        result.warnings.append(
+                            f"line {j + 1}: task {tid}'s 'depends:' line names no task ids"
+                        )
 
             result.tasks.append(
                 ParsedTask(
@@ -219,6 +248,7 @@ def parse_tasks_md(text: str) -> ParsedTasks:
                     tags=tags,
                     files=files,
                     review=review,
+                    depends=depends,
                 )
             )
             continue
