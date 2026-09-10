@@ -21,7 +21,7 @@
 
 ## 2. Import inference in compile
 
-- [ ] 2.1 Add `src/worktrail/conductor/import_deps.py` exposing
+- [x] 2.1 Add `src/worktrail/conductor/import_deps.py` exposing
       `import_dep_edges(tasks, repo) -> (edges, warnings)`: for each non-tail task, parse
       every declared `.py` file present under the repo with `ast`, resolve relative imports
       against the file's package and absolute imports under `src/` then the repo root (module
@@ -38,7 +38,7 @@
       (Requirement: Inference never introduces a cycle and never fails a compile)
   files: src/worktrail/conductor/import_deps.py tests/conductor/test_import_deps.py
 
-- [ ] 2.2 Union `import_dep_edges()` into `deps` in both `_plan_from_tasks()` and
+- [x] 2.2 Union `import_dep_edges()` into `deps` in both `_plan_from_tasks()` and
       `_validate()` next to the existing prose-reference union, threading `repo` to both and
       logging any returned warnings; extend `PROMPT` so the "files are not the only source
       of ordering" paragraph also names an import relationship between two tasks' files as

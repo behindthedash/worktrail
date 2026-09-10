@@ -2096,7 +2096,7 @@ def test_plan_from_tasks_unions_prose_deps_for_a_file_disjoint_pair():
             "deps": [],
         },
     ]
-    plan = conductor_compile._plan_from_tasks(
+    plan, _ = conductor_compile._plan_from_tasks(
         "spec", "fp", tasks, conductor_compile.SOURCE_SEED
     )
     by_id = {t.id: t for t in plan.tasks}
@@ -2115,7 +2115,7 @@ def test_plan_from_tasks_prose_union_is_additive():
             "deps": ["1.2"],
         },
     ]
-    plan = conductor_compile._plan_from_tasks(
+    plan, _ = conductor_compile._plan_from_tasks(
         "spec", "fp", tasks, conductor_compile.SOURCE_SEED
     )
     deps = {t.id: t.deps for t in plan.tasks}["2.1"]
@@ -2212,7 +2212,7 @@ def test_plan_from_tasks_unions_after_deps_for_a_file_disjoint_pair():
         {"id": "1.1", "title": "First", "files": ["a.py"], "deps": []},
         {"id": "2.1", "title": "Second; after 1.1.", "files": ["b.py"], "deps": []},
     ]
-    plan = conductor_compile._plan_from_tasks(
+    plan, _ = conductor_compile._plan_from_tasks(
         "spec", "fp", tasks, conductor_compile.SOURCE_SEED
     )
     by_id = {t.id: t for t in plan.tasks}
@@ -2244,3 +2244,116 @@ def test_validate_does_not_report_an_unresolvable_after_reference():
     planned, problems, _ = conductor_compile._validate(payload, {"1.1"}, None, tasks)
     assert problems == []
     assert {t.id: t.deps for t in planned} == {"1.1": ()}
+
+
+# --------------------------------------------------------------------------- #
+# Import-inferred edges (2.2 -- wiring into both compile paths)
+# --------------------------------------------------------------------------- #
+def _import_fixture(tmp_path):
+    """Task 1.1 owns a module; task 2.1's on-disk file imports it. Disjoint `files:`.
+
+    This is the go-20260910-085218 shape: nothing but the import couples them.
+    """
+    pkg = tmp_path / "src" / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    (pkg / "owned.py").write_text("VALUE = 1\n")
+    (pkg / "consumer.py").write_text("from pkg.owned import VALUE\n")
+    return [
+        {"id": "1.1", "title": "Own it", "files": ["src/pkg/owned.py"], "deps": []},
+        {"id": "2.1", "title": "Use it", "files": ["src/pkg/consumer.py"], "deps": []},
+    ]
+
+
+def test_plan_from_tasks_unions_import_deps_for_a_file_disjoint_pair(tmp_path):
+    tasks = _import_fixture(tmp_path)
+    plan, warnings = conductor_compile._plan_from_tasks(
+        "spec", "fp", tasks, conductor_compile.SOURCE_SEED, tmp_path
+    )
+    by_id = {t.id: t.deps for t in plan.tasks}
+    assert by_id["2.1"] == ("1.1",)
+    assert by_id["1.1"] == ()
+    assert warnings == []
+
+
+def test_plan_from_tasks_without_a_repo_infers_no_import_deps(tmp_path):
+    tasks = _import_fixture(tmp_path)
+    plan, warnings = conductor_compile._plan_from_tasks(
+        "spec", "fp", tasks, conductor_compile.SOURCE_SEED
+    )
+    assert {t.id: t.deps for t in plan.tasks}["2.1"] == ()
+    assert warnings == []
+
+
+def test_plan_from_tasks_import_union_is_additive(tmp_path):
+    tasks = _import_fixture(tmp_path)
+    tasks.append({"id": "1.2", "title": "Other", "files": ["src/pkg/other.py"]})
+    tasks[1]["deps"] = ["1.2"]
+    plan, _ = conductor_compile._plan_from_tasks(
+        "spec", "fp", tasks, conductor_compile.SOURCE_SEED, tmp_path
+    )
+    assert {t.id: t.deps for t in plan.tasks}["2.1"] == ("1.2", "1.1")
+
+
+def test_validate_unions_import_deps_the_model_omitted(tmp_path):
+    tasks = _import_fixture(tmp_path)
+    payload = {
+        "tasks": [
+            {"id": "1.1", "files": ["src/pkg/owned.py"], "deps": []},
+            {"id": "2.1", "files": ["src/pkg/consumer.py"], "deps": []},
+        ]
+    }
+    planned, problems, warnings = conductor_compile._validate(
+        payload, {"1.1", "2.1"}, None, tasks, tmp_path
+    )
+    assert problems == []
+    assert {t.id: t.deps for t in planned} == {"1.1": (), "2.1": ("1.1",)}
+    assert warnings == []
+
+
+def test_validate_without_a_repo_infers_no_import_deps(tmp_path):
+    tasks = _import_fixture(tmp_path)
+    payload = {
+        "tasks": [
+            {"id": "1.1", "files": ["src/pkg/owned.py"], "deps": []},
+            {"id": "2.1", "files": ["src/pkg/consumer.py"], "deps": []},
+        ]
+    }
+    planned, problems, _ = conductor_compile._validate(
+        payload, {"1.1", "2.1"}, None, tasks
+    )
+    assert problems == []
+    assert {t.id: t.deps for t in planned}["2.1"] == ()
+
+
+def test_import_inference_defers_to_an_authored_depends_when_neither_file_exists(
+    tmp_path,
+):
+    """The same coupling stated by `depends:` alone -- nothing on disk to parse."""
+    tasks = [
+        {"id": "1.1", "title": "Own it", "files": ["src/pkg/owned.py"], "deps": []},
+        {
+            "id": "2.1",
+            "title": "Use it",
+            "files": ["src/pkg/consumer.py"],
+            "deps": ["1.1"],
+        },
+    ]
+    plan, warnings = conductor_compile._plan_from_tasks(
+        "spec", "fp", tasks, conductor_compile.SOURCE_SEED, tmp_path
+    )
+    assert {t.id: t.deps for t in plan.tasks}["2.1"] == ("1.1",)
+    assert warnings == []
+
+
+def test_prompt_names_import_relationships_as_an_ordering_constraint():
+    rendered = conductor_compile.PROMPT.format(
+        spec_rel="openspec/changes/x",
+        task_list="- 1.1: First",
+        purpose_instructions="",
+        purpose_field="",
+    )
+    assert "import relationship is an ordering constraint" in rendered
+    assert "the importing task depends on the owning task" in rendered.replace(
+        "\n", " "
+    )
