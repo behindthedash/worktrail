@@ -125,6 +125,14 @@ from .audit_postmerge import (
     resolve_state_dir as _postmerge_resolve_state_dir,
 )
 
+# smoke_flake_selfcheck is a sibling module (spec smoke-flake-dashboard-surface):
+# its check_repo() aggregates recorded smoke flakes from a repo's run journals.
+# Optional so the dashboard renders unchanged while the detector is landing.
+try:
+    from .smoke_flake_selfcheck import check_repo as _smoke_flake_check_repo
+except ImportError:  # pragma: no cover - detector not yet shipped
+    _smoke_flake_check_repo = None
+
 # automerge_selfcheck is a sibling module (route:J automerge-label-gate audit).
 from .automerge_selfcheck import check_repo as _automerge_check_repo
 
@@ -3155,6 +3163,27 @@ def build_category_items(
     return result
 
 
+SMOKE_FLAKE_DISPLAY_CAP = 4
+
+
+def smoke_flake_aggregate(repos: list[tuple[str, Path]]) -> dict[str, Any]:
+    """Cross-repo smoke-flake snapshot: smoke_flake_selfcheck.check_repo() once
+    per `(repo_name, repo_dir)`, each entry tagged with its `repo`, merged into
+    one `{"entries": [...]}` keeping the detector's ordering (count desc, suite
+    asc). Any failure yields an empty aggregate -- never break the dashboard."""
+    try:
+        if _smoke_flake_check_repo is None:
+            return {"entries": []}
+        entries: list[dict[str, Any]] = []
+        for name, repo_dir in repos:
+            for e in _smoke_flake_check_repo(Path(repo_dir)).get("entries", []):
+                entries.append({**e, "repo": name})
+        entries.sort(key=lambda e: (-int(e.get("count", 0)), str(e.get("suite", ""))))
+        return {"entries": entries}
+    except Exception:  # noqa: BLE001 — telemetry must never break the dashboard
+        return {"entries": []}
+
+
 def load_recent_runs(
     repo: Path, limit: int = 5, runs_dir: Path | None = None
 ) -> list[dict[str, Any]]:
@@ -3215,6 +3244,7 @@ def render_dashboard(
     staleness_warnings: list[dict[str, Any]] | None = None,
     queue_repo: str | None = None,
     epic_rows: list[dict[str, Any]] | None = None,
+    smoke_flakes: dict[str, Any] | None = None,
 ) -> str:
     """The compact, category-grouped, deterministic dashboard the conductor prints
     verbatim (no LLM rendering). Active specs are grouped by work-category in
@@ -3237,7 +3267,11 @@ def render_dashboard(
     CLUSTER_PRECISION_MIN_DECIDED decided outcomes, an extra precision line is
     appended under it. `recent_runs` (single-repo mode) or each repo row's own
     `recent_runs` (multi-repo mode, tagged with its repo name like worktrees)
-    renders a "Recent runs" section, most-recent-first, capped at 5. Empty
+    renders a "Recent runs" section, most-recent-first, capped at 5.
+    `smoke_flakes` (smoke_flake_aggregate()'s result, entries tagged with their
+    repo) renders a one-line "Smoke flakes" review nudge naming each suite with
+    its run count -- recurring first, per the detector's ordering, with an
+    `… +N` overflow past SMOKE_FLAKE_DISPLAY_CAP -- omitted when empty. Empty
     sections are omitted -- with no clusters or recent runs, output is
     byte-for-byte unchanged regardless of `cluster_precision`."""
 
@@ -3515,6 +3549,25 @@ def render_dashboard(
                 f"⏳ Headless capacity gates ({len(capacity['gated'])}): {entries}{more}"
                 " → fallback may be available"
             )
+
+    flakes = list((smoke_flakes or {}).get("entries") or [])
+    if flakes:
+        multi_repo = len({e.get("repo") for e in flakes}) > 1
+
+        def _flake_label(e: dict[str, Any]) -> str:
+            n = e.get("count", 0)
+            suite = f"{e.get('repo')}:{e['suite']}" if multi_repo else e["suite"]
+            return f"{suite} ({n} run{'s' if n != 1 else ''})"
+
+        head = ", ".join(_flake_label(e) for e in flakes[:SMOKE_FLAKE_DISPLAY_CAP])
+        more = (
+            f" … +{len(flakes) - SMOKE_FLAKE_DISPLAY_CAP}"
+            if len(flakes) > SMOKE_FLAKE_DISPLAY_CAP
+            else ""
+        )
+        lines.append(
+            f"🧪 Smoke flakes ({len(flakes)}): {head}{more} → fix the flaky suite"
+        )
 
     if postmerge_check_failures and postmerge_check_failures.get("flagged"):
         pmf_flagged = postmerge_check_failures["flagged"]
@@ -3873,6 +3926,9 @@ def main(argv=None) -> int:
             if args.check_freshness
             else []
         )
+        smoke_flakes = smoke_flake_aggregate(
+            [(r["repo"], Path(r["path"])) for r in repo_rows]
+        )
         rendered = render_dashboard(
             repo_rows,
             None,
@@ -3883,6 +3939,7 @@ def main(argv=None) -> int:
             capacity=capacity,
             postmerge_check_failures=postmerge_check_failures,
             staleness_warnings=staleness_warnings,
+            smoke_flakes=smoke_flakes,
         )
         if args.json:
             print(
@@ -3914,6 +3971,7 @@ def main(argv=None) -> int:
                         "cluster_precision": cluster_precision,
                         "capacity": capacity,
                         "postmerge_check_failures": postmerge_check_failures,
+                        "smoke_flakes": smoke_flakes,
                         "staleness_warnings": staleness_warnings,
                         "rendered": rendered,
                     },
@@ -3946,6 +4004,7 @@ def main(argv=None) -> int:
     staleness_warnings = (
         _staleness_warnings([(repo_dir.name, repo_dir)]) if args.check_freshness else []
     )
+    smoke_flakes = smoke_flake_aggregate([(repo_dir.name, repo_dir)])
     rendered = render_dashboard(
         None,
         rows,
@@ -3965,6 +4024,7 @@ def main(argv=None) -> int:
         # unfiltered by design.
         queue_repo=repo_dir.name,
         epic_rows=epic_rows,
+        smoke_flakes=smoke_flakes,
     )
     if args.json:
         print(
@@ -4008,6 +4068,7 @@ def main(argv=None) -> int:
                     "cluster_precision": cluster_precision,
                     "capacity": capacity,
                     "postmerge_check_failures": postmerge_check_failures,
+                    "smoke_flakes": smoke_flakes,
                     "recent_runs": recent_runs,
                     "staleness_warnings": staleness_warnings,
                     "rendered": rendered,
