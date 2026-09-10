@@ -4014,12 +4014,18 @@ def _write_stale_openspec_change(repo: Path, change_id: str) -> None:
     subprocess.run(["git", "-C", str(repo), "push", "-q", "origin", "dev"], check=True)
 
 
-def _fake_openspec_archive_run():
-    """Fake `openspec archive -y <id> --json` by moving the change directory
-    under `openspec/changes/archive/`; everything else passes through."""
+def _fake_openspec_archive_run(validate_rc: int = 0):
+    """Fake `openspec validate <id> --strict` (returns `validate_rc`) and
+    `openspec archive -y <id> --json` (moves the change directory under
+    `openspec/changes/archive/`); everything else passes through. Keeps the
+    test hermetic: the real OpenSpec CLI is never invoked."""
     real_run = subprocess.run
 
     def fake_run(cmd, **kwargs):
+        if cmd[:2] == ["openspec", "validate"]:
+            return subprocess.CompletedProcess(
+                cmd, validate_rc, stdout="", stderr="bad delta" if validate_rc else ""
+            )
         if cmd[:2] == ["openspec", "archive"]:
             cwd = Path(kwargs["cwd"])
             change_id = cmd[3]
@@ -4111,6 +4117,51 @@ def test_close_stale_bookkeeping_openspec_flip_error_raises(tmp_path, monkeypatc
             finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None
         )
     assert land_pr_calls == []
+
+
+def test_close_stale_bookkeeping_openspec_precheck_refusal_raises(
+    tmp_path, monkeypatch
+):
+    """A delta pre-check refusal (here: `openspec validate --strict` failing)
+    aborts the unattended sweep before any mutation: no flip, no archive, no
+    PR. Drain surfaces no `--allow-delta-drift`; the refusal is the sweep's
+    stop condition, and the change is left for a human."""
+    import worktrail.router.close_stale_openspec as cso
+
+    repo = _init_repo_with_origin(tmp_path, "repo-a")
+    _write_stale_openspec_change(repo, "add-export")
+    finding = {
+        "repo": repo,
+        "repo_name": "repo-a",
+        "spec_id": "add-export",
+        "stale_task_ids": ["1.1"],
+        "format": "openspec",
+    }
+    land_pr_calls = []
+    monkeypatch.setattr(drain, "land_pr", lambda r: land_pr_calls.append(r))
+    monkeypatch.setattr(
+        drain.subprocess, "run", _fake_gh_subprocess_run("https://example.invalid/pr/9")
+    )
+    monkeypatch.setattr(
+        cso.subprocess, "run", _fake_openspec_archive_run(validate_rc=1)
+    )
+
+    with pytest.raises(RuntimeError, match="openspec validate add-export --strict"):
+        close_stale_bookkeeping(
+            finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None
+        )
+
+    assert land_pr_calls == []
+    # The fix worktree is torn down in the finally; the branch tip is the
+    # evidence: still at base, tasks.md unchecked, nothing archived.
+    git_show = lambda path: subprocess.run(
+        ["git", "-C", str(repo), "show", f"fix/close-stale-add-export:{path}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert "[ ] 1.1" in git_show("openspec/changes/add-export/tasks.md").stdout
+    assert git_show("openspec/changes/archive/add-export/tasks.md").returncode != 0
 
 
 def test_find_stale_bookkeeping_specs_carries_format(tmp_path):

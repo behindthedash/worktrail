@@ -43,7 +43,104 @@ from pathlib import Path
 from typing import Any
 
 from ..taskformats.openspec.schema import parse_tasks_md, set_task_checked
+from . import dashboard
 from .land_pr import LandRequest, land_pr
+
+
+def _delta_precheck(
+    worktree: Path,
+    change_id: str,
+    *,
+    allow_delta_drift: bool,
+    timeout: int,
+) -> tuple[dict[str, Any], str | None]:
+    """Read-only pre-check run before any checkbox flip (design.md D1-D3).
+
+    Returns `(precheck, error)`. `precheck` is always fully populated;
+    `error` names the first failing class (validate failure, missing
+    canonical target, archived-sibling delta drift) or is None. Validate
+    failure and missing canonical targets can never be overridden -- archive
+    would fail on them anyway. Drift is time-based and may be stale for a
+    delta reconciled but not yet committed, so `allow_delta_drift` bypasses
+    that class alone and is recorded as `drift_allowed`.
+    """
+    change_dir = worktree / "openspec" / "changes" / change_id
+    precheck: dict[str, Any] = {
+        "validate_ok": False,
+        "validate_output": "",
+        "missing_canonical": [],
+        "delta_drift": [],
+        "drift_allowed": bool(allow_delta_drift),
+    }
+
+    proc = subprocess.run(
+        ["openspec", "validate", change_id, "--strict"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=str(worktree),
+        timeout=timeout,
+    )
+    precheck["validate_output"] = (proc.stdout or proc.stderr).strip()
+    precheck["validate_ok"] = proc.returncode == 0
+
+    # Missing canonical targets: MODIFIED/REMOVED headings and RENAMED FROM:
+    # names must already exist in openspec/specs/<capability>/spec.md.
+    # ADDED is not checked -- a brand-new capability has no canonical file yet.
+    specs_root = change_dir / "specs"
+    for delta_file in sorted(specs_root.glob("**/spec.md")):
+        capability = str(delta_file.relative_to(specs_root).parent)
+        canonical_file = worktree / "openspec" / "specs" / capability / "spec.md"
+        canonical_names: set[str] = set()
+        if canonical_file.is_file():
+            canonical_names = {
+                m.strip()
+                for m in dashboard._OPENSPEC_REQUIREMENT.findall(
+                    canonical_file.read_text(errors="ignore")
+                )
+            }
+        text = delta_file.read_text(errors="ignore")
+        for kind, body in dashboard._iter_openspec_delta_sections(text):
+            if kind in {"MODIFIED", "REMOVED"}:
+                names = [
+                    m.strip() for m in dashboard._OPENSPEC_REQUIREMENT.findall(body)
+                ]
+            elif kind == "RENAMED":
+                names = [
+                    dashboard._rename_requirement_name(value)
+                    for direction, value in dashboard._OPENSPEC_RENAME.findall(body)
+                    if direction == "FROM"
+                ]
+            else:
+                continue
+            for name in names:
+                if name not in canonical_names:
+                    precheck["missing_canonical"].append(
+                        {"capability": capability, "requirement": name, "kind": kind}
+                    )
+
+    precheck["delta_drift"] = dashboard._openspec_delta_drift(change_dir, worktree)
+
+    if not precheck["validate_ok"]:
+        return precheck, (
+            f"openspec validate {change_id} --strict failed: "
+            f"{precheck['validate_output']}"
+        )
+    if precheck["missing_canonical"]:
+        first = precheck["missing_canonical"][0]
+        return precheck, (
+            f"missing canonical target: {first['kind']} requirement "
+            f"{first['capability']}/{first['requirement']} not in "
+            f"openspec/specs/{first['capability']}/spec.md"
+        )
+    if precheck["delta_drift"] and not allow_delta_drift:
+        first = precheck["delta_drift"][0]
+        return precheck, (
+            f"archived-sibling delta drift: {first['capability']}/"
+            f"{first['requirement']} overtaken by archived change "
+            f"{first['archived_change_id']} (pass --allow-delta-drift to proceed)"
+        )
+    return precheck, None
 
 
 def flip_and_archive(
@@ -51,14 +148,20 @@ def flip_and_archive(
     change_id: str,
     task_ids: list[str] | None = None,
     *,
+    allow_delta_drift: bool = False,
     timeout: int = 300,
 ) -> dict[str, Any]:
-    """Flip the given (or every) task checkbox for `change_id` and
-    run `openspec archive -y <change_id> --json` in `worktree`.
+    """Run the delta pre-check, then flip the given (or every) task checkbox
+    for `change_id` and run `openspec archive -y <change_id> --json` in
+    `worktree`.
 
-    Returns `{"checked": bool, "change_dir": str, "flipped": [...],
-    "already_checked": [...], "unknown_task_ids": [...], "archived": bool,
-    "archive_output": str, "error": str|None}`.
+    Returns `{"checked": bool, "change_dir": str, "precheck": {...}|None,
+    "flipped": [...], "already_checked": [...], "unknown_task_ids": [...],
+    "archived": bool, "archive_output": str, "error": str|None}`.
+
+    `precheck` is populated whenever `checked` is true (see `_delta_precheck`).
+    A pre-check refusal returns before any flip, leaving the worktree
+    unchanged so the caller can fix the delta and re-run the same command.
 
     `checked=False` means the change directory or its `tasks.md` could not be
     found -- the caller should treat this as unknown, not as "nothing to do".
@@ -75,6 +178,7 @@ def flip_and_archive(
     result: dict[str, Any] = {
         "checked": False,
         "change_dir": None,
+        "precheck": None,
         "flipped": [],
         "already_checked": [],
         "unknown_task_ids": [],
@@ -91,6 +195,14 @@ def flip_and_archive(
 
     result["checked"] = True
     result["change_dir"] = str(change_dir)
+
+    precheck, precheck_error = _delta_precheck(
+        worktree, change_id, allow_delta_drift=allow_delta_drift, timeout=timeout
+    )
+    result["precheck"] = precheck
+    if precheck_error is not None:
+        result["error"] = precheck_error
+        return result
 
     parsed = parse_tasks_md(tasks_md.read_text())
     if task_ids is None:
@@ -159,13 +271,25 @@ def main(argv=None) -> int:
         default=None,
         help="comma-separated task ids to flip (e.g. 2.1,3.1); default: all pending",
     )
+    parser.add_argument(
+        "--allow-delta-drift",
+        action="store_true",
+        help="proceed despite archived-sibling delta drift (the only pre-check "
+        "class that can be overridden; validate failure and missing canonical "
+        "targets always refuse)",
+    )
     parser.add_argument("--base", required=True, help="base branch for landing")
     parser.add_argument("--run", required=True, help="run record path")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
     task_ids = args.task_ids.split(",") if args.task_ids else None
-    res = flip_and_archive(Path(args.worktree), args.change_id, task_ids)
+    res = flip_and_archive(
+        Path(args.worktree),
+        args.change_id,
+        task_ids,
+        allow_delta_drift=args.allow_delta_drift,
+    )
 
     if res["error"]:
         # flip_and_archive failed; do not attempt to land
