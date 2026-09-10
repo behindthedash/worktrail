@@ -2,7 +2,7 @@
 
 ## 1. Detector
 
-- [ ] 1.1 Add the smoke-flake detector module, complete with its CLI.
+- [x] 1.1 Add the smoke-flake detector module, complete with its CLI.
       - `check_repo(repo, *, window_days=30, now=None)` globs `<repo>-worktrees/run-*.json`,
         filters by journal mtime against the recency window, reads each journal's
         `smoke_flakes` map, and aggregates by suite name into entries carrying `suite`,
@@ -29,7 +29,7 @@
       (Requirement: Detector is runnable standalone)
   files: src/worktrail/router/smoke_flake_selfcheck.py tests/router/test_smoke_flake_selfcheck.py
 
-- [ ] 1.2 Register the `worktrail-smoke-flake-selfcheck` console script, alphabetically placed
+- [x] 1.2 Register the `worktrail-smoke-flake-selfcheck` console script, alphabetically placed
       among the sibling `worktrail-*-selfcheck` entries.
   files: pyproject.toml
   review: skip
