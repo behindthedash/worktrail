@@ -244,6 +244,37 @@ class TestValidation(unittest.TestCase):
         pol = load_policy(_repo_with("pr_pacing_wait_s: 1800\n"))
         self.assertEqual(pol["pr_pacing_wait_s"], 1800)
 
+    def test_integrate_smoke_retries_default_is_zero(self):
+        self.assertEqual(DEFAULTS["integrate_smoke_retries"], 0)
+        pol = load_policy(_repo_with(""))
+        self.assertEqual(pol["integrate_smoke_retries"], 0)
+        self.assertFalse(
+            any("integrate_smoke_retries" in w for w in pol["_meta"]["warnings"])
+        )
+
+    def test_integrate_smoke_retries_loaded(self):
+        pol = load_policy(_repo_with("integrate_smoke_retries: 1\n"))
+        self.assertEqual(pol["integrate_smoke_retries"], 1)
+        self.assertFalse(
+            any("integrate_smoke_retries" in w for w in pol["_meta"]["warnings"])
+        )
+
+    def test_integrate_smoke_retries_invalid_dropped_to_zero_with_warning(self):
+        for bad in (
+            "integrate_smoke_retries: true\n",
+            'integrate_smoke_retries: "1"\n',
+            "integrate_smoke_retries: -1\n",
+        ):
+            pol = load_policy(_repo_with(bad))
+            self.assertEqual(pol["integrate_smoke_retries"], 0, msg=bad)
+            self.assertTrue(
+                any(
+                    "integrate_smoke_retries must be an integer >= 0; dropped" in w
+                    for w in pol["_meta"]["warnings"]
+                ),
+                msg=bad,
+            )
+
     def test_max_active_changes_default_is_zero(self):
         self.assertEqual(DEFAULTS["max_active_changes"], 0)
         pol = load_policy(_repo_with(""))
