@@ -1784,9 +1784,10 @@ class ReposScan(unittest.TestCase):
         self.assertNotIn("Smoke flakes", baseline)
 
     def test_render_dashboard_names_suites_with_run_counts_and_pointer(self):
+        # Single-repo mode (repo_rows=None): no repo prefix.
         out = dashboard.render_dashboard(
-            [],
             None,
+            [],
             [],
             [],
             smoke_flakes={
@@ -1810,6 +1811,19 @@ class ReposScan(unittest.TestCase):
         self.assertIn("repo-a:suite-0 (5 runs)", line)
         self.assertIn(" … +2", line)
         self.assertNotIn("suite-4", line)
+
+    def test_render_dashboard_multi_repo_mode_always_tags_repo(self):
+        # Repo prefix keys off the render mode, not the entry set: a single
+        # flaky repo across N scanned repos must still name the repo to fix.
+        out = dashboard.render_dashboard(
+            [],
+            None,
+            [],
+            [],
+            smoke_flakes={"entries": [self._flake("smoke-api", 3, repo="repo-b")]},
+        )
+        line = next(ln for ln in out.splitlines() if "Smoke flakes" in ln)
+        self.assertIn("repo-b:smoke-api (3 runs)", line)
 
     def test_smoke_flake_aggregate_tags_merges_and_orders_across_repos(self):
         def fake_check_repo(repo):

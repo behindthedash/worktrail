@@ -3552,11 +3552,15 @@ def render_dashboard(
 
     flakes = list((smoke_flakes or {}).get("entries") or [])
     if flakes:
-        multi_repo = len({e.get("repo") for e in flakes}) > 1
+        # Multi-repo render mode prefixes the repo unconditionally, like every
+        # sibling section: a single flaky repo must still say which repo to fix.
+        multi_repo = repo_rows is not None
 
         def _flake_label(e: dict[str, Any]) -> str:
             n = e.get("count", 0)
-            suite = f"{e.get('repo')}:{e['suite']}" if multi_repo else e["suite"]
+            suite = e.get("suite", "?")
+            if multi_repo:
+                suite = f"{e.get('repo')}:{suite}"
             return f"{suite} ({n} run{'s' if n != 1 else ''})"
 
         head = ", ".join(_flake_label(e) for e in flakes[:SMOKE_FLAKE_DISPLAY_CAP])
