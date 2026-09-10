@@ -2,7 +2,7 @@
 
 ## 1. Merge-base review diff base
 
-- [ ] 1.1 In `src/worktrail/orchestrator/live.py`, add a helper next to `_resolve_ref_to_sha`
+- [x] 1.1 In `src/worktrail/orchestrator/live.py`, add a helper next to `_resolve_ref_to_sha`
       that resolves the task worktree's `HEAD` to a SHA and returns
       `git merge-base <start_ref> <that sha>` computed in the canonical repo, returning `None`
       when either git call fails. Use it in `LiveSpawn.__call__` so `ctx["base_commit"]`
