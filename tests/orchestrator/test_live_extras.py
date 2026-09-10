@@ -1543,6 +1543,113 @@ class LiveSpawnBaseCommitTests(unittest.TestCase):
             self.assertEqual(ctx.get("base_commit"), dep_sha)
             self.assertNotEqual(ctx.get("base_commit"), "HEAD")
 
+    def test_root_task_uses_fork_point_when_canonical_tip_advanced(self):
+        # Spec: review diff base is the task branch's merge-base with its start
+        # ref -- a canonical tip that moved after spawn must not leak into the
+        # task's review diff.
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            repo = self._make_repo(tmp)
+            fork_sha = _run_git(repo, "rev-parse", "HEAD").stdout.strip()
+            wt = tmp / "wt"
+            _run_git(
+                repo, "worktree", "add", "-b", "spec-001/task-001", str(wt), "HEAD"
+            )
+            (wt / "task.py").write_text("t = 1\n")
+            _run_git(wt, "add", "-A")
+            _run_git(wt, "commit", "-q", "-m", "task work")
+            # Canonical tip advances after the task forked.
+            (repo / "README.md").write_text("advanced\n")
+            _run_git(repo, "add", "-A")
+            _run_git(repo, "commit", "-q", "-m", "tip advanced")
+            new_tip = _run_git(repo, "rev-parse", "HEAD").stdout.strip()
+            self.assertNotEqual(fork_sha, new_tip)
+
+            task = {"id": "TASK-001", "deps": [], "files": ["src/foo.py"]}
+            spawn = live.LiveSpawn(
+                "spec-001", "docs/specs/001-spec", agent="claude", repo=repo
+            )
+            spawn.by_id = {"TASK-001": task}
+
+            ctx = self._spawn_and_capture_ctx(spawn, task, wt)
+
+            self.assertEqual(ctx.get("base_commit"), fork_sha)
+            self.assertNotEqual(ctx.get("base_commit"), new_tip)
+
+    def test_dependent_task_uses_fork_point_when_dependency_branch_advanced(self):
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            repo = self._make_repo(tmp)
+            base = _run_git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+            _run_git(repo, "checkout", "-q", "-B", "spec-001/task-001", "HEAD")
+            (repo / "helper.py").write_text("x = 1\n")
+            _run_git(repo, "add", "-A")
+            _run_git(repo, "commit", "-q", "-m", "add helper")
+            fork_sha = _run_git(repo, "rev-parse", "spec-001/task-001").stdout.strip()
+
+            wt = tmp / "wt"
+            _run_git(
+                repo,
+                "worktree",
+                "add",
+                "-b",
+                "spec-001/task-002",
+                str(wt),
+                "spec-001/task-001",
+            )
+            (wt / "task2.py").write_text("y = 2\n")
+            _run_git(wt, "add", "-A")
+            _run_git(wt, "commit", "-q", "-m", "task-002 work")
+            # Dependency branch advances (e.g. a fix pass) after task-002 forked.
+            (repo / "helper.py").write_text("x = 2\n")
+            _run_git(repo, "add", "-A")
+            _run_git(repo, "commit", "-q", "-m", "dep fix")
+            dep_tip = _run_git(repo, "rev-parse", "spec-001/task-001").stdout.strip()
+            _run_git(repo, "checkout", "-q", base)
+            self.assertNotEqual(fork_sha, dep_tip)
+
+            task = {"id": "TASK-002", "deps": ["TASK-001"], "files": ["src/bar.py"]}
+            spawn = live.LiveSpawn(
+                "spec-001", "docs/specs/001-spec", agent="claude", repo=repo
+            )
+            spawn.by_id = {"TASK-001": {"id": "TASK-001", "deps": []}, "TASK-002": task}
+
+            ctx = self._spawn_and_capture_ctx(spawn, task, wt)
+
+            self.assertEqual(ctx.get("base_commit"), fork_sha)
+            self.assertNotEqual(ctx.get("base_commit"), dep_tip)
+
+    def test_no_common_ancestor_falls_back_to_start_ref_sha(self):
+        # Spec: merge-base resolution degrades to the previous value. A worktree
+        # whose history is unrelated to the start ref has no merge-base, so the
+        # start ref's resolved SHA is used instead.
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            repo = self._make_repo(tmp)
+            base_sha = _run_git(repo, "rev-parse", "HEAD").stdout.strip()
+            wt = tmp / "wt"
+            _run_git(repo, "worktree", "add", "--orphan", "-b", "orphan", str(wt))
+            (wt / "alone.py").write_text("z = 3\n")
+            _run_git(wt, "add", "-A")
+            _run_git(wt, "commit", "-q", "-m", "unrelated root")
+            mb = subprocess.run(
+                ["git", "-C", str(repo), "merge-base", base_sha, "orphan"],
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertNotEqual(mb.returncode, 0)
+
+            task = {"id": "TASK-001", "deps": [], "files": ["src/foo.py"]}
+            spawn = live.LiveSpawn(
+                "spec-001", "docs/specs/001-spec", agent="claude", repo=repo
+            )
+            spawn.by_id = {"TASK-001": task}
+
+            ctx = self._spawn_and_capture_ctx(spawn, task, wt)
+
+            self.assertEqual(ctx.get("base_commit"), base_sha)
+
     def test_no_repo_falls_back_to_head_sentinel(self):
         # Backward compatibility: a caller (or test) that constructs LiveSpawn
         # without a canonical repo (repo=None, the default) keeps the pre-fix
