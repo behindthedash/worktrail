@@ -35,8 +35,8 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [e2e] Run `pytest -q tests/test_no_biased_merge_strategy.py` and then
+- [x] 2.1 [e2e] Run `pytest -q tests/test_no_biased_merge_strategy.py` and then
       the full `pytest -q`, and confirm both are green — in particular that the
       new guard passes against the current `src/worktrail/` tree unmodified.
-- [ ] 2.2 [e2e] Run `openspec validate ci-guardrail-biased-merge-strategy
+- [x] 2.2 [e2e] Run `openspec validate ci-guardrail-biased-merge-strategy
       --strict` and confirm it passes.
