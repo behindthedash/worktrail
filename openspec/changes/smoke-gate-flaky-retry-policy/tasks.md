@@ -64,7 +64,7 @@
 
 ## 4. Documentation (`integration-smoke-retry-policy`)
 
-- [ ] 4.1 In `skills/worktrail-go/references/subagent-prompts.md`, extend the
+- [x] 4.1 In `skills/worktrail-go/references/subagent-prompts.md`, extend the
       "Integrated smoke test (opt-in, from policy)" bullet with one sentence
       each: `integrate_smoke_retries` (default `0`, recommend `1`) re-runs
       the command on a non-zero exit before quarantining; a pass-after-retry
