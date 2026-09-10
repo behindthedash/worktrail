@@ -1026,32 +1026,72 @@ def _record_unreconciled_tail_evidence(
 SMOKE_TIMEOUT_DEFAULT = int(os.environ.get("ORCH_SMOKE_TIMEOUT", "1800"))
 
 
-def _run_integration_smoke(iw: Path, name: str, smoke_cmd: str) -> tuple:
+def _run_integration_smoke(
+    iw: Path, name: str, smoke_cmd: str, retries: int = 0
+) -> tuple:
     """Run the policy smoke command in a group's integration worktree.
 
     Returns (ok, detail). `ok` is True on exit 0; on failure `detail` carries a
     short tail of stderr/stdout for the quarantine reason. A timeout or spawn
-    error counts as failure (fail-closed: never open a PR on an unverified merge).
+    error counts as failure (fail-closed: never open a PR on an unverified merge)
+    and is never retried.
+
+    retries: extra attempts allowed after a non-zero exit (policy
+    `integrate_smoke_retries`, default 0). The same command re-runs in the same
+    worktree. On exhaustion the last attempt's `exit N: <tail>` is returned. On
+    a pass after the first attempt, `detail` is
+    `attempt K of N; attempt 1: <first attempt's detail>` rather than "ok", so
+    the caller can log and record the flake.
     """
-    print(f"  SMOKE [{name:9}] running integrated test: {smoke_cmd}")
+    attempts = retries + 1
+    first_detail = ""
+    for attempt in range(1, attempts + 1):
+        label = f" (attempt {attempt} of {attempts})" if attempts > 1 else ""
+        print(f"  SMOKE [{name:9}] running integrated test{label}: {smoke_cmd}")
+        try:
+            r = subprocess.run(
+                smoke_cmd,
+                check=False,
+                shell=True,
+                cwd=str(iw),
+                capture_output=True,
+                text=True,
+                timeout=SMOKE_TIMEOUT_DEFAULT,
+            )
+        except subprocess.TimeoutExpired:
+            return False, f"timed out after {SMOKE_TIMEOUT_DEFAULT}s"
+        except OSError as e:
+            return False, f"could not run smoke command: {e}"
+        if r.returncode == 0:
+            if attempt == 1:
+                return True, "ok"
+            return True, f"attempt {attempt} of {attempts}; attempt 1: {first_detail}"
+        tail = ((r.stderr or "") + (r.stdout or "")).strip()[-300:]
+        detail = f"exit {r.returncode}: {tail}"
+        if attempt == 1:
+            first_detail = detail
+    return False, detail
+
+
+def _record_smoke_flake(journal_path: str | None, name: str, detail: str) -> None:
+    """Persist a pass-after-retry smoke result under `smoke_flakes[<group>]` in
+    the run journal, so a repeated entry for the same suite across runs is
+    visible as a flake to fix rather than a reason to raise the retry count.
+    Direct atomic write, mirroring `_record_unreconciled_tail_evidence`.
+    """
+    if not journal_path:
+        return
     try:
-        r = subprocess.run(
-            smoke_cmd,
-            check=False,
-            shell=True,
-            cwd=str(iw),
-            capture_output=True,
-            text=True,
-            timeout=SMOKE_TIMEOUT_DEFAULT,
+        journal_file = Path(journal_path)
+        journal: dict = {}
+        if journal_file.exists():
+            journal = json.loads(journal_file.read_text())
+        journal.setdefault("smoke_flakes", {})[name] = detail
+        progress.atomic_write_text(
+            journal_file, json.dumps(journal, indent=2, sort_keys=True) + "\n"
         )
-    except subprocess.TimeoutExpired:
-        return False, f"timed out after {SMOKE_TIMEOUT_DEFAULT}s"
-    except OSError as e:
-        return False, f"could not run smoke command: {e}"
-    if r.returncode == 0:
-        return True, "ok"
-    tail = ((r.stderr or "") + (r.stdout or "")).strip()[-300:]
-    return False, f"exit {r.returncode}: {tail}"
+    except Exception as e:  # noqa: BLE001
+        print(f"  WARNING: Failed to record smoke flake evidence: {e}")
 
 
 DRIFT_GATE_TIMEOUT_DEFAULT = int(os.environ.get("ORCH_DRIFT_GATE_TIMEOUT", "300"))
@@ -1268,6 +1308,7 @@ def integrate_one(
     route: str | None = None,
     gates: str = "",
     policy: dict | None = None,
+    smoke_retries: int = 0,
 ) -> tuple | None:
     """Integrate exactly one group and record its result in the journal.
 
@@ -1295,6 +1336,11 @@ def integrate_one(
     coexist -- BEFORE pushing/opening the PR. A non-zero exit quarantines the group
     instead of opening a red-CI PR, catching cross-task drift a CI round-trip earlier.
     None = skip. Only runs when the branch is freshly built (not on a remote-branch reuse).
+    smoke_retries (policy integrate_smoke_retries, default 0): extra attempts
+    after a non-zero exit before quarantining; timeouts/spawn errors are never
+    retried. A pass after retry still pushes and opens the PR, but is logged as
+    `FLAKY [<group>] smoke passed on attempt K of N; attempt 1: <detail>` and
+    recorded under the journal's `smoke_flakes[<group>]` as flake evidence.
     pr_labels: seed labels resolved by the GO pre-PR gate. Only the seed's
     go:risk-* label is used, as the risk from which
     `land_pr.open_or_update_pull_request` recomputes the labels immediately
@@ -1531,7 +1577,12 @@ def integrate_one(
                 _do_journal(name, "", gb, "QUARANTINED", QUARANTINE_PRE_PR_DRIFT)
                 return None
             if smoke_cmd:
-                ok, detail = _run_integration_smoke(iw, name, smoke_cmd)
+                ok, detail = _run_integration_smoke(
+                    iw, name, smoke_cmd, retries=smoke_retries
+                )
+                if ok and detail != "ok":
+                    print(f"  FLAKY [{name}] smoke passed on {detail}")
+                    _record_smoke_flake(journal_path, name, detail)
                 if not ok:
                     quarantined[name] = f"integrated smoke test failed: {detail}"
                     print(f"  SKIP [{name:9}] -- {quarantined[name]}")

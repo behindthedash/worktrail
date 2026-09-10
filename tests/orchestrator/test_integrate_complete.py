@@ -12,6 +12,7 @@ Run: python3 test_integrate_complete.py
 from __future__ import annotations
 
 import contextlib
+import io
 import json
 import os
 import subprocess
@@ -1508,6 +1509,152 @@ class IntegrationSmokeTest(unittest.TestCase):
             # No push and no PR create after a smoke failure.
             self.assertEqual(run.find_calls("gh", "pr", "create"), [])
             self.assertEqual([c for c in run.calls if c[:1] == ["push"]], [])
+
+    # Policy integrate_smoke_retries: re-run a non-zero smoke exit before
+    # quarantining; a pass-after-retry is logged FLAKY and recorded as evidence.
+
+    @staticmethod
+    def _counter_cmd(tmp: str, fail_first: int = 1) -> str:
+        """Shell command that fails on its first `fail_first` invocations and
+        passes afterwards, bumping a counter file each time."""
+        counter = Path(tmp) / "count"
+        counter.write_text("0")
+        return (
+            f"n=$(($(cat {counter}) + 1)); echo $n > {counter}; "
+            f"if [ $n -le {fail_first} ]; then echo boom$n >&2; exit 2; fi"
+        )
+
+    @staticmethod
+    def _count(tmp: str) -> int:
+        return int((Path(tmp) / "count").read_text())
+
+    def test_default_no_retry_invokes_once_and_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ok, detail = integrate._run_integration_smoke(
+                Path(tmp), "base", self._counter_cmd(tmp)
+            )
+            self.assertFalse(ok)
+            self.assertIn("exit 2", detail)
+            self.assertIn("boom1", detail)
+            self.assertEqual(self._count(tmp), 1)
+
+    def test_retry_passes_second_attempt_returns_first_detail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ok, detail = integrate._run_integration_smoke(
+                Path(tmp), "base", self._counter_cmd(tmp), retries=1
+            )
+            self.assertTrue(ok)
+            self.assertNotEqual(detail, "ok")
+            self.assertIn("attempt 2 of 2", detail)
+            self.assertIn("attempt 1: exit 2: boom1", detail)
+            self.assertEqual(self._count(tmp), 2)
+
+    def test_two_hard_failures_invoke_twice_and_return_last_exit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ok, detail = integrate._run_integration_smoke(
+                Path(tmp), "base", self._counter_cmd(tmp, fail_first=5), retries=1
+            )
+            self.assertFalse(ok)
+            self.assertIn("exit 2", detail)
+            self.assertIn("boom2", detail)
+            self.assertNotIn("boom1", detail)
+            self.assertEqual(self._count(tmp), 2)
+
+    def test_timeout_is_not_retried(self):
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("worktrail.orchestrator.integrate.SMOKE_TIMEOUT_DEFAULT", 1),
+        ):
+            counter = Path(tmp) / "count"
+            counter.write_text("0")
+            cmd = f"n=$(($(cat {counter}) + 1)); echo $n > {counter}; sleep 5"
+            ok, detail = integrate._run_integration_smoke(
+                Path(tmp), "base", cmd, retries=2
+            )
+            self.assertFalse(ok)
+            self.assertIn("timed out", detail)
+            self.assertEqual(self._count(tmp), 1)
+
+    def _integrate_with_real_smoke(self, tmp: str, smoke_cmd: str, journal: str):
+        """Drive integrate_one with the fake git/gh runner but let the smoke
+        runner execute its real shell command. Returns (result, run, stdout)."""
+        run = FakeRunWithOperator.FakeRunHelper(
+            pr_view_responses={}, ls_remote_responses={}
+        )
+        real_run = subprocess.run
+        real_smoke = integrate._run_integration_smoke
+
+        def smoke_unpatched(*args, **kwargs):
+            with patch("worktrail.orchestrator.integrate.subprocess.run", real_run):
+                return real_smoke(*args, **kwargs)
+
+        @contextlib.contextmanager
+        def fake_iw(repo, branch, start_ref, git_lock=None):
+            yield Path(tmp)
+
+        out = io.StringIO()
+        with (
+            patch("worktrail.orchestrator.integrate._git", side_effect=run),
+            patch("worktrail.orchestrator.integrate.subprocess.run", side_effect=run),
+            patch("worktrail.orchestrator.integrate._integration_worktree", fake_iw),
+            patch(
+                "worktrail.orchestrator.integrate._run_integration_smoke",
+                side_effect=smoke_unpatched,
+            ),
+            contextlib.redirect_stdout(out),
+        ):
+            result = integrate.integrate_one(
+                mock_group("base", ["T001"]),
+                Path("/repo"),
+                "spec-001",
+                [mock_task("T001")],
+                "origin",
+                "full-s2",
+                "main",
+                journal,
+                {"T001": "done"},
+                {},
+                {},
+                smoke_cmd=smoke_cmd,
+                smoke_retries=1,
+            )
+        return result, run, out.getvalue()
+
+    def test_integrate_one_pass_after_retry_opens_pr_and_records_flake(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = str(Path(tmp) / "journal.json")
+            result, run, out = self._integrate_with_real_smoke(
+                tmp, self._counter_cmd(tmp), journal
+            )
+            self.assertIsNotNone(result)
+            self.assertEqual(len(run.find_calls("gh", "pr", "create")), 1)
+            self.assertTrue([c for c in run.calls if c[:1] == ["push"]])
+            self.assertIn(
+                "FLAKY [base] smoke passed on attempt 2 of 2; attempt 1: exit 2: boom1",
+                out,
+            )
+            data = json.loads(Path(journal).read_text())
+            self.assertIn("attempt 1: exit 2: boom1", data["smoke_flakes"]["base"])
+            # The group record written afterwards leaves smoke_flakes intact.
+            self.assertEqual(data["groups"]["base"]["state"], "OPEN")
+            integrate._write_group_journal(
+                journal, "base", "https://x/pr/9", "full-s2/base", "MERGED"
+            )
+            data = json.loads(Path(journal).read_text())
+            self.assertIn("base", data["smoke_flakes"])
+            self.assertEqual(data["groups"]["base"]["state"], "MERGED")
+
+    def test_integrate_one_first_attempt_pass_writes_no_flake(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = str(Path(tmp) / "journal.json")
+            result, _run, out = self._integrate_with_real_smoke(
+                tmp, self._counter_cmd(tmp, fail_first=0), journal
+            )
+            self.assertIsNotNone(result)
+            self.assertEqual(self._count(tmp), 1)
+            self.assertNotIn("FLAKY", out)
+            data = json.loads(Path(journal).read_text())
+            self.assertNotIn("smoke_flakes", data)
 
 
 class DepBranchGonePRBase(unittest.TestCase):
