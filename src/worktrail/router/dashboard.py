@@ -125,14 +125,6 @@ from .audit_postmerge import (
     resolve_state_dir as _postmerge_resolve_state_dir,
 )
 
-# smoke_flake_selfcheck is a sibling module (spec smoke-flake-dashboard-surface):
-# its check_repo() aggregates recorded smoke flakes from a repo's run journals.
-# Optional so the dashboard renders unchanged while the detector is landing.
-try:
-    from .smoke_flake_selfcheck import check_repo as _smoke_flake_check_repo
-except ImportError:  # pragma: no cover - detector not yet shipped
-    _smoke_flake_check_repo = None
-
 # automerge_selfcheck is a sibling module (route:J automerge-label-gate audit).
 from .automerge_selfcheck import check_repo as _automerge_check_repo
 
@@ -174,6 +166,10 @@ from .resolve_repo import list_candidate_repos as _list_candidate_repos
 # its YAML loader is reused so recent /go run outcomes can be surfaced
 # without duplicating the parser.
 from .run_record import _load as _load_run_record
+
+# smoke_flake_selfcheck is a sibling module (spec smoke-flake-dashboard-surface):
+# its check_repo() aggregates recorded smoke flakes from a repo's run journals.
+from .smoke_flake_selfcheck import check_repo as _smoke_flake_check_repo
 
 # --- spec file discovery -----------------------------------------------------
 
@@ -3172,8 +3168,6 @@ def smoke_flake_aggregate(repos: list[tuple[str, Path]]) -> dict[str, Any]:
     one `{"entries": [...]}` keeping the detector's ordering (count desc, suite
     asc). Any failure yields an empty aggregate -- never break the dashboard."""
     try:
-        if _smoke_flake_check_repo is None:
-            return {"entries": []}
         entries: list[dict[str, Any]] = []
         for name, repo_dir in repos:
             for e in _smoke_flake_check_repo(Path(repo_dir)).get("entries", []):
