@@ -184,6 +184,18 @@ incomplete-tasks failure to a stdout warning and proceeds when `-y` is
 passed, so the sweep SHALL NOT rely solely on upstream stage detection
 before archiving.
 
+After the unchecked-task check passes and still before invoking
+`openspec archive`, the system SHALL run the delta pre-check specified by
+`close-stale-archive-delta-precheck` (`close_stale_openspec._delta_precheck`)
+against the sweep's worktree and change id, with archived-sibling drift never
+allowed. When the pre-check reports an error — `openspec validate
+<change-id> --strict` failing, a `MODIFIED`/`REMOVED`/`RENAMED FROM` target
+absent from the canonical `openspec/specs/<capability>/spec.md`, or an
+archived sibling having overtaken the change's delta — the sweep SHALL refuse
+by raising an error that carries the pre-check's message, with no
+`openspec archive`, commit, push, or pull-request attempted. The sweep SHALL
+NOT offer a drift override.
+
 #### Scenario: An OpenSpec change is at the complete stage
 - **WHEN** the common dashboard scan reports an OpenSpec change as
   `stage == "complete"`
@@ -214,6 +226,35 @@ before archiving.
   reported the change as `stage == "complete"`
 - **THEN** the sweep refuses and raises before invoking `openspec archive`,
   and no commit, push, or pull request is attempted for that finding
+
+#### Scenario: openspec validate fails for a finding
+- **WHEN** a finding's `tasks.md` is fully checked but
+  `openspec validate <change-id> --strict` exits non-zero in the sweep's
+  worktree
+- **THEN** the sweep raises an error carrying the validate output before
+  invoking `openspec archive`, and no commit, push, or pull request is
+  attempted for that finding
+
+#### Scenario: A finding's delta targets a requirement absent from the canonical spec
+- **WHEN** a finding's delta declares a `MODIFIED` or `REMOVED` requirement,
+  or a `RENAMED ... FROM:` name, that is not a `### Requirement:` heading in
+  `openspec/specs/<capability>/spec.md`
+- **THEN** the sweep raises an error naming the capability and requirement
+  before invoking `openspec archive`, and no commit, push, or pull request is
+  attempted for that finding
+
+#### Scenario: An archived sibling overtook a finding's delta
+- **WHEN** the delta drift check reports that an archived sibling postdates
+  the finding's delta for a requirement it also touches
+- **THEN** the sweep raises an error naming the requirement and the archived
+  change id before invoking `openspec archive`, with no override available,
+  and no commit, push, or pull request is attempted for that finding
+
+#### Scenario: Pre-check passes
+- **WHEN** a finding's `tasks.md` is fully checked, validate succeeds, every
+  delta target exists canonically, and no drift is reported
+- **THEN** the sweep proceeds to `openspec archive -y <change-id>`, commit,
+  push, and pull request exactly as before
 
 ### Requirement: Stuck-remediation detection
 The system SHALL persist, across nightly sweeps, a history of every
