@@ -106,6 +106,33 @@ def test_unparseable_lockfile_is_unknown(repo: Path) -> None:
     assert entry["status"] == "unknown"
 
 
+def test_unparseable_installed_manifest_is_unknown(repo: Path) -> None:
+    lock = _write_lock(repo, {}, {"vitest": "5.0.0"})
+    pkg = repo / "node_modules" / "vitest"
+    pkg.mkdir(parents=True)
+    (pkg / "package.json").write_text("{not json")
+    _track(repo, lock)
+
+    [entry] = check_dependency_freshness(repo)
+
+    assert entry["status"] == "unknown"
+    assert entry["mismatches"] == []
+    assert "vitest" in entry["detail"]
+
+
+def test_installed_manifest_without_version_is_unknown(repo: Path) -> None:
+    lock = _write_lock(repo, {"left-pad": "1.3.0"})
+    pkg = repo / "node_modules" / "left-pad"
+    pkg.mkdir(parents=True)
+    (pkg / "package.json").write_text(json.dumps({"name": "left-pad"}))
+    _track(repo, lock)
+
+    [entry] = check_dependency_freshness(repo)
+
+    assert entry["status"] == "unknown"
+    assert entry["mismatches"] == []
+
+
 def test_nested_app_root(repo: Path) -> None:
     app = repo / "app"
     lock = _write_lock(app, {"left-pad": "1.3.0"})

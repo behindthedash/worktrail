@@ -78,16 +78,22 @@ def _check_root(repo_path: Path, lockfile_rel: str) -> dict[str, Any]:
         locked = locked_entry.get("version") if isinstance(locked_entry, dict) else None
         if not isinstance(locked, str):
             continue
-        installed_pkg = root / "node_modules" / name / "package.json"
-        if not installed_pkg.is_file():
+        installed_dir = root / "node_modules" / name
+        if not installed_dir.is_dir():
             mismatches.append({"name": name, "locked": locked, "installed": "missing"})
             continue
-        installed_data = _read_json(installed_pkg)
+        installed_data = _read_json(installed_dir / "package.json")
         installed = (
             installed_data.get("version") if isinstance(installed_data, dict) else None
         )
         if not isinstance(installed, str):
-            installed = "unknown"
+            # Directory present but its manifest is unreadable: we cannot tell
+            # whether the tree is fresh or stale, so the root is `unknown`.
+            result["detail"] = (
+                f"{app_dir}/node_modules/{name}/package.json: unparseable JSON"
+                " or no `version`"
+            )
+            return result
         if installed != locked:
             mismatches.append({"name": name, "locked": locked, "installed": installed})
 
