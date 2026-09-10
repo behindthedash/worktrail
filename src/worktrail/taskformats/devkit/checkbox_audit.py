@@ -29,7 +29,9 @@ from .schema import (
 UNCHECKED_RE = re.compile(r"- \[ \]")
 CHECKED_RE = re.compile(r"- \[x\]")
 HEADING_RE = re.compile(r"^(#{2,3})\s+(.*)$", re.MULTILINE)
-RECONCILIATION_NOTE_RE = re.compile(r"\s*-\s+Reconciliation note:")
+RECONCILIATION_NOTE_RE = re.compile(r"\s*-\s+Reconciliation note\s*(?:\(.*\))?\s*:")
+NEW_LIST_ITEM_RE = re.compile(r"\s*[-*+]\s")
+HEADING_LINE_RE = re.compile(r"\s*#")
 
 
 class Hit:
@@ -41,17 +43,29 @@ class Hit:
 
 
 def _is_reconciled(text: str, match_end: int) -> bool:
-    """Whether the unchecked box ending at ``match_end`` is immediately followed by
-    a line matching the "Reconciliation note:" convention (PR #669) -- meaning it
-    was individually verified and deliberately left unchecked with cited evidence,
-    not genuine drift.
+    """Whether the unchecked box ending at ``match_end`` carries a
+    "Reconciliation note:" sub-bullet (PR #669) -- meaning it was individually
+    verified and deliberately left unchecked with cited evidence, not genuine
+    drift.
+
+    The note is looked for on every line belonging to that checkbox's own item
+    block, not just the line immediately below it: a criterion long enough to
+    wrap pushes its note several lines down. The block ends at the first blank
+    line, heading, or new list item -- so a note attached to a *different* item,
+    or detached by a blank line, never reconciles this one.
     """
     next_newline = text.find("\n", match_end)
     if next_newline == -1:
         return False
-    line_end = text.find("\n", next_newline + 1)
-    next_line = text[next_newline + 1 : line_end if line_end != -1 else len(text)]
-    return RECONCILIATION_NOTE_RE.match(next_line) is not None
+
+    for line in text[next_newline + 1 :].split("\n"):
+        if RECONCILIATION_NOTE_RE.match(line):
+            return True
+        if not line.strip():
+            return False
+        if NEW_LIST_ITEM_RE.match(line) or HEADING_LINE_RE.match(line):
+            return False
+    return False
 
 
 def _unreconciled_unchecked_matches(text: str) -> list:

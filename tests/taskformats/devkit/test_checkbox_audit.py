@@ -66,3 +66,84 @@ def test_mixed_reconciled_and_genuine_drift_counts_only_genuine(tmp_path):
     assert len(hits) == 1
     assert hits[0].unchecked_count == 1
     assert hits[0].total_count == 1
+
+
+def test_reconciliation_note_with_parenthetical_qualifier_is_not_flagged(tmp_path):
+    """The convention is also written `Reconciliation note (<what>):` -- the
+    qualifier names which clause of a multi-clause criterion the note addresses.
+    Regression for queue brief 20260907-060010, where every one of the eight
+    flagged gracefully-giving-back files used this spelling.
+    """
+    body = (
+        "## Acceptance Criteria\n"
+        "- [ ] Save button uploads the image to Cloudinary (AC-016).\n"
+        "  - Reconciliation note (Cloudinary reference): storage migrated to Bunny; "
+        "the observable save behavior is confirmed.\n"
+    )
+    _write_task(tmp_path, body)
+
+    assert audit_repo(tmp_path) == []
+
+
+def test_reconciliation_note_qualifier_containing_parentheses_is_not_flagged(tmp_path):
+    body = (
+        "## Acceptance Criteria\n"
+        "- [ ] `render()` wraps `_render()` in a `p-limit(2)` singleton (AC-003).\n"
+        "  - Reconciliation note (p-limit(2) singleton): a hand-rolled "
+        "`ConcurrencyLimiter` is used instead; the 2-slot guard is verified.\n"
+    )
+    _write_task(tmp_path, body)
+
+    assert audit_repo(tmp_path) == []
+
+
+def test_reconciliation_note_after_wrapped_criterion_is_not_flagged(tmp_path):
+    """A criterion long enough to wrap puts its note several lines below the
+    `- [ ]` marker. Only inspecting the immediately-following line missed it.
+    """
+    body = (
+        "## Acceptance Criteria\n"
+        "- [ ] **AC-013 [SEF]** -- the admin review UI continues to list, "
+        "mark-delivered, restore, and\n"
+        "      delete requests with no rendering or styling rewrite. Verify by "
+        "using\n"
+        "      `/admin/feedback` in a running dev instance.\n"
+        "  - Reconciliation note: covered at the component-test level rather than "
+        "a live session.\n"
+    )
+    _write_task(tmp_path, body)
+
+    assert audit_repo(tmp_path) == []
+
+
+def test_wrapped_criterion_without_note_is_still_flagged(tmp_path):
+    """The forward scan must not swallow genuine drift on a wrapped criterion."""
+    body = (
+        "## Acceptance Criteria\n"
+        "- [ ] **AC-014 [EXT]** -- `npm run build`, `npm test`, and `npm run e2e` "
+        "all pass in\n"
+        "      the worktree after the re-wire.\n"
+        "- [ ] A second, separate unverified criterion (AC-015).\n"
+    )
+    _write_task(tmp_path, body)
+
+    hits = audit_repo(tmp_path)
+
+    assert len(hits) == 1
+    assert hits[0].unchecked_count == 2
+
+
+def test_note_separated_by_blank_line_does_not_reconcile(tmp_path):
+    """A note detached by a blank line belongs to the section, not the item."""
+    body = (
+        "## Acceptance Criteria\n"
+        "- [ ] Unverified criterion (AC-001).\n"
+        "\n"
+        "  - Reconciliation note: detached from the item above.\n"
+    )
+    _write_task(tmp_path, body)
+
+    hits = audit_repo(tmp_path)
+
+    assert len(hits) == 1
+    assert hits[0].unchecked_count == 1
