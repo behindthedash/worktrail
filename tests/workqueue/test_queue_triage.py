@@ -746,6 +746,11 @@ class TestEvaluateGroupArchivedShortCircuit(QueueTriageTestBase):
                 return_value=self._completed(1, ""),
             ) as mock_run,
             mock.patch(
+                "worktrail.workqueue.queue_triage.dependency_freshness."
+                "check_dependency_freshness",
+                return_value=[],
+            ),
+            mock.patch(
                 "worktrail.orchestrator.spawnlib.spawn_agent",
                 return_value=SpawnResult(text=evaluator_text, usage={}),
             ) as mock_spawn,
@@ -774,6 +779,11 @@ class TestEvaluateGroupArchivedShortCircuit(QueueTriageTestBase):
                 "worktrail.workqueue.queue_triage.subprocess.run",
                 side_effect=OSError("gh not found"),
             ) as mock_run,
+            mock.patch(
+                "worktrail.workqueue.queue_triage.dependency_freshness."
+                "check_dependency_freshness",
+                return_value=[],
+            ),
             mock.patch(
                 "worktrail.orchestrator.spawnlib.spawn_agent",
                 return_value=SpawnResult(text=evaluator_text, usage={}),
@@ -5931,6 +5941,7 @@ class TestFoldTargetQuoteValidation(QueueTriageTestBase):
             no_repo_key=qt.NO_REPO_KEY,
             memory_index="MEMORY.md",
             propose_target_rule="",
+            dependency_freshness="",
         )
         self.assertIn("must also set `target_quote`", prompt)
         self.assertIn("at least 12 characters copied", prompt)
@@ -5938,3 +5949,201 @@ class TestFoldTargetQuoteValidation(QueueTriageTestBase):
         self.assertIn("proposal.md`/`tasks.md`, which you", prompt)
         # the per-brief JSON output shape lists it too
         self.assertIn('"target_quote": "<>=12 characters copied', prompt)
+
+
+class TestEvaluateGroupDependencyFreshness(unittest.TestCase):
+    """3.1: `evaluate_group()` runs `check_dependency_freshness(cwd)` once per
+    repo-bearing group, feeds it to the premise check, renders it into the
+    prompt's "Dependency freshness" block, and returns it as
+    `dependency_freshness`; the no-repo group and archived short-circuit
+    return `[]`.
+    """
+
+    STALE: ClassVar[list[dict[str, Any]]] = [
+        {
+            "app_dir": "web",
+            "lockfile": "web/package-lock.json",
+            "status": "stale",
+            "mismatches": [
+                {"name": "left-pad", "locked": "1.3.0", "installed": "1.1.0"}
+            ],
+            "detail": "web: 1 mismatch(es): left-pad 1.3.0 -> 1.1.0",
+        }
+    ]
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self.tmp.name)
+        self.repo_root = self.base / "repo"
+        self.repo_root.mkdir()
+        self.brief = self.base / "a.md"
+        self.brief.write_text(
+            "---\nrepo: repo\n---\n## Focus\n\nanything at all\n", encoding="utf-8"
+        )
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_prompt_template_has_placeholder_and_d3_rule(self):
+        self.assertIn("{dependency_freshness}", qt.EVALUATOR_PROMPT_TEMPLATE)
+        self.assertIn("Dependency freshness", qt.EVALUATOR_PROMPT_TEMPLATE)
+        self.assertIn(
+            "`stale` or `unknown` is NOT evidence", qt.EVALUATOR_PROMPT_TEMPLATE
+        )
+        for verdict in ("`stale-close`", "`needs-update`", "`work-directly`"):
+            self.assertIn(verdict, qt.EVALUATOR_PROMPT_TEMPLATE)
+        self.assertIn('"no candidate fits"', qt.EVALUATOR_PROMPT_TEMPLATE)
+        self.assertIn(
+            "Prefer `keep`, citing the affected root", qt.EVALUATOR_PROMPT_TEMPLATE
+        )
+
+    def test_repo_group_checks_once_feeds_premise_and_returns_list(self):
+        from worktrail.orchestrator.spawnlib import SpawnResult
+
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run",
+                return_value=subprocess.CompletedProcess(
+                    args=["gh"], returncode=1, stdout="", stderr=""
+                ),
+            ),
+            mock.patch(
+                "worktrail.workqueue.queue_triage.dependency_freshness."
+                "check_dependency_freshness",
+                return_value=self.STALE,
+            ) as mock_check,
+            mock.patch(
+                "worktrail.workqueue.queue_triage.premise_check.run_premise_check",
+                return_value=[],
+            ) as mock_premise,
+            mock.patch(
+                "worktrail.orchestrator.spawnlib.spawn_agent",
+                return_value=SpawnResult(text="", usage={}),
+            ) as mock_spawn,
+        ):
+            result = qt.evaluate_group(
+                str(self.repo_root), [self.brief], cwd=self.repo_root
+            )
+
+        mock_check.assert_called_once_with(self.repo_root)
+        self.assertEqual(
+            mock_premise.call_args.kwargs["dependency_freshness"], self.STALE
+        )
+        self.assertEqual(result[0]["dependency_freshness"], self.STALE)
+        prompt_sent = mock_spawn.call_args.args[0]
+        self.assertIn("Dependency freshness", prompt_sent)
+        self.assertIn(
+            "- web (web/package-lock.json): stale\n"
+            "  web: 1 mismatch(es): left-pad 1.3.0 -> 1.1.0\n"
+            "  - left-pad: locked 1.3.0, installed 1.1.0",
+            prompt_sent,
+        )
+
+    def test_no_repo_group_returns_empty_without_checking(self):
+        from worktrail.orchestrator.spawnlib import SpawnResult
+
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.dependency_freshness."
+                "check_dependency_freshness"
+            ) as mock_check,
+            mock.patch(
+                "worktrail.orchestrator.spawnlib.spawn_agent",
+                return_value=SpawnResult(text="", usage={}),
+            ) as mock_spawn,
+        ):
+            result = qt.evaluate_group(qt.NO_REPO_KEY, [self.brief], cwd=self.base)
+
+        mock_check.assert_not_called()
+        self.assertEqual(result[0]["dependency_freshness"], [])
+        self.assertIn("- no npm package roots found", mock_spawn.call_args.args[0])
+
+    def test_archived_short_circuit_returns_empty_without_checking(self):
+        repo = "behindthedash/retired-repo"
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run",
+                return_value=subprocess.CompletedProcess(
+                    args=["gh"],
+                    returncode=0,
+                    stdout=json.dumps({"isArchived": True, "name": repo}),
+                    stderr="",
+                ),
+            ),
+            mock.patch(
+                "worktrail.workqueue.queue_triage.dependency_freshness."
+                "check_dependency_freshness"
+            ) as mock_check,
+            mock.patch("worktrail.orchestrator.spawnlib.spawn_agent") as mock_spawn,
+        ):
+            result = qt.evaluate_group(repo, [self.brief], cwd=self.base)
+
+        mock_check.assert_not_called()
+        mock_spawn.assert_not_called()
+        self.assertEqual(result[0]["dependency_freshness"], [])
+
+
+class TestParseVerdictsDependencyFreshness(unittest.TestCase):
+    """3.1: `parse_verdicts(dependency_freshness=...)` lands the list on every
+    `Verdict`; omitting it yields `[]`; `escalate()` carries it through.
+    """
+
+    FRESHNESS: ClassVar[list[dict[str, Any]]] = [
+        {
+            "app_dir": ".",
+            "lockfile": "package-lock.json",
+            "status": "unknown",
+            "mismatches": [],
+            "detail": "package-lock.json: unparseable JSON",
+        }
+    ]
+
+    def _raw(self, *ids: str) -> str:
+        return "\n".join(
+            json.dumps(
+                {
+                    "brief_id": bid,
+                    "verdict": "keep",
+                    "duplicate_of": None,
+                    "evidence": "still relevant",
+                }
+            )
+            for bid in ids
+        )
+
+    def test_lands_on_every_verdict(self):
+        verdicts = qt.parse_verdicts(
+            self._raw("a", "b"), ["a", "b"], dependency_freshness=self.FRESHNESS
+        )
+        self.assertEqual(len(verdicts), 2)
+        for v in verdicts:
+            self.assertEqual(v.dependency_freshness, self.FRESHNESS)
+
+    def test_omitted_argument_defaults_to_empty(self):
+        [v] = qt.parse_verdicts(self._raw("a"), ["a"])
+        self.assertEqual(v.dependency_freshness, [])
+        self.assertEqual(qt.Verdict("a", "keep", None, "e").dependency_freshness, [])
+
+    def test_no_repo_needs_decision_conversion_keeps_freshness(self):
+        [v] = qt.parse_verdicts(
+            self._raw("a"), ["a"], no_repo=True, dependency_freshness=self.FRESHNESS
+        )
+        self.assertEqual(v.verdict, "needs-decision")
+        self.assertEqual(v.dependency_freshness, self.FRESHNESS)
+
+    def test_escalate_carries_freshness_through(self):
+        v = qt.Verdict(
+            brief_id="a",
+            verdict="keep",
+            duplicate_of=None,
+            evidence="still relevant",
+            dependency_freshness=self.FRESHNESS,
+        )
+        with mock.patch(
+            "worktrail.workqueue.queue_triage.escalation_due",
+            return_value="keep-limit",
+        ):
+            out = qt.escalate(v, Path("/nonexistent/a.md"), qt.NO_REPO_KEY, [])
+        self.assertEqual(out.verdict, "needs-decision")
+        self.assertEqual(out.escalation, "keep-limit")
+        self.assertEqual(out.dependency_freshness, self.FRESHNESS)

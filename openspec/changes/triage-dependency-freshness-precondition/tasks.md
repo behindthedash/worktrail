@@ -2,7 +2,7 @@
 
 ## 1. Dependency-freshness check
 
-- [ ] 1.1 Add `src/worktrail/workqueue/dependency_freshness.py` with
+- [x] 1.1 Add `src/worktrail/workqueue/dependency_freshness.py` with
       `check_dependency_freshness(repo_path) -> list[dict]`: discover tracked lockfiles via
       `git ls-files -- package-lock.json '*/package-lock.json'`, and for each root compare the
       lockfile's `packages[""]` `dependencies`/`devDependencies` pinned versions
@@ -21,7 +21,7 @@
 
 ## 2. Premise-check gate
 
-- [ ] 2.1 In `src/worktrail/workqueue/premise_check.py`, give `run_premise_check` a
+- [x] 2.1 In `src/worktrail/workqueue/premise_check.py`, give `run_premise_check` a
       keyword-only `dependency_freshness: list[dict] | None = None` argument and, in
       `_check_command`, skip an `npm test` needle (exact or `npm test ...`) when any entry's
       status is not `fresh`: record `confirmed: false` with a detail naming the root(s) and
@@ -37,7 +37,7 @@
 
 ## 3. Wire into triage
 
-- [ ] 3.1 In `src/worktrail/workqueue/queue_triage.py`, have `evaluate_group` call
+- [x] 3.1 In `src/worktrail/workqueue/queue_triage.py`, have `evaluate_group` call
       `check_dependency_freshness(cwd)` once for a repo-bearing group (empty list for the
       no-repo group and the archived short-circuit), pass it into every
       `run_premise_check` call, render it into a new `{dependency_freshness}` placeholder in
