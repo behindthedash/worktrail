@@ -190,3 +190,56 @@ def test_tail_task_files_are_not_parsed(repo: Path) -> None:
         [_task("1.1", "src/pkg/b.py"), _task("3.1", "src/pkg/a.py", kind="e2e")], repo
     )
     assert edges == {}
+
+
+def test_src_takes_precedence_over_repo_root(repo: Path) -> None:
+    _write(repo, "src/pkg/a.py", "import chosen\n")
+    _write(repo, "src/chosen.py", "")
+    _write(repo, "chosen.py", "")
+    edges, _ = import_dep_edges(
+        [
+            _task("1.1", "src/chosen.py"),
+            _task("1.2", "chosen.py"),
+            _task("2.1", "src/pkg/a.py"),
+        ],
+        repo,
+    )
+    assert edges == {"2.1": ["1.1"]}
+
+
+def test_module_file_takes_precedence_over_package_init(repo: Path) -> None:
+    _write(repo, "src/pkg/a.py", "import choice\n")
+    _write(repo, "src/choice.py", "")
+    _write(repo, "src/choice/__init__.py", "")
+    edges, _ = import_dep_edges(
+        [
+            _task("1.1", "src/choice.py"),
+            _task("1.2", "src/choice/__init__.py"),
+            _task("2.1", "src/pkg/a.py"),
+        ],
+        repo,
+    )
+    assert edges == {"2.1": ["1.1"]}
+
+
+def test_repo_root_used_when_absent_under_src(repo: Path) -> None:
+    _write(repo, "src/pkg/a.py", "import chosen\n")
+    _write(repo, "chosen.py", "")
+    edges, _ = import_dep_edges(
+        [_task("1.1", "chosen.py"), _task("2.1", "src/pkg/a.py")], repo
+    )
+    assert edges == {"2.1": ["1.1"]}
+
+
+def test_declared_file_outside_repo_is_ignored(repo: Path, tmp_path: Path) -> None:
+    (tmp_path / "outside.py").write_text("from pkg.b import thing\n")
+    _write(repo, "src/pkg/b.py", "")
+    edges, warnings = import_dep_edges(
+        [
+            _task("owner", "src/pkg/b.py"),
+            _task("importer", "../outside.py", str(tmp_path / "outside.py")),
+        ],
+        repo,
+    )
+    assert edges == {}
+    assert warnings == []
