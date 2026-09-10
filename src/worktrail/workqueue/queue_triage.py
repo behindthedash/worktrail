@@ -29,7 +29,7 @@ from ..router.dashboard import _resolve_repo_dir
 from ..router.land_pr import LandRequest, land_pr
 from ..shared.brief_frontmatter import read_frontmatter, split_frontmatter
 from ..shared.homedir import worktrail_home
-from . import decisions, premise_check, repo_inference
+from . import decisions, dependency_freshness, premise_check, repo_inference
 from .repo_inference import InferenceResult
 from .score_candidates import _overlap_coefficient, _tokenize
 from .slug import fallback_slugify
@@ -145,6 +145,16 @@ premise check run before you were spawned (a quoted claim/path/command from \
 its focus, confirmed or refuted against this repo's checkout). Treat a \
 CONFIRMED entry as already-cited evidence -- you do not need to re-derive it \
 yourself.
+
+Dependency freshness (checked before you were spawned; one line per tracked \
+npm package root, comparing `node_modules/` against `package-lock.json`):
+{dependency_freshness}
+Output from a root whose status is `stale` or `unknown` is NOT evidence: a \
+stale or half-installed tree fails for reasons that say nothing about the \
+brief. Do not use test/build output from such a root to justify \
+`stale-close`, `needs-update`, `work-directly`, or a claim that "no candidate \
+fits". Prefer `keep`, citing the affected root and its mismatches as the \
+reason the check was inconclusive.
 
 Briefs in this group (each with its ranked candidate target changes, if any):
 {briefs}
@@ -557,7 +567,7 @@ def escalate(
 
     `duplicate_of`/`target_repo`/`question` etc. are set only for the rows that
     need them; every other Verdict field (`evidence`, `confidence`, `repo`,
-    `premise_check`) is carried over from `v` unchanged, with `escalation` set
+    `premise_check`, `dependency_freshness`) is carried over from `v` unchanged, with `escalation` set
     to the triggering reason (`"keep-limit"`/`"queue-age"`) for `write_report()`.
     """
     if v.verdict != "keep":
@@ -572,6 +582,7 @@ def escalate(
         "confidence": v.confidence,
         "repo": v.repo,
         "premise_check": v.premise_check,
+        "dependency_freshness": v.dependency_freshness,
         "escalation": reason,
     }
 
@@ -1193,7 +1204,8 @@ def evaluate_group(
     inconclusive) falls through to the normal spawn unchanged.
 
     Returns a single-element list -- `[{"repo", "brief_ids", "raw_text",
-    "candidates_by_brief", "premise_by_brief", "known_repos_by_brief"}]`, plus
+    "candidates_by_brief", "premise_by_brief", "known_repos_by_brief",
+    "dependency_freshness"}]`, plus
     `"exhausted": True` and `"failure_class"` when the spawn gave up without
     ever producing a verdict (`raw_text` is `""` in that case) --
     rather than the raw string directly, so a caller fanning out across
@@ -1216,7 +1228,12 @@ def evaluate_group(
     maps each brief id to `_known_repos(repos_root)` -- the repos a
     `{no_repo_key}` group's `propose-change` may legally target -- when
     `repo` is `{no_repo_key}`, else `{}` (a repo-bearing group's briefs carry
-    no such restriction).
+    no such restriction). `dependency_freshness` is
+    `dependency_freshness.check_dependency_freshness(cwd)` -- run once per
+    repo-bearing group, fed into every `run_premise_check()` call (so a stale
+    root's `npm test` is skipped) and rendered into the prompt's
+    "Dependency freshness" block -- and `[]` for the `{no_repo_key}` group and
+    the archived short-circuit.
     """
     brief_ids = [path.stem for path in briefs]
 
@@ -1241,10 +1258,17 @@ def evaluate_group(
                 "candidates_by_brief": {bid: [] for bid in brief_ids},
                 "premise_by_brief": {bid: [] for bid in brief_ids},
                 "known_repos_by_brief": {},
+                "dependency_freshness": [],
             }
         ]
 
     from ..orchestrator import spawnlib
+
+    freshness = (
+        dependency_freshness.check_dependency_freshness(cwd)
+        if repo != NO_REPO_KEY
+        else []
+    )
 
     rank_repo = repo if repo != NO_REPO_KEY else None
     candidates_by_path = {
@@ -1252,7 +1276,9 @@ def evaluate_group(
     }
     premise_by_path: dict[Path, list[dict[str, Any]]] = {
         path: (
-            premise_check.run_premise_check(_brief_focus(path), cwd)
+            premise_check.run_premise_check(
+                _brief_focus(path), cwd, dependency_freshness=freshness
+            )
             if repo != NO_REPO_KEY
             else []
         )
@@ -1285,6 +1311,7 @@ def evaluate_group(
         no_repo_key=NO_REPO_KEY,
         memory_index=_memory_index_path(cwd),
         propose_target_rule=propose_target_rule,
+        dependency_freshness=dependency_freshness.format_freshness_block(freshness),
     )
     result = spawnlib.spawn_agent(prompt, cwd, tier=DEFAULT_TIER, prefer=agent)
     candidates_by_brief = {
@@ -1308,6 +1335,7 @@ def evaluate_group(
                 "candidates_by_brief": candidates_by_brief,
                 "premise_by_brief": premise_by_brief,
                 "known_repos_by_brief": known_repos_by_brief,
+                "dependency_freshness": freshness,
             }
         ]
     return [
@@ -1318,6 +1346,7 @@ def evaluate_group(
             "candidates_by_brief": candidates_by_brief,
             "premise_by_brief": premise_by_brief,
             "known_repos_by_brief": known_repos_by_brief,
+            "dependency_freshness": freshness,
         }
     ]
 
@@ -1377,6 +1406,7 @@ class Verdict:
     repo: str | None = None
     held_by_wip_cap: bool = False
     premise_check: list[dict[str, Any]] = field(default_factory=list)
+    dependency_freshness: list[dict[str, Any]] = field(default_factory=list)
     escalation: str | None = None
     refuted_span: str | None = None
     corrected_span: str | None = None
@@ -1510,6 +1540,7 @@ def parse_verdicts(
     premise_by_brief: dict[str, list[dict[str, Any]]] | None = None,
     no_repo: bool = False,
     known_repos_by_brief: dict[str, list[str]] | None = None,
+    dependency_freshness: list[dict[str, Any]] | None = None,
 ) -> list[Verdict]:
     """Parse `evaluate_group()`'s raw evaluator text into one `Verdict` per expected brief.
 
@@ -1539,6 +1570,10 @@ def parse_verdicts(
     repo-bearing brief is never in this map to begin with, per
     `evaluate_group()`), so a caller that hasn't wired this through yet gets the
     prior, unrestricted `propose-change` well-formedness check unchanged.
+
+    `dependency_freshness` (the group's `check_dependency_freshness()` result,
+    from `evaluate_group()`) is copied onto every parsed `Verdict`; it defaults
+    to `[]` when not supplied.
 
     `repo`/`held_by_wip_cap` (2.4's per-repo reporting fields) are left at their
     defaults here -- `apply_wip_cap_preview()` stamps them afterward, once per
@@ -1659,7 +1694,11 @@ def parse_verdicts(
             )
         )
         resolved = Verdict(
-            **{**asdict(resolved), "premise_check": premise_by_brief.get(bid, [])}
+            **{
+                **asdict(resolved),
+                "premise_check": premise_by_brief.get(bid, []),
+                "dependency_freshness": list(dependency_freshness or []),
+            }
         )
         if no_repo and resolved.verdict == "keep":
             resolved = Verdict(
@@ -1670,6 +1709,7 @@ def parse_verdicts(
                 confidence=resolved.confidence,
                 question=REPO_ASSIGNMENT_QUESTION,
                 premise_check=resolved.premise_check,
+                dependency_freshness=resolved.dependency_freshness,
             )
         verdicts.append(resolved)
     return verdicts
@@ -1719,6 +1759,7 @@ def evaluate_briefs(
             premise_by_brief=result.get("premise_by_brief"),
             no_repo=no_repo,
             known_repos_by_brief=result.get("known_repos_by_brief"),
+            dependency_freshness=result.get("dependency_freshness"),
         )
         group_verdicts = apply_wip_cap_preview(repo, group_verdicts)
         for v in group_verdicts:
