@@ -1761,6 +1761,164 @@ class ReposScan(unittest.TestCase):
         )
         self.assertNotIn("Post-merge check failures", out_none)
 
+    @staticmethod
+    def _flake(suite, count, repo="repo-a"):
+        return {
+            "suite": suite,
+            "count": count,
+            "runs": [f"spec-{i}" for i in range(count)],
+            "recurrence": "recurring" if count >= 2 else "single",
+            "detail": "timeout",
+            "repo": repo,
+        }
+
+    def test_render_dashboard_omits_smoke_flakes_when_empty(self):
+        baseline = dashboard.render_dashboard([], None, [], [])
+        self.assertEqual(
+            baseline,
+            dashboard.render_dashboard([], None, [], [], smoke_flakes={"entries": []}),
+        )
+        self.assertEqual(
+            baseline, dashboard.render_dashboard([], None, [], [], smoke_flakes=None)
+        )
+        self.assertNotIn("Smoke flakes", baseline)
+
+    def test_render_dashboard_names_suites_with_run_counts_and_pointer(self):
+        # Single-repo mode (repo_rows=None): no repo prefix.
+        out = dashboard.render_dashboard(
+            None,
+            [],
+            [],
+            [],
+            smoke_flakes={
+                "entries": [self._flake("smoke-api", 3), self._flake("smoke-ui", 1)]
+            },
+        )
+        line = next(ln for ln in out.splitlines() if "Smoke flakes" in ln)
+        self.assertIn("Smoke flakes (2)", line)
+        self.assertIn("smoke-api (3 runs), smoke-ui (1 run)", line)
+        self.assertIn("→ fix the flaky suite", line)
+        self.assertNotIn("repo-a:", line)
+
+    def test_render_dashboard_smoke_flakes_overflow_and_multi_repo_tag(self):
+        entries = [self._flake(f"suite-{i}", 5 - i) for i in range(5)]
+        entries.append(self._flake("suite-b", 1, repo="repo-b"))
+        out = dashboard.render_dashboard(
+            [], None, [], [], smoke_flakes={"entries": entries}
+        )
+        line = next(ln for ln in out.splitlines() if "Smoke flakes" in ln)
+        self.assertIn("Smoke flakes (6)", line)
+        self.assertIn("repo-a:suite-0 (5 runs)", line)
+        self.assertIn(" … +2", line)
+        self.assertNotIn("suite-4", line)
+
+    def test_render_dashboard_multi_repo_mode_always_tags_repo(self):
+        # Repo prefix keys off the render mode, not the entry set: a single
+        # flaky repo across N scanned repos must still name the repo to fix.
+        out = dashboard.render_dashboard(
+            [],
+            None,
+            [],
+            [],
+            smoke_flakes={"entries": [self._flake("smoke-api", 3, repo="repo-b")]},
+        )
+        line = next(ln for ln in out.splitlines() if "Smoke flakes" in ln)
+        self.assertIn("repo-b:smoke-api (3 runs)", line)
+
+    def test_smoke_flake_aggregate_tags_merges_and_orders_across_repos(self):
+        def fake_check_repo(repo):
+            if repo.name == "repo-a":
+                return {"entries": [{"suite": "z", "count": 1}]}
+            return {"entries": [{"suite": "a", "count": 2}, {"suite": "m", "count": 1}]}
+
+        with mock.patch.object(dashboard, "_smoke_flake_check_repo", fake_check_repo):
+            agg = dashboard.smoke_flake_aggregate(
+                [("repo-a", Path("/x/repo-a")), ("repo-b", Path("/x/repo-b"))]
+            )
+        self.assertEqual(
+            [(e["repo"], e["suite"], e["count"]) for e in agg["entries"]],
+            [("repo-b", "a", 2), ("repo-b", "m", 1), ("repo-a", "z", 1)],
+        )
+
+    def test_smoke_flake_aggregate_degrades_to_empty_on_failure(self):
+        def boom(repo):
+            raise RuntimeError("detector exploded")
+
+        with mock.patch.object(dashboard, "_smoke_flake_check_repo", boom):
+            agg = dashboard.smoke_flake_aggregate([("repo-a", Path("/x/repo-a"))])
+        self.assertEqual(agg, {"entries": []})
+        with mock.patch.object(dashboard, "_smoke_flake_check_repo", None):
+            self.assertEqual(
+                dashboard.smoke_flake_aggregate([("r", Path("/x/r"))]),
+                {"entries": []},
+            )
+
+    def test_json_payloads_always_carry_smoke_flakes_key(self):
+        from contextlib import redirect_stdout
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            specs_dir = root / "repo-a" / "docs" / "specs"
+            specs_dir.mkdir(parents=True)
+            (root / "repo-a" / ".git").mkdir()
+            picked_dir = root / "picked"
+            picked_dir.mkdir()
+            calls: list[Path] = []
+
+            def fake_check_repo(repo):
+                calls.append(Path(repo))
+                return {"entries": [{"suite": "smoke-api", "count": 2}]}
+
+            with mock.patch.object(dashboard, "_smoke_flake_check_repo", None):
+                f = io.StringIO()
+                with redirect_stdout(f):
+                    dashboard.main(
+                        [
+                            "--root",
+                            str(specs_dir),
+                            "--picked-dir",
+                            str(picked_dir),
+                            "--json",
+                        ]
+                    )
+                single = json.loads(f.getvalue())
+            self.assertEqual(single["smoke_flakes"], {"entries": []})
+            self.assertNotIn("Smoke flakes", single["rendered"])
+
+            with mock.patch.object(
+                dashboard, "_smoke_flake_check_repo", fake_check_repo
+            ):
+                f = io.StringIO()
+                with redirect_stdout(f):
+                    dashboard.main(
+                        [
+                            "--root",
+                            str(specs_dir),
+                            "--picked-dir",
+                            str(picked_dir),
+                            "--json",
+                        ]
+                    )
+                single = json.loads(f.getvalue())
+                self.assertEqual(single["smoke_flakes"]["entries"][0]["repo"], "repo-a")
+                self.assertIn("smoke-api (2 runs)", single["rendered"])
+                self.assertEqual(calls, [(root / "repo-a").resolve()])
+
+                f = io.StringIO()
+                with redirect_stdout(f):
+                    dashboard.main(
+                        [
+                            "--repos",
+                            str(root),
+                            "--picked-dir",
+                            str(picked_dir),
+                            "--json",
+                        ]
+                    )
+                multi = json.loads(f.getvalue())
+            self.assertIn("smoke_flakes", multi)
+            self.assertIsInstance(multi["smoke_flakes"]["entries"], list)
+
     def test_worktrees_reported_not_overlaid(self):
         # A worktree's docs/specs must NOT resurface a spec as active (overlay
         # removed); the worktree is reported by name for the cleanup action.

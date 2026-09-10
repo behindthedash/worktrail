@@ -80,10 +80,32 @@ item in the same list (no double-listing); it stays reachable via "Other"/
 The stale-worktree entry point is **not** a picker item; it surfaces only as the
 `rendered` worktree nudge and is reached via "Other"/free-text (`cleanup-worktrees`).
 
+## `smoke_flakes`
+
+The cross-repo smoke-flake aggregate (`smoke_flake_selfcheck.check_repo()` per
+in-scope repo, merged), backing the `rendered` smoke-flake line. **Always
+present** when the dashboard emits JSON — `{"entries": []}` when there is
+nothing to report, never absent — so a consumer can read it without an
+existence check.
+
+Each entry is `{suite, count, runs, recurrence, detail, repo}`: `suite` is the
+integration group name the orchestrator recorded the flake under; `count` is the
+number of distinct runs that suite flaked in; `runs` lists those spec ids,
+most-recent-first; `recurrence` is `recurring` (count ≥ 2 — the act-on-it
+signal) or `single`; `detail` is the first-attempt failure detail from the most
+recent of those runs; `repo` tags which repository the entry came from.
+Entries are ordered by `count` descending, then `suite` ascending.
+
+Only run journals last modified inside the detector's recency window (default
+30 days) contribute, so a suite that was fixed long ago ages out of the count
+rather than accumulating across every journal ever written. The detector is
+passive — any failure yields an empty aggregate and the `rendered` section is
+simply omitted; it never breaks the dashboard.
+
 ## JSON shapes by mode
 
-- **`--root` (in-repo)**: `{constitution, specs, active_specs, handoff_queue, inflight, worktrees, category_actions, category_items, rendered}`
-- **`--repos` (multi-repo)**: `{repos, active_specs, handoff_queue, inflight, category_actions, category_items, rendered}`
+- **`--root` (in-repo)**: `{constitution, specs, active_specs, handoff_queue, inflight, worktrees, smoke_flakes, category_actions, category_items, rendered}`
+- **`--repos` (multi-repo)**: `{repos, active_specs, handoff_queue, inflight, smoke_flakes, category_actions, category_items, rendered}`
   (each repo row carries `active_specs`, `backlog`/`backlog_ids`, and `worktrees`).
 - **brief-ID invocations**: skip the picker; print a one-line summary from `specs`/`inflight` counts.
 

@@ -36,7 +36,7 @@
 
 ## 2. Dashboard integration
 
-- [ ] 2.1 Thread the aggregate through `dashboard.py` and render it.
+- [x] 2.1 Thread the aggregate through `dashboard.py` and render it.
       - Build a cross-repo snapshot by calling the detector once per in-scope repo (both
         single-repo and multi-repo mode), tagging each entry with its repo name and merging
         into one `{"entries": [...]}` aggregate, wrapped in the same
@@ -55,14 +55,14 @@
       (Requirement: Expose smoke flakes on the dashboard JSON payload)
   files: src/worktrail/router/dashboard.py tests/router/test_dashboard.py
 
-- [ ] 2.2 Document the new `smoke_flakes` key in the dashboard JSON field contract, describing
+- [x] 2.2 Document the new `smoke_flakes` key in the dashboard JSON field contract, describing
       the entry shape and that the key is always present.
   files: skills/worktrail-go/references/dashboard-render.md
   review: skip
 
 ## 3. Verification
 
-- [ ] 3.1 [e2e] Run `PYTHONPATH=src pytest -q`, `ruff check .`, `ruff format --check .`, and
+- [x] 3.1 [e2e] Run `PYTHONPATH=src pytest -q`, `ruff check .`, `ruff format --check .`, and
       `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`, and confirm all
       pass. Then run the new CLI against this repository and confirm it exits 0 with no
       findings (no smoke flakes have been recorded on disk yet) and that
