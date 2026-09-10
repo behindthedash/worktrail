@@ -54,7 +54,7 @@
 
 ## 3. Authoring guidance
 
-- [ ] 3.1 In the `openspec-propose` skill's `tasks.md` rules, document the `depends:`
+- [x] 3.1 In the `openspec-propose` skill's `tasks.md` rules, document the `depends:`
       continuation line next to the `files:`/`review: skip` guidance, with the rule: when a
       task's `files:` names a path that does not exist on the base branch and another task
       will import it, the importing task carries `depends: <creator id>`. Note that
