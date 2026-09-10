@@ -11,6 +11,13 @@ pre_commit_cmd: "ruff check . --fix && ruff format ."
 release_gate: v1.0
 # orchestrator-throughput 7.1: check lint/format at integrate so it can't slip past pre_commit_cmd.
 integrate_smoke_cmd: "PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check && ruff check . && ruff format --check ."
+# smoke-gate-flaky-retry-policy: one bounded re-run of the smoke command on a
+# non-zero exit, so a load-flaky red on this 4-runner host does not quarantine a
+# group whose own diff is fine (run agent-capacity-expired-gate-hygiene, 2026-09-05,
+# lost 2 of 3 groups that way). A pass-after-retry is never silent: it prints FLAKY
+# and lands in the run journal's smoke_flakes map -- a repeat entry for the same
+# suite means fix the flake, not raise this number.
+integrate_smoke_retries: 1
 base_branch: main
 # orchestrator-throughput 7.1: small diffs skip the full reviewer pass.
 review_skip_max_diff_lines: 40
