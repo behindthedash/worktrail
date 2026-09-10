@@ -528,6 +528,53 @@ class TestDocsOnlyRiskSignalGuard(unittest.TestCase):
         self.assertIn("low:docs-only", labels)
 
 
+class TestAuthzRiskSignalHyphenGuard(unittest.TestCase):
+    """RISK_SIGNALS' 'authz' regex is `\\bauth(entication|orization)?\\b`, and
+    `\\b` treats the hyphen in a package name like `better-auth` as a word
+    boundary -- so merely naming the dependency scored high:authz. Confirmed
+    live 2026-09-10 (run go-20260910-085556, devops PR #366): a config-only PR
+    adding two JSON known_risks entries plus a unittest file classified
+    risk=high, exceeded that repo's policy max_risk=medium, and was labeled
+    go:no-automerge, forcing a hand merge. Distinct from the module's
+    documented "prose can't see the diff" limitation -- this match is a
+    word-boundary artifact inside a single compound token, not an incidental
+    mention of a real word."""
+
+    def test_hyphenated_package_name_does_not_score_authz(self):
+        _risk, labels = classify_risk(
+            "Add two known_risks policy entries for the better-auth dependency "
+            "plus a unittest file"
+        )
+        self.assertFalse(any(l.endswith(":authz") for l in labels))
+
+    def test_hyphenated_package_name_does_not_elevate_risk(self):
+        risk, _labels = classify_risk(
+            "Add two known_risks policy entries for the better-auth dependency "
+            "plus a unittest file"
+        )
+        self.assertEqual(risk, "low")
+
+    def test_scoped_package_name_does_not_score_authz(self):
+        _risk, labels = classify_risk("bump the @auth/core dependency to 1.4.0")
+        self.assertFalse(any(l.endswith(":authz") for l in labels))
+
+    def test_underscore_joined_identifier_does_not_score_authz(self):
+        _risk, labels = classify_risk("rename the require_auth helper's argument")
+        self.assertFalse(any(l.endswith(":authz") for l in labels))
+
+    def test_standalone_auth_still_scores_authz(self):
+        _risk, labels = classify_risk("add an auth check to the admin endpoint")
+        self.assertIn("high:authz", labels)
+
+    def test_authentication_word_still_scores_authz(self):
+        _risk, labels = classify_risk("rework the authentication flow")
+        self.assertIn("high:authz", labels)
+
+    def test_auth_prefixed_phrase_still_scores_authz(self):
+        _risk, labels = classify_risk("tighten the auth-related permission checks")
+        self.assertIn("high:authz", labels)
+
+
 class TestCitedPrStates(unittest.TestCase):
     """cited_pr_states/_pr_state — the only live-I/O boundary in this module,
     exercised here with an injected fake runner (no real `gh`/network calls)."""

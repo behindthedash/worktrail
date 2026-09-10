@@ -364,10 +364,24 @@ RISK_SIGNALS = [
             "auth-weakening",
         ),
     ),
+    # The `(?<![-@])` guard excludes a match that sits inside a hyphen- or
+    # `@`-joined compound token -- `\b` treats the hyphen in a package name
+    # like `better-auth` (or the `@` in `@auth/core`) as a word boundary, so
+    # merely naming the dependency scored high:authz. Confirmed live
+    # 2026-09-10 (run go-20260910-085556, devops PR #366): a config-only PR
+    # adding two JSON known_risks entries plus a unittest file classified
+    # risk=high, exceeded that repo's policy max_risk=medium, and was labeled
+    # go:no-automerge, forcing a hand merge. This is a word-boundary artifact
+    # inside a single token, NOT the diff-blindness the table comment above
+    # deliberately fails loud on -- a compound token is never a prose mention
+    # of the bare word. Underscore-joined identifiers (`require_auth`) were
+    # already excluded, since `_` is a word character and `\b` never fires
+    # mid-token. `auth-related` still matches: the guard looks only at what
+    # PRECEDES the word.
     (
         "high",
         _sig(
-            r"\bauth(entication|orization)?\b|\blogin\b|\bpermissions?\b|\broles?\b|\baccess control\b",
+            r"(?<![-@])\b(?:auth(entication|orization)?|login|permissions?|roles?|access control)\b",
             0,
             "authz",
         ),
