@@ -1,6 +1,6 @@
 ## 1. Delta pre-check in the close-stale command (`close-stale-archive-delta-precheck`)
 
-- [ ] 1.1 Implement Requirements: Close-stale runs a delta pre-check before
+- [x] 1.1 Implement Requirements: Close-stale runs a delta pre-check before
       mutating the worktree; Close-stale refuses on archived-sibling delta
       drift unless explicitly allowed. In
       `src/worktrail/router/close_stale_openspec.py`, add a `_delta_precheck`
