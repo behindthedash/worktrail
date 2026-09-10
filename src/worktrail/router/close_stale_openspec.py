@@ -53,7 +53,7 @@ def flip_and_archive(
     *,
     timeout: int = 300,
 ) -> dict[str, Any]:
-    """Flip the given (or all pending) task checkboxes for `change_id` and
+    """Flip the given (or every) task checkbox for `change_id` and
     run `openspec archive -y <change_id> --json` in `worktree`.
 
     Returns `{"checked": bool, "change_dir": str, "flipped": [...],
@@ -94,7 +94,12 @@ def flip_and_archive(
 
     parsed = parse_tasks_md(tasks_md.read_text())
     if task_ids is None:
-        targets = [t.id for t in parsed.tasks if t.status != "completed"]
+        # Every task id, not just the pending ones: a change whose tasks.md is
+        # already 100% `[x]` but was never archived is pure bookkeeping drift --
+        # the exact case this module exists to close. A pending-only default
+        # leaves both `flipped` and `already_checked` empty for it, so the
+        # "nothing to flip" guard below wrongly refuses to archive it.
+        targets = [t.id for t in parsed.tasks]
     else:
         targets = list(task_ids)
         known_ids = {t.id for t in parsed.tasks}
