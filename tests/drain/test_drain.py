@@ -66,6 +66,7 @@ from worktrail.drain.summary_contract import (
     summary_block_contract,
 )
 from worktrail.orchestrator import agent_capacity
+from worktrail.router import dashboard
 from worktrail.router import run_record as run_record_mod
 
 # ---------------------------------------------------------------------------
@@ -2577,16 +2578,28 @@ def test_find_complete_openspec_changes_go_repo_filter(tmp_path):
     assert [f["repo_name"] for f in found] == ["repo-b"]
 
 
-def _fake_gh_and_openspec_archive_subprocess_run(pr_url: str):
+def _fake_gh_and_openspec_archive_subprocess_run(
+    pr_url: str, validate_rc: int = 0, calls: list | None = None
+):
     """Real `git`/other commands pass through to the real subprocess.run; the
-    `openspec archive` and two gh-pr-related calls are faked so the test needs
-    no network, `gh` auth, or a real `openspec` CLI. The faked archive call
-    writes a marker file into the worktree so the subsequent `git commit` has
-    something to commit, mirroring what a real `openspec archive -y` would
-    move/write."""
+    `openspec validate`, `openspec archive` and two gh-pr-related calls are
+    faked so the test needs no network, `gh` auth, or a real `openspec` CLI.
+    The faked archive call writes a marker file into the worktree so the
+    subsequent `git commit` has something to commit, mirroring what a real
+    `openspec archive -y` would move/write. `validate_rc` drives the faked
+    `openspec validate --strict` exit code; `calls` records every argv."""
     real_run = subprocess.run
 
     def fake_run(cmd, **kwargs):
+        if calls is not None:
+            calls.append(cmd)
+        if cmd[:2] == ["openspec", "validate"]:
+            return subprocess.CompletedProcess(
+                cmd,
+                validate_rc,
+                stdout="",
+                stderr="bad delta heading" if validate_rc else "",
+            )
         if cmd[:2] == ["openspec", "archive"]:
             Path(kwargs["cwd"], "ARCHIVED.marker").write_text("archived\n")
             return subprocess.CompletedProcess(cmd, 0, stdout="archived\n", stderr="")
@@ -2618,6 +2631,7 @@ def test_archive_openspec_change_runs_archive_and_opens_pr(tmp_path, monkeypatch
         "run",
         _fake_gh_and_openspec_archive_subprocess_run("https://example.invalid/pr/9"),
     )
+    monkeypatch.setattr(dashboard, "_openspec_delta_drift", lambda c, r: [])
 
     result = archive_openspec_change(
         finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None
@@ -2681,6 +2695,234 @@ def test_archive_openspec_change_refuses_when_tasks_unchecked(tmp_path, monkeypa
     assert "archive completed change" not in log
 
 
+def _seed_archive_change(repo: Path, change_id: str, delta_spec: str | None = None):
+    """Commit a fully-checked change (plus an optional delta spec under
+    `specs/<capability>/spec.md`) to the repo's `dev` branch so the archive
+    worktree sees it."""
+    change = repo / "openspec" / "changes" / change_id
+    change.mkdir(parents=True)
+    (change / "tasks.md").write_text("## 1. Export\n\n- [x] 1.1 Add exporter\n")
+    if delta_spec is not None:
+        spec = change / "specs" / "export" / "spec.md"
+        spec.parent.mkdir(parents=True)
+        spec.write_text(delta_spec)
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "add change"], check=True)
+    subprocess.run(["git", "-C", str(repo), "push", "-q", "origin", "dev"], check=True)
+
+
+def _assert_archive_had_no_side_effects(repo: Path, calls: list, land_pr_calls: list):
+    assert not any(c[:2] == ["openspec", "archive"] for c in calls)
+    assert not any(c[:2] == ["gh", "pr"] and c[2] == "create" for c in calls)
+    assert not any(c[:2] == ["git", "push"] or "push" in c[:4] for c in calls)
+    assert land_pr_calls == []
+    log = subprocess.run(
+        ["git", "-C", str(repo), "log", "--all", "--oneline"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "archive completed change" not in log
+
+
+def test_archive_openspec_change_refuses_when_validate_fails(tmp_path, monkeypatch):
+    repo = _init_repo_with_origin(tmp_path, "repo-a")
+    _seed_archive_change(repo, "add-export")
+    finding = {"repo": repo, "repo_name": "repo-a", "spec_id": "add-export"}
+    calls: list = []
+    land_pr_calls: list = []
+    monkeypatch.setattr(drain, "land_pr", lambda req: land_pr_calls.append(req))
+    monkeypatch.setattr(
+        drain.subprocess,
+        "run",
+        _fake_gh_and_openspec_archive_subprocess_run(
+            "https://example.invalid/pr/9", validate_rc=1, calls=calls
+        ),
+    )
+    monkeypatch.setattr(dashboard, "_openspec_delta_drift", lambda c, r: [])
+
+    with pytest.raises(RuntimeError) as excinfo:
+        archive_openspec_change(
+            finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None
+        )
+
+    msg = str(excinfo.value)
+    assert "refusing to archive add-export" in msg
+    assert "openspec validate add-export --strict failed" in msg
+    assert "bad delta heading" in msg
+    assert any(c[:2] == ["openspec", "validate"] for c in calls)
+    _assert_archive_had_no_side_effects(repo, calls, land_pr_calls)
+
+
+def test_archive_openspec_change_refuses_when_canonical_target_missing(
+    tmp_path, monkeypatch
+):
+    repo = _init_repo_with_origin(tmp_path, "repo-a")
+    _seed_archive_change(
+        repo,
+        "add-export",
+        delta_spec=(
+            "## MODIFIED Requirements\n\n### Requirement: CSV export\n\n"
+            "#### Scenario: exports\n- **WHEN** x\n- **THEN** y\n"
+        ),
+    )
+    finding = {"repo": repo, "repo_name": "repo-a", "spec_id": "add-export"}
+    calls: list = []
+    land_pr_calls: list = []
+    monkeypatch.setattr(drain, "land_pr", lambda req: land_pr_calls.append(req))
+    monkeypatch.setattr(
+        drain.subprocess,
+        "run",
+        _fake_gh_and_openspec_archive_subprocess_run(
+            "https://example.invalid/pr/9", calls=calls
+        ),
+    )
+    monkeypatch.setattr(dashboard, "_openspec_delta_drift", lambda c, r: [])
+
+    with pytest.raises(RuntimeError) as excinfo:
+        archive_openspec_change(
+            finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None
+        )
+
+    msg = str(excinfo.value)
+    assert "refusing to archive add-export" in msg
+    assert "missing canonical target: MODIFIED requirement export/CSV export" in msg
+    assert "openspec/specs/export/spec.md" in msg
+    _assert_archive_had_no_side_effects(repo, calls, land_pr_calls)
+
+
+def test_archive_openspec_change_refuses_on_delta_drift_with_no_override(
+    tmp_path, monkeypatch
+):
+    repo = _init_repo_with_origin(tmp_path, "repo-a")
+    _seed_archive_change(repo, "add-export")
+    finding = {"repo": repo, "repo_name": "repo-a", "spec_id": "add-export"}
+    calls: list = []
+    land_pr_calls: list = []
+    monkeypatch.setattr(drain, "land_pr", lambda req: land_pr_calls.append(req))
+    monkeypatch.setattr(
+        drain.subprocess,
+        "run",
+        _fake_gh_and_openspec_archive_subprocess_run(
+            "https://example.invalid/pr/9", calls=calls
+        ),
+    )
+    drift = [
+        {
+            "capability": "export",
+            "requirement": "CSV export",
+            "archived_change_id": "older-export-rework",
+        }
+    ]
+    monkeypatch.setattr(
+        dashboard,
+        "_openspec_delta_drift",
+        lambda c, r: drift,
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        archive_openspec_change(
+            finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None
+        )
+
+    msg = str(excinfo.value)
+    assert "refusing to archive add-export" in msg
+    assert "archived-sibling delta drift" in msg
+    assert "older-export-rework" in msg
+    # No override path: `_run_openspec_archive` takes no allow-drift argument.
+    import inspect
+
+    assert (
+        "allow_delta_drift"
+        not in inspect.signature(drain._run_openspec_archive).parameters
+    )
+    _assert_archive_had_no_side_effects(repo, calls, land_pr_calls)
+
+
+def test_archive_openspec_change_unchecked_refusal_precedes_validate(
+    tmp_path, monkeypatch
+):
+    repo = _init_repo_with_origin(tmp_path, "repo-a")
+    change = repo / "openspec" / "changes" / "add-export"
+    change.mkdir(parents=True)
+    (change / "tasks.md").write_text("## 1. Export\n\n- [ ] 1.1 Add exporter\n")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "add change"], check=True)
+    subprocess.run(["git", "-C", str(repo), "push", "-q", "origin", "dev"], check=True)
+    finding = {"repo": repo, "repo_name": "repo-a", "spec_id": "add-export"}
+    calls: list = []
+    monkeypatch.setattr(
+        drain.subprocess,
+        "run",
+        _fake_gh_and_openspec_archive_subprocess_run(
+            "https://example.invalid/pr/9", validate_rc=1, calls=calls
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="unchecked task"):
+        archive_openspec_change(
+            finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None
+        )
+
+    assert not any(c[:2] == ["openspec", "validate"] for c in calls)
+    assert not any(c[:2] == ["openspec", "archive"] for c in calls)
+
+
+def test_archive_openspec_change_precheck_pass_through_archives_and_opens_pr(
+    tmp_path, monkeypatch
+):
+    repo = _init_repo_with_origin(tmp_path, "repo-a")
+    # Canonical spec already carries the MODIFIED requirement -> precheck passes.
+    canonical = repo / "openspec" / "specs" / "export" / "spec.md"
+    canonical.parent.mkdir(parents=True)
+    canonical.write_text(
+        "# export\n\n### Requirement: CSV export\n\n#### Scenario: exports\n"
+        "- **WHEN** x\n- **THEN** y\n"
+    )
+    _seed_archive_change(
+        repo,
+        "add-export",
+        delta_spec=(
+            "## MODIFIED Requirements\n\n### Requirement: CSV export\n\n"
+            "#### Scenario: exports\n- **WHEN** x\n- **THEN** z\n"
+        ),
+    )
+    finding = {"repo": repo, "repo_name": "repo-a", "spec_id": "add-export"}
+    calls: list = []
+    land_pr_calls: list = []
+
+    def mock_land_pr(request):
+        land_pr_calls.append(request)
+        from worktrail.router.land_pr import LandOutcome
+
+        return LandOutcome(outcome="landed", pr_url="https://example.invalid/pr/9")
+
+    monkeypatch.setattr(drain, "land_pr", mock_land_pr)
+    monkeypatch.setattr(
+        drain.subprocess,
+        "run",
+        _fake_gh_and_openspec_archive_subprocess_run(
+            "https://example.invalid/pr/9", calls=calls
+        ),
+    )
+    monkeypatch.setattr(dashboard, "_openspec_delta_drift", lambda c, r: [])
+
+    result = archive_openspec_change(
+        finding, "claude", 30, lambda c, t: SpawnOutcome(0), lambda _l: None
+    )
+
+    assert result["pr_url"] == "https://example.invalid/pr/9"
+    validate_idx = next(
+        i for i, c in enumerate(calls) if c[:2] == ["openspec", "validate"]
+    )
+    archive_idx = next(
+        i for i, c in enumerate(calls) if c[:2] == ["openspec", "archive"]
+    )
+    assert calls[validate_idx] == ["openspec", "validate", "add-export", "--strict"]
+    assert validate_idx < archive_idx
+    assert len(land_pr_calls) == 1
+
+
 def test_archive_openspec_change_existing_pr_skips_rearchiving(tmp_path, monkeypatch):
     repo = _init_repo_with_origin(tmp_path, "repo-a")
     finding = {"repo": repo, "repo_name": "repo-a", "spec_id": "add-export"}
@@ -2737,10 +2979,14 @@ def test_archive_openspec_change_gh_pr_create_failure_raises(tmp_path, monkeypat
     real_run = subprocess.run
 
     def fake_run(cmd, **kwargs):
+        if cmd[:2] == ["openspec", "validate"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[:2] == ["openspec", "archive"]:
             Path(kwargs["cwd"], "ARCHIVED.marker").write_text("archived\n")
             return subprocess.CompletedProcess(cmd, 0, stdout="archived\n", stderr="")
         return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(dashboard, "_openspec_delta_drift", lambda c, r: [])
 
     fake_table = [
         StageRemediation(

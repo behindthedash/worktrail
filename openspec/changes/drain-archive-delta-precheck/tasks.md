@@ -1,6 +1,6 @@
 ## 1. Delta pre-check in the drain archive sweep (`drain-stage-remediation-table`)
 
-- [ ] 1.1 Implement Requirement: OpenSpec change archive remediation (delta
+- [x] 1.1 Implement Requirement: OpenSpec change archive remediation (delta
       pre-check paragraph and its four new scenarios). In
       `src/worktrail/drain/drain.py`, import `_delta_precheck` from
       `..router.close_stale_openspec` next to the existing `flip_and_archive`
