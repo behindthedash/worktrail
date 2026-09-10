@@ -68,10 +68,17 @@ construction — nothing accumulates across iterations.
   `<action> error:` line and skips rather than aborting the sweep. Each sweep still does its own
   `git push --force -u origin <branch>` before calling the helper. Tests mock `drain.land_pr`
   directly (no `gh pr create` subprocess fake remains for these paths).
+  The OpenSpec archive sweep additionally runs `close_stale_openspec._delta_precheck`
+  (`openspec validate --strict` plus the delta-vs-canonical and archived-sibling drift checks)
+  after the unchecked-task refusal and before `openspec archive -y`. Any pre-check refusal
+  raises `RuntimeError` and is logged as an `archive-openspec-change error:` line with no
+  archive, commit, push, or PR. Drain deliberately has no `--allow-delta-drift` equivalent:
+  an unattended sweep never overrides drift, the interactive close-stale path is the only
+  place that flag exists.
 
 ## Critical files
 - `drain/drain.py` — the whole driver: iteration loop, stop-condition classification, agent
   fallback selection, and `_land_remediation_pr` (the single `land_pr` seam for remediation PRs)
 
 ---
-**Last Updated:** 2026-09-07
+**Last Updated:** 2026-09-09
