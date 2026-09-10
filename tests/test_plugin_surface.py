@@ -330,6 +330,28 @@ def test_go_dispatch_mode_table_pins_invocation_context_constants():
     )
 
 
+def test_close_stale_row_documents_delta_precheck():
+    """`worktrail-close-stale-openspec` runs `openspec validate --strict` plus a
+    delta-vs-canonical pre-check before flipping any checkbox, refuses without
+    mutating the worktree, and accepts `--allow-delta-drift` only for the
+    archived-sibling drift class. The close-stale dispatch row is the only place
+    an agent learns this; if the row drops the pre-check or the flag, the agent
+    misreads a refusal as a crash or hand-rolls the archive instead."""
+    text = (SKILLS_DIR / "worktrail-go" / "SKILL.md").read_text()
+    rows = [line for line in text.splitlines() if line.startswith("| `close-stale` |")]
+    assert len(rows) == 1, (
+        f"expected exactly one close-stale dispatch row, found {len(rows)}"
+    )
+    row = rows[0]
+    for needle in (
+        "openspec validate",
+        "--allow-delta-drift",
+        "`precheck`",
+        "unmodified",
+    ):
+        assert needle in row, f"close-stale row no longer documents {needle!r}"
+
+
 def test_active_run_resume_stays_in_session_never_spawns_nested_worker():
     """An interactive parent resuming its own already-active run (no final_status +
     existing worktree, Route E) must hand execution back to the active parent and continue
