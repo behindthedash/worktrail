@@ -261,3 +261,110 @@ def test_set_task_checked_on_declared_task_changes_only_checkbox_byte(tmp_path: 
     task = parsed.by_id("1.1")
     assert task.files == ["src/widget.py", "tests/test_widget.py"]
     assert task.status == "completed"
+
+
+def _parse_one(body: str):
+    text = textwrap.dedent(
+        f"""\
+        ## 1. Setup
+
+        - [ ] 1.1 Add the widget
+        - [ ] 1.2 Wire the widget
+        {body}
+        """
+    )
+    parsed = parse_tasks_md(text)
+    return parsed, parsed.by_id("1.2")
+
+
+def test_depends_declaration_single_id():
+    parsed, task = _parse_one("  depends: 1.1")
+    assert task.depends == ["1.1"]
+    assert parsed.warnings == []
+
+
+def test_depends_declaration_several_ids_backticks_stripped():
+    text = textwrap.dedent(
+        """\
+        ## 1. Setup
+
+        - [ ] 1.1 Add the widget
+        - [ ] 1.2 Add the gadget
+        - [ ] 1.3 Wire both
+          files: src/wire.py
+          depends: `1.1`, 1.2
+        """
+    )
+    parsed = parse_tasks_md(text)
+    task = parsed.by_id("1.3")
+    assert task.depends == ["1.1", "1.2"]
+    assert task.files == ["src/wire.py"]
+    assert parsed.warnings == []
+
+
+def test_task_without_depends_line_has_empty_depends():
+    parsed, task = _parse_one("")
+    assert task.depends == []
+    assert parsed.by_id("1.1").depends == []
+    assert parsed.warnings == []
+
+
+def test_duplicate_depends_declaration_warns_and_uses_first():
+    text = textwrap.dedent(
+        """\
+        ## 1. Setup
+
+        - [ ] 1.1 Add the widget
+        - [ ] 1.2 Wire the widget
+          depends: 1.1
+          depends: 1.3
+        """
+    )
+    parsed = parse_tasks_md(text)
+    task = parsed.by_id("1.2")
+    assert task.depends == ["1.1"]
+    assert len(parsed.warnings) == 1
+    assert "1.2" in parsed.warnings[0]
+    assert "more than one 'depends:'" in parsed.warnings[0]
+
+
+def test_empty_depends_declaration_warns_and_leaves_depends_empty():
+    parsed, task = _parse_one("  depends:")
+    assert task.depends == []
+    assert len(parsed.warnings) == 1
+    assert "1.2" in parsed.warnings[0]
+    assert "names no task ids" in parsed.warnings[0]
+
+
+def test_depends_self_reference_dropped():
+    parsed, task = _parse_one("  depends: 1.2, 1.1")
+    assert task.depends == ["1.1"]
+    assert parsed.warnings == []
+
+
+def test_depends_only_self_reference_warns_as_empty():
+    parsed, task = _parse_one("  depends: 1.2")
+    assert task.depends == []
+    assert len(parsed.warnings) == 1
+    assert "names no task ids" in parsed.warnings[0]
+
+
+def test_set_task_checked_leaves_depends_line_untouched(tmp_path: Path):
+    text = textwrap.dedent(
+        """\
+        ## 1. Setup
+
+        - [ ] 1.1 Add the widget
+        - [ ] 1.2 Wire the widget
+          depends: 1.1
+        """
+    )
+    tasks_md = tmp_path / "tasks.md"
+    tasks_md.write_text(text)
+
+    assert set_task_checked(tasks_md, "1.2", checked=True) is True
+    new_text = tasks_md.read_text()
+    assert new_text == text.replace("- [ ] 1.2 Wire", "- [x] 1.2 Wire", 1)
+    task = parse_tasks_md(new_text).by_id("1.2")
+    assert task.depends == ["1.1"]
+    assert task.status == "completed"
