@@ -123,7 +123,7 @@ from typing import Any
 
 from ..orchestrator import agent_capacity
 from ..router import branch_selfcheck, dashboard, quarantine_selfcheck
-from ..router.close_stale_openspec import flip_and_archive
+from ..router.close_stale_openspec import _delta_precheck, flip_and_archive
 from ..router.land_pr import LandRequest, land_pr
 from ..router.policy import (
     OperatorConfigError,
@@ -1599,7 +1599,15 @@ def _run_openspec_archive(wt: Path, spec_id: str, timeout: int) -> None:
     unchecked task -- `openspec archive -y` itself only downgrades that case
     to a stdout warning and archives anyway, so this pre-check is the only
     thing standing between drain's unattended sweep and silently archiving
-    partial work."""
+    partial work.
+
+    Also refuses (raises, no `openspec archive` invoked) on a delta pre-check
+    failure from `close_stale_openspec._delta_precheck`: `openspec validate
+    --strict` non-zero, a MODIFIED/REMOVED/RENAMED-FROM requirement missing
+    from its canonical `openspec/specs/<capability>/spec.md`, or a delta
+    requirement overtaken by an archived sibling. Drain is unattended, so
+    the drift class has no `--allow-delta-drift` override here (design.md
+    D1-D3)."""
     tasks_md = wt / "openspec" / "changes" / spec_id / "tasks.md"
     if tasks_md.is_file():
         pending = [
@@ -1613,6 +1621,11 @@ def _run_openspec_archive(wt: Path, spec_id: str, timeout: int) -> None:
                 f"unchecked task(s) {pending} -- openspec archive -y would "
                 f"proceed anyway (it only warns), so this hard-refuses instead"
             )
+    _precheck, error = _delta_precheck(
+        wt, spec_id, allow_delta_drift=False, timeout=timeout
+    )
+    if error is not None:
+        raise RuntimeError(f"refusing to archive {spec_id} (in {wt}): {error}")
     result = subprocess.run(
         ["openspec", "archive", "-y", spec_id],
         check=False,
