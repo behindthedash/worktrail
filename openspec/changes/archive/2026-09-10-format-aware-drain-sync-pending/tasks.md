@@ -1,6 +1,6 @@
 ## 1. Format-aware sync-pending remediation
 
-- [ ] 1.1 In `src/worktrail/drain/drain.py`, preserve the dashboard row format
+- [x] 1.1 In `src/worktrail/drain/drain.py`, preserve the dashboard row format
       in `find_sync_pending_specs()` (defaulting absent format to `devkit`),
       then make `build_sync_command()` and `_run_sync_pending()` select the
       format-native agent operation: retain `opsx:sync` for OpenSpec changes
