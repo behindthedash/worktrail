@@ -211,6 +211,31 @@ class TestOverridesAndSignals(unittest.TestCase):
         )
         self.assertEqual(r["route"], "J")
 
+    def test_classify_py_incidental_mention_does_not_win_workflow_evolution(self):
+        # Live incident 2026-09-10 (run go-20260910-142322, brief
+        # 20260821-135836): classify.py is cited only as evidence that a CI
+        # job's ratchet has been exercised across prior PRs -- the actual
+        # change target is a .github/rulesets required-status-check
+        # promotion, not the routing/classifier code itself. J must not win.
+        r = classify(
+            "Promote the 'Classifier Coverage Ratchet' CI job to a required "
+            "status check in .github/rulesets/protect-main.json once its "
+            "baseline has proven stable across PRs touching classify.py "
+            "(#620, #623, #819)."
+        )
+        self.assertNotEqual(r["route"], "J")
+
+    def test_classify_py_mention_with_other_j_signal_still_wins(self):
+        # Damping only fires when EVERY J hit is a mention-only label -- a
+        # genuine workflow-evolution request that also cites a CI/config path
+        # (e.g. a routing fix that needs new cassette coverage) still wins on
+        # its other, non-mention-only J signal.
+        r = classify(
+            "Add cassette coverage and update classify.py's routing logic so "
+            ".github/rulesets changes are classified correctly"
+        )
+        self.assertEqual(r["route"], "J")
+
     def test_ci_repair_forces_continue_route(self):
         r = classify("the bug is that CI is broken on my branch")
         self.assertEqual(r["route"], "E")

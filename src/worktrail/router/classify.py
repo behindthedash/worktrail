@@ -306,6 +306,22 @@ ROUTE_SIGNALS: dict[str, list[tuple[re.Pattern, int, str]]] = {
     ],
 }
 
+# A J score built ENTIRELY from these two labels is unreliable evidence that
+# routing/classifier code is the change TARGET -- both fire on a bare mention
+# of "classify.py"/"routing logic"/"classifier" regardless of whether the
+# file is being changed or merely cited as context (e.g. "PR #620 exercised
+# classify.py's ratchet"). Scoped to only these two evidence-confirmed labels
+# (live incident 2026-09-10, brief 20260910-143657/run go-20260910-142322) --
+# do not widen to other J labels without their own confirmed false-positive.
+_MENTION_ONLY_J_LABELS = {"routing-logic", "classify-py"}
+
+# Strong signal that the actual change target is CI/branch-protection config,
+# not this repo's own routing/workflow machinery.
+_CI_CONFIG_RE = re.compile(
+    r"\.github/workflows|\.github/rulesets|required status check|branch protection",
+    re.IGNORECASE,
+)
+
 # CI/PR-repair signals force Route E (repair existing delivery) with F secondary.
 CI_REPAIR = [
     _sig(
@@ -591,6 +607,26 @@ def classify(
     forced = m.group(1).upper() if m else None
 
     scores, hits = _score_routes(text)
+
+    # A J score built entirely from filename/path-mention signals, alongside a
+    # strong CI/config signal, is the incidental-filename-mention shape: the
+    # routing/classifier file is cited as evidence for unrelated CI/branch-
+    # protection config work, not the actual change target. Damp it so the
+    # runner-up route (or the brief's own recommended-route, via the override
+    # below) wins instead.
+    if (
+        scores["J"] > 0
+        and hits["J"]
+        and set(hits["J"]) <= _MENTION_ONLY_J_LABELS
+        and _CI_CONFIG_RE.search(text)
+    ):
+        reason_parts.append(
+            f"J damped: signals {hits['J']} are filename/path mentions only, "
+            "alongside a strong CI/config signal -- treated as cited "
+            "evidence, not the change target"
+        )
+        scores["J"] = 0
+        hits["J"] = []
 
     handoff_route_norm = (
         handoff_route.upper()
