@@ -27,6 +27,7 @@ triggers:
     - LandRequest
     - LandOutcome
     - close_stale_openspec
+    - flip_and_archive
     - capacity-gate
     - retry_after
 ---
@@ -187,6 +188,12 @@ agents or writes task files — that is `orchestrator/`'s job.
   return type so existing callers/mocks of `_push(repo, branch, remote, runner)` keep working. A
   timeout/`OSError` still returns `"push_ambiguous"` with nothing appended. Regression tests live
   in `tests/router/test_land_pr_push_refusal.py`, deliberately not in `test_land_pr.py`.
+- **`flip_and_archive`'s default (`task_ids=None`) targets *every* task id, not just the pending
+  ones.** The whole point of this module is bookkeeping drift, and its purest case is a change whose
+  `tasks.md` is already 100% `[x]` but was never archived. A pending-only default left both
+  `flipped` and `already_checked` empty for that change, so the "nothing to flip" guard refused to
+  archive exactly the case it exists to close. Already-checked ids land in `already_checked` rather
+  than being skipped, so the default path still archives a fully-checked change.
 - **`close_stale_openspec.py` now lands the PR itself.** `main()` requires `--base` and `--run`;
   after a successful `flip_and_archive` it calls `land_pr(LandRequest(route="E", risk="low",
   title="chore(<change-id>): close stale bookkeeping", commit_message="chore(<change-id>):
@@ -221,4 +228,4 @@ agents or writes task files — that is `orchestrator/`'s job.
   outcome→exit-code mapping for the `worktrail-close-stale-openspec` console script
 
 ---
-**Last Updated:** 2026-09-06
+**Last Updated:** 2026-09-10
