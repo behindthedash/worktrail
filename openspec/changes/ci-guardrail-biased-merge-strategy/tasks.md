@@ -1,6 +1,6 @@
 ## 1. Structural guard against biased merge strategy options (`biased-merge-strategy-guardrail`)
 
-- [ ] 1.1 Implement requirements: Biased merge strategy options fail the build;
+- [x] 1.1 Implement requirements: Biased merge strategy options fail the build;
       Documenting the prohibition does not trip the guard; The guard blocks
       merges through an existing required check.
       Add `tests/test_no_biased_merge_strategy.py`, modelled on the existing
