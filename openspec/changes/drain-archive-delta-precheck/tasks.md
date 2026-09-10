@@ -27,7 +27,7 @@
 
 ## 2. Drain skill (`drain-stage-remediation-table`)
 
-- [ ] 2.1 In `.claude/skills/drain/skill.md`, extend the remediation-sweeps
+- [x] 2.1 In `.claude/skills/drain/skill.md`, extend the remediation-sweeps
       bullet so it states that the OpenSpec archive sweep runs
       `close_stale_openspec._delta_precheck` (`openspec validate --strict`
       plus the delta-vs-canonical and archived-sibling drift checks) after
