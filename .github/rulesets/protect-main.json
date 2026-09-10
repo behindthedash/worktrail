@@ -27,6 +27,7 @@
       "type": "required_status_checks",
       "parameters": {
         "required_status_checks": [
+          { "context": "Classifier Coverage Ratchet" },
           { "context": "Lint, Test & Build (3.11)" },
           { "context": "Lint, Test & Build (3.14)" },
           { "context": "Release metadata check" },
