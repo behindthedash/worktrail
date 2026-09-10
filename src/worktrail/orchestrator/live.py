@@ -1923,6 +1923,27 @@ def _resolve_ref_to_sha(repo: Path, ref: str) -> str:
     return resolved.stdout.strip() if resolved.returncode == 0 else ref
 
 
+def _merge_base_with_worktree_head(
+    repo: Path, start_ref: str, worktree: Path
+) -> str | None:
+    """Return `git merge-base <start_ref> <worktree HEAD>` computed in `repo`.
+
+    The task branch forked from `start_ref` at spawn time, but by review time
+    the start ref may have advanced (the canonical tip moved, or a dependency
+    branch grew). Diffing against the *current* start ref would then show
+    unrelated upstream changes as the task's own. The merge-base is the actual
+    fork point. Returns None when either git call fails (unborn worktree HEAD,
+    no common ancestor, ...) so the caller can fall back.
+    """
+    head = _git(worktree, "rev-parse", "--verify", "HEAD^{commit}", check=False)
+    if head.returncode != 0:
+        return None
+    mb = _git(repo, "merge-base", start_ref, head.stdout.strip(), check=False)
+    if mb.returncode != 0:
+        return None
+    return mb.stdout.strip() or None
+
+
 def _live_base_ref(repo: Path, remote: str, base: str) -> str | None:
     """Fetch `remote`/`base` (best-effort) and return the resolvable live base ref:
     `remote/base` when it exists, else the local `base`, else None."""
@@ -2829,14 +2850,19 @@ class LiveSpawn:
         # not the literal "HEAD" sentinel, which is worktree-relative and, run
         # inside the task's own worktree, would render `git diff {base_commit}..HEAD`
         # (dispatch.py's review-worker prompt) as a no-op HEAD..HEAD (see
-        # _resolve_ref_to_sha). Falls back to "HEAD" when no canonical repo was
-        # given (e.g. unit tests exercising __call__ directly).
+        # _resolve_ref_to_sha). Prefers the merge-base of the start ref and the
+        # worktree's HEAD (the fork point, immune to the start ref advancing
+        # after spawn); degrades to the start ref's SHA when merge-base fails.
+        # Falls back to "HEAD" when no canonical repo was given (e.g. unit
+        # tests exercising __call__ directly).
         base_commit = "HEAD"
         if self.repo is not None:
             start_ref, _ = dependency_start_ref(
                 self.repo, self.spec_id, task, self.by_id or {}
             )
-            base_commit = _resolve_ref_to_sha(self.repo, start_ref)
+            base_commit = _merge_base_with_worktree_head(
+                self.repo, start_ref, worktree
+            ) or _resolve_ref_to_sha(self.repo, start_ref)
         ctx = {
             "spec_id": self.spec_id,
             "spec_folder": self.spec_folder_rel,
