@@ -27,7 +27,7 @@
 
 ## 2. Skill row (`close-stale-archive-delta-precheck`)
 
-- [ ] 2.1 Implement Requirement: The worktrail-go close-stale dispatch row
+- [x] 2.1 Implement Requirement: The worktrail-go close-stale dispatch row
       documents the pre-check. In `skills/worktrail-go/SKILL.md`, extend the
       `close-stale` row's openspec branch so it says the command runs
       `openspec validate --strict` plus a delta-vs-canonical pre-check before
