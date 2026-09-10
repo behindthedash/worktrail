@@ -1,6 +1,6 @@
 ## 1. Policy key (`integration-smoke-retry-policy`)
 
-- [ ] 1.1 Implement Requirement: integrate_smoke_retries is a policy key. In
+- [x] 1.1 Implement Requirement: integrate_smoke_retries is a policy key. In
       `src/worktrail/router/policy.py`, add `"integrate_smoke_retries": 0` to
       `DEFAULTS` with a comment stating it is opt-in, recommends `1`, and is
       consumed only by the orchestrator's integrated smoke gate; add the key
@@ -14,7 +14,7 @@
 
 ## 2. Smoke gate retry and flake evidence (`integration-smoke-retry-policy`)
 
-- [ ] 2.1 Implement Requirements: The integrated smoke gate retries non-zero
+- [x] 2.1 Implement Requirements: The integrated smoke gate retries non-zero
       exits when configured; A pass after retry is recorded as flake evidence.
       In `src/worktrail/orchestrator/integrate.py`, give
       `_run_integration_smoke` a `retries: int = 0` keyword and loop up to
@@ -48,7 +48,7 @@
 
 ## 3. Orchestrator plumbing (`integration-smoke-retry-policy`)
 
-- [ ] 3.1 Plumb the smoke retry count from policy; depends on 1.1, 2.1.
+- [x] 3.1 Plumb the smoke retry count from policy; depends on 1.1, 2.1.
       Implement Requirement: The retry count reaches the orchestrator from
       policy. In `src/worktrail/orchestrator/live.py`, add
       `_default_smoke_retries(repo) -> int` next to `_default_smoke_cmd`

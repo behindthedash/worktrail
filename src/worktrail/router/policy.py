@@ -104,6 +104,12 @@ DEFAULTS: dict[str, Any] = {
     # narrower command than integrate_smoke_cmd (e.g. skip slow e2e/browser
     # suites) if the full command is too slow to re-run after every merge.
     "post_merge_smoke_cmd": None,
+    # Number of times the orchestrator's integrated smoke gate re-runs a
+    # non-zero integrate_smoke_cmd before treating the failure as real.
+    # Opt-in: 0 = no retry (existing behavior). 1 is the recommended value
+    # for repos with a known-flaky suite. Consumed only by the orchestrator's
+    # integrated smoke gate; pre_pr_gate.py and the post-merge gate ignore it.
+    "integrate_smoke_retries": 0,
     # Universal pre-PR test gate command (run by pre_pr_gate.py from the worktree
     # root). Enforced on EVERY PR-producing /go route — one-off claude/codex
     # subprocess workers included, not just orchestrator delivery groups. Preferred
@@ -1293,6 +1299,7 @@ def load_policy(repo: Path) -> dict[str, Any]:
         ("max_workers", 1),
         ("pr_pacing_wait_s", 0),
         ("max_parallel_workers", 1),
+        ("integrate_smoke_retries", 0),
     ):
         value = policy.get(key)
         if value is None:
