@@ -575,6 +575,75 @@ class TestAuthzRiskSignalHyphenGuard(unittest.TestCase):
         self.assertIn("high:authz", labels)
 
 
+class TestRiskSignalCompoundTokenAuditInvariants(unittest.TestCase):
+    """Locks the two invariants the 2026-09-10 sibling audit (brief
+    20260910-110957) established, so a future widening pass cannot silently
+    break them. The audit swept 13,626 real texts and found ZERO confirmed
+    compound-token false positives outside `authz`, so no other entry carries
+    the `(?<![-@])` guard -- see the AUDIT note on RISK_SIGNALS. These tests
+    assert WHY the other entries need no guard, not that they have one."""
+
+    # Invariant 1: the trailing side stays unguarded. `<word>-<suffix>` is
+    # genuine prose about the concept and must still score.
+    def test_trailing_hyphen_still_scores_authz(self):
+        _risk, labels = classify_risk("an auth-related change to the admin flow")
+        self.assertIn("high:authz", labels)
+
+    def test_trailing_hyphen_still_scores_interface(self):
+        _risk, labels = classify_risk("a schema-change is needed for the payload")
+        self.assertIn("medium:interface", labels)
+
+    def test_api_first_still_scores_interface(self):
+        _risk, labels = classify_risk("move to an api-first design")
+        self.assertIn("medium:interface", labels)
+
+    # Invariant 2: underscore-joined identifiers need no guard at all, because
+    # `_` is a word character so `\b` never fires mid-token. Asserted rather
+    # than defended with a redundant guard character.
+    def test_underscore_joined_identifier_does_not_score_interface(self):
+        _risk, labels = classify_risk("rename the db_schema_version column helper")
+        self.assertFalse(any(l.endswith(":interface") for l in labels))
+
+    def test_underscore_joined_identifier_does_not_score_billing(self):
+        _risk, labels = classify_risk("rename the stripe_client constructor argument")
+        self.assertFalse(any(l.endswith(":billing") for l in labels))
+
+    def test_underscore_joined_identifier_does_not_score_migration(self):
+        _risk, labels = classify_risk("rename the run_migration_step local variable")
+        self.assertFalse(any(l.endswith(":migration") for l in labels))
+
+    # The audit's positive finding: slug-form mentions are TRUE positives and
+    # must keep scoring. Guarding these entries would suppress real signal.
+    def test_slug_form_migration_still_scores_migration(self):
+        _risk, labels = classify_risk(
+            "implement 015-cloudinary-to-sharp-migration task-004"
+        )
+        self.assertIn("high:migration", labels)
+
+    def test_slug_form_api_still_scores_interface(self):
+        _risk, labels = classify_risk(
+            "sync specs from change subscriber-registration-api"
+        )
+        self.assertIn("medium:interface", labels)
+
+    def test_slug_form_credentials_still_scores_secrets(self):
+        _risk, labels = classify_risk("mask-auth0-management-credentials-in-logs")
+        self.assertIn("critical:secrets", labels)
+
+    # The guard is scoped to authz alone -- siblings are deliberately
+    # unguarded. This pins the audit's decision so a widening pass is a
+    # conscious, evidence-backed edit rather than an accident.
+    def test_guard_is_scoped_to_authz_alone(self):
+        from worktrail.router.classify import RISK_SIGNALS
+
+        guarded = [
+            label
+            for _tier, (rx, _weight, label) in RISK_SIGNALS
+            if "(?<![-@])" in rx.pattern
+        ]
+        self.assertEqual(guarded, ["authz"])
+
+
 class TestCitedPrStates(unittest.TestCase):
     """cited_pr_states/_pr_state — the only live-I/O boundary in this module,
     exercised here with an injected fake runner (no real `gh`/network calls)."""
