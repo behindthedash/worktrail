@@ -1510,10 +1510,8 @@ class IntegrationSmokeTest(unittest.TestCase):
             self.assertEqual(run.find_calls("gh", "pr", "create"), [])
             self.assertEqual([c for c in run.calls if c[:1] == ["push"]], [])
 
-
-class IntegrationSmokeRetryTest(unittest.TestCase):
-    """Policy integrate_smoke_retries: re-run a non-zero smoke exit before
-    quarantining; a pass-after-retry is logged FLAKY and recorded as evidence."""
+    # Policy integrate_smoke_retries: re-run a non-zero smoke exit before
+    # quarantining; a pass-after-retry is logged FLAKY and recorded as evidence.
 
     @staticmethod
     def _counter_cmd(tmp: str, fail_first: int = 1) -> str:
@@ -1631,9 +1629,9 @@ class IntegrationSmokeRetryTest(unittest.TestCase):
             self.assertIsNotNone(result)
             self.assertEqual(len(run.find_calls("gh", "pr", "create")), 1)
             self.assertTrue([c for c in run.calls if c[:1] == ["push"]])
-            self.assertIn("FLAKY [base", out)
             self.assertIn(
-                "smoke passed on attempt 2 of 2; attempt 1: exit 2: boom1", out
+                "FLAKY [base] smoke passed on attempt 2 of 2; attempt 1: exit 2: boom1",
+                out,
             )
             data = json.loads(Path(journal).read_text())
             self.assertIn("attempt 1: exit 2: boom1", data["smoke_flakes"]["base"])

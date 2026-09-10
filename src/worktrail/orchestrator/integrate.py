@@ -1581,7 +1581,7 @@ def integrate_one(
                     iw, name, smoke_cmd, retries=smoke_retries
                 )
                 if ok and detail != "ok":
-                    print(f"  FLAKY [{name:9}] smoke passed on {detail}")
+                    print(f"  FLAKY [{name}] smoke passed on {detail}")
                     _record_smoke_flake(journal_path, name, detail)
                 if not ok:
                     quarantined[name] = f"integrated smoke test failed: {detail}"
