@@ -75,6 +75,67 @@ Package the attestation as an opt-in scheduled or release-time canary with expli
 
 **Release evidence:** documented invocation and ownership, bounded retries/timeouts, sanitized evidence retention, and distinct alerts for platform, provider/authentication, and Worktrail contract failures.
 
+## Feature 2 operating procedure: invocation and evidence review
+
+This procedure is how an operator produces and reviews Feature 2's release evidence. It is
+**advisory only**: running it creates no schedule, retry loop, alert, CI requirement, or
+release gate. Any recurring signal is Feature 3's decision, made later and explicitly.
+
+### Invocation
+
+Run the managed attestation command (`src/worktrail/orchestrator/codex_runtime_attestation.py`,
+installed as a `worktrail-*` console script alongside `worktrail-codex-probe`) from the
+installed or current Worktrail checkout under test, inside a managed session. Every invocation
+requires:
+
+- the path of the owning Worktrail run record, which is where the single sanitized entry is written;
+- a wall-clock timeout, propagated to the nested Codex run;
+- a nonce that is unique to this session (any fresh random string), so distinct executions are
+  distinguishable without identifying an operator or environment.
+
+The command prepares the deliberately read-only parent `CODEX_HOME` fixture, invokes the existing
+probe on the direct orchestrator spawn path, and exits non-zero after recording any failed result.
+Do not hand-edit the run record and do not pass credential values, credential-file locations, or
+raw environment dumps as arguments; the entry API rejects them.
+
+### Step 1 — two independent fresh-session passes
+
+1. Start a fresh managed session and invoke the command with run-record path, timeout, and a new nonce.
+2. Start a second, independent fresh managed session (not a reuse of the first) and invoke it
+   again with a different nonce against the same run record.
+3. Confirm the intended source identity matches across both entries: the same Worktrail
+   version and commit (or the same explicit unavailable value), and the same selected
+   provider and model identity.
+
+### Step 2 — one controlled negative run
+
+Perform exactly one of the following and invoke the command once more with a new nonce:
+
+- **bad auth:** point the parent home at a fixture whose inherited authentication is absent or
+  unusable; or
+- **unwritable child home:** make the location where the writable child home would be prepared
+  non-writable.
+
+The expected result is a non-zero exit and one entry classified as `authentication` or
+`environment_preparation` respectively. Any other classification, or a success, is a finding.
+
+### Evidence review
+
+Open the owning run record after each invocation and check that:
+
+- exactly one new attestation entry was appended per invocation (three total), each carrying
+  its nonce, source version/commit, selected and effective provider/model identity, stage,
+  success flag, boolean signals, and a diagnostic;
+- the two positive entries are both successful, have distinct nonces, and match on intended
+  source identity; the negative entry is failed with the expected stage;
+- no entry, and no stdout/stderr captured during the session, contains tokens, cookies,
+  credential-file contents or paths, raw child output, or an environment dump;
+- the target repository shows no mutation (`git status` is clean and unchanged from before).
+
+Record the three-entry outcome in the change's verification notes. A reviewer who cannot
+confirm every bullet treats the attestation as not passed; do not re-run in a loop to get a
+pass, and do not enable any recurring signal on the strength of this procedure.
+
 ## Dependencies
 
 - Feature 1 depends on merged PR #323 and the current direct-worker preparation path in `spawnlib.py`.
