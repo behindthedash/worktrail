@@ -2,13 +2,19 @@
 """
 Periodic stale-worktree sweep (report-only).
 
-Nothing today ever revisits an orchestrator worktree once its run stops
-short of the delivered-merge path (`orchestrator/verify.py`'s
-`cleanup_group()` is correct as written -- gated on delivery, and
-deliberately keeps a quarantined group's worktree for human review -- but no
-*other* mechanism ever comes back to it later). `worktree-cleanup.md`
-already owns the classify-then-confirm procedure for an attended cleanup,
-but that flow only runs when an agent picks the dashboard's
+`orchestrator/verify.py`'s `cleanup_group()` is gated on delivery and
+deliberately keeps a quarantined group's worktrees for human review. This
+sweep is the mechanism that comes back to them later: it attributes each
+orchestrator worktree to its QUARANTINED journal group and reports it
+`QUARANTINE-MERGED` (reclaimable) once there is positive evidence the group
+landed anyway -- the group's PR reports `MERGED`, or
+`quarantine_selfcheck.reconcile_finding()` finds its files on base / in a
+merged PR. Only `QUARANTINED` groups are ever indexed; `MERGED`/`OPEN`
+groups and worktrees with no evidence stay on the git-only path below, and
+the DIRTY / unpushed-commit guards are checked first and never bypassed.
+
+`worktree-cleanup.md` already owns the classify-then-confirm procedure for
+an attended cleanup, but that flow only runs when an agent picks the dashboard's
 `cleanup-worktrees` action; nothing runs it unattended. This module is the
 unattended half: modeled on `~/.gitnexus/sweep-orphans.sh`'s cron shape, it
 scans every worktree under `<repo>-worktrees/` for one or more repos and
@@ -18,7 +24,7 @@ classify, show the user, and confirm before removing; a cron sweep has no
 one to confirm with, so this module stops at reporting.
 
 Classification mirrors `worktree-cleanup.md`'s buckets:
-- MERGED or GONE, and clean -> reclaimable.
+- MERGED, GONE, or QUARANTINE-MERGED, and clean -> reclaimable.
 - DIRTY (uncommitted changes) -> keep, report only.
 - Unpushed local commits (ahead of the branch's own remote-tracking ref) ->
   keep, report only.
@@ -51,6 +57,8 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
+from worktrail.router import quarantine_selfcheck
 
 _REVIEWS_UNTRACKED_RE = re.compile(r"^\?\? .*openspec/changes/[^/]+/reviews/")
 
@@ -236,8 +244,102 @@ def pr_state_for_branch(repo: Path, branch: str, timeout: int = 15) -> str | Non
     return data[0].get("state")
 
 
+def pr_state_for_url(repo: Path, pr_url: str, timeout: int = 15) -> str | None:
+    """Best-effort GitHub PR state for `pr_url` via `gh pr view`, or `None`
+    when `gh` is missing, unauthenticated, times out, fails, or returns
+    unparseable output. Never raises (same posture as `pr_state_for_branch`).
+    """
+    if not pr_url or not _gh_available() or not _gh_authenticated(repo, timeout):
+        return None
+    out = _run_gh(repo, ["pr", "view", pr_url, "--json", "state"], timeout)
+    if out is None or out.returncode != 0:
+        return None
+    try:
+        data = json.loads(out.stdout)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data.get("state")
+
+
+def build_attribution_index(repo: Path) -> dict[str, dict[str, Any]]:
+    """Worktree directory name -> `{spec_id, group, pr_url}` for every
+    QUARANTINED group in the repo's run journals.
+
+    Task worktrees are `<spec_id>-<task_id>` (lowercased, per
+    `orchestrator/worktree.py`'s `worktree_path`), resolved through the cached
+    RunPlan via `quarantine_selfcheck.group_task_ids()`; a missing RunPlan
+    leaves them unattributed. Verify worktrees are `<spec_id>-verify-<group>`
+    by name and need no RunPlan. `MERGED`/`OPEN` groups are never indexed.
+    """
+    index: dict[str, dict[str, Any]] = {}
+    worktrees_dir = repo.parent / f"{repo.name}-worktrees"
+    if not worktrees_dir.is_dir():
+        return index
+    for journal_path in quarantine_selfcheck._iter_journal_files(worktrees_dir):
+        try:
+            journal = json.loads(journal_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        groups = journal.get("groups") if isinstance(journal, dict) else None
+        if not isinstance(groups, dict):
+            continue
+        spec_id = quarantine_selfcheck._spec_id_from_journal_path(journal_path)
+        for group_name, group in groups.items():
+            if not isinstance(group, dict) or group.get("state") != "QUARANTINED":
+                continue
+            attribution = {
+                "spec_id": spec_id,
+                "group": group_name,
+                "pr_url": group.get("pr_url", "") or "",
+            }
+            index[f"{spec_id}-verify-{group_name}"] = attribution
+            for task_id in (
+                quarantine_selfcheck.group_task_ids(repo, spec_id, group_name) or []
+            ):
+                index[f"{spec_id}-{task_id.lower()}"] = attribution
+    return index
+
+
+def quarantine_merge_evidence(
+    repo: Path,
+    attribution: dict[str, Any],
+    cache: dict[tuple[str, str], str | None] | None = None,
+    gh_timeout: int = 15,
+) -> str | None:
+    """Reason string when the attributed QUARANTINED group is confirmed landed,
+    else `None`. Memoised per `(spec_id, group)` in `cache` so a sweep runs
+    the lookup once per group, not once per worktree."""
+    key = (attribution["spec_id"], attribution["group"])
+    if cache is not None and key in cache:
+        return cache[key]
+    reason: str | None = None
+    pr_url = attribution.get("pr_url") or ""
+    if pr_state_for_url(repo, pr_url, timeout=gh_timeout) == "MERGED":
+        reason = f"quarantined group {key[1]} of {key[0]}: PR {pr_url} is MERGED"
+    else:
+        record = quarantine_selfcheck.reconcile_finding(
+            repo, {"spec_id": key[0], "group": key[1], "pr_url": pr_url}
+        )
+        if record is not None:
+            reason = (
+                f"quarantined group {key[1]} of {key[0]}: reconciled via "
+                f"{record.get('method')}"
+            )
+    if cache is not None:
+        cache[key] = reason
+    return reason
+
+
 def classify_worktree(
-    repo: Path, worktree: Path, base: str, remote: str = "origin", gh_timeout: int = 15
+    repo: Path,
+    worktree: Path,
+    base: str,
+    remote: str = "origin",
+    gh_timeout: int = 15,
+    attribution_index: dict[str, dict[str, Any]] | None = None,
+    evidence_cache: dict[tuple[str, str], str | None] | None = None,
 ) -> dict[str, Any]:
     branch = branch_of(worktree)
     if branch is None:
@@ -267,6 +369,20 @@ def classify_worktree(
             "reclaimable": False,
             "reason": "unpushed local commits",
         }
+
+    attribution = (attribution_index or {}).get(worktree.name)
+    if attribution is not None:
+        reason = quarantine_merge_evidence(
+            repo, attribution, cache=evidence_cache, gh_timeout=gh_timeout
+        )
+        if reason is not None:
+            return {
+                "path": str(worktree),
+                "branch": branch,
+                "state": "QUARANTINE-MERGED",
+                "reclaimable": True,
+                "reason": reason,
+            }
 
     if is_merged_into_base(repo, base, branch, remote):
         return {
@@ -342,7 +458,19 @@ def sweep_repo(
 
     base = default_base_branch(repo)
     worktrees = find_worktrees(repo)
-    results = [classify_worktree(repo, wt, base, remote) for wt in worktrees]
+    attribution_index = build_attribution_index(repo)
+    evidence_cache: dict[tuple[str, str], str | None] = {}
+    results = [
+        classify_worktree(
+            repo,
+            wt,
+            base,
+            remote,
+            attribution_index=attribution_index,
+            evidence_cache=evidence_cache,
+        )
+        for wt in worktrees
+    ]
     reclaimable = [r for r in results if r["reclaimable"]]
     return {
         "repo": str(repo),

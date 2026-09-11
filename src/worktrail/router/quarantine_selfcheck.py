@@ -34,16 +34,9 @@ from worktrail.orchestrator.integrate import QUARANTINE_BUDGET_EXHAUSTED
 from .policy_selfcheck import discover_repo_names
 
 
-def _group_files(repo: Path, spec_id: str, group_name: str) -> list[str] | None:
-    """Recompute a group's file set from the cached RunPlan, not the journal.
-
-    The journal only records the group name a QUARANTINED task landed in at
-    integrate time. Recomputing the partition from the cached RunPlan via
-    `plan_groups()` cross-checks that grouping is still current -- if the
-    RunPlan has moved on and no group named `group_name` exists anymore,
-    that's RunPlan/journal drift and this returns `None` rather than a stale
-    file list.
-    """
+def _runplan_tasks(repo: Path, spec_id: str) -> list[dict[str, Any]] | None:
+    """Task list of the newest cached RunPlan for `spec_id`, or `None` when
+    there is no cache under `<repo>-worktrees/runplans/` or it is unreadable."""
     runplans_dir = repo.parent / f"{repo.name}-worktrees" / "runplans"
     matches = list(runplans_dir.glob(f"{spec_id}-*.json"))
     if not matches:
@@ -53,20 +46,49 @@ def _group_files(repo: Path, spec_id: str, group_name: str) -> list[str] | None:
         payload = json.loads(newest.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    tasks = payload.get("tasks")
+    tasks = payload.get("tasks") if isinstance(payload, dict) else None
     if not isinstance(tasks, list):
         return None
-    by_id = {t["id"]: t for t in tasks if isinstance(t, dict) and "id" in t}
+    return tasks
+
+
+def group_task_ids(repo: Path, spec_id: str, group_name: str) -> list[str] | None:
+    """Task ids of group `group_name` per the cached RunPlan, or `None`.
+
+    Re-partitions the newest cached RunPlan with `plan_groups()`. `None` when
+    there is no cache, it is unreadable, or no group named `group_name` exists
+    anymore (RunPlan/journal drift) -- never a stale or guessed task list.
+    """
+    tasks = _runplan_tasks(repo, spec_id)
+    if tasks is None:
+        return None
     for group in plan_groups(tasks):
-        if group.get("name") != group_name:
-            continue
-        files: set = set()
-        for task_id in group.get("tasks", []):
-            task = by_id.get(task_id)
-            if task:
-                files.update(task.get("files") or [])
-        return sorted(files)
+        if group.get("name") == group_name:
+            return list(group.get("tasks", []))
     return None
+
+
+def _group_files(repo: Path, spec_id: str, group_name: str) -> list[str] | None:
+    """Recompute a group's file set from the cached RunPlan, not the journal.
+
+    The journal only records the group name a QUARANTINED task landed in at
+    integrate time. Recomputing the partition from the cached RunPlan via
+    `group_task_ids()` cross-checks that grouping is still current -- if the
+    RunPlan has moved on and no group named `group_name` exists anymore,
+    that's RunPlan/journal drift and this returns `None` rather than a stale
+    file list.
+    """
+    task_ids = group_task_ids(repo, spec_id, group_name)
+    if task_ids is None:
+        return None
+    tasks = _runplan_tasks(repo, spec_id) or []
+    by_id = {t["id"]: t for t in tasks if isinstance(t, dict) and "id" in t}
+    files: set = set()
+    for task_id in task_ids:
+        task = by_id.get(task_id)
+        if task:
+            files.update(task.get("files") or [])
+    return sorted(files)
 
 
 def _files_on_base(repo: Path, files: list[str], base: str = "") -> bool:
