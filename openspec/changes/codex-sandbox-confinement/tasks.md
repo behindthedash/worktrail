@@ -1,6 +1,6 @@
 ## 1. Shared sandbox helper
 
-- [ ] 1.1 Add `src/worktrail/shared/codex_sandbox.py` with `codex_sandbox_args(cwd, repo=None,
+- [x] 1.1 Add `src/worktrail/shared/codex_sandbox.py` with `codex_sandbox_args(cwd, repo=None,
       extra_roots=())` returning `-s workspace-write`, the
       `sandbox_workspace_write.network_access=true` override, and one `--add-dir` per root
       from design D3 (cwd, git common dir, operator state dir, work-queue root,
