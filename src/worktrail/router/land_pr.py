@@ -498,10 +498,11 @@ def open_or_update_pull_request(
     (design.md D6); no caller assembles `--label` flags of its own.
 
     `base_slug` (from `_push_target()`), when set, is passed as `gh ... -R
-    <slug>` on both the lookup and create calls below -- without it, `gh`
-    infers the target repo from the current checkout's default remote, which
-    is wrong when `head_branch` was pushed to a non-default remote (a fork
-    via `remote.pushDefault`; see `_push_target()`).
+    <slug>` on the lookup, create, and update (`pr edit`) calls below --
+    without it, `gh` infers the target repo from the current checkout's
+    default remote, which is wrong when `head_branch` was pushed to a
+    non-default remote (a fork via `remote.pushDefault`; see
+    `_push_target()`).
 
     Shared with `orchestrator/integrate.py`'s group-PR open/update step
     (design.md D6) -- this is the only place a `gh pr create` literal for a
@@ -564,9 +565,7 @@ def open_or_update_pull_request(
             # `gh pr edit --title/--body` (unlike `--add-label`) does not
             # touch classic-Projects fields, so the GraphQL-mutation failure
             # `_add_label()`/`pr_labels` avoid does not apply here.
-            edit_result = _gh(
-                repo,
-                runner,
+            edit_args = [
                 "pr",
                 "edit",
                 str(pr_number),
@@ -574,7 +573,10 @@ def open_or_update_pull_request(
                 title,
                 "--body",
                 body,
-            )
+            ]
+            if base_slug:
+                edit_args += ["-R", base_slug]
+            edit_result = _gh(repo, runner, *edit_args)
             # Every mutation above is fire-and-forget from a return-value
             # standpoint (the shared label helpers can't distinguish
             # "already correct" from "gh call failed" from their None

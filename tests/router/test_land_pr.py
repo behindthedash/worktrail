@@ -390,6 +390,88 @@ class OpenOrUpdatePullRequestTests(unittest.TestCase):
         no_automerge_label.assert_called_once()
         self.assertFalse(runner.called_with_prefix("gh", "pr", "create"))
 
+    def test_existing_open_pr_update_passes_base_slug_to_pr_edit(self) -> None:
+        """`gh pr edit <number>` must pass `-R <base_slug>` like `pr view`/`pr
+        create` already do -- otherwise, on a checkout whose `remote.pushDefault`
+        is a fork, `gh` resolves the bare PR number against `origin` (the
+        upstream) instead of the fork and fails to find it. Regression for the
+        brief's live incident (behindthedash/aspens PR #12)."""
+        runner = (
+            FakeRun()
+            .script(
+                "gh",
+                "pr",
+                "view",
+                "feature",
+                "--json",
+                "url,number,state,labels",
+                "-R",
+                "o/r",
+                stdout=json.dumps(
+                    {
+                        "url": "https://github.com/o/r/pull/9",
+                        "number": 9,
+                        "state": "OPEN",
+                        "labels": [],
+                    }
+                ),
+            )
+            .script(
+                "gh",
+                "pr",
+                "edit",
+                "9",
+                "--title",
+                "Title",
+                "--body",
+                "Body",
+                "-R",
+                "o/r",
+            )
+            .script(
+                "gh",
+                "pr",
+                "view",
+                "https://github.com/o/r/pull/9",
+                "--json",
+                "labels",
+                stdout=json.dumps(
+                    {"labels": [{"name": "go:risk-low"}, {"name": "go:no-automerge"}]}
+                ),
+            )
+        )
+        with (
+            mock.patch.object(land_pr.pr_labels, "ensure_pr_risk_label"),
+            mock.patch.object(land_pr.pr_labels, "ensure_pr_no_automerge_label"),
+        ):
+            result = land_pr.open_or_update_pull_request(
+                Path("/repo"),
+                "main",
+                "feature",
+                "Title",
+                "Body",
+                "low",
+                ["go:risk-low", "go:no-automerge"],
+                "B",
+                runner,
+                base_slug="o/r",
+            )
+        self.assertIsNone(result["refused_step"])
+        self.assertTrue(
+            runner.called_with_prefix(
+                "gh",
+                "pr",
+                "edit",
+                "9",
+                "--title",
+                "Title",
+                "--body",
+                "Body",
+                "-R",
+                "o/r",
+            )
+        )
+
     def test_no_existing_pr_creates_one(self) -> None:
         runner = (
             FakeRun()
