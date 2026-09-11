@@ -41,8 +41,24 @@ git -C "$REPO" cherry "origin/$BASE" "$BR" | grep -q '^+' && echo UNMERGED || ec
 git -C "$REPO" ls-remote --exit-code --heads origin "$BR" >/dev/null 2>&1 || echo GONE  # remote branch deleted
 ```
 
+Then run the journal-aware sweep once for the whole repo and join its entries to
+the list above by `path` (`git cherry` alone cannot see a quarantined group whose
+PR was later merged by hand, or one the quarantine self-check already reconciled):
+
+```bash
+worktrail-sweep-stale-worktrees --repo "$REPO" --json   # one entry per worktree: path, branch, state, reclaimable, reason
+```
+
+Its `state` is `QUARANTINE-MERGED` when the worktree belongs to a group the
+orchestrator journal marks `QUARANTINED` *and* either the group's PR reports
+`MERGED` on GitHub or the quarantine self-check has a reconciliation record for
+it. The sweep is report-only — it never removes anything — and it applies the same
+DIRTY / unpushed guards first, so a `QUARANTINE-MERGED` entry is always clean.
+
 Buckets:
 - **MERGED / GONE, clean** → stale, safe to prune.
+- **`QUARANTINE-MERGED` (from the sweep)** → stale, safe to prune, same as MERGED /
+  GONE; carry the entry's `reason` forward into the step-3 table.
 - **UNMERGED but clean and the branch is fully contained in another merged branch** → likely an orchestrator task leaf; treat as prunable only if `git cherry` shows nothing unique. When in doubt, leave it and say so.
 - **DIRTY or unpushed** → keep; list it but never auto-prune.
 
@@ -52,7 +68,10 @@ already upstream — the squash-merge-safe "is it merged" check (see memory
 
 ## 3. Present, confirm, prune
 
-Show a compact table: branch · state (MERGED/GONE/DIRTY) · prunable? Group the
+Show a compact table: branch · state (MERGED/GONE/QUARANTINE-MERGED/DIRTY) ·
+prunable? · reason. For every entry the sweep returned, quote its `reason` field
+verbatim in the reason column (for `QUARANTINE-MERGED` this is the evidence — merged
+PR or reconciliation record — the user is being asked to trust). Group the
 clearly-safe ones and ask for a single confirmation before removing. Then, for each
 confirmed-stale worktree, run the shared
 `subagent-prompts.md#worktree-deletion-liveness-guard` before removing it — this flow
@@ -85,5 +104,6 @@ any now-dangling administrative entries.
 - This procedure also covers orphan recovery after a cancelled/crashed
   orchestrator run. `git worktree prune` only drops registrations whose
   directory is already gone — it never deletes a live worktree. A quarantined
-  group intentionally keeps its worktree; when in doubt, mention it, don't
-  auto-delete.
+  group intentionally keeps its worktree until
+  `worktrail-sweep-stale-worktrees` reports it `QUARANTINE-MERGED` (step 2); until
+  then, mention it, don't auto-delete.
