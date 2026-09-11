@@ -234,6 +234,11 @@
       "request": "Promote the 'Classifier Coverage Ratchet' CI job to a required status check in .github/rulesets/protect-main.json once its baseline has proven stable across PRs touching classify.py (#620, #623, #819).",
       "handoff_route": "F",
       "expect": {"route": "F", "confidence": "medium", "route_source": "handoff-recommended-override"}
+    },
+    {
+      "id": "classify-py-self-reference-quoting-ci-config-as-example-still-wins",
+      "request": "A defect report about classify.py's routing logic said it wrongly demotes true positives; it quotes another brief's .github/rulesets promotion as a worked example.",
+      "expect": {"route": "J", "confidence": "medium"}
     }
   ]
 }
