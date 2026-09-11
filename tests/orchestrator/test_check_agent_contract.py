@@ -10,6 +10,7 @@ Run: python3 scripts/test_check_agent_contract.py
 
 import os
 import sys
+import tempfile
 import unittest
 from collections import namedtuple
 
@@ -105,6 +106,25 @@ class CheckAgentCodex(unittest.TestCase):
         result = cac.check_agent("codex", ".", runner=runner)
         self.assertFalse(result.ok)
         self.assertIn("did not contain the expected reply", result.detail)
+
+    def test_codex_argv_is_sandboxed_to_the_probe_cwd(self):
+        seen = []
+
+        def runner(cmd, **kwargs):
+            seen.append(cmd)
+            path = self._find_output_file(cmd)
+            with open(path, "w") as f:
+                f.write("ok\n")
+            return Proc(0, '{"type":"final"}', "")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = cac.check_agent("codex", tmp, runner=runner)
+            self.assertTrue(result.ok, result.detail)
+            cmd = seen[0]
+            self.assertEqual(cmd[cmd.index("-s") + 1], "workspace-write")
+            self.assertNotIn("danger-full-access", cmd)
+            add_dirs = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "--add-dir"]
+            self.assertIn(tmp, add_dirs)
 
     def test_codex_infra_failure_fails(self):
         def runner(cmd, **kwargs):

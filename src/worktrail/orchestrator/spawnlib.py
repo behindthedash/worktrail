@@ -81,8 +81,13 @@ from ..router.policy import (
     resolve_routing,
     resolved_routing_file_path,
 )
-from ..router.skill_dispatch import prepare_codex_child_environment
+from ..router.skill_dispatch import (
+    codex_sandbox_args,
+    prepare_codex_child_environment,
+    real_subprocess_run,
+)
 from ..runtime.selection import Cell, NoExecutionTarget, select_cell
+from ..shared import codex_sandbox
 from ..shared.homedir import env_setting, worktrail_home
 from . import agent_capacity
 
@@ -549,12 +554,18 @@ def build_cmd(
     extra_args: Sequence[str] | None = None,
     resume_session_id: str | None = None,
     output_last_message: str | None = None,
+    cwd: str | Path | None = None,
 ) -> list[str]:
     """Build the launcher argv for *cell* (design D3/D6): `cell.harness` picks the
     CLI, `cell.model`/`cell.effort` are translated per-harness exactly as before,
     and `cell.pool` decides claude's auth lane -- `--bare` is appended only for
     a claude `api`-pool cell (`subscription` omits it, matching every existing
-    claude spawn); opencode/codex are unaffected by pool."""
+    claude spawn); opencode/codex are unaffected by pool.
+
+    `cwd` is the worker's working directory; codex derives its
+    `-s workspace-write` root set from it (the cwd, its git common dir, the
+    operator state dir, the work-queue root) via the shared
+    `codex_sandbox_args` helper. Defaults to the process cwd when omitted."""
     agent = cell.harness
     if agent not in SUPPORTED_AGENTS:
         raise ValueError(f"unsupported agent: {agent}")
@@ -589,7 +600,7 @@ def build_cmd(
         cmd.append(prompt)
         return cmd
 
-    cmd = ["codex", "exec", "--json", "-s", "danger-full-access"]
+    cmd = ["codex", "exec", "--json", *codex_sandbox_args(cwd or os.getcwd())]
     if model:
         cmd += ["--model", model]
     if effort:
@@ -692,35 +703,15 @@ def _parent_opencode_data_dir(env: dict[str, str]) -> Path:
     return base / "opencode"
 
 
-# The real subprocess.run, captured at import: the hermetic spawn tests script
-# `spawnlib.subprocess.run` with fake worker outcomes, and the git probe below
-# must never consume one of those scripted outcomes (or feed its own output
-# into them).
-_REAL_SUBPROCESS_RUN = subprocess.run
-
-
 def _git_common_dir(cwd: str | Path) -> str | None:
-    """Absolute git common dir for *cwd* (the shared .git a linked worktree's
-    objects live in), or None when cwd is not a git checkout."""
-    try:
-        proc = _REAL_SUBPROCESS_RUN(
-            [
-                "git",
-                "-C",
-                str(cwd),
-                "rev-parse",
-                "--path-format=absolute",
-                "--git-common-dir",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if proc.returncode != 0:
-        return None
-    return proc.stdout.strip() or None
+    """`codex_sandbox.git_common_dir` as a str, or None outside a git checkout.
+
+    Runs under the real `subprocess.run`: tests script `spawnlib.subprocess.run`
+    with fake worker outcomes, and the probe must never consume one of those
+    outcomes (or feed its own output into them)."""
+    with real_subprocess_run():
+        common = codex_sandbox.git_common_dir(cwd)
+    return str(common) if common is not None else None
 
 
 def _opencode_permission_config(cwd: str | Path, existing_content: str | None) -> dict:
@@ -749,7 +740,7 @@ def _opencode_permission_config(cwd: str | Path, existing_content: str | None) -
         external[root.rstrip("/") + "/**"] = "allow"
     permission: dict = {
         # Parity with claude's --permission-mode bypassPermissions and codex's
-        # -s danger-full-access: tool USE is granted, while file access outside
+        # -s workspace-write: tool USE is granted, while file access outside
         # the roots above is still auto-rejected via external_directory.
         "read": "allow",
         "edit": "allow",
@@ -1025,6 +1016,7 @@ def spawn_agent(
         extra_args=extra_args if cell.target == primary_target else None,
         resume_session_id=resume_session_id,
         output_last_message=output_file,
+        cwd=cwd,
     )
 
     def _prepare_child_env(current_cell: Cell) -> tuple[dict[str, str], Path | None]:
@@ -1224,6 +1216,7 @@ def spawn_agent(
                     extra_args=None,
                     resume_session_id=None,
                     output_last_message=output_file,
+                    cwd=cwd,
                 )
                 child_env, opencode_dir = _prepare_child_env(cell)
                 log(
@@ -1351,6 +1344,7 @@ def spawn_agent(
                 extra_args=None,
                 resume_session_id=None,
                 output_last_message=output_file,
+                cwd=cwd,
             )
             child_env, opencode_dir = _prepare_child_env(cell)
             log(

@@ -95,7 +95,7 @@ def check_agent(
     cell = Cell(
         target=agent, harness=agent, model=model, effort=None, pool="subscription"
     )
-    cmd = spawnlib.build_cmd(prompt, cell, output_last_message=output_file)
+    cmd = spawnlib.build_cmd(prompt, cell, output_last_message=output_file, cwd=cwd)
     try:
         proc = runner(
             cmd, cwd=str(cwd), capture_output=True, text=True, timeout=timeout
