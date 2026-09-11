@@ -138,6 +138,7 @@ from ..router.pr_labels import ensure_pr_risk_label
 from ..router.routing_cli import _check as check_routing_liveness
 from ..router.run_record import _active_conflicts
 from ..runtime.selection import NoExecutionTarget, select_cell
+from ..shared.codex_sandbox import codex_sandbox_args
 from ..shared.homedir import worktrail_home
 from ..taskformats.devkit.schema import set_status_completed
 from ..taskformats.openspec.schema import STATUS_COMPLETED, parse_tasks_md
@@ -167,7 +168,7 @@ SUPPORTED_AGENTS = ("claude", "codex", "opencode")
 BASE_CMDS: dict[str, list[str]] = {
     "claude": ["claude", "-p"],
     "opencode": ["opencode", "run"],
-    "codex": ["codex", "exec", "-s", "danger-full-access"],
+    "codex": ["codex", "exec"],
 }
 
 AGENT_RUNTIME_EXECUTABLES: dict[str, tuple[str, ...]] = {
@@ -202,9 +203,15 @@ def build_command(
     go_repo: str | None = None,
     model: str | None = None,
     effort: str | None = None,
+    sandbox_args: list[str] | None = None,
 ) -> list[str]:
     """Build the one-shot CLI argv. A template with {prompt} overrides the
     per-agent shape entirely (permission args are the caller's job then).
+
+    `sandbox_args` is the Codex sandbox argv fragment from
+    `shared.codex_sandbox.codex_sandbox_args()` (sandbox mode, network
+    override, `--add-dir` roots); it is spliced in right after `codex exec`
+    and ignored for the other harnesses.
 
     `model`/`effort` are the routing-selected cell's own fields (task 5.1); a
     per-harness `--model`/effort flag is appended in the same position
@@ -237,8 +244,7 @@ def build_command(
     return [
         "codex",
         "exec",
-        "-s",
-        "danger-full-access",
+        *(sandbox_args or []),
         *permission_args,
         *model_flag,
         *effort_flag,
@@ -277,6 +283,21 @@ def build_agent_environment(home: Path | None = None) -> dict[str, str]:
     env = os.environ.copy()
     env["PATH"] = os.pathsep.join(entries)
     return env
+
+
+def repo_sandbox_roots(repos_root: Path, go_repo: str | None = None) -> list[Path]:
+    """Writable roots a drain one-shot needs per git checkout under
+    `repos_root` (or just `go_repo` when given): the checkout's `.git` and its
+    `<name>-worktrees` sibling -- never the checkout itself, so a one-shot
+    can only write inside the worktrees it creates."""
+    names = discover_repo_names(repos_root)
+    if go_repo is not None:
+        names = [n for n in names if n == go_repo]
+    roots: list[Path] = []
+    for name in names:
+        roots.append(repos_root / name / ".git")
+        roots.append(repos_root / f"{name}-worktrees")
+    return roots
 
 
 def worker_scratch_dir(slot: int, home: Path | None = None) -> Path:
@@ -2367,6 +2388,12 @@ def drain(
     scratch_dir.mkdir(parents=True, exist_ok=True)
     if uses_builtin_spawner:
         spawner = functools.partial(run_one_shot, env=agent_env, cwd=scratch_dir)
+    sandbox_args = codex_sandbox_args(
+        scratch_dir,
+        extra_roots=repo_sandbox_roots(config.repos_root, config.go_repo)
+        if config.repos_root is not None
+        else (),
+    )
     started = clock()
     state = LoopState(
         max_items=config.max_items,
@@ -2511,6 +2538,7 @@ def drain(
             config.go_repo,
             model=active_model,
             effort=active_effort,
+            sandbox_args=sandbox_args,
         )
         while True:
             queue = list_queue(config.work_queue_py, config.queue_dir)
@@ -2542,6 +2570,7 @@ def drain(
                             config.go_repo,
                             model=active_model,
                             effort=active_effort,
+                            sandbox_args=sandbox_args,
                         )
             else:
                 state.agent_capacity_gated = capacity_gated(cache, active_agent)
