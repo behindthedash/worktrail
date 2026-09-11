@@ -20,7 +20,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [depends: 1.1] [e2e] Run the new test module, `tests/orchestrator/test_context_widening.py`,
+- [x] 2.1 [depends: 1.1] [e2e] Run the new test module, `tests/orchestrator/test_context_widening.py`,
       `tests/orchestrator/test_live_manual_recovery.py`, and
       `tests/orchestrator/test_quarantine_write_sites_structural.py`, then `pytest -q` and
       `python3 -m worktrail.orchestrator.orchestrate check`. Run
