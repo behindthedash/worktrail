@@ -61,6 +61,9 @@ literal text and never observe completion (see `RUNNING_LOCK_NAME`).
 
 Usage:
   worktrail-preflight check [--repo PATH] [--command "<gh pr create ...>"]
+  worktrail-preflight record-pr [--repo PATH] --command "<gh pr create ...>"
+                                [--exit-code N] [--output TEXT | --output-file PATH]
+                                [--session ID] [--run ID]
   worktrail-preflight run [--repo PATH] [--risk low|medium|high|critical]
                            [--gates G1,G2] [--target-branch BRANCH]
                            [--run RUN_RECORD]
@@ -83,7 +86,7 @@ from typing import Any
 
 from worktrail.addons.runner import AddOnFailure, run_addons
 
-from . import pre_pr_gate
+from . import pr_ledger, pre_pr_gate
 from .policy import load_policy
 
 MARKER_NAME = "preflight-pass.json"
@@ -651,6 +654,78 @@ def check(repo: Path, command: str | None = None) -> dict[str, Any]:
     )
 
 
+_PR_URL_TOKEN_RE = re.compile(r"https?://\S+/pull/\d+")
+
+
+def pr_url_in_output(output: str) -> str | None:
+    """The PR URL `gh pr create` printed, or None. gh prints the new PR's URL
+    as its final stdout line; scanning every token (last match wins) keeps
+    this robust to any preceding "Creating pull request for ..." chatter."""
+    found: str | None = None
+    for match in _PR_URL_TOKEN_RE.finditer(output or ""):
+        candidate = match.group(0).rstrip(".,;)")
+        if pr_ledger.parse_pr_url(candidate):
+            found = candidate
+    return found
+
+
+def record_pr_create(
+    repo: Path,
+    command: str,
+    exit_code: int,
+    output: str,
+    *,
+    session_id: str | None = None,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    """Register an agent-typed `gh pr create` in the shared PR ledger, but only
+    once the PR is known to exist: the command must be a `gh pr create`, it
+    must have exited 0, and its output must carry the created PR's URL. A
+    `check` verdict alone proves nothing was created, and a denied or failed
+    command must leave no ledger entry -- the sweep would otherwise chase a
+    PR that never existed.
+
+    Returns {"registered": bool, "url": str|None, "reason": str}. Ledger
+    failures are reported, never raised: this runs from a PostToolUse hook
+    whose exit code must not turn into a spurious tool failure.
+    """
+    if not PR_CREATE_RE.search(command or ""):
+        return {
+            "registered": False,
+            "url": None,
+            "reason": "not a `gh pr create` command",
+        }
+    if exit_code != 0:
+        return {
+            "registered": False,
+            "url": None,
+            "reason": f"`gh pr create` exited {exit_code}; nothing to register",
+        }
+    url = pr_url_in_output(output)
+    if url is None:
+        return {
+            "registered": False,
+            "url": None,
+            "reason": "no pull request URL in `gh pr create` output; nothing to register",
+        }
+    try:
+        pr_ledger.register(
+            url,
+            repo,
+            branch=_current_branch(repo),
+            session_id=session_id,
+            run_id=run_id,
+            source="preflight",
+        )
+    except (pr_ledger.LedgerError, OSError) as exc:
+        return {
+            "registered": False,
+            "url": url,
+            "reason": f"PR ledger registration failed for {url}: {exc}",
+        }
+    return {"registered": True, "url": url, "reason": "registered in PR ledger"}
+
+
 def _run(args: argparse.Namespace) -> int:
     repo = Path(args.repo).resolve()
     dirty_reason = dirty_tree_reason(repo)
@@ -719,6 +794,35 @@ def _check(args: argparse.Namespace) -> int:
     verdict = check(Path(args.repo).resolve(), command=args.gh_command)
     print(json.dumps(verdict))
     return 0 if verdict["decision"] == "allow" else 1
+
+
+def _record_pr(args: argparse.Namespace) -> int:
+    if args.output_file is not None:
+        try:
+            output = Path(args.output_file).read_text(encoding="utf-8")
+        except OSError as exc:
+            print(
+                json.dumps(
+                    {
+                        "registered": False,
+                        "url": None,
+                        "reason": f"could not read --output-file: {exc}",
+                    }
+                )
+            )
+            return 1
+    else:
+        output = args.output or ""
+    result = record_pr_create(
+        Path(args.repo).resolve(),
+        args.gh_command or "",
+        args.exit_code,
+        output,
+        session_id=args.session,
+        run_id=args.run,
+    )
+    print(json.dumps(result))
+    return 0 if result["registered"] or result["url"] is None else 1
 
 
 def _wait(args: argparse.Namespace) -> int:
@@ -791,6 +895,43 @@ def main(argv=None) -> int:
         help="shared go run record; enables mandatory scope completeness review",
     )
     run_p.set_defaults(func=_run)
+
+    record_p = sub.add_parser(
+        "record-pr",
+        help="register a successful agent-typed `gh pr create` in the shared PR "
+        "ledger (PostToolUse hook); denied/failed commands record nothing",
+    )
+    record_p.add_argument(
+        "--repo",
+        default=".",
+        help="worktree root the PR was opened from (default: cwd)",
+    )
+    record_p.add_argument(
+        "--command",
+        required=True,
+        dest="gh_command",
+        help="the gh command that ran; only `gh pr create` registers",
+    )
+    record_p.add_argument(
+        "--exit-code",
+        type=int,
+        default=0,
+        help="the command's exit code; non-zero registers nothing (default: 0)",
+    )
+    output_group = record_p.add_mutually_exclusive_group()
+    output_group.add_argument(
+        "--output", default=None, help="the command's stdout (carries the PR URL)"
+    )
+    output_group.add_argument(
+        "--output-file", default=None, help="file holding the command's stdout"
+    )
+    record_p.add_argument(
+        "--session", default=None, help="opening session id recorded in the ledger"
+    )
+    record_p.add_argument(
+        "--run", default=None, metavar="RUN_ID", help="run id recorded in the ledger"
+    )
+    record_p.set_defaults(func=_record_pr)
 
     wait_p = sub.add_parser(
         "wait",
