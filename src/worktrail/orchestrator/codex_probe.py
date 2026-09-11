@@ -82,6 +82,17 @@ class ProbeReport:
     # identifies or validates a provider/model.
     session_started_marker: str | None = None
     auth_usable: bool | None = None
+    # Equality-checkable launch/result identity pair for a caller that must
+    # attest provider/model preservation (managed-codex-runtime-attestation).
+    # `selected_*` is what the direct Codex path was launched with
+    # (`PROBE_CELL`); `effective_*` is what the nested runtime's documented
+    # output reported, or `None` when it reported nothing -- see
+    # `extract_effective_identity`. These are the *only* identity values: a
+    # session/thread id is never a substitute for either.
+    selected_provider: str | None = None
+    selected_model: str | None = None
+    effective_provider: str | None = None
+    effective_model: str | None = None
 
 
 def prepare_environment(
@@ -155,6 +166,27 @@ def _home_preparation_succeeds_without_auth(codex_home_override: str | None) -> 
     return True
 
 
+# The one `Cell` every probe launch is built from. Its `harness` is the fixed
+# direct-Codex provider label a caller attests against (`selected_provider`);
+# `model=None` means no model is pinned on the launch argv, so the nested
+# runtime's configured default applies and no model equality is required.
+PROBE_CELL = Cell(
+    target="codex-probe",
+    harness="codex",
+    model=None,
+    effort=None,
+    pool="subscription",
+)
+
+
+def selected_identity() -> tuple[str, str | None]:
+    """Return the `(provider, model)` pair the probe launch selects, read from
+    `PROBE_CELL` -- the same object `build_probe_command` hands to
+    `spawnlib.build_cmd` -- so a caller comparing it against the effective
+    identity is comparing against what was really launched."""
+    return PROBE_CELL.harness, PROBE_CELL.model
+
+
 def build_probe_command() -> tuple[list[str], str]:
     """Build the probe's `codex` argv and an isolated scratch directory to
     run it from.
@@ -173,14 +205,7 @@ def build_probe_command() -> tuple[list[str], str]:
     refuses outright ("Not inside a trusted directory") before emitting any
     classifiable output.
     """
-    cell = Cell(
-        target="codex-probe",
-        harness="codex",
-        model=None,
-        effort=None,
-        pool="subscription",
-    )
-    cmd = build_cmd(PROBE_PROMPT, cell, extra_args=["--skip-git-repo-check"])
+    cmd = build_cmd(PROBE_PROMPT, PROBE_CELL, extra_args=["--skip-git-repo-check"])
     scratch_dir = tempfile.mkdtemp(prefix="codex-probe-")
     return cmd, scratch_dir
 
@@ -231,6 +256,49 @@ def extract_session_started_marker(stdout: str) -> str | None:
         if isinstance(thread_id, str) and thread_id:
             return thread_id
     return None
+
+
+_IDENTITY_SAFE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$")
+
+
+def extract_effective_identity(stdout: str) -> tuple[str | None, str | None]:
+    """Return the `(provider, model)` identity the nested runtime itself
+    reported on its documented `thread.started` event, each `None` when absent.
+
+    Only a string-valued `model_provider` (or `provider`) and `model` key on
+    that one documented event are read -- never any other event, field, or
+    the raw stream -- and each value must match `_IDENTITY_SAFE_RE` (a short
+    slug: no whitespace, quotes, or credential-shaped content) or it is
+    dropped as if absent. A `thread_id` is *not* an identity and is never
+    returned here.
+
+    codex-cli 0.154.0's `thread.started` carries only `thread_id` (confirmed
+    against a live run and the binary's `ThreadStartedEvent` fields), so on
+    that runtime this returns `(None, None)`: the attestation caller must then
+    classify `provider_selection`, not treat the session marker as a
+    stand-in. Malformed lines are skipped, matching the other extractors.
+    """
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict) or event.get("type") != "thread.started":
+            continue
+        provider = event.get("model_provider", event.get("provider"))
+        model = event.get("model")
+        return (
+            provider
+            if isinstance(provider, str) and _IDENTITY_SAFE_RE.match(provider)
+            else None,
+            model
+            if isinstance(model, str) and _IDENTITY_SAFE_RE.match(model)
+            else None,
+        )
+    return None, None
 
 
 # Normalized, non-secret labels for the authentication failures the probe
@@ -633,6 +701,18 @@ def run_probe_command(
             success=False,
             diagnostic=str(exc),
         )
+    # Targeted, already-safe signals stamped on whatever report this run
+    # ends up with: the session marker and the effective identity pair, each
+    # extracted from one documented event (never the raw stream). Extracted
+    # here, before any classifying branch below replaces `result` with a
+    # `ProbeReport`, so a classified failure (auth refusal, startup, provider
+    # selection) still carries the readiness/identity the runtime reported.
+    session_started_marker: str | None = None
+    effective_provider: str | None = None
+    effective_model: str | None = None
+    if isinstance(result, subprocess.CompletedProcess):
+        session_started_marker = extract_session_started_marker(result.stdout)
+        effective_provider, effective_model = extract_effective_identity(result.stdout)
     if isinstance(result, subprocess.CompletedProcess):
         auth_failure_marker = extract_auth_failure_marker(result.stdout)
         if auth_failure_marker is not None:
@@ -750,14 +830,10 @@ def run_probe_command(
             if isinstance(result, subprocess.CompletedProcess):
                 result = replace(violation, auth_usable=post_spawn_auth_usable)
             else:
-                result = ProbeReport(
-                    stage=result.stage,
+                result = replace(
+                    result,
                     success=False,
                     diagnostic=f"{result.diagnostic}; {violation.diagnostic}",
-                    codex_home=result.codex_home,
-                    automatic_home=result.automatic_home,
-                    session_started_marker=result.session_started_marker,
-                    auth_usable=result.auth_usable,
                 )
     # report_back: reached only by a run no earlier stage (or the no-op-scope
     # check above) already classified. Whether the parsed final reply matches
@@ -780,7 +856,15 @@ def run_probe_command(
             ),
             auth_usable=post_spawn_auth_usable,
         )
-    return result
+    selected_provider, selected_model = selected_identity()
+    return replace(
+        result,
+        session_started_marker=session_started_marker,
+        selected_provider=selected_provider,
+        selected_model=selected_model,
+        effective_provider=effective_provider,
+        effective_model=effective_model,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
