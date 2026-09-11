@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """pr_ledger.py — durable, URL-keyed ledger of open pull requests plus the
 periodic recovery sweep that files one `pr fix` brief per abandoned PR.
 

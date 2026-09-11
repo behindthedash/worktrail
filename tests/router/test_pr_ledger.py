@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Unit tests for the URL-keyed PR ledger and its recovery sweep."""
 
 from __future__ import annotations
