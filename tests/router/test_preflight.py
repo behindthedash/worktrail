@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import io
 import json
+import os
 import subprocess
 import tempfile
 import threading
@@ -13,6 +15,7 @@ from pathlib import Path
 from unittest import mock
 
 from worktrail.addons.base import AddOnResult
+from worktrail.router import pr_ledger
 from worktrail.router.policy import load_policy
 from worktrail.router.preflight import (
     ADDON_REQUIRED_FAILURE_EXIT,
@@ -28,8 +31,10 @@ from worktrail.router.preflight import (
     labels_in_command,
     main,
     marker_path,
+    pr_url_in_output,
     read_marker,
     read_running_lock,
+    record_pr_create,
     remove_running_lock,
     running_lock_path,
     tree_state,
@@ -979,6 +984,187 @@ class TestCheckWarningIntegration(_GitRepoCase):
             verdict = check(Path(repo))
         self.assertEqual(verdict["decision"], "allow")
         self.assertNotIn("warning", verdict)
+
+
+_PR_URL = "https://github.com/acme/widgets/pull/42"
+_CREATE_OUTPUT = (
+    "Creating pull request for feat/x into main in acme/widgets\n\n" + _PR_URL + "\n"
+)
+
+
+class TestRecordPrCreate(_GitRepoCase):
+    """`record-pr`: the hook-facing path that registers an agent-typed
+    `gh pr create` in the shared PR ledger only once the PR is known to exist."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.ledger = (
+            Path(tempfile.mkdtemp(prefix="preflight-ledger-")) / "pr-ledger.json"
+        )
+        patcher = mock.patch.dict(os.environ, {pr_ledger.LEDGER_ENV: str(self.ledger)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _entries(self) -> dict:
+        if not self.ledger.exists():
+            return {}
+        return pr_ledger.load_ledger(self.ledger)["prs"]
+
+    def test_pr_url_in_output_takes_final_github_pr_url(self) -> None:
+        self.assertEqual(pr_url_in_output(_CREATE_OUTPUT), _PR_URL)
+        self.assertEqual(pr_url_in_output(_PR_URL + ".\n"), _PR_URL)
+        self.assertIsNone(pr_url_in_output("https://github.com/acme/widgets\n"))
+        self.assertIsNone(pr_url_in_output(""))
+
+    def test_successful_create_registers_with_preflight_opener(self) -> None:
+        repo = self._init_repo()
+        result = record_pr_create(
+            Path(repo), "gh pr create --title t --body b", 0, _CREATE_OUTPUT
+        )
+        self.assertTrue(result["registered"], result)
+        self.assertEqual(result["url"], _PR_URL)
+        entry = self._entries()[_PR_URL]
+        self.assertEqual(entry["source"], "preflight")
+        self.assertEqual(entry["repo"], str(Path(repo)))
+        self.assertEqual(entry["branch"], "main")
+        self.assertIsNone(entry["session_id"])
+        self.assertIsNone(entry["run_id"])
+
+    def test_session_and_run_provenance_recorded_when_supplied(self) -> None:
+        repo = self._init_repo()
+        record_pr_create(
+            Path(repo),
+            "gh pr create --fill",
+            0,
+            _CREATE_OUTPUT,
+            session_id="sess-1",
+            run_id="run-9",
+        )
+        entry = self._entries()[_PR_URL]
+        self.assertEqual(entry["session_id"], "sess-1")
+        self.assertEqual(entry["run_id"], "run-9")
+
+    def test_non_create_command_records_nothing(self) -> None:
+        repo = self._init_repo()
+        for command in ("gh pr ready 42", "git push -u origin HEAD", "gh pr view 42"):
+            result = record_pr_create(Path(repo), command, 0, _CREATE_OUTPUT)
+            self.assertFalse(result["registered"], command)
+        self.assertEqual(self._entries(), {})
+
+    def test_failed_create_records_nothing(self) -> None:
+        repo = self._init_repo()
+        result = record_pr_create(Path(repo), "gh pr create --fill", 1, _CREATE_OUTPUT)
+        self.assertFalse(result["registered"])
+        self.assertIn("exited 1", result["reason"])
+        self.assertEqual(self._entries(), {})
+
+    def test_create_without_pr_url_records_nothing(self) -> None:
+        repo = self._init_repo()
+        result = record_pr_create(
+            Path(repo), "gh pr create --fill", 0, "pull request create failed\n"
+        )
+        self.assertFalse(result["registered"])
+        self.assertIsNone(result["url"])
+        self.assertEqual(self._entries(), {})
+
+    def test_repeat_registration_is_idempotent_and_keeps_provenance(self) -> None:
+        repo = self._init_repo()
+        record_pr_create(
+            Path(repo), "gh pr create --fill", 0, _CREATE_OUTPUT, session_id="first"
+        )
+        opened_at = self._entries()[_PR_URL]["opened_at"]
+        record_pr_create(Path(repo), "gh pr create --fill", 0, _CREATE_OUTPUT)
+        entries = self._entries()
+        self.assertEqual(list(entries), [_PR_URL])
+        self.assertEqual(entries[_PR_URL]["opened_at"], opened_at)
+        self.assertEqual(entries[_PR_URL]["session_id"], "first")
+
+    def test_ledger_failure_is_reported_not_raised(self) -> None:
+        repo = self._init_repo()
+        with mock.patch.object(
+            pr_ledger, "register", side_effect=pr_ledger.LedgerError("disk full")
+        ):
+            result = record_pr_create(
+                Path(repo), "gh pr create --fill", 0, _CREATE_OUTPUT
+            )
+        self.assertFalse(result["registered"])
+        self.assertEqual(result["url"], _PR_URL)
+        self.assertIn("disk full", result["reason"])
+        self.assertEqual(self._entries(), {})
+
+    def test_cli_record_pr_registers_and_emits_json(self) -> None:
+        repo = self._init_repo()
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            code = main(
+                [
+                    "record-pr",
+                    "--repo",
+                    repo,
+                    "--command",
+                    "gh pr create --fill",
+                    "--exit-code",
+                    "0",
+                    "--output",
+                    _CREATE_OUTPUT,
+                    "--session",
+                    "sess-cli",
+                    "--run",
+                    "run-cli",
+                ]
+            )
+        self.assertEqual(code, 0)
+        payload = json.loads(out.getvalue())
+        self.assertTrue(payload["registered"])
+        self.assertEqual(payload["url"], _PR_URL)
+        entry = self._entries()[_PR_URL]
+        self.assertEqual(entry["session_id"], "sess-cli")
+        self.assertEqual(entry["run_id"], "run-cli")
+        self.assertEqual(entry["source"], "preflight")
+
+    def test_cli_record_pr_reads_output_file_and_skips_failed_command(self) -> None:
+        repo = self._init_repo()
+        out_file = Path(repo) / "gh-out.txt"
+        out_file.write_text(_CREATE_OUTPUT, encoding="utf-8")
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            code = main(
+                [
+                    "record-pr",
+                    "--repo",
+                    repo,
+                    "--command",
+                    "gh pr create --fill",
+                    "--exit-code",
+                    "2",
+                    "--output-file",
+                    str(out_file),
+                ]
+            )
+        self.assertEqual(code, 0)
+        self.assertFalse(json.loads(out.getvalue())["registered"])
+        self.assertEqual(self._entries(), {})
+
+    def test_cli_record_pr_exits_nonzero_on_ledger_failure(self) -> None:
+        repo = self._init_repo()
+        out = io.StringIO()
+        with (
+            mock.patch("sys.stdout", out),
+            mock.patch.object(pr_ledger, "register", side_effect=OSError("read-only")),
+        ):
+            code = main(
+                [
+                    "record-pr",
+                    "--repo",
+                    repo,
+                    "--command",
+                    "gh pr create --fill",
+                    "--output",
+                    _CREATE_OUTPUT,
+                ]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("read-only", json.loads(out.getvalue())["reason"])
 
 
 if __name__ == "__main__":
