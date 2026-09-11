@@ -3621,5 +3621,166 @@ class TestPendingDecisionEvents(unittest.TestCase):
         self.assertEqual(len(rec["pending_decisions"]), 1)
 
 
+def _attestation_entry(**over):
+    entry = {
+        "schema_version": run_record.MANAGED_CODEX_ATTESTATION_SCHEMA_VERSION,
+        "recorded_at": "2026-09-10T12:00:00+0000",
+        "worktrail_version": "1.1.41",
+        "worktrail_commit": "13a5713764c8ae0216f6d589835ba330e87a0430",
+        "nonce": "fresh-session-1",
+        "selected_provider": "codex",
+        "selected_model": None,
+        "effective_provider": "codex",
+        "effective_model": None,
+        "child_home_isolated_writable": True,
+        "runtime_ready": True,
+        "auth_usable": True,
+        "report_back_success": True,
+        "stage": "report_back",
+        "success": True,
+        "diagnostic": "codex probe replied with the expected sentinel",
+    }
+    entry.update(over)
+    return entry
+
+
+class TestManagedCodexAttestation(unittest.TestCase):
+    """The narrow, versioned managed-attestation entry API."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.path = Path(_start(self.tmp)["path"])
+
+    def _record(self, **over):
+        return run_record.record_managed_codex_attestation(
+            self.path, _attestation_entry(**over)
+        )
+
+    def _rejects(self, **over):
+        with self.assertRaises(run_record.ManagedCodexAttestationError):
+            self._record(**over)
+        self.assertEqual(run_record.load_managed_codex_attestations(self.path), [])
+
+    def test_stage_vocabulary_matches_the_probe(self):
+        from worktrail.orchestrator.codex_probe import StageOutcome
+
+        self.assertEqual(
+            run_record.MANAGED_CODEX_ATTESTATION_STAGES,
+            tuple(stage.value for stage in StageOutcome),
+        )
+
+    def test_success_entry_round_trips_through_the_writer(self):
+        stored = self._record()
+        self.assertEqual(stored, _attestation_entry())
+        self.assertEqual(
+            run_record.load_managed_codex_attestations(self.path), [stored]
+        )
+        record = _load(self.path)
+        self.assertEqual(len(record["managed_codex_attestations"]), 1)
+        self.assertEqual(record["selected_route"], "F")  # rest untouched
+        # Written by the line renderer: re-parse is clean, no hand-edit garbage.
+        self.assertIsInstance(_load(self.path), dict)
+
+    def test_failure_entry_serializes_with_one_classified_stage(self):
+        stored = self._record(
+            stage="authentication",
+            success=False,
+            auth_usable=False,
+            runtime_ready=False,
+            report_back_success=False,
+            effective_provider=None,
+            diagnostic="parent Codex is not authenticated with ChatGPT",
+        )
+        self.assertEqual(stored["stage"], "authentication")
+        self.assertFalse(stored["success"])
+        self.assertIsNone(stored["effective_provider"])
+        self.assertEqual(
+            run_record.load_managed_codex_attestations(self.path)[0], stored
+        )
+
+    def test_two_invocations_append_two_entries(self):
+        self._record(nonce="n-one")
+        self._record(nonce="n-two")
+        self.assertEqual(
+            [e["nonce"] for e in run_record.load_managed_codex_attestations(self.path)],
+            ["n-one", "n-two"],
+        )
+
+    def test_rejects_invalid_stage_and_schema(self):
+        self._rejects(stage="spawn")
+        self._rejects(stage=None)
+        self._rejects(schema_version=2)
+        self._rejects(success=True, stage="timeout")
+
+    def test_rejects_non_boolean_signals(self):
+        for field in (
+            "child_home_isolated_writable",
+            "runtime_ready",
+            "auth_usable",
+            "report_back_success",
+            "success",
+        ):
+            self._rejects(**{field: "true"})
+            self._rejects(**{field: 1})
+
+    def test_rejects_malformed_identity_version_nonce_timestamp(self):
+        self._rejects(worktrail_version="1.0; rm -rf")
+        self._rejects(worktrail_commit="")
+        self._rejects(nonce="abc")
+        self._rejects(nonce="has space")
+        self._rejects(recorded_at="yesterday")
+        self._rejects(selected_provider=None)
+        self._rejects(selected_provider="code x")
+        self._rejects(effective_model=42)
+
+    def test_rejects_unknown_fields_including_raw_output_and_env(self):
+        with self.assertRaises(run_record.ManagedCodexAttestationError):
+            run_record.record_managed_codex_attestation(
+                self.path, {**_attestation_entry(), "stdout": "x"}
+            )
+        with self.assertRaises(run_record.ManagedCodexAttestationError):
+            run_record.record_managed_codex_attestation(
+                self.path, {**_attestation_entry(), "env": {"CODEX_HOME": "/x"}}
+            )
+        entry = _attestation_entry()
+        del entry["nonce"]
+        with self.assertRaises(run_record.ManagedCodexAttestationError):
+            run_record.record_managed_codex_attestation(self.path, entry)
+        with self.assertRaises(run_record.ManagedCodexAttestationError):
+            run_record.record_managed_codex_attestation(self.path, ["not", "a", "map"])
+        self.assertEqual(run_record.load_managed_codex_attestations(self.path), [])
+
+    def test_rejects_raw_output_shaped_diagnostic(self):
+        self._rejects(diagnostic='{"type": "error", "message": "boom"}')
+        self._rejects(diagnostic="line one\nline two")
+        self._rejects(diagnostic="")
+        self._rejects(diagnostic="x" * 301)
+
+    def test_rejects_credential_shaped_values(self):
+        self._rejects(diagnostic="token=abc123def")
+        self._rejects(diagnostic="api_key: sk-live-abcdefgh")
+        self._rejects(diagnostic="refused sk-abcdefghijklmnop")
+        self._rejects(diagnostic="session eyJhbGciOiJIUzI1NiJ9.payload")
+        self._rejects(diagnostic="Authorization: Bearer xyz")
+        self._rejects(diagnostic="set cookie for account")
+        self._rejects(nonce="sk-abcdefghijkl")
+
+    def test_rejects_credential_file_locations(self):
+        self._rejects(diagnostic="could not read auth.json")
+        self._rejects(diagnostic="linked /home/u/.codex/auth.json.save")
+        self._rejects(diagnostic="CODEX_HOME=/tmp/x is read-only")
+        self._rejects(diagnostic="parent home /srv/codex-home/ denied")
+        self._rejects(diagnostic="found ~/.netrc")
+        self._rejects(diagnostic="credentials.json missing")
+
+    def test_writer_refuses_a_hand_edited_record(self):
+        self.path.write_text(
+            self.path.read_text() + "- category: garbage\n", encoding="utf-8"
+        )
+        with self.assertRaises(run_record.RunRecordFormatError):
+            self._record()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

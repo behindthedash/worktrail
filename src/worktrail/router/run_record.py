@@ -688,6 +688,185 @@ def cmd_capacity_gate(args: argparse.Namespace) -> int:
 OUT_OF_SCOPE_REASON_PREFIXES = ("different purpose:", "user approved:")
 
 
+# --- Managed Codex runtime attestation entries (versioned, allowlisted) ------
+#
+# `worktrail-codex-runtime-attestation` records one sanitized entry per
+# invocation, success or failure, in the owning run record's
+# `managed_codex_attestations` list. Every entry passes through
+# `record_managed_codex_attestation`, which admits exactly the fields below
+# and nothing else: no raw nested-process output, no environment mapping, no
+# credential-shaped value, no credential-file location. The stage vocabulary
+# mirrors `orchestrator.codex_probe.StageOutcome` (kept as literals here so the
+# router never imports the orchestrator; a test pins the two together).
+
+MANAGED_CODEX_ATTESTATION_SCHEMA_VERSION = 1
+MANAGED_CODEX_ATTESTATIONS_FIELD = "managed_codex_attestations"
+MANAGED_CODEX_ATTESTATION_STAGES = (
+    "environment_preparation",
+    "startup",
+    "provider_selection",
+    "authentication",
+    "timeout",
+    "report_back",
+)
+_MANAGED_CODEX_ATTESTATION_BOOL_FIELDS = (
+    "child_home_isolated_writable",
+    "runtime_ready",
+    "auth_usable",
+    "report_back_success",
+)
+MANAGED_CODEX_ATTESTATION_FIELDS = frozenset(
+    (
+        "schema_version",
+        "recorded_at",
+        "worktrail_version",
+        "worktrail_commit",
+        "nonce",
+        "selected_provider",
+        "selected_model",
+        "effective_provider",
+        "effective_model",
+        *_MANAGED_CODEX_ATTESTATION_BOOL_FIELDS,
+        "stage",
+        "success",
+        "diagnostic",
+    )
+)
+MANAGED_CODEX_ATTESTATION_DIAGNOSTIC_MAX = 300
+_ATTESTATION_TIMESTAMP_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:?\d{2})?$"
+)
+_ATTESTATION_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$")
+_ATTESTATION_NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{4,64}$")
+_ATTESTATION_IDENTITY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$")
+# Credential-shaped content and credential-file locations that must never
+# reach a long-lived run record, checked on every string field in addition to
+# the module-wide SECRET_PAT.
+_CREDENTIAL_SHAPED_RE = re.compile(
+    r"(?:"
+    r"\beyJ[A-Za-z0-9_-]{10,}"  # JWT / ChatGPT session token prefix
+    r"|\bsk-[A-Za-z0-9_-]{8,}"  # OpenAI-style API key
+    r"|\bbearer\s+\S+"
+    r"|\bcookie\b"
+    r"|\bauth\.json\b|\.netrc\b|\bcredentials(?:\.json)?\b|\bid_rsa\b"
+    r"|(?:^|[\s'\"(=])/\S*(?:\.codex|codex-home)(?:/|\b)"  # a codex home path
+    r"|CODEX_HOME=|OPENAI_API_KEY"
+    r")",
+    re.IGNORECASE,
+)
+# Raw `codex exec --json` output has this shape; a diagnostic is prose.
+_RAW_OUTPUT_RE = re.compile(r"\{\s*\"type\"\s*:")
+
+
+class ManagedCodexAttestationError(ValueError):
+    """The attestation entry violates the allowlisted, sanitized schema."""
+
+
+def _reject_unsafe_text(field: str, value: str) -> None:
+    if SECRET_PAT.search(value) or _CREDENTIAL_SHAPED_RE.search(value):
+        raise ManagedCodexAttestationError(
+            f"{field} looks like a credential or credential-file location; refusing to record"
+        )
+    if _RAW_OUTPUT_RE.search(value):
+        raise ManagedCodexAttestationError(
+            f"{field} looks like raw nested-process output; refusing to record"
+        )
+
+
+def validate_managed_codex_attestation(entry: Any) -> dict[str, Any]:
+    """Validate one attestation entry against the allowlisted schema and
+    return a normalized copy. Raises `ManagedCodexAttestationError`."""
+    if not isinstance(entry, dict):
+        raise ManagedCodexAttestationError("attestation entry must be a mapping")
+    unknown = sorted(set(entry) - MANAGED_CODEX_ATTESTATION_FIELDS)
+    missing = sorted(MANAGED_CODEX_ATTESTATION_FIELDS - set(entry))
+    if unknown or missing:
+        raise ManagedCodexAttestationError(
+            f"attestation entry fields must be exactly the allowlist "
+            f"(unknown={unknown}, missing={missing})"
+        )
+    if entry["schema_version"] != MANAGED_CODEX_ATTESTATION_SCHEMA_VERSION:
+        raise ManagedCodexAttestationError(
+            f"unsupported attestation schema_version {entry['schema_version']!r}"
+        )
+    for field, pattern in (
+        ("recorded_at", _ATTESTATION_TIMESTAMP_RE),
+        ("worktrail_version", _ATTESTATION_VERSION_RE),
+        ("worktrail_commit", _ATTESTATION_VERSION_RE),
+        ("nonce", _ATTESTATION_NONCE_RE),
+        ("selected_provider", _ATTESTATION_IDENTITY_RE),
+    ):
+        value = entry[field]
+        if not isinstance(value, str) or not pattern.match(value):
+            raise ManagedCodexAttestationError(f"invalid {field}: {value!r}")
+    for field in ("selected_model", "effective_provider", "effective_model"):
+        value = entry[field]
+        if value is not None and (
+            not isinstance(value, str) or not _ATTESTATION_IDENTITY_RE.match(value)
+        ):
+            raise ManagedCodexAttestationError(f"invalid {field}: {value!r}")
+    for field in (*_MANAGED_CODEX_ATTESTATION_BOOL_FIELDS, "success"):
+        if not isinstance(entry[field], bool):
+            raise ManagedCodexAttestationError(f"{field} must be a boolean")
+    if entry["stage"] not in MANAGED_CODEX_ATTESTATION_STAGES:
+        raise ManagedCodexAttestationError(
+            f"invalid stage {entry['stage']!r}; allowed: {MANAGED_CODEX_ATTESTATION_STAGES}"
+        )
+    if entry["success"] and entry["stage"] != "report_back":
+        raise ManagedCodexAttestationError(
+            "a successful attestation must end at stage report_back"
+        )
+    diagnostic = entry["diagnostic"]
+    if (
+        not isinstance(diagnostic, str)
+        or not diagnostic.strip()
+        or "\n" in diagnostic
+        or len(diagnostic) > MANAGED_CODEX_ATTESTATION_DIAGNOSTIC_MAX
+    ):
+        raise ManagedCodexAttestationError(
+            "diagnostic must be one non-empty line of at most "
+            f"{MANAGED_CODEX_ATTESTATION_DIAGNOSTIC_MAX} characters"
+        )
+    for field in MANAGED_CODEX_ATTESTATION_FIELDS:
+        value = entry[field]
+        if isinstance(value, str):
+            _reject_unsafe_text(field, value)
+    return {field: entry[field] for field in sorted(MANAGED_CODEX_ATTESTATION_FIELDS)}
+
+
+def record_managed_codex_attestation(
+    path: Path, entry: dict[str, Any]
+) -> dict[str, Any]:
+    """Append exactly one validated attestation entry to the run record at
+    `path` through the module's own writer, and return the stored entry.
+
+    The record is loaded and saved by `_load`/`_save` -- never hand-edited --
+    so an attestation can never corrupt the line-based format. Raises
+    `ManagedCodexAttestationError` before touching the file on any schema or
+    sanitization violation, and `RunRecordFormatError`/`OSError` from the
+    record itself.
+    """
+    stored = validate_managed_codex_attestation(entry)
+    record = _load(path)
+    current = record.get(MANAGED_CODEX_ATTESTATIONS_FIELD)
+    if current is None:
+        current = record[MANAGED_CODEX_ATTESTATIONS_FIELD] = []
+    elif not isinstance(current, list):
+        raise ManagedCodexAttestationError(
+            f"field '{MANAGED_CODEX_ATTESTATIONS_FIELD}' is not a list"
+        )
+    current.append(json.dumps(stored, sort_keys=True))
+    _save(path, record)
+    return stored
+
+
+def load_managed_codex_attestations(path: Path) -> list[dict[str, Any]]:
+    """Read back every attestation entry recorded at `path`, in order."""
+    record = _load(path)
+    raw = record.get(MANAGED_CODEX_ATTESTATIONS_FIELD) or []
+    return [json.loads(item) for item in raw]
+
+
 def cmd_scope_review(args: argparse.Namespace) -> int:
     """Record evidence that requested scope was completed or explicitly excluded.
 
