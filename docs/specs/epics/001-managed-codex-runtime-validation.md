@@ -38,7 +38,7 @@ The smallest complete outcome is one credential-safe live probe that starts the 
 ## Success metrics
 
 - A managed run with a deliberately read-only inherited `CODEX_HOME` reaches nested Codex app-server readiness through the direct orchestrator path.
-- The child reports the intended provider identity and demonstrates usable inherited authentication without credential material appearing in stdout, stderr, run records, or committed artifacts.
+- The child demonstrates usable inherited authentication without credential material appearing in stdout, stderr, run records, or committed artifacts; it reports the intended provider identity when the runtime exposes that signal, and disagrees with none (see Feature 2's accepted limitation for the current codex-cli).
 - The probe completes a bounded no-op/report-back contract and causes no target-repository mutation.
 - Every failure is classified at least as environment preparation, startup, provider selection, authentication, timeout, or report-back, with an actionable sanitized diagnostic.
 - A second execution from a fresh managed session reproduces the same result before any recurring gate is enabled.
@@ -59,7 +59,9 @@ Define the smallest no-op worker contract and launcher that enters the same dire
 
 **Future spec id:** `managed-codex-runtime-attestation`
 
-Run the safe launcher in the managed environment against the published/current Worktrail path. Attest that the child home is writable and isolated, the nested app server becomes ready, the selected provider is preserved, inherited authentication is usable, and the bounded report-back succeeds. Store only sanitized stage results and relevant version/commit identity in the run record.
+Run the safe launcher in the managed environment against the published/current Worktrail path. Attest that the child home is writable and isolated, the nested app server becomes ready, the selected provider is preserved when the runtime exposes it, inherited authentication is usable, and the bounded report-back succeeds. Store only sanitized stage results and relevant version/commit identity in the run record.
+
+**Known limitation (accepted 2026-09-11):** codex-cli 0.154.0 — the current stable release — does not expose provider/model identity on its documented `thread.started` event, so the runtime-observed "effective identity" signal is unattainable against the real tool. Verifying it is not treated as a hard requirement: an unreported effective identity is recorded as unverified (not a failure), while a *reported* identity that disagrees with the selected one still fails the attestation. This can be tightened later if codex-cli starts exposing the field, or if an explicitly sanctioned alternate signal (e.g. pre-spawn `--model`/config parsing) is adopted.
 
 **Independent value:** operators receive the missing end-to-end proof for PR #323 and can distinguish a platform boundary regression from an authentication or provider problem.
 

@@ -29,6 +29,22 @@
       payload class.
   files: src/worktrail/orchestrator/codex_probe.py, src/worktrail/orchestrator/codex_runtime_attestation.py, src/worktrail/router/run_record.py, pyproject.toml, tests/orchestrator/test_codex_probe.py, tests/orchestrator/test_codex_runtime_attestation.py, tests/router/test_run_record.py
 
+- [x] 1.2 Live evidence from task 3.2's first managed attempt (2026-09-10/11)
+      showed real codex-cli 0.154.0 never populates `effective_provider`/
+      `effective_model` on `thread.started`, so 1.1's "missing ... must
+      classify as `provider_selection`" rule makes the attestation
+      permanently unpassable against the real tool. Revise `check_identity`
+      (`codex_runtime_attestation.py`) so an *absent* effective identity is
+      recorded as unverified and does not fail the attestation on its own; a
+      *reported* identity that disagrees with the selected one still fails at
+      `provider_selection` unchanged. (Requirement: Success attests all
+      direct-runtime signals — see the revised "Runtime identity is
+      unverifiable" / "Runtime identity disagrees with the selected one"
+      scenarios.) Update `tests/orchestrator/test_codex_runtime_attestation.py`
+      to match: missing identity succeeds (unverified), mismatched identity
+      still fails.
+  files: src/worktrail/orchestrator/codex_runtime_attestation.py, tests/orchestrator/test_codex_runtime_attestation.py, docs/specs/epics/001-managed-codex-runtime-validation.md
+
 ## 2. Managed-session operating procedure
 
 - [x] 2.1 Document the operator invocation and evidence review procedure:

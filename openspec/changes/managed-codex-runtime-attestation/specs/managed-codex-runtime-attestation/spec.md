@@ -32,10 +32,17 @@ or use a target repository as the nested process working directory.
 ### Requirement: Success attests all direct-runtime signals
 
 An attestation SHALL be successful only when the child home is isolated and
-writable, the nested Codex runtime reports readiness, the selected and
-effective provider identities agree (and configured model identities agree),
-inherited authentication is usable, and the fixed no-op report-back succeeds
-within the configured timeout.
+writable, the nested Codex runtime reports readiness, the effective provider
+and model identity (when the runtime exposes it) agree with the selected
+identity, inherited authentication is usable, and the fixed no-op report-back
+succeeds within the configured timeout. An effective identity that the
+runtime does not expose is recorded as unverified and does not by itself fail
+the attestation — codex-cli 0.154.0 (the current stable release) does not
+report provider/model identity on `thread.started` at all, so "not reported"
+cannot be distinguished from "correct but unobservable" (see
+`docs/specs/epics/001-managed-codex-runtime-validation.md` Feature 2). A
+reported identity that disagrees with the selected one is always a failure:
+that is real evidence of a problem, not a tooling gap.
 
 #### Scenario: Managed runtime satisfies every signal
 
@@ -44,11 +51,19 @@ within the configured timeout.
 - **THEN** the attestation records success with readiness, identity,
   authentication, and report-back signals all true
 
-#### Scenario: Runtime identity cannot be proved
+#### Scenario: Runtime identity is unverifiable
 
 - **WHEN** the nested runtime does not expose a documented non-secret
-  effective provider/model identity or that identity differs from the
-  selected one
+  effective provider/model identity, but every other signal (readiness,
+  authentication, report-back) passes
+- **THEN** the attestation records success, and the run-record entry records
+  the effective identity fields as unverified (null) rather than failing at
+  `provider_selection`
+
+#### Scenario: Runtime identity disagrees with the selected one
+
+- **WHEN** the nested runtime reports an effective provider or model identity
+  that differs from the selected one
 - **THEN** the attestation fails at `provider_selection` rather than using a
   session/thread marker as an identity substitute
 

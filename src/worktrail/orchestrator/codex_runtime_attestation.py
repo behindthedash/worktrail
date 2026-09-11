@@ -154,10 +154,15 @@ def verify_child_home(child_home: str, parent_home: str) -> str | None:
 def check_identity(report: ProbeReport) -> ProbeReport:
     """Apply the provider/model equality rule to a run that stood up a session.
 
-    Success requires the effective provider to equal the selected provider,
-    and -- when a model was selected -- the effective model to equal it. An
-    absent or mismatched effective identity is a `PROVIDER_SELECTION`
-    failure: the session marker is never accepted as identity in its place.
+    A *mismatched* effective identity is a `PROVIDER_SELECTION` failure: the
+    session marker is never accepted as identity in its place. An *absent*
+    effective identity is not a failure -- codex-cli 0.154.0 (the current
+    stable release) does not expose provider/model on `thread.started` at
+    all, so "not reported" cannot be distinguished from "correct but
+    unobservable" and would otherwise make this rule permanently unsatisfiable
+    (see docs/specs/epics/001-managed-codex-runtime-validation.md Feature 2).
+    The unattested identity is still visible to a reviewer: `build_entry`
+    records `effective_provider`/`effective_model` as null on success.
     Runs that never reached a session, and runs the probe already classified
     as failing (authentication refusal, no-op scope violation, ...), keep
     their earlier stage and diagnostic: the identity rule only applies to a
@@ -168,21 +173,23 @@ def check_identity(report: ProbeReport) -> ProbeReport:
     if not report.success:
         return report
     problems = []
-    if report.effective_provider is None:
-        problems.append("effective provider identity not reported")
-    elif report.effective_provider != report.selected_provider:
+    if (
+        report.effective_provider is not None
+        and report.effective_provider != report.selected_provider
+    ):
         problems.append(
             f"effective provider {report.effective_provider!r} != selected "
             f"{report.selected_provider!r}"
         )
-    if report.selected_model is not None:
-        if report.effective_model is None:
-            problems.append("effective model identity not reported")
-        elif report.effective_model != report.selected_model:
-            problems.append(
-                f"effective model {report.effective_model!r} != selected "
-                f"{report.selected_model!r}"
-            )
+    if (
+        report.selected_model is not None
+        and report.effective_model is not None
+        and report.effective_model != report.selected_model
+    ):
+        problems.append(
+            f"effective model {report.effective_model!r} != selected "
+            f"{report.selected_model!r}"
+        )
     if not problems:
         return report
     return replace(
@@ -190,7 +197,7 @@ def check_identity(report: ProbeReport) -> ProbeReport:
         stage=StageOutcome.PROVIDER_SELECTION,
         success=False,
         diagnostic=(
-            "provider/model identity not attested: "
+            "provider/model identity mismatch: "
             + "; ".join(problems)
             + " (a session/thread id is not an identity substitute)"
         ),
