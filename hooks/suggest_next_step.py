@@ -322,22 +322,22 @@ def build_dedup_gate_block(hits: list[dict]) -> str:
 
 
 def query_open_prs(session_id: str) -> list[dict]:
-    """Non-terminal PR ledger entries opened by `session_id`, via the
-    read-only `worktrail-pr-ledger query --session <id> --json` CLI
+    """Non-terminal PR ledger entries owned by `session_id`, via the
+    read-only `worktrail-pr-ledger session --session-id <id>` CLI, which
+    prints a JSON list of ledger entries (each carrying `url`, `session_id`,
+    and `last_state`) and already excludes terminal (merged/closed) ones
     (Requirement: Interactive session end is guarded by its open PRs).
 
     Fails open to `[]` on every non-happy path -- missing binary, non-zero
     exit, timeout, or unparseable JSON -- the same failure boundary as
     `check_deferred_work`. Never raises.
     """
-    if not session_id:
-        return []
     binary = shutil.which(PR_LEDGER_BINARY)
     if not binary:
         return []
     try:
         result = subprocess.run(
-            [binary, "query", "--session", session_id, "--json"],
+            [binary, "session", "--session-id", session_id],
             check=False,
             capture_output=True,
             text=True,
@@ -348,10 +348,9 @@ def query_open_prs(session_id: str) -> list[dict]:
     if result.returncode != 0:
         return []
     try:
-        data = json.loads(result.stdout)
+        entries = json.loads(result.stdout)
     except json.JSONDecodeError:
         return []
-    entries = data.get("entries") if isinstance(data, dict) else None
     if not isinstance(entries, list):
         return []
     return [
@@ -359,7 +358,7 @@ def query_open_prs(session_id: str) -> list[dict]:
         for item in entries
         if isinstance(item, dict)
         and item.get("url")
-        and (item.get("session_id") in (None, "", session_id))
+        and item.get("session_id") == session_id
     ]
 
 
@@ -370,7 +369,7 @@ def build_open_pr_block(entries: list[dict]) -> str:
     """
     lines = "\n".join(
         f"- {item.get('url')}"
-        + (f" ({item.get('state')})" if item.get("state") else "")
+        + (f" ({item.get('last_state')})" if item.get("last_state") else "")
         for item in entries
     )
     return (
@@ -401,19 +400,18 @@ def main() -> int:
         has_work, run_record_paths, touched_durable_paths = scan_transcript(
             transcript_path
         )
-        open_prs = query_open_prs(session_id)
-        if open_prs and not (STATE_DIR / f"{session_id}.pr-ledger").exists():
-            # Guard before the ordinary sentinel is written so an unresolved PR
-            # cannot be bypassed by consuming that sentinel first. Blocks once
-            # per session, like the suggestion block, so a session that
-            # deliberately leaves a PR open is never trapped.
-            (STATE_DIR / f"{session_id}.pr-ledger").write_text("1", encoding="utf-8")
-            print(
-                json.dumps(
-                    {"decision": "block", "reason": build_open_pr_block(open_prs)}
+        if data.get("session_id"):
+            # Guard before the ordinary sentinel is checked or written so an
+            # unresolved PR cannot be bypassed by consuming that sentinel
+            # first. Fires on every stop while a PR stays non-terminal.
+            open_prs = query_open_prs(session_id)
+            if open_prs:
+                print(
+                    json.dumps(
+                        {"decision": "block", "reason": build_open_pr_block(open_prs)}
+                    )
                 )
-            )
-            return 0
+                return 0
         if sentinel.exists() or not has_work:
             return 0
 

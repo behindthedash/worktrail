@@ -2,7 +2,10 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 from pathlib import Path
+
+import pytest
 
 HOOK_PATH = Path(__file__).with_name("suggest_next_step.py")
 SPEC = importlib.util.spec_from_file_location("suggest_next_step", HOOK_PATH)
@@ -750,15 +753,16 @@ def _install_pr_ledger_fake(
     tmp_path: Path, monkeypatch, entries: list[dict] | None, exit_code: int = 0
 ) -> Path:
     """A fake `worktrail-pr-ledger` on `PATH` that records the argv it was
-    called with and answers `query --session <id> --json` with `entries`
-    (or a non-zero exit / garbage stdout when `entries` is None), so
-    `query_open_prs` exercises the real subprocess boundary without needing
-    the ledger package itself."""
+    called with and answers `session --session-id <id>` with a JSON list of
+    `entries` -- the same bare-list payload the real CLI's `_emit` prints
+    for `session_entries` -- (or a non-zero exit / garbage stdout when
+    `entries` is None), so `query_open_prs` exercises the real subprocess
+    boundary without needing the ledger package itself."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     argv_log = tmp_path / "pr-ledger-argv.json"
     fake = bin_dir / "worktrail-pr-ledger"
-    body = "garbage" if entries is None else json.dumps({"entries": entries})
+    body = "garbage" if entries is None else json.dumps(entries, indent=2)
     fake.write_text(
         "#!/usr/bin/env python3\n"
         "import json, sys\n"
@@ -788,10 +792,11 @@ def test_main_blocks_with_pr_recovery_when_session_owns_open_pr(
     tmp_path, monkeypatch, capsys
 ):
     """Requirement: Interactive session end is guarded by its open PRs --
-    Scenario: Session owns an open PR. The block names the PR, is emitted
-    before the ordinary suggestion sentinel is written (so the next stop
-    still gets the normal once-per-session suggestion), and fires only once
-    per session so a deliberately-left-open PR never traps the session."""
+    Scenario: Session owns an open PR. The block names the PR and its last
+    known state, is emitted before the ordinary suggestion sentinel is
+    written, and keeps firing on every stop while the PR stays non-terminal.
+    Once the ledger no longer lists it, the normal once-per-session
+    suggestion flow runs unchanged."""
     monkeypatch.delenv("CC_HEADLESS", raising=False)
     monkeypatch.setattr(hook, "STATE_DIR", tmp_path / "state")
     transcript = tmp_path / "transcript.jsonl"
@@ -800,36 +805,37 @@ def test_main_blocks_with_pr_recovery_when_session_owns_open_pr(
     argv_log = _install_pr_ledger_fake(
         tmp_path,
         monkeypatch,
-        [{"url": url, "session_id": "session-1", "state": "ci_red"}],
+        [{"url": url, "session_id": "session-1", "last_state": "ci_red"}],
     )
 
-    out = _run_main(monkeypatch, capsys, "session-1", transcript)
-    emitted = json.loads(out)
-    assert emitted["decision"] == "block"
-    assert url in emitted["reason"]
-    assert "OPEN PR RECOVERY" in emitted["reason"]
-    assert hook.INSTRUCTION not in emitted["reason"]
-    assert json.loads(argv_log.read_text()) == [
-        "query",
-        "--session",
-        "session-1",
-        "--json",
-    ]
-    # The ordinary suggestion sentinel was NOT consumed by the PR block.
-    assert not (tmp_path / "state" / "session-1.done").exists()
+    for _ in range(2):  # every stop is guarded, not just the first
+        emitted = json.loads(_run_main(monkeypatch, capsys, "session-1", transcript))
+        assert emitted["decision"] == "block"
+        assert f"- {url} (ci_red)" in emitted["reason"]
+        assert "OPEN PR RECOVERY" in emitted["reason"]
+        assert hook.INSTRUCTION not in emitted["reason"]
+        assert json.loads(argv_log.read_text()) == [
+            "session",
+            "--session-id",
+            "session-1",
+        ]
+        # The ordinary suggestion sentinel was NOT consumed by the PR block.
+        assert not (tmp_path / "state" / "session-1.done").exists()
 
-    # Second stop: PR guard already fired once; normal suggestion flow runs.
+    # PR resolved (ledger returns nothing): normal suggestion flow runs once.
+    _install_pr_ledger_fake(tmp_path, monkeypatch, [])
     out = _run_main(monkeypatch, capsys, "session-1", transcript)
     assert out == json.dumps({"decision": "block", "reason": hook.INSTRUCTION}) + "\n"
-
-    # Third stop: nothing left to say.
     assert _run_main(monkeypatch, capsys, "session-1", transcript) == ""
 
 
-def test_main_not_blocked_by_pr_owned_by_another_session(tmp_path, monkeypatch, capsys):
-    """Scenario: Another session owns the PR -- an entry the ledger returns
-    under a different session_id never blocks this session; output is the
-    ordinary suggestion, byte-identical to the pre-feature baseline."""
+def test_main_not_blocked_by_pr_owned_by_another_or_no_session(
+    tmp_path, monkeypatch, capsys
+):
+    """Scenario: Another session owns the PR -- entries the ledger returns
+    under a different session_id, or with no session attribution at all,
+    never block this session; output is the ordinary suggestion,
+    byte-identical to the pre-feature baseline."""
     monkeypatch.delenv("CC_HEADLESS", raising=False)
     monkeypatch.setattr(hook, "STATE_DIR", tmp_path / "state")
     transcript = tmp_path / "transcript.jsonl"
@@ -837,7 +843,12 @@ def test_main_not_blocked_by_pr_owned_by_another_session(tmp_path, monkeypatch, 
     _install_pr_ledger_fake(
         tmp_path,
         monkeypatch,
-        [{"url": "https://github.com/acme/repo/pull/7", "session_id": "other"}],
+        [
+            {"url": "https://github.com/acme/repo/pull/7", "session_id": "other"},
+            {"url": "https://github.com/acme/repo/pull/8", "session_id": None},
+            {"url": "https://github.com/acme/repo/pull/9", "session_id": ""},
+            {"url": "https://github.com/acme/repo/pull/10"},
+        ],
     )
     out = _run_main(monkeypatch, capsys, "session-1", transcript)
     assert out == json.dumps({"decision": "block", "reason": hook.INSTRUCTION}) + "\n"
@@ -846,8 +857,9 @@ def test_main_not_blocked_by_pr_owned_by_another_session(tmp_path, monkeypatch, 
 def test_main_fails_open_when_pr_ledger_missing_fails_or_is_malformed(
     tmp_path, monkeypatch, capsys
 ):
-    """Missing binary, non-zero exit, and unparseable JSON each fail open to
-    the ordinary suggestion flow; the hook never raises or blocks on them."""
+    """Missing binary, non-zero exit, unparseable JSON, and a non-list
+    payload each fail open to the ordinary suggestion flow; the hook never
+    raises or blocks on them."""
     monkeypatch.delenv("CC_HEADLESS", raising=False)
     monkeypatch.setattr(hook, "STATE_DIR", tmp_path / "state")
     transcript = tmp_path / "transcript.jsonl"
@@ -868,6 +880,54 @@ def test_main_fails_open_when_pr_ledger_missing_fails_or_is_malformed(
 
     _install_pr_ledger_fake(tmp_path, monkeypatch, None)
     assert _run_main(monkeypatch, capsys, "malformed", transcript) == baseline
+
+    _install_pr_ledger_fake(tmp_path, monkeypatch, {"entries": []})  # type: ignore[arg-type]
+    assert _run_main(monkeypatch, capsys, "not-a-list", transcript) == baseline
+
+
+def test_main_skips_ledger_query_without_session_id(tmp_path, monkeypatch, capsys):
+    """A Stop payload with no session_id has nothing to query the ledger by,
+    so the CLI is never spawned and the ordinary flow runs."""
+    monkeypatch.delenv("CC_HEADLESS", raising=False)
+    monkeypatch.setattr(hook, "STATE_DIR", tmp_path / "state")
+    transcript = tmp_path / "transcript.jsonl"
+    _write_transcript(transcript, "Write")
+    argv_log = _install_pr_ledger_fake(
+        tmp_path, monkeypatch, [{"url": "https://x/pull/1", "session_id": "unknown"}]
+    )
+    monkeypatch.setattr(
+        hook.sys, "stdin", io.StringIO(json.dumps({"transcript_path": str(transcript)}))
+    )
+    assert hook.main() == 0
+    assert capsys.readouterr().out == (
+        json.dumps({"decision": "block", "reason": hook.INSTRUCTION}) + "\n"
+    )
+    assert not argv_log.exists()
+
+
+def test_query_open_prs_matches_real_pr_ledger_cli(tmp_path, monkeypatch):
+    """Integration cross-check: the argv and payload shape the hook assumes
+    are pinned against the real `worktrail-pr-ledger` entry point, not only
+    the hand-written fake. Registers one PR for this session, one for
+    another, and one merged, then queries through the console script."""
+    pr_ledger = pytest.importorskip("worktrail.router.pr_ledger")
+    if shutil.which(hook.PR_LEDGER_BINARY) is None:
+        pytest.skip("worktrail-pr-ledger console script not installed")
+    ledger = tmp_path / "ledger.json"
+    monkeypatch.setenv("WORKTRAIL_PR_LEDGER", str(ledger))
+    mine = "https://github.com/acme/repo/pull/1"
+    pr_ledger.register(mine, "/repo", session_id="s-1", path=ledger)
+    pr_ledger.register(
+        "https://github.com/acme/repo/pull/2", "/repo", session_id="s-2", path=ledger
+    )
+    merged = "https://github.com/acme/repo/pull/3"
+    pr_ledger.register(merged, "/repo", session_id="s-1", path=ledger)
+    data = json.loads(ledger.read_text())
+    data["prs"][merged]["last_state"] = pr_ledger.STATE_MERGED
+    ledger.write_text(json.dumps(data))
+
+    assert [e["url"] for e in hook.query_open_prs("s-1")] == [mine]
+    assert hook.query_open_prs("s-3") == []
 
 
 def test_main_headless_skips_even_when_session_owns_open_pr(
