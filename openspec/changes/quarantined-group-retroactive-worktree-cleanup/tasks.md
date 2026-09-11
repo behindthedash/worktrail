@@ -36,7 +36,7 @@
 
 ## 2. Attended cleanup procedure
 
-- [ ] 2.1 [depends: 1.1] In `skills/worktrail-go/references/worktree-cleanup.md`, extend
+- [x] 2.1 [depends: 1.1] In `skills/worktrail-go/references/worktree-cleanup.md`, extend
       step 2 so the agent runs `worktrail-sweep-stale-worktrees --repo "$REPO" --json`
       and treats `QUARANTINE-MERGED` entries as prunable alongside MERGED / GONE, quoting
       each entry's `reason` in the step-3 table; leave the confirm -> liveness-guard ->
