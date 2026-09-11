@@ -95,7 +95,7 @@ jobs:
         run: bash scripts/ci/test_dev_install.sh
       - name: Install package and Ruff
         if: needs.changes.outputs.bookkeeping == 'false'
-        run: pip install -e ".[dev]" ruff
+        run: pip install -e ".[dev]"
       - name: Ruff lint
         if: needs.changes.outputs.bookkeeping == 'false'
         run: ruff check .

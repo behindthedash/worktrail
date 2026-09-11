@@ -20,7 +20,7 @@ jobs:
           python-version: '3.14'
 
       - name: Install package and Ruff
-        run: pip install -e ".[dev]" ruff
+        run: pip install -e ".[dev]"
 
       - name: Apply Ruff safe fixes and formatting
         run: |
