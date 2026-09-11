@@ -1,6 +1,6 @@
 ## 1. Persist and evaluate detached-owner liveness (`run-record-liveness-reconciliation`)
 
-- [ ] 1.1 Implement Requirements: Run records bind a detached owner after a
+- [x] 1.1 Implement Requirements: Run records bind a detached owner after a
       successful launch; Liveness distinguishes heartbeat freshness from
       detached process state; Orphan sweeping requires confirmed dead-owner
       evidence. In `src/worktrail/router/run_record.py`, add a validated
