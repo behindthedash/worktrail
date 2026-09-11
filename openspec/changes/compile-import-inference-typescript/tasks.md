@@ -1,6 +1,6 @@
 ## 1. TypeScript/JavaScript import scanning (`compile-import-dependency-inference`)
 
-- [ ] 1.1 In `src/worktrail/conductor/import_deps.py`, replace the `.py` suffix gate in
+- [x] 1.1 In `src/worktrail/conductor/import_deps.py`, replace the `.py` suffix gate in
       `import_dep_edges` with a suffix-to-scanner dispatch; keep the existing `ast` walk as the
       Python scanner and add a `_js_imported_paths` scanner that regex-extracts string-literal
       specifiers from `import ... from`, side-effect `import`, `export ... from`, dynamic

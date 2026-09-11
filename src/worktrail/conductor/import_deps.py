@@ -1,10 +1,21 @@
-"""Infer plan edges from Python imports between tasks' declared files.
+"""Infer plan edges from Python and TypeScript/JavaScript imports between
+tasks' declared files.
 
-A task whose on-disk `.py` file imports a module another task declares in its
-`files:` depends on that task, whether or not the author said so. The change
-that motivated this (go-20260910-085218) had `dashboard.py` importing
-`smoke_flake_selfcheck` with disjoint `files:` on both tasks, so the plan ran
-them in parallel and the importer's worktree never saw the module.
+A task whose on-disk `.py` (or `.ts`/`.tsx`/`.js`/... ) file imports a module
+another task declares in its `files:` depends on that task, whether or not the
+author said so. The change that motivated this (go-20260910-085218) had
+`dashboard.py` importing `smoke_flake_selfcheck` with disjoint `files:` on both
+tasks, so the plan ran them in parallel and the importer's worktree never saw
+the module.
+
+Python imports are read with `ast`. TypeScript/JavaScript files are scanned
+with a regex for the string-literal specifier of `import ... from`, side-effect
+`import`, `export ... from`, dynamic `import(...)`, and `require(...)`; only
+`./` and `../` specifiers are resolved (against the importing file's directory,
+trying the path as written, each supported extension, the `.js`-family suffix
+rewritten to its `.ts`-family source, then an `index` file). Bare package
+specifiers (`react`, `@scope/pkg`) and `tsconfig.json` path aliases (`@/lib/x`)
+are dropped without resolution, so an aliased import is silently unordered.
 
 Only imports already on disk can be seen here; a module a task is about to
 create is invisible, which is what the `depends:` continuation line is for.
@@ -16,6 +27,7 @@ warning naming both tasks.
 from __future__ import annotations
 
 import ast
+import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -88,6 +100,59 @@ def _imported_paths(tree: ast.AST, file: Path, repo: Path) -> list[Path]:
     return [rel for p in out if (rel := _under_repo(p, repo)) is not None]
 
 
+# TypeScript/JavaScript resolution: extensions tried when a relative specifier
+# has none, and the emitted-name -> source-name rewrite for the ESM convention.
+_JS_EXTS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".d.ts")
+_JS_TO_TS = {".js": ".ts", ".jsx": ".tsx", ".mjs": ".mts", ".cjs": ".cts"}
+_JS_SUFFIXES = frozenset(_JS_EXTS) - {".d.ts"}
+
+_JS_SPECIFIER = re.compile(
+    r"""(?:
+        \b(?:import|export)\b[^'"`;]*?\bfrom\s*  # import x from / export * from
+      | \bimport\s*                              # side-effect import "x"
+      | \bimport\s*\(\s*                         # dynamic import("x")
+      | \brequire\s*\(\s*                        # require("x")
+    )(['"])([^'"\n]+)\1""",
+    re.VERBOSE,
+)
+
+
+def _js_candidates(stem: Path) -> list[Path]:
+    """Paths a relative specifier could resolve to, in precedence order."""
+    out = [stem]
+    out.extend(stem.with_name(stem.name + ext) for ext in _JS_EXTS)
+    for js, ts in _JS_TO_TS.items():
+        if stem.name.endswith(js):
+            out.append(stem.with_name(stem.name[: -len(js)] + ts))
+    out.extend(stem / f"index{ext}" for ext in _JS_EXTS)
+    return out
+
+
+def _js_imported_paths(text: str, file: Path, repo: Path) -> list[Path]:
+    """Repo-relative paths the relative specifiers in `text` resolve to, in
+    source order. Bare and alias specifiers are dropped."""
+    out: list[Path] = []
+    for m in _JS_SPECIFIER.finditer(text):
+        spec = m.group(2)
+        if not spec.startswith(("./", "../")):
+            continue
+        for cand in _js_candidates(file.parent / spec):
+            if cand.is_file():
+                out.append(cand)
+                break
+    return [rel for p in out if (rel := _under_repo(p, repo)) is not None]
+
+
+def _py_imported_paths(text: str, file: Path, repo: Path) -> list[Path]:
+    return _imported_paths(ast.parse(text, filename=str(file)), file, repo)
+
+
+_SCANNERS = {
+    ".py": _py_imported_paths,
+    **{ext: _js_imported_paths for ext in _JS_SUFFIXES},
+}
+
+
 def _reachable(start: str, target: str, deps: Mapping[str, Sequence[str]]) -> bool:
     """True if following `deps` edges from `start` arrives at `target`."""
     seen = {start}
@@ -108,9 +173,11 @@ def import_dep_edges(
 ) -> tuple[dict[str, list[str]], list[str]]:
     """`{importer id: [owner ids]}` inferred from on-disk imports, plus warnings.
 
-    For each non-tail task, every declared `.py` file present under `repo`
-    (a path escaping it is ignored) is parsed and its imports resolved (relative against the file's package,
-    absolute under `src/` then the repo root) to paths; a path another task
+    For each non-tail task, every declared file present under `repo` (a path
+    escaping it is ignored) whose suffix has a scanner is read and its imports
+    resolved to paths (Python: relative against the file's package, absolute
+    under `src/` then the repo root; TypeScript/JavaScript: `./` and `../`
+    specifiers against the file's directory); a path another task
     declares yields an importer -> owner edge. An edge is added only if the
     owner cannot already reach the importer through the edges present so far
     (baseline `deps` plus edges added earlier in authored order); otherwise it
@@ -133,16 +200,17 @@ def import_dep_edges(
             continue
         tid = str(t.get("id"))
         for f in runplan._norm_str_list(t.get("files")):
-            if not f.endswith(".py"):
+            scanner = _SCANNERS.get(Path(f).suffix)
+            if scanner is None:
                 continue
             path = repo / f
             if _under_repo(path, repo) is None or not path.is_file():
                 continue
             try:
-                tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+                targets = scanner(path.read_text(encoding="utf-8"), path, repo)
             except (SyntaxError, ValueError, UnicodeDecodeError, OSError):
                 continue
-            for target in _imported_paths(tree, path, repo):
+            for target in targets:
                 for owner in owners.get(target.as_posix(), ()):
                     if owner == tid or owner in deps.get(tid, ()):
                         continue
