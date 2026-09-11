@@ -701,6 +701,18 @@ def run_probe_command(
             success=False,
             diagnostic=str(exc),
         )
+    # Targeted, already-safe signals stamped on whatever report this run
+    # ends up with: the session marker and the effective identity pair, each
+    # extracted from one documented event (never the raw stream). Extracted
+    # here, before any classifying branch below replaces `result` with a
+    # `ProbeReport`, so a classified failure (auth refusal, startup, provider
+    # selection) still carries the readiness/identity the runtime reported.
+    session_started_marker: str | None = None
+    effective_provider: str | None = None
+    effective_model: str | None = None
+    if isinstance(result, subprocess.CompletedProcess):
+        session_started_marker = extract_session_started_marker(result.stdout)
+        effective_provider, effective_model = extract_effective_identity(result.stdout)
     if isinstance(result, subprocess.CompletedProcess):
         auth_failure_marker = extract_auth_failure_marker(result.stdout)
         if auth_failure_marker is not None:
@@ -781,14 +793,6 @@ def run_probe_command(
     post_spawn_auth_usable: bool | None = None
     if isinstance(result, subprocess.CompletedProcess):
         post_spawn_auth_usable = extract_authenticated_marker(result.stdout)
-        # Targeted, already-safe signals stamped on whatever report this run
-        # ends up with: the session marker and the effective identity pair,
-        # each extracted from one documented event (never the raw stream).
-        session_started_marker = extract_session_started_marker(result.stdout)
-        effective_provider, effective_model = extract_effective_identity(result.stdout)
-    else:
-        session_started_marker = None
-        effective_provider = effective_model = None
     if pre_spawn_snapshot is not None:
         try:
             violation = check_no_op_scope_violation(

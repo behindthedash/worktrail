@@ -278,12 +278,19 @@ class TestSignalsAndIdentity(_AttestationHarness):
 
     def test_nested_auth_refusal_is_authentication(self):
         result = self.run_with(
-            '{"type": "thread.started", "thread_id": "t1"}\n'
+            '{"type": "thread.started", "thread_id": "t1", '
+            '"model_provider": "codex", "model": "gpt-5"}\n'
             '{"type": "error", "message": "Not logged in, token=abc123"}\n',
             returncode=1,
         )
         self.assertEqual(result.report.stage, StageOutcome.AUTHENTICATION)
         self.assertNotIn("abc123", result.report.diagnostic)
+        # The runtime reported readiness and identity before refusing auth;
+        # a classified failure must keep those observed signals, not drop them.
+        self.assertTrue(result.runtime_ready)
+        self.assertEqual(result.report.session_started_marker, "t1")
+        self.assertEqual(result.report.effective_provider, "codex")
+        self.assertEqual(result.report.effective_model, "gpt-5")
 
     def test_repository_scope_is_unchanged(self):
         before = subprocess.run(
