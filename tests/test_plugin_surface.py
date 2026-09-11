@@ -268,6 +268,42 @@ def test_native_skill_dispatch_threads_run_record():
     assert "reuse it instead of starting a second run record" in sdd_text
 
 
+def test_full_real_launch_binds_detached_owner_to_run_record():
+    """The full-real launch must bind its detach handle to `$RUN` before monitoring.
+
+    Without the binding, `worktrail-run-record liveness` / `sweep-orphans` can
+    only see the heartbeat and cannot ask `worktrail-detach status` whether the
+    orchestrator process is still alive (openspec/changes/
+    run-record-liveness-reconciliation, design D4). Pin the sequence
+    structurally: launch -> extract name + state dir from the handle -> bind
+    against the already-open `$RUN` -> only then the status check / Monitor
+    instructions. A failed or missing handle must never be bound.
+    """
+    text = (
+        SKILLS_DIR / "worktrail-go" / "references" / "subagent-prompts.md"
+    ).read_text()
+
+    launch = text.index('DETACH_JSON=$(worktrail-detach launch --name "$DETACH_NAME"')
+    bind = text.index('worktrail-run-record bind-detach "$RUN"', launch)
+    status = text.index('worktrail-detach status --name "$DETACH_NAME"', launch)
+    monitor = text.index("arm one `Monitor`", launch)
+    assert launch < bind < status < monitor
+
+    block = text[launch:bind]
+    # The bound identity comes from the handle itself, not from a guessed name.
+    assert 'echo "$DETACH_JSON" | python3 -c' in block
+    assert 'print(h["name"])' in block
+    assert 'os.path.dirname(h.get("pid_file")' in block
+    # A failed / missing handle short-circuits before the bind command.
+    assert 'if h.get("error") or not h.get("name"):' in block
+    assert 'if [ -z "$DETACH_OWNER" ]; then' in block
+    assert "exit 1" in block[block.index('if [ -z "$DETACH_OWNER" ]') :]
+
+    bind_cmd = text[bind : text.index("```", bind)]
+    assert '--name "$DETACH_OWNER_NAME"' in bind_cmd
+    assert '--state-dir "$DETACH_STATE_DIR"' in bind_cmd
+
+
 def test_adapter_dispatch_seeds_the_parent_run_record():
     """The adapter must send the resolved seed, not the raw handoff args.
 
