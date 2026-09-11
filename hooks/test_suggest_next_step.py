@@ -744,3 +744,143 @@ def test_main_headless_skips_even_when_dedup_gate_would_hit(
     )
     assert hook.main() == 0
     assert capsys.readouterr().out == ""
+
+
+def _install_pr_ledger_fake(
+    tmp_path: Path, monkeypatch, entries: list[dict] | None, exit_code: int = 0
+) -> Path:
+    """A fake `worktrail-pr-ledger` on `PATH` that records the argv it was
+    called with and answers `query --session <id> --json` with `entries`
+    (or a non-zero exit / garbage stdout when `entries` is None), so
+    `query_open_prs` exercises the real subprocess boundary without needing
+    the ledger package itself."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    argv_log = tmp_path / "pr-ledger-argv.json"
+    fake = bin_dir / "worktrail-pr-ledger"
+    body = "garbage" if entries is None else json.dumps({"entries": entries})
+    fake.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, sys\n"
+        f"open({str(argv_log)!r}, 'w').write(json.dumps(sys.argv[1:]))\n"
+        f"sys.stdout.write({body!r})\n"
+        f"sys.exit({exit_code})\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    return argv_log
+
+
+def _run_main(monkeypatch, capsys, session_id: str, transcript: Path) -> str:
+    monkeypatch.setattr(
+        hook.sys,
+        "stdin",
+        io.StringIO(
+            json.dumps({"session_id": session_id, "transcript_path": str(transcript)})
+        ),
+    )
+    assert hook.main() == 0
+    return capsys.readouterr().out
+
+
+def test_main_blocks_with_pr_recovery_when_session_owns_open_pr(
+    tmp_path, monkeypatch, capsys
+):
+    """Requirement: Interactive session end is guarded by its open PRs --
+    Scenario: Session owns an open PR. The block names the PR, is emitted
+    before the ordinary suggestion sentinel is written (so the next stop
+    still gets the normal once-per-session suggestion), and fires only once
+    per session so a deliberately-left-open PR never traps the session."""
+    monkeypatch.delenv("CC_HEADLESS", raising=False)
+    monkeypatch.setattr(hook, "STATE_DIR", tmp_path / "state")
+    transcript = tmp_path / "transcript.jsonl"
+    _write_transcript(transcript, "Write")
+    url = "https://github.com/acme/repo/pull/42"
+    argv_log = _install_pr_ledger_fake(
+        tmp_path,
+        monkeypatch,
+        [{"url": url, "session_id": "session-1", "state": "ci_red"}],
+    )
+
+    out = _run_main(monkeypatch, capsys, "session-1", transcript)
+    emitted = json.loads(out)
+    assert emitted["decision"] == "block"
+    assert url in emitted["reason"]
+    assert "OPEN PR RECOVERY" in emitted["reason"]
+    assert hook.INSTRUCTION not in emitted["reason"]
+    assert json.loads(argv_log.read_text()) == [
+        "query",
+        "--session",
+        "session-1",
+        "--json",
+    ]
+    # The ordinary suggestion sentinel was NOT consumed by the PR block.
+    assert not (tmp_path / "state" / "session-1.done").exists()
+
+    # Second stop: PR guard already fired once; normal suggestion flow runs.
+    out = _run_main(monkeypatch, capsys, "session-1", transcript)
+    assert out == json.dumps({"decision": "block", "reason": hook.INSTRUCTION}) + "\n"
+
+    # Third stop: nothing left to say.
+    assert _run_main(monkeypatch, capsys, "session-1", transcript) == ""
+
+
+def test_main_not_blocked_by_pr_owned_by_another_session(tmp_path, monkeypatch, capsys):
+    """Scenario: Another session owns the PR -- an entry the ledger returns
+    under a different session_id never blocks this session; output is the
+    ordinary suggestion, byte-identical to the pre-feature baseline."""
+    monkeypatch.delenv("CC_HEADLESS", raising=False)
+    monkeypatch.setattr(hook, "STATE_DIR", tmp_path / "state")
+    transcript = tmp_path / "transcript.jsonl"
+    _write_transcript(transcript, "Write")
+    _install_pr_ledger_fake(
+        tmp_path,
+        monkeypatch,
+        [{"url": "https://github.com/acme/repo/pull/7", "session_id": "other"}],
+    )
+    out = _run_main(monkeypatch, capsys, "session-1", transcript)
+    assert out == json.dumps({"decision": "block", "reason": hook.INSTRUCTION}) + "\n"
+
+
+def test_main_fails_open_when_pr_ledger_missing_fails_or_is_malformed(
+    tmp_path, monkeypatch, capsys
+):
+    """Missing binary, non-zero exit, and unparseable JSON each fail open to
+    the ordinary suggestion flow; the hook never raises or blocks on them."""
+    monkeypatch.delenv("CC_HEADLESS", raising=False)
+    monkeypatch.setattr(hook, "STATE_DIR", tmp_path / "state")
+    transcript = tmp_path / "transcript.jsonl"
+    _write_transcript(transcript, "Write")
+    baseline = json.dumps({"decision": "block", "reason": hook.INSTRUCTION}) + "\n"
+
+    monkeypatch.setenv("PATH", "")
+    assert hook.shutil.which(hook.PR_LEDGER_BINARY) is None
+    assert _run_main(monkeypatch, capsys, "missing-binary", transcript) == baseline
+
+    _install_pr_ledger_fake(
+        tmp_path,
+        monkeypatch,
+        [{"url": "https://github.com/acme/repo/pull/9", "session_id": "failed"}],
+        exit_code=2,
+    )
+    assert _run_main(monkeypatch, capsys, "failed", transcript) == baseline
+
+    _install_pr_ledger_fake(tmp_path, monkeypatch, None)
+    assert _run_main(monkeypatch, capsys, "malformed", transcript) == baseline
+
+
+def test_main_headless_skips_even_when_session_owns_open_pr(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("CC_HEADLESS", "1")
+    monkeypatch.setattr(hook, "STATE_DIR", tmp_path / "state")
+    transcript = tmp_path / "transcript.jsonl"
+    _write_transcript(transcript, "Write")
+    _install_pr_ledger_fake(
+        tmp_path,
+        monkeypatch,
+        [{"url": "https://github.com/acme/repo/pull/1", "session_id": "s"}],
+    )
+    assert _run_main(monkeypatch, capsys, "s", transcript) == ""
+    assert not (tmp_path / "state").exists()
