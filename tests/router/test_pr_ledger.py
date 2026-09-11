@@ -11,7 +11,11 @@ import unittest
 from pathlib import Path
 
 from worktrail.router import pr_ledger
-from worktrail.shared.brief_frontmatter import read_frontmatter, validate_brief
+from worktrail.shared.brief_frontmatter import (
+    is_canonical_style,
+    read_frontmatter,
+    validate_brief,
+)
 
 URL = "https://github.com/acme/widgets/pull/42"
 URL2 = "https://github.com/acme/widgets/pull/43"
@@ -262,8 +266,87 @@ class SweepTest(LedgerBase):
         self.assertTrue(str(fm.get("focus", "")).startswith("pr fix "))
         ok, why = validate_brief(briefs[0], required=("id", "status", "focus"))
         self.assertTrue(ok, why)
+        self.assertTrue(
+            is_canonical_style(briefs[0].read_text(encoding="utf-8")),
+            "recovery brief must be written in the canonical frontmatter style",
+        )
         entry = json.loads(self.ledger.read_text())["prs"][URL]
         self.assertEqual(entry["recovery_brief"], str(briefs[0]))
+
+    def test_one_failed_brief_does_not_lose_the_rest_of_the_pass(self) -> None:
+        """A brief write failure for one PR is recorded and skipped; the merged
+        PR's removal and every other ledger update still land."""
+        from unittest import mock
+
+        pr_ledger.register(URL2, "/repo", branch="other", path=self.ledger, now=T0)
+        by_url = {URL: MERGED, URL2: RED}
+
+        def runner(cmd, **_kw):
+            url = cmd[cmd.index("view") + 1]
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps(by_url[url]), stderr=""
+            )
+
+        real = pr_ledger.file_recovery_brief
+
+        def flaky(entry, state, reason, queue_base):
+            if entry["url"] == URL2:
+                raise OSError("disk full")
+            return real(entry, state, reason, queue_base)
+
+        with mock.patch.object(pr_ledger, "file_recovery_brief", flaky):
+            report = pr_ledger.sweep(
+                path=self.ledger, queue_base=self.queue, runner=runner, now=T0
+            )
+        self.assertEqual([r["url"] for r in report["removed"]], [URL])
+        self.assertEqual([r["url"] for r in report["brief_failed"]], [URL2])
+        self.assertEqual(report["recovered"], [])
+        prs = json.loads(self.ledger.read_text())["prs"]
+        self.assertNotIn(URL, prs)
+        self.assertEqual(prs[URL2]["last_state"], "red")
+        self.assertIn("disk full", prs[URL2]["last_brief_error"])
+        self.assertEqual(self._briefs(), [])
+
+    def test_invalid_brief_is_not_left_behind(self) -> None:
+        from unittest import mock
+
+        with mock.patch.object(
+            pr_ledger, "_render_brief", lambda *_a, **_k: "not a brief\n"
+        ):
+            report = self._sweep(RED)
+        self.assertEqual([r["url"] for r in report["brief_failed"]], [URL])
+        self.assertEqual(self._briefs(), [])
+        self.assertIn(URL, json.loads(self.ledger.read_text())["prs"])
+
+    def test_live_queries_run_outside_the_ledger_lock(self) -> None:
+        """`register`/`heartbeat` must never block behind a slow `gh` call."""
+        import fcntl
+
+        seen: list[bool] = []
+
+        def runner(cmd, **_kw):
+            lock = self.ledger.with_name(self.ledger.name + ".lock")
+            lock.parent.mkdir(parents=True, exist_ok=True)
+            with open(lock, "a+", encoding="utf-8") as fh:
+                try:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                    seen.append(True)
+                except OSError:
+                    seen.append(False)
+            # A heartbeat landing mid-query must be honoured by the sweep.
+            pr_ledger.heartbeat(URL, path=self.ledger, now=T0)
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps(RED), stderr=""
+            )
+
+        report = pr_ledger.sweep(
+            path=self.ledger, queue_base=self.queue, runner=runner, now=T0
+        )
+        self.assertEqual(seen, [True])
+        self.assertEqual(report["recovered"], [])
+        self.assertIn("watching", report["retained"][0]["reason"])
+        self.assertEqual(self._briefs(), [])
 
     def test_picked_brief_still_dedups(self) -> None:
         self._sweep(RED)

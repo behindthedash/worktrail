@@ -49,7 +49,11 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from ..shared.brief_frontmatter import read_frontmatter, validate_brief
+from ..shared.brief_frontmatter import (
+    read_frontmatter,
+    serialize_frontmatter,
+    validate_brief,
+)
 from ..shared.homedir import worktrail_home
 from . import pr_labels
 
@@ -438,18 +442,26 @@ def _render_brief(entry: dict[str, Any], state: str, reason: str, brief_id: str)
     url = entry["url"]
     created = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
     focus = f"pr fix {url} -- {reason}"
+    # Routed through `serialize_frontmatter` so the brief matches the canonical
+    # style every other `queue/` writer produces (`is_canonical_style`), instead
+    # of being flagged as a style-mismatch by the corpus scanner on every sweep.
+    frontmatter = serialize_frontmatter(
+        {
+            "id": brief_id,
+            "created": created,
+            "focus": focus,
+            "repo": entry.get("repo"),
+            "remote": None,
+            "status": "queued",
+            "intent": "pr fix",
+            "pr-url": url,
+            "pr-state": state,
+            "brief-source": BRIEF_SOURCE,
+        }
+    )
     lines = [
         "---",
-        f"id: {brief_id}",
-        f"created: {created}",
-        f"focus: {focus}",
-        f"repo: {entry.get('repo')}",
-        "remote: null",
-        "status: queued",
-        "intent: pr fix",
-        f"pr-url: {url}",
-        f"pr-state: {state}",
-        f"brief-source: {BRIEF_SOURCE}",
+        frontmatter.rstrip("\n"),
         "---",
         "",
         "## Focus",
@@ -485,6 +497,11 @@ def file_recovery_brief(
     path.write_text(_render_brief(entry, state, reason, brief_id), encoding="utf-8")
     ok, why = validate_brief(path, required=("id", "status", "focus"))
     if not ok:
+        # Never leave an invalid brief behind for a consumer to claim.
+        try:
+            path.unlink()
+        except OSError:
+            pass
         raise ValueError(f"written recovery brief failed validation: {why}")
     return path
 
@@ -537,7 +554,17 @@ def sweep(
     """Query every ledgered PR live, drop merged/closed ones, and file at most
     one recovery brief per unwatched non-terminal PR. Safe to run every five
     minutes: a PR that already has a queued/picked recovery brief is skipped,
-    and a failed live query retains the entry untouched."""
+    and a failed live query retains the entry untouched.
+
+    The live `gh pr view` queries run *outside* the ledger lock (they can take
+    tens of seconds each), so `register`/`heartbeat` on the landing pipeline's
+    critical path never block behind a sweep. The lock is taken only for the
+    read-modify-write that applies the decisions, re-reading each entry so a
+    heartbeat that arrived during the query phase is honoured.
+
+    One brief that fails to write never aborts the pass: the failure is
+    recorded per entry (`brief_failed`) and every other update still lands.
+    """
     now = now or _now()
     queue_base = queue_base or _queue_base()
     path = path or ledger_path()
@@ -547,8 +574,18 @@ def sweep(
         "recovered": [],
         "already_briefed": [],
         "query_failed": [],
+        "brief_failed": [],
     }
 
+    # Phase 1 (unlocked): snapshot the URLs and query live state.
+    snapshot = load_ledger(path)
+    states: dict[str, str] = {}
+    for url, entry in snapshot["prs"].items():
+        if not isinstance(entry, dict):
+            continue
+        states[url] = classify_state(query_pr_state(url, entry.get("repo"), runner))
+
+    # Phase 2 (locked): apply decisions against the current ledger contents.
     with _Locked(path):
         ledger = load_ledger(path)
         for url in list(ledger["prs"].keys()):
@@ -557,9 +594,11 @@ def sweep(
                 del ledger["prs"][url]
                 report["removed"].append({"url": url, "reason": "malformed entry"})
                 continue
+            if url not in states:
+                # Registered after the snapshot; the next sweep will query it.
+                continue
             entry.setdefault("url", url)
-            payload = query_pr_state(url, entry.get("repo"), runner)
-            state = classify_state(payload)
+            state = states[url]
             action, reason = _decide(
                 entry,
                 state,
@@ -587,7 +626,16 @@ def sweep(
                 entry["recovery_brief"] = str(existing)
                 report["already_briefed"].append({"url": url, "brief": str(existing)})
                 continue
-            brief = file_recovery_brief(entry, state, reason, queue_base)
+            try:
+                brief = file_recovery_brief(entry, state, reason, queue_base)
+            except (OSError, ValueError) as exc:
+                entry["last_brief_error"] = f"{_iso(now)}: {exc}"
+                report["brief_failed"].append({"url": url, "error": str(exc)})
+                print(
+                    f"pr_ledger: recovery brief for {url} failed: {exc}",
+                    file=sys.stderr,
+                )
+                continue
             entry["recovery_brief"] = str(brief)
             entry["recovery_brief_at"] = _iso(now)
             report["recovered"].append(
