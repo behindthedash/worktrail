@@ -45,7 +45,7 @@
 
 ## 4. Verification
 
-- [ ] 4.1 [depends: 2.1, 2.2, 3.1] [e2e] Run the focused ledger, landing, preflight, and Stop-hook
+- [x] 4.1 [depends: 2.1, 2.2, 3.1] [e2e] Run the focused ledger, landing, preflight, and Stop-hook
       tests, then `pytest -q`. Run `openspec validate pr-ledger-recovery-sweep --strict` and
       `worktrail-compile openspec/changes/pr-ledger-recovery-sweep`; record the external
       five-minute cron deployment handoff rather than editing an unversioned host crontab from
