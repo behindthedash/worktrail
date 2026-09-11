@@ -781,6 +781,30 @@ DETACH_NAME="orch-$(basename "$SPEC_ROOT")-$SPEC_ID"
 # for why this is never a run_in_background call.
 DETACH_JSON=$(worktrail-detach launch --name "$DETACH_NAME" --cwd "$SPEC_ROOT" -- \
   worktrail-live full-real --repo "$SPEC_ROOT" --spec "$SPEC_REF" --base "$BASE" --agent "$AGENT_CLI" "${AGENT_MODEL_ARGS[@]}" "${FALLBACK_AGENT_ARGS[@]}" "${ROLE_AGENT_MAP_ARGS[@]}" "${PR_LABEL_ARGS[@]}" --route "$ROUTE" --gates "$GATES")
+# Bind the detached owner to the already-open run record so liveness can query the
+# process itself, not just the heartbeat. Only a successful handle is bound: a failed
+# launch (non-zero rc, `error` key, or missing `name`) is reported and never recorded
+# as the run's owner.
+DETACH_OWNER=$(echo "$DETACH_JSON" | python3 -c '
+import json, sys
+try:
+    h = json.load(sys.stdin)
+except ValueError:
+    sys.exit(0)
+if h.get("error") or not h.get("name"):
+    sys.exit(0)
+import os
+print(h["name"])
+print(os.path.dirname(h.get("pid_file") or ""))
+')
+if [ -z "$DETACH_OWNER" ]; then
+  echo "ERROR: worktrail-detach launch did not return a usable handle — not binding it to $RUN: $DETACH_JSON" >&2
+  exit 1
+fi
+DETACH_OWNER_NAME=$(echo "$DETACH_OWNER" | sed -n 1p)
+DETACH_STATE_DIR=$(echo "$DETACH_OWNER" | sed -n 2p)
+worktrail-run-record bind-detach "$RUN" --name "$DETACH_OWNER_NAME" \
+  ${DETACH_STATE_DIR:+--state-dir "$DETACH_STATE_DIR"}
 ```
 
 `AGENT_CLI` precedence is explicit invocation > repo policy `agent_cli` > machine-wide
@@ -909,7 +933,11 @@ a role pinned to a different agent falls back to that agent's own default model.
   surfaces a `tail-pending` stage. On a `tail-pending` spec, run those tasks (or mark them
   `completed`/backfill if not applicable) rather than re-launching the orchestrator — a
   re-launch would just skip them again.
-- **After launching — confirm health, then watch with `Monitor`, never `sleep`:** run
+- **After launching — bind, confirm health, then watch with `Monitor`, never `sleep`:**
+  `worktrail-run-record bind-detach` (the code block above) must already have stored the
+  handle's name and state directory on `$RUN` — that binding is what lets
+  `worktrail-run-record liveness` and `sweep-orphans` ask `worktrail-detach status`
+  whether the owner is still running instead of guessing from the heartbeat. Then run
   `worktrail-detach status --name "$DETACH_NAME"` right after launch; `state: running` plus a
   few lines in `log_tail` confirm health (`gone` means the process died before writing its
   sentinel — read the log). Then arm one `Monitor` whose command is the handle's `wait_cmd`

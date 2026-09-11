@@ -25,7 +25,7 @@
 
 ## 2. Bind the workflow launch handle to its run record (`run-record-liveness-reconciliation`)
 
-- [ ] 2.1 Implement Requirement: Run records bind a detached owner after a
+- [x] 2.1 Implement Requirement: Run records bind a detached owner after a
       successful launch. In `skills/worktrail-go/references/subagent-prompts.md`
       at the full-real detached-launch procedure, extract the successful
       launch handle's name and state directory and invoke the new run-record
