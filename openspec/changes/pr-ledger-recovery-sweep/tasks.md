@@ -34,7 +34,7 @@
 
 ## 3. Prevent interactive abandonment (`pr-ledger-recovery`)
 
-- [ ] 3.1 [depends: 1.1] Update `hooks/suggest_next_step.py` to query
+- [x] 3.1 [depends: 1.1] Update `hooks/suggest_next_step.py` to query
       `worktrail-pr-ledger` for non-terminal PRs owned by the Stop-hook session before writing
       its normal suggestion sentinel, block with concise PR recovery guidance when one exists,
       and preserve the current headless and fail-open behavior. Extend
