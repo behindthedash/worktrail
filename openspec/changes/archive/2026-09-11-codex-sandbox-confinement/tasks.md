@@ -52,7 +52,7 @@
 
 ## 4. Verification
 
-- [ ] 4.1 [e2e] Run `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m
+- [x] 4.1 [e2e] Run `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m
       worktrail.orchestrator.orchestrate check`; then a live smoke: a Codex dry-run dispatch
       from a linked worktree shows the common dir and `-worktrees` roots, and one real Codex
       dispatch in a scratch worktree commits successfully under the sandbox.
