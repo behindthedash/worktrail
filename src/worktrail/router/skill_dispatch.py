@@ -17,6 +17,7 @@ an unattended caller receives the structured pending result unchanged.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -32,6 +33,7 @@ from unittest import mock
 
 from ..orchestrator import agent_capacity
 from ..runtime.selection import Cell, NoExecutionTarget, select_cell
+from ..shared import codex_sandbox
 
 SUPPORTED_AGENTS = ("claude", "codex", "opencode")
 _SKILL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
@@ -447,6 +449,32 @@ def select_dispatch_cell(
             _record_skipped_cells(run_path, skipped)
 
 
+# Tests script `subprocess.run` on this module (and on spawnlib, which shares
+# the same module object) with fake worker outcomes; the shared helper's git
+# probe resolves `subprocess.run` at call time and must neither consume one of
+# those outcomes nor feed its own output into them.
+_REAL_SUBPROCESS_RUN = subprocess.run
+
+
+@contextlib.contextmanager
+def real_subprocess_run():
+    """Undo a scripted `subprocess.run` for the duration of the block."""
+    scripted = subprocess.run
+    subprocess.run = _REAL_SUBPROCESS_RUN
+    try:
+        yield
+    finally:
+        subprocess.run = scripted
+
+
+def codex_sandbox_args(
+    cwd: str | Path, extra_roots: Sequence[str | Path] = ()
+) -> list[str]:
+    """`codex_sandbox.codex_sandbox_args` with its git probe on the real runner."""
+    with real_subprocess_run():
+        return codex_sandbox.codex_sandbox_args(cwd, extra_roots=extra_roots)
+
+
 def build_command(
     agent: str,
     skill: str,
@@ -469,16 +497,20 @@ def build_command(
 
     `write` opts into the permissions a skill needs to author files headlessly.
     It is opt-in because granting them by default would silently widen every
-    existing dispatch. Codex worker dispatches use
-    `-s danger-full-access` so local integration tests can bind loopback
-    sockets. `claude` and
-    `opencode` are otherwise unable to write without
-    an interactive approval that a headless run has no channel to answer, which
-    strands the spawn instead of failing it.
+    existing dispatch. Codex dispatches always launch under
+    `-s workspace-write` via the shared `codex_sandbox_args` helper, which
+    also sets `sandbox_workspace_write.network_access=true`: workspace-write
+    blocks outbound network by default, and a headless child still has to
+    reach `gh`, `git push`, and package registries. `claude` and `opencode`
+    are otherwise unable to write without an interactive approval that a
+    headless run has no channel to answer, which strands the spawn instead of
+    failing it.
 
-    `add_dirs` grants Codex additional writable roots alongside `cwd`. It is
-    intentionally explicit because these paths may contain run records,
-    sibling worktrees, or other state outside the target checkout.
+    `add_dirs` grants Codex additional writable roots on top of the helper's
+    default set (the child cwd, its git common dir, the operator state dir,
+    the work-queue root). It is intentionally explicit because these paths may
+    contain run records, sibling worktrees, or other state outside the target
+    checkout.
     """
     if agent not in SUPPORTED_AGENTS:
         raise ValueError(f"unsupported agent: {agent!r}")
@@ -500,11 +532,10 @@ def build_command(
             command += ["--model", model]
         command.append(prompt)
     else:
-        command = ["codex", "exec", "--json", "-s", "danger-full-access"]
+        command = ["codex", "exec", "--json"]
         if cwd:
             command += ["-C", cwd]
-        for directory in add_dirs:
-            command += ["--add-dir", directory]
+        command += codex_sandbox_args(cwd or os.getcwd(), extra_roots=add_dirs)
         if model:
             command += ["--model", model]
         command.append(prompt)
