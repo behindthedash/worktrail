@@ -16,7 +16,7 @@
 
 ## 2. Skill dispatch and orchestrator worker launch sites
 
-- [ ] 2.1 In `src/worktrail/router/skill_dispatch.py`, replace the hardcoded
+- [x] 2.1 In `src/worktrail/router/skill_dispatch.py`, replace the hardcoded
       `["-s", "danger-full-access"]` in `build_command` with the shared helper called with
       the child cwd and caller `add_dirs` as extras, keep `-C cwd`, and correct the
       docstring's loopback justification to describe the network-access override. Tests
