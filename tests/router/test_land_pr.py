@@ -947,6 +947,33 @@ class LandPrOrchestrationTests(unittest.TestCase):
         self.assertEqual(len(spy.finish_calls()), 1)
         self.assertIn("failed_recoverable", spy.finish_calls()[0])
 
+    def test_ledger_failure_with_pipeline_owned_run_still_records_the_pr(
+        self,
+    ) -> None:
+        # `run=None` callers (queue triage, drain) have no record of their own:
+        # the open PR must land in a started run record even when the ledger
+        # write fails, or it is recorded nowhere at all.
+        request = _land_request(run=None)
+        with (
+            mock.patch.object(
+                pr_ledger, "register", side_effect=pr_ledger.LedgerError("disk full")
+            ),
+            mock.patch.object(land_pr, "_watch_ci") as watch_mock,
+        ):
+            outcome, spy = self._run(request, _watch_ci=_UNPATCHED)
+        self.assertEqual(outcome.outcome, "ceiling")
+        self.assertEqual(outcome.refused_step, "pr_ledger")
+        self.assertEqual(outcome.run, spy.run_path)
+        watch_mock.assert_not_called()
+        self.assertEqual([c[0] for c in spy.calls if c[0] == "start"], ["start"])
+        self.assertIn(
+            ["set", spy.run_path, "pull_request", "https://github.com/o/r/pull/1"],
+            spy.set_calls(),
+        )
+        self.assertEqual(len(spy.finish_calls()), 1)
+        self.assertEqual(spy.finish_calls()[0][1], spy.run_path)
+        self.assertIn("failed_recoverable", spy.finish_calls()[0])
+
     def test_watch_heartbeats_then_unwatches(self) -> None:
         request = _land_request()
         seen: list[object] = []

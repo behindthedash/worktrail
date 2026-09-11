@@ -1392,11 +1392,23 @@ def land_pr(request: LandRequest) -> LandOutcome:
     # sweep must be able to find it even if nothing below ever runs.
     ledger_err = _register_pr(repo, request, pr_url, branch)
     if ledger_err:
-        if request.run:
-            _run_record_main(
+        # The ledger write failed, so the run record is the only place left
+        # that can name this open PR: start one for a pipeline-owned landing
+        # (`run=None`) rather than leaving the PR recorded nowhere, write the
+        # URL into it, and finish it as recoverable. A refused finish (the
+        # pipeline-owned record has no scope-review entry, so the gate may
+        # decline) is folded into the detail -- the outcome is already a
+        # ceiling, and the started record still carries `pull_request`.
+        detail = ledger_err
+        failed_run = _ensure_run_record(
+            repo, request.route, request.risk, request.request_summary, request.run
+        )
+        if failed_run:
+            _run_record_main(["set", failed_run, "pull_request", pr_url])
+            finish_exit, _, finish_detail = _run_record_main(
                 [
                     "finish",
-                    request.run,
+                    failed_run,
                     "--status",
                     "failed_recoverable",
                     "--pr",
@@ -1405,16 +1417,18 @@ def land_pr(request: LandRequest) -> LandOutcome:
                     ledger_err,
                 ]
             )
+            if finish_exit != 0 and finish_detail:
+                detail = f"{detail}; run record not finished: {finish_detail}"
         return LandOutcome(
             outcome="ceiling",
             pr_url=pr_url,
             pr_number=pr_number,
             labels=labels,
-            run=request.run,
+            run=failed_run or request.run,
             refused_step="pr_ledger",
             final_status="failed_recoverable",
             merge_result="PR open but not registered in the PR ledger",
-            detail=ledger_err,
+            detail=detail,
         )
 
     run_path = _ensure_run_record(
