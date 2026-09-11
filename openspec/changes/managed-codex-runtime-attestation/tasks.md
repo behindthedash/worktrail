@@ -1,6 +1,6 @@
 ## 1. Managed attestation implementation
 
-- [ ] 1.1 Add the managed Codex runtime-attestation module and
+- [x] 1.1 Add the managed Codex runtime-attestation module and
       `worktrail-*` entry point.  It must create the deliberate read-only
       parent-home fixture, invoke the existing probe rather than rebuilding
       its spawn path, require a timeout and owning run-record path, verify the

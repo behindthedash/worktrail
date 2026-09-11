@@ -1108,5 +1108,97 @@ class TestLauncherTimeoutRequired(unittest.TestCase):
         self.assertEqual(exit_code, 1)
 
 
+class TestEffectiveIdentity(unittest.TestCase):
+    """The probe's safe result carries an equality-checkable selected/effective
+    provider+model pair (managed-codex-runtime-attestation); a thread id is
+    never used as identity."""
+
+    def _run(self, stdout):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_dir = os.path.join(tmpdir, "test-repo")
+            os.makedirs(repo_dir)
+            _init_git_repo(repo_dir)
+            _add_and_commit_file(repo_dir, "test.txt", "initial content")
+            cmd, scratch = build_probe_command()
+            try:
+                with patch.dict(
+                    os.environ,
+                    {"WORKTRAIL_CODEX_HOME": os.path.join(tmpdir, "codex-home")},
+                    clear=True,
+                ):
+                    child_env, _, _ = prepare_environment(inherit_auth=False)
+                completed = subprocess.CompletedProcess(
+                    args=cmd, returncode=0, stdout=stdout, stderr=""
+                )
+                with patch.object(
+                    codex_probe.subprocess, "run", return_value=completed
+                ):
+                    return run_probe_command(
+                        cmd, scratch, child_env, timeout=30.0, repo_dir=repo_dir
+                    )
+            finally:
+                shutil.rmtree(scratch, ignore_errors=True)
+
+    def test_selected_identity_comes_from_the_launched_cell(self):
+        self.assertEqual(
+            codex_probe.selected_identity(),
+            (codex_probe.PROBE_CELL.harness, codex_probe.PROBE_CELL.model),
+        )
+        self.assertEqual(codex_probe.PROBE_CELL.harness, "codex")
+
+    def test_extract_effective_identity_reads_only_thread_started(self):
+        self.assertEqual(
+            codex_probe.extract_effective_identity(
+                '{"type": "thread.started", "thread_id": "t1", '
+                '"model_provider": "codex", "model": "gpt-5"}\n'
+            ),
+            ("codex", "gpt-5"),
+        )
+        # Absent on codex-cli 0.154.0's documented event: both None, and the
+        # thread id is not promoted into either slot.
+        self.assertEqual(
+            codex_probe.extract_effective_identity(
+                '{"type": "thread.started", "thread_id": "t1"}\n'
+            ),
+            (None, None),
+        )
+        # Other events, malformed lines, and unsafe values are ignored.
+        self.assertEqual(
+            codex_probe.extract_effective_identity(
+                'not json\n{"type": "turn.started", "model": "x"}\n'
+                '{"type": "thread.started", "thread_id": "t1", '
+                '"model": "sk-secret token with spaces"}\n'
+            ),
+            (None, None),
+        )
+
+    def test_report_carries_selected_and_effective_identity(self):
+        result = self._run(
+            '{"type": "thread.started", "thread_id": "t1", '
+            '"model_provider": "codex", "model": "gpt-5"}\n'
+            '{"type": "turn.completed"}\n'
+            '{"type": "item.completed", "item": '
+            '{"type": "agent_message", "text": "ok"}}\n'
+        )
+        self.assertEqual(result.stage, StageOutcome.REPORT_BACK)
+        self.assertTrue(result.success)
+        self.assertEqual(result.session_started_marker, "t1")
+        self.assertEqual(result.selected_provider, "codex")
+        self.assertIsNone(result.selected_model)
+        self.assertEqual(result.effective_provider, "codex")
+        self.assertEqual(result.effective_model, "gpt-5")
+
+    def test_missing_identity_is_none_not_thread_id(self):
+        result = self._run(
+            '{"type": "thread.started", "thread_id": "t1"}\n'
+            '{"type": "item.completed", "item": '
+            '{"type": "agent_message", "text": "ok"}}\n'
+        )
+        self.assertEqual(result.session_started_marker, "t1")
+        self.assertIsNone(result.effective_provider)
+        self.assertIsNone(result.effective_model)
+        self.assertNotIn("t1", str((result.effective_provider, result.effective_model)))
+
+
 if __name__ == "__main__":
     unittest.main()
