@@ -31,7 +31,7 @@
 
 ## 2. Managed-session operating procedure
 
-- [ ] 2.1 Document the operator invocation and evidence review procedure:
+- [x] 2.1 Document the operator invocation and evidence review procedure:
       invoke the installed/current Worktrail command with a run-record path;
       perform two independent fresh managed-session passes with distinct
       nonces and matching intended source identity; then perform a controlled
