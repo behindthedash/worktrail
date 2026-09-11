@@ -223,27 +223,29 @@ class TestSignalsAndIdentity(_AttestationHarness):
         self.assertEqual(result.report.stage, StageOutcome.PROVIDER_SELECTION)
         self.assertFalse(result.runtime_ready)
 
-    def test_missing_effective_identity_is_provider_selection_not_thread_id(self):
+    def test_missing_effective_identity_is_unverified_not_failed(self):
+        # codex-cli 0.154.0 never reports identity on thread.started, so an
+        # absent effective identity is not distinguishable from "correct but
+        # unobservable" -- the attestation still succeeds on its other
+        # signals, and the entry records the identity as unverified (null).
         result = self.run_with(NO_IDENTITY_STREAM)
-        self.assertEqual(result.report.stage, StageOutcome.PROVIDER_SELECTION)
-        self.assertFalse(result.success)
+        self.assertEqual(result.report.stage, StageOutcome.REPORT_BACK)
+        self.assertTrue(result.success)
         self.assertTrue(result.runtime_ready)
         self.assertIsNone(result.report.effective_provider)
-        self.assertNotIn("t1", result.report.diagnostic)
-        self.assertIn("not an identity substitute", result.report.diagnostic)
 
-    def test_identity_reclassification_keeps_observed_report_back_signal(self):
+    def test_mismatched_identity_reclassification_keeps_observed_report_back_signal(
+        self,
+    ):
         # The probe DID reply with the sentinel; only the identity rule
         # failed. The observed signal must survive into the result and entry.
-        for stream in (NO_IDENTITY_STREAM, OK_STREAM.replace('"codex"', '"other"')):
-            with self.subTest(stream=stream):
-                result = self.run_with(stream)
-                self.assertEqual(result.report.stage, StageOutcome.PROVIDER_SELECTION)
-                self.assertFalse(result.success)
-                self.assertTrue(result.report_back_success)
-                entry = att.build_entry(result, "nonce-1")
-                self.assertTrue(entry["report_back_success"])
-                self.assertFalse(entry["success"])
+        result = self.run_with(OK_STREAM.replace('"codex"', '"other"'))
+        self.assertEqual(result.report.stage, StageOutcome.PROVIDER_SELECTION)
+        self.assertFalse(result.success)
+        self.assertTrue(result.report_back_success)
+        entry = att.build_entry(result, "nonce-1")
+        self.assertTrue(entry["report_back_success"])
+        self.assertFalse(entry["success"])
 
     def test_mismatched_provider_is_provider_selection(self):
         result = self.run_with(OK_STREAM.replace('"codex"', '"other"'))
@@ -261,9 +263,8 @@ class TestSignalsAndIdentity(_AttestationHarness):
         )
         self.assertTrue(att.check_identity(base).success)
         pinned = codex_probe.dataclasses.replace(base, selected_model="gpt-5")
-        self.assertEqual(
-            att.check_identity(pinned).stage, StageOutcome.PROVIDER_SELECTION
-        )
+        # No effective_model reported -- unverified, not a failure.
+        self.assertTrue(att.check_identity(pinned).success)
         matched = codex_probe.dataclasses.replace(pinned, effective_model="gpt-5")
         self.assertTrue(att.check_identity(matched).success)
         wrong = codex_probe.dataclasses.replace(pinned, effective_model="gpt-4")
