@@ -15,6 +15,7 @@ from worktrail.orchestrator import agent_capacity
 from worktrail.router import run_record, skill_dispatch
 from worktrail.router.run_record import _load as _load_run_record
 from worktrail.runtime.selection import NoExecutionTarget
+from worktrail.shared import codex_sandbox
 from worktrail.workqueue import decisions as decisions_mod
 
 
@@ -35,9 +36,18 @@ class SkillDispatchTests(unittest.TestCase):
             "codex", "worktrail-sdd-workflow", "route:E"
         )
         self.assertEqual(
-            command[:5],
-            ["codex", "exec", "--json", "-s", "danger-full-access"],
+            command[:7],
+            [
+                "codex",
+                "exec",
+                "--json",
+                "-s",
+                "workspace-write",
+                "-c",
+                codex_sandbox.NETWORK_ACCESS_OVERRIDE,
+            ],
         )
+        self.assertNotIn("danger-full-access", command)
         self.assertNotIn("-a", command)
         self.assertNotIn("on-request", command)
         self.assertIn("[WORKTRAIL INTERNAL DISPATCH]", command[-1])
@@ -49,21 +59,63 @@ class SkillDispatchTests(unittest.TestCase):
         )
         self.assertNotIn("claude", command)
 
+    @staticmethod
+    def _add_dirs(command):
+        return [command[i + 1] for i, arg in enumerate(command) if arg == "--add-dir"]
+
     def test_codex_receives_explicit_additional_writable_dirs(self):
-        command = skill_dispatch.build_command(
-            "codex",
-            "worktrail-sdd-workflow",
-            "route:C",
-            cwd="/repo",
-            add_dirs=("/runs", "/repo-worktrees"),
-        )
+        with patch.dict(
+            os.environ,
+            {"WORKTRAIL_HOME": "/state", "WORK_QUEUE_DIR": "/queue"},
+        ):
+            command = skill_dispatch.build_command(
+                "codex",
+                "worktrail-sdd-workflow",
+                "route:C",
+                cwd="/repo",
+                add_dirs=("/runs", "/repo-worktrees"),
+            )
+        # `-C cwd` is kept, and the caller's extras are merged after the
+        # helper's default roots (cwd, operator state dir, work-queue root;
+        # /repo is not a git checkout so no common dir appears).
+        self.assertEqual(command[command.index("-C") + 1], "/repo")
         self.assertEqual(
-            command[
-                command.index("--add-dir") : command.index("--model")
-                if "--model" in command
-                else -1
-            ],
-            ["--add-dir", "/runs", "--add-dir", "/repo-worktrees"],
+            self._add_dirs(command),
+            ["/repo", "/state", "/queue", "/runs", "/repo-worktrees"],
+        )
+        self.assertNotIn("danger-full-access", command)
+
+    def test_codex_dry_run_json_is_stable_across_calls(self):
+        with patch.dict(
+            os.environ,
+            {"WORKTRAIL_HOME": "/state", "WORK_QUEUE_DIR": "/queue"},
+        ):
+            outputs = []
+            for _ in range(2):
+                output = StringIO()
+                with redirect_stdout(output):
+                    rc = skill_dispatch.main(
+                        [
+                            "--agent",
+                            "codex",
+                            "--skill",
+                            "worktrail-sdd-workflow",
+                            "--cwd",
+                            "/repo",
+                            "--add-dir",
+                            "/runs",
+                            "--json",
+                            "--dry-run",
+                        ]
+                    )
+                self.assertEqual(rc, 0)
+                outputs.append(json.loads(output.getvalue()))
+        self.assertEqual(outputs[0], outputs[1])
+        command = outputs[0]
+        self.assertEqual(command[:5], ["codex", "exec", "--json", "-C", "/repo"])
+        self.assertEqual(command[5:7], ["-s", "workspace-write"])
+        self.assertEqual(
+            self._add_dirs(command), ["/repo", "/state", "/queue", "/runs"]
         )
 
     def test_additional_writable_dirs_are_not_added_to_other_providers(self):

@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from typing import ClassVar
 
 from worktrail.orchestrator import spawnlib
+from worktrail.shared import codex_sandbox
 
 os.environ.setdefault(
     "GO_AGENT_CAPACITY_CACHE", os.path.join(tempfile.mkdtemp(), "capacity.json")
@@ -593,13 +594,47 @@ class Helpers(unittest.TestCase):
         )
         self.assertEqual(c[:2], ["codex", "exec"])
         self.assertIn("--json", c)
-        self.assertIn("-s", c)
-        self.assertIn("danger-full-access", c)
+        self.assertEqual(c[c.index("-s") + 1], "workspace-write")
+        self.assertNotIn("danger-full-access", c)
         self.assertNotIn("-a", c)
         self.assertNotIn("on-request", c)
         self.assertIn("--output-last-message", c)
         self.assertIn("/tmp/out", c)
         self.assertEqual(c[-1], "hi")
+
+    def test_build_cmd_codex_workspace_write_adds_worker_common_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(["git", "init", "-q", tmp], check=True, capture_output=True)
+            common = codex_sandbox.git_common_dir(tmp)
+            self.assertIsNotNone(common)
+            c = spawnlib.build_cmd("hi", _cell(harness="codex"), cwd=tmp)
+        add_dirs = [c[i + 1] for i, arg in enumerate(c) if arg == "--add-dir"]
+        self.assertEqual(c[:5], ["codex", "exec", "--json", "-s", "workspace-write"])
+        self.assertEqual(c[5:7], ["-c", codex_sandbox.NETWORK_ACCESS_OVERRIDE])
+        self.assertIn(tmp, add_dirs)
+        self.assertIn(str(common), add_dirs)
+        self.assertNotIn("danger-full-access", c)
+        self.assertEqual(c[-1], "hi")
+
+    def test_build_cmd_codex_cwd_defaults_to_process_cwd(self):
+        c = spawnlib.build_cmd("hi", _cell(harness="codex"))
+        add_dirs = [c[i + 1] for i, arg in enumerate(c) if arg == "--add-dir"]
+        self.assertEqual(add_dirs[0], os.getcwd())
+
+    def test_build_cmd_codex_git_probe_ignores_scripted_subprocess_run(self):
+        # spawn_agent tests script spawnlib.subprocess.run with worker
+        # outcomes; the helper's git probe must not consume (or be fed by) one.
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(["git", "init", "-q", tmp], check=True, capture_output=True)
+            fr = FakeRun([Proc(0, "scripted worker outcome", "")])
+            orig = spawnlib.subprocess.run
+            spawnlib.subprocess.run = fr
+            try:
+                c = spawnlib.build_cmd("hi", _cell(harness="codex"), cwd=tmp)
+            finally:
+                spawnlib.subprocess.run = orig
+            self.assertEqual(fr.calls, 0)
+            self.assertIn(str(codex_sandbox.git_common_dir(tmp)), c)
 
     def test_build_cmd_rejects_unknown_agent(self):
         with self.assertRaises(ValueError):
@@ -633,7 +668,7 @@ class Helpers(unittest.TestCase):
     def test_build_cmd_codex_effort_reasoning_config(self):
         c = spawnlib.build_cmd("hi", _cell(harness="codex", effort="xhigh"))
         self.assertIn("-c", c)
-        self.assertEqual(c[c.index("-c") + 1], "model_reasoning_effort=xhigh")
+        self.assertEqual(c[c.index("model_reasoning_effort=xhigh") - 1], "-c")
 
     def test_build_cmd_claude_subscription_omits_bare(self):
         c = spawnlib.build_cmd("hi", _cell(pool="subscription"))

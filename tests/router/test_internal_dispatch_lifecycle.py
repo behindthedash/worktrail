@@ -16,6 +16,7 @@ from pathlib import Path
 from unittest import mock
 
 from worktrail.router import skill_dispatch
+from worktrail.shared import codex_sandbox
 from worktrail.workqueue import decisions as decisions_mod
 
 from ._subprocess_timeouts import subprocess_timeout_s
@@ -265,11 +266,19 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            # A real checkout: codex's workspace-write root set must include
+            # the child cwd's git common dir (a linked worktree's objects live
+            # there), which only exists for a git checkout.
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            common_dir = codex_sandbox.git_common_dir(root)
+            self.assertIsNotNone(common_dir)
             bin_dir = root / "bin"
             bin_dir.mkdir()
             brief = root / "20260812-090245-add-an-install-level-cross.md"
             brief.write_text("install dispatch contract\n")
-            run = root / "run.yaml"
+            runs = root / "runs"
+            runs.mkdir()
+            run = runs / "run.yaml"
             run.write_text("run_id: install-contract\n")
             skills = root / "skills" / "worktrail-sdd-workflow"
             skills.mkdir(parents=True)
@@ -333,6 +342,8 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
                         "--cwd",
                         str(root),
                         "--write",
+                        "--add-dir",
+                        str(runs),
                     ]
                     if agent == "codex":
                         command.append("--no-inherit-codex-auth")
@@ -361,10 +372,19 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
                         "codex": [
                             "exec",
                             "--json",
-                            "-s",
-                            "danger-full-access",
                             "-C",
                             str(root),
+                            "-s",
+                            "workspace-write",
+                            "-c",
+                            codex_sandbox.NETWORK_ACCESS_OVERRIDE,
+                            *(
+                                arg
+                                for root_dir in codex_sandbox.writable_roots(
+                                    root, extra_roots=[runs]
+                                )
+                                for arg in ("--add-dir", str(root_dir))
+                            ),
                             prompt,
                         ],
                         "opencode": [
@@ -378,6 +398,15 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
                         ],
                     }
                     self.assertEqual(provider_argv, expected_argv[agent])
+                    if agent == "codex":
+                        add_dirs = {
+                            provider_argv[i + 1]
+                            for i, arg in enumerate(provider_argv)
+                            if arg == "--add-dir"
+                        }
+                        self.assertNotIn("danger-full-access", provider_argv)
+                        self.assertIn(str(common_dir), add_dirs)
+                        self.assertIn(str(runs), add_dirs)
 
                     blocked = subprocess.run(
                         command,
