@@ -19,7 +19,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [depends: 1.1] [e2e] Run `pytest -q tests/conductor/test_import_deps.py
+- [x] 2.1 [depends: 1.1] [e2e] Run `pytest -q tests/conductor/test_import_deps.py
       tests/conductor/test_compile.py`, then `pytest -q` and
       `python3 -m worktrail.orchestrator.orchestrate check`. Run
       `openspec validate compile-import-inference-typescript --strict` and
