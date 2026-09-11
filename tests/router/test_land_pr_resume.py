@@ -14,7 +14,7 @@ import json
 import unittest
 from unittest import mock
 
-from worktrail.router import land_pr
+from worktrail.router import land_pr, pr_ledger
 
 from .test_land_pr import FakeRun, RunRecordSpy, _land_request
 
@@ -253,6 +253,41 @@ class LandPrResumeTests(unittest.TestCase):
         commit_mock.assert_called_once()
         push_mock.assert_called_once()
         self.assertEqual(outcome.outcome, "landed")
+
+    def test_resumed_open_pr_registers_in_ledger_once_before_outcome(self) -> None:
+        runner = _resumable_runner()
+        request = _land_request(runner=runner, session_id="sess-resume")
+        with mock.patch.object(
+            pr_ledger, "register", wraps=pr_ledger.register
+        ) as register:
+            outcome, _spy, _p, _c, _push = self._run(runner, request=request)
+        self.assertEqual(outcome.outcome, "landed")
+        register.assert_called_once()
+        entries = pr_ledger.load_ledger()["prs"]
+        self.assertEqual(list(entries), [_PR_URL])
+        self.assertEqual(entries[_PR_URL]["branch"], "feature")
+        self.assertEqual(entries[_PR_URL]["session_id"], "sess-resume")
+        self.assertIsNone(entries[_PR_URL]["watcher"])
+
+    def test_resumed_pr_registration_failure_is_a_ceiling(self) -> None:
+        runner = _resumable_runner()
+        with mock.patch.object(
+            pr_ledger, "register", side_effect=pr_ledger.LedgerError("locked")
+        ):
+            outcome, _spy, _p, _c, _push = self._run(runner)
+        self.assertEqual(outcome.outcome, "ceiling")
+        self.assertEqual(outcome.refused_step, "pr_ledger")
+        self.assertEqual(outcome.final_status, "failed_recoverable")
+        self.assertEqual(outcome.pr_url, _PR_URL)
+        self.assertIn("locked", outcome.detail)
+
+    def test_already_merged_resume_does_not_register(self) -> None:
+        runner = _resumable_runner(state="MERGED")
+        outcome, _spy, _p, _c, _push = self._run(
+            runner, open_or_update_pull_request=None
+        )
+        self.assertEqual(outcome.final_status, "completed_and_merged")
+        self.assertEqual(pr_ledger.load_ledger()["prs"], {})
 
     def test_dirty_tree_falls_back_to_full_pipeline(self) -> None:
         self._assert_full_pipeline(_resumable_runner(status_stdout="M f.py\n"))

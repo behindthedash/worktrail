@@ -19,7 +19,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from worktrail.router import land_pr
+from worktrail.router import land_pr, pr_ledger
 
 
 def _normalize(cmd: list[str]) -> tuple[str, ...]:
@@ -88,6 +88,9 @@ class RunRecordSpy:
 
     def scope_review_calls(self) -> list[list[str]]:
         return [c for c in self.calls if c[0] == "scope-review"]
+
+
+_UNPATCHED = object()
 
 
 def _land_request(**overrides) -> land_pr.LandRequest:
@@ -620,9 +623,13 @@ class LandPrOrchestrationTests(unittest.TestCase):
             "_pr_is_merged": False,
         }
         defaults.update(overrides)
+        # An `_UNPATCHED` override means "do not patch this here" -- the
+        # test supplies its own outer patch for that seam (`None` is a real
+        # return value for e.g. `_commit_pending`).
         patchers = [
             mock.patch.object(land_pr, name, return_value=value)
             for name, value in defaults.items()
+            if value is not _UNPATCHED
         ]
         return patchers
 
@@ -903,6 +910,107 @@ class LandPrOrchestrationTests(unittest.TestCase):
         self.assertEqual(outcome.outcome, "landed")
         self.assertEqual(spy.scope_review_calls(), [])
         self.assertEqual(len(spy.finish_calls()), 1)
+
+    def test_created_pr_registers_in_ledger_once_before_outcome(self) -> None:
+        request = _land_request(session_id="sess-1")
+        with mock.patch.object(
+            pr_ledger, "register", wraps=pr_ledger.register
+        ) as register:
+            outcome, _ = self._run(request)
+        self.assertEqual(outcome.outcome, "landed")
+        register.assert_called_once()
+        entries = pr_ledger.load_ledger()["prs"]
+        self.assertEqual(list(entries), ["https://github.com/o/r/pull/1"])
+        entry = entries["https://github.com/o/r/pull/1"]
+        self.assertEqual(entry["branch"], "feature")
+        self.assertEqual(entry["session_id"], "sess-1")
+        self.assertEqual(entry["run_id"], "runs/existing.yaml")
+        self.assertEqual(entry["source"], "land_pr")
+        # The watch returned, so the opener is no longer the watcher.
+        self.assertIsNone(entry["watcher"])
+
+    def test_ledger_registration_failure_is_a_ceiling_not_landed(self) -> None:
+        request = _land_request()
+        with (
+            mock.patch.object(
+                pr_ledger, "register", side_effect=pr_ledger.LedgerError("disk full")
+            ),
+            mock.patch.object(land_pr, "_watch_ci") as watch_mock,
+        ):
+            outcome, spy = self._run(request, _watch_ci=_UNPATCHED)
+        self.assertEqual(outcome.outcome, "ceiling")
+        self.assertEqual(outcome.refused_step, "pr_ledger")
+        self.assertEqual(outcome.final_status, "failed_recoverable")
+        self.assertEqual(outcome.pr_url, "https://github.com/o/r/pull/1")
+        self.assertIn("disk full", outcome.detail)
+        watch_mock.assert_not_called()
+        self.assertEqual(len(spy.finish_calls()), 1)
+        self.assertIn("failed_recoverable", spy.finish_calls()[0])
+
+    def test_ledger_failure_with_pipeline_owned_run_still_records_the_pr(
+        self,
+    ) -> None:
+        # `run=None` callers (queue triage, drain) have no record of their own:
+        # the open PR must land in a started run record even when the ledger
+        # write fails, or it is recorded nowhere at all.
+        request = _land_request(run=None)
+        with (
+            mock.patch.object(
+                pr_ledger, "register", side_effect=pr_ledger.LedgerError("disk full")
+            ),
+            mock.patch.object(land_pr, "_watch_ci") as watch_mock,
+        ):
+            outcome, spy = self._run(request, _watch_ci=_UNPATCHED)
+        self.assertEqual(outcome.outcome, "ceiling")
+        self.assertEqual(outcome.refused_step, "pr_ledger")
+        self.assertEqual(outcome.run, spy.run_path)
+        watch_mock.assert_not_called()
+        self.assertEqual([c[0] for c in spy.calls if c[0] == "start"], ["start"])
+        self.assertIn(
+            ["set", spy.run_path, "pull_request", "https://github.com/o/r/pull/1"],
+            spy.set_calls(),
+        )
+        self.assertEqual(len(spy.finish_calls()), 1)
+        self.assertEqual(spy.finish_calls()[0][1], spy.run_path)
+        self.assertIn("failed_recoverable", spy.finish_calls()[0])
+
+    def test_watch_heartbeats_then_unwatches(self) -> None:
+        request = _land_request()
+        seen: list[object] = []
+
+        def fake_watch(repo, pr_number, timeout, runner, heartbeat=None):
+            heartbeat()
+            entry = pr_ledger.load_ledger()["prs"]["https://github.com/o/r/pull/1"]
+            seen.append(entry["watcher"])
+            return {
+                "settled": True,
+                "failing_checks": [],
+                "log_excerpt": "",
+                "budget_exhausted": False,
+            }
+
+        with mock.patch.object(land_pr, "_watch_ci", side_effect=fake_watch):
+            outcome, _ = self._run(request, _watch_ci=_UNPATCHED)
+        self.assertEqual(outcome.outcome, "landed")
+        self.assertEqual(len(seen), 1)
+        self.assertIsNotNone(seen[0])
+        entry = pr_ledger.load_ledger()["prs"]["https://github.com/o/r/pull/1"]
+        self.assertIsNone(entry["watcher"])
+
+    def test_pr_update_ceiling_still_registers_the_open_pr(self) -> None:
+        request = _land_request()
+        outcome, _ = self._run(
+            request,
+            open_or_update_pull_request={
+                "pr_url": "https://github.com/o/r/pull/1",
+                "pr_number": 1,
+                "refused_step": "pr_update",
+                "detail": "gh pr edit failed",
+            },
+        )
+        self.assertEqual(outcome.outcome, "ceiling")
+        self.assertEqual(outcome.refused_step, "pr_update")
+        self.assertIn("https://github.com/o/r/pull/1", pr_ledger.load_ledger()["prs"])
 
     def test_finish_systemexit_string_surfaces_as_ceiling_detail(self) -> None:
         class GateRefusingSpy(RunRecordSpy):
