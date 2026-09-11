@@ -1,6 +1,6 @@
 ## 1. Sweep classification (`quarantined-worktree-retroactive-reclaim`)
 
-- [ ] 1.1 In `src/worktrail/router/quarantine_selfcheck.py`, add a public
+- [x] 1.1 In `src/worktrail/router/quarantine_selfcheck.py`, add a public
       `group_task_ids(repo, spec_id, group_name) -> list[str] | None` that performs the
       cached-RunPlan lookup and `plan_groups()` match now inside `_group_files`, and
       refactor `_group_files` to call it (same `None` on missing/unreadable cache or

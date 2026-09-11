@@ -17,6 +17,7 @@ from worktrail.router.quarantine_selfcheck import (
     _group_files,
     _merged_pr_matching,
     check_repo,
+    group_task_ids,
     main,
     reconcile_finding,
     sweep,
@@ -151,6 +152,42 @@ class TestGroupFiles(unittest.TestCase):
         repo = _repo_with_worktrees(self.tmp, "myrepo")
         _write_runplan(repo, "some-spec", _RUNPLAN_TASKS)
         self.assertIsNone(_group_files(repo, "some-spec", "feature-99"))
+
+
+class TestGroupTaskIds(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def test_group_name_matches_yields_task_ids(self):
+        repo = _repo_with_worktrees(self.tmp, "myrepo")
+        _write_runplan(repo, "some-spec", _RUNPLAN_TASKS)
+        self.assertEqual(
+            sorted(group_task_ids(repo, "some-spec", "feature-1")), ["1.1", "1.2"]
+        )
+
+    def test_group_name_not_found_yields_none(self):
+        repo = _repo_with_worktrees(self.tmp, "myrepo")
+        _write_runplan(repo, "some-spec", _RUNPLAN_TASKS)
+        self.assertIsNone(group_task_ids(repo, "some-spec", "feature-99"))
+
+    def test_no_runplan_cache_yields_none(self):
+        repo = _repo_with_worktrees(self.tmp, "myrepo")
+        self.assertIsNone(group_task_ids(repo, "some-spec", "feature-1"))
+
+    def test_unreadable_runplan_cache_yields_none(self):
+        repo = _repo_with_worktrees(self.tmp, "myrepo")
+        path = _write_runplan(repo, "some-spec", _RUNPLAN_TASKS)
+        path.write_text("{not json", encoding="utf-8")
+        self.assertIsNone(group_task_ids(repo, "some-spec", "feature-1"))
+
+    def test_group_files_is_union_over_group_task_ids(self):
+        repo = _repo_with_worktrees(self.tmp, "myrepo")
+        _write_runplan(repo, "some-spec", _RUNPLAN_TASKS)
+        ids = group_task_ids(repo, "some-spec", "feature-1")
+        expected = sorted(
+            {f for t in _RUNPLAN_TASKS if t["id"] in ids for f in t["files"]}
+        )
+        self.assertEqual(_group_files(repo, "some-spec", "feature-1"), expected)
 
 
 def _git_repo(root: Path, name: str) -> Path:
