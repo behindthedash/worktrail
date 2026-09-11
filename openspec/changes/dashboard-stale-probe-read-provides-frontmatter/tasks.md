@@ -1,6 +1,6 @@
 ## 1. Provides fallback in the dashboard task loader (`devkit-task-file-scope-resolution`)
 
-- [ ] 1.1 In `src/worktrail/router/dashboard.py`, add a helper that slices a
+- [x] 1.1 In `src/worktrail/router/dashboard.py`, add a helper that slices a
       `TASK-*.md`'s leading `---` frontmatter block, `yaml.safe_load`s it, and returns
       the ordered, de-duplicated `file` strings from its `provides:` list, returning
       `[]` on `yaml.YAMLError`, a non-list `provides`, or entries that are not maps
