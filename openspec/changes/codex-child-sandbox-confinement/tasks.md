@@ -1,54 +1,38 @@
-## 1. Canonical-checkout detection
+## 1. Canonical-checkout guard + core tests
 
-- [ ] 1.1 Add a small helper in `src/worktrail/router/skill_dispatch.py` that resolves a
-      target directory to `(worktree_root, canonical_root)` via
-      `git rev-parse --show-toplevel --git-common-dir` (mirroring
-      `flagged-checkout.cjs`'s `getWorktreeIdentity`), returning `None` when the target is not
-      inside any git repository or the command fails.
-- [ ] 1.2 Add a helper that walks upward from a target path to the nearest existing ancestor
-      directory before resolving it, since a `-C`/`--add-dir` target may not exist yet
-      (mirroring `flagged-checkout.cjs`'s `nearestExistingAncestor`).
-- [ ] 1.3 Add a helper that returns whether a resolved target is a canonical (non-worktree)
-      checkout root: `worktree_root == canonical_root`.
+Implements requirement: Codex dispatch refuses a canonical-checkout working root or
+additional directory.
 
-## 2. Guard integration in `build_command()`
+- [ ] 1.1 In `src/worktrail/router/skill_dispatch.py`, add helpers that resolve a target
+      directory to `(worktree_root, canonical_root)` via
+      `git rev-parse --show-toplevel --git-common-dir` (mirroring `flagged-checkout.cjs`'s
+      `getWorktreeIdentity`), walk upward to the nearest existing ancestor first (mirroring
+      `nearestExistingAncestor`) since a `-C`/`--add-dir` target may not exist yet, and return
+      whether a resolved target is a canonical (non-worktree) checkout root
+      (`worktree_root == canonical_root`). In the codex branch of `build_command()`
+      (`skill_dispatch.py:502-510`), resolve `cwd` (if set) and every `add_dirs` entry with
+      these helpers before appending them to the argv, and raise (identifying the offending
+      target path and repository name) instead of returning a command when any resolved
+      target is a canonical checkout root. Leave the `claude` and `opencode` branches
+      untouched. Add matching coverage in `tests/router/test_skill_dispatch.py`: a `cwd`
+      pointing at a canonical (non-worktree) checkout raises (temporary git repo fixture); a
+      `cwd` pointing at a linked worktree (`git worktree add`) builds the command normally; an
+      `add_dirs` entry pointing at a canonical checkout raises even when `cwd` is a valid
+      worktree; a `cwd`/`add_dirs` target outside any git repository builds the command
+      normally (no false positive).
 
-- [ ] 2.1 In the codex branch of `build_command()` (`skill_dispatch.py:502-510`), before
-      appending `-C`/`--add-dir` values to the argv, resolve `cwd` (if set) and every entry in
-      `add_dirs` using the helpers from section 1.
-- [ ] 2.2 If any resolved target is a canonical checkout root and the escape hatch (section 3)
-      is not set, raise an error identifying the offending target path and the repository name,
-      instead of returning a command.
-- [ ] 2.3 Confirm the `claude` and `opencode` branches are untouched — the guard applies only
-      to the codex branch.
+## 2. Escape hatch, remaining tests, spec sync
 
-## 3. Escape hatch
+Implements requirement: Escape hatch overrides the canonical-checkout refusal.
 
-- [ ] 3.1 Define a worktrail-scoped environment variable (e.g.
+- [ ] 2.1 Define a worktrail-scoped environment variable (e.g.
       `WORKTRAIL_CODEX_CANONICAL_CHECKOUT_ALLOW`) that, when set to a truthy value, skips the
-      refusal in 2.2 and builds the command normally.
-- [ ] 3.2 Document the override in `build_command()`'s docstring, alongside the existing
-      `-s danger-full-access` explanation.
-
-## 4. Tests
-
-- [ ] 4.1 Add `tests/router/test_skill_dispatch.py` coverage: `cwd` pointing at a canonical
-      (non-worktree) checkout raises, using a temporary git repo fixture.
-- [ ] 4.2 Add coverage: `cwd` pointing at a linked worktree (created via `git worktree add`)
-      builds the command normally.
-- [ ] 4.3 Add coverage: an `add_dirs` entry pointing at a canonical checkout raises, even when
-      `cwd` itself is a valid worktree.
-- [ ] 4.4 Add coverage: a `cwd`/`add_dirs` target that is not inside any git repository builds
-      the command normally (no false positive).
-- [ ] 4.5 Add coverage: the escape hatch env var set to a truthy value allows a target that
-      would otherwise be refused.
-- [ ] 4.6 Add coverage: the `claude` and `opencode` branches are unaffected by a
-      canonical-checkout target (guard is codex-only).
-- [ ] 4.7 Run `PYTHONPATH=src pytest -q` and
-      `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` and confirm both are
-      green.
-
-## 5. Spec sync
-
-- [ ] 5.1 Confirm `specs/codex-canonical-checkout-guard/spec.md`'s scenarios all have
-      corresponding test coverage from section 4.
+      1.1 refusal and builds the command normally; document it in `build_command()`'s
+      docstring alongside the existing `-s danger-full-access` explanation. Add matching
+      coverage in `tests/router/test_skill_dispatch.py`: the escape hatch env var set to a
+      truthy value allows a target that would otherwise be refused; the `claude` and
+      `opencode` branches are unaffected by a canonical-checkout target (guard is codex-only).
+      Confirm `specs/codex-canonical-checkout-guard/spec.md`'s scenarios all have
+      corresponding test coverage from 1.1/2.1. Run `PYTHONPATH=src pytest -q` and
+      `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` and confirm both
+      are green.
