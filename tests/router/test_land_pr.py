@@ -472,6 +472,65 @@ class OpenOrUpdatePullRequestTests(unittest.TestCase):
             )
         )
 
+    def test_no_existing_pr_creates_one_passes_base_slug(self) -> None:
+        """`gh pr create` must pass `-R <base_slug>` too -- it builds its
+        `--base`/`--head` args from bare branch names, the same ambiguous
+        shape `pr view`/`pr edit` need `-R` for. No prior test exercised
+        `base_slug` through the create path (only the update path, PR
+        #1157's own regression); this closes that gap."""
+        runner = (
+            FakeRun()
+            .script(
+                "gh",
+                "pr",
+                "view",
+                "feature",
+                "--json",
+                "url,number,state,labels",
+                "-R",
+                "o/r",
+                returncode=1,
+                stderr="no pull requests found",
+            )
+            .script(
+                "gh",
+                "pr",
+                "create",
+                stdout="https://github.com/o/r/pull/10\n",
+            )
+            .script(
+                "gh",
+                "pr",
+                "view",
+                "https://github.com/o/r/pull/10",
+                "--json",
+                "number",
+                stdout=json.dumps({"number": 10}),
+            )
+        )
+        result = land_pr.open_or_update_pull_request(
+            Path("/repo"),
+            "main",
+            "feature",
+            "Title",
+            "Body",
+            "low",
+            ["go:risk-low"],
+            "B",
+            runner,
+            base_slug="o/r",
+        )
+        self.assertIsNone(result["refused_step"])
+        self.assertEqual(result["pr_url"], "https://github.com/o/r/pull/10")
+        create_calls = [
+            c
+            for c in runner.calls
+            if _normalize(c)[:2] == ("gh", "pr") and "create" in c
+        ]
+        self.assertEqual(len(create_calls), 1)
+        self.assertIn("-R", create_calls[0])
+        self.assertIn("o/r", create_calls[0])
+
     def test_no_existing_pr_creates_one(self) -> None:
         runner = (
             FakeRun()
