@@ -803,7 +803,7 @@ if [ -z "$DETACH_OWNER" ]; then
 fi
 DETACH_OWNER_NAME=$(echo "$DETACH_OWNER" | sed -n 1p)
 DETACH_STATE_DIR=$(echo "$DETACH_OWNER" | sed -n 2p)
-worktrail-run-record bind-detach "$RUN" --name "$DETACH_OWNER_NAME" \
+worktrail-run-record bind-detached-owner "$RUN" --name "$DETACH_OWNER_NAME" \
   ${DETACH_STATE_DIR:+--state-dir "$DETACH_STATE_DIR"}
 ```
 
@@ -934,7 +934,7 @@ a role pinned to a different agent falls back to that agent's own default model.
   `completed`/backfill if not applicable) rather than re-launching the orchestrator — a
   re-launch would just skip them again.
 - **After launching — bind, confirm health, then watch with `Monitor`, never `sleep`:**
-  `worktrail-run-record bind-detach` (the code block above) must already have stored the
+  `worktrail-run-record bind-detached-owner` (the code block above) must already have stored the
   handle's name and state directory on `$RUN` — that binding is what lets
   `worktrail-run-record liveness` and `sweep-orphans` ask `worktrail-detach status`
   whether the owner is still running instead of guessing from the heartbeat. Then run

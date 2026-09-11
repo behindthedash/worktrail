@@ -284,7 +284,7 @@ def test_full_real_launch_binds_detached_owner_to_run_record():
     ).read_text()
 
     launch = text.index('DETACH_JSON=$(worktrail-detach launch --name "$DETACH_NAME"')
-    bind = text.index('worktrail-run-record bind-detach "$RUN"', launch)
+    bind = text.index('worktrail-run-record bind-detached-owner "$RUN"', launch)
     status = text.index('worktrail-detach status --name "$DETACH_NAME"', launch)
     monitor = text.index("arm one `Monitor`", launch)
     assert launch < bind < status < monitor
