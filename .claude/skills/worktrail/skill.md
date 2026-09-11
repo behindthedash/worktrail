@@ -42,6 +42,9 @@ triggers:
     - SESSION_LIMIT_REPROBE_MAX_S
     - SESSION_LIMIT_TOTAL_WAIT_MAX_S
     - session limit
+    - import_dep_edges
+    - spec_from_file_location
+    - import_module
 ---
 
 You are working on **worktrail's task-orchestration core**: compiling specs/changes into a
@@ -57,6 +60,16 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
 - **File collision detection normalizes paths** (`coordinator._norm_files`) via
   `os.path.normpath` — `./src/a.ts` and `src/a.ts` must compare equal or two tasks that declare
   the same file run in parallel and collide at integration.
+- **Python import inference follows dynamic `importlib` loads, conservatively**
+  (`conductor/import_deps.py` `_dynamic_imported_paths`): beyond `ast`-visible `import`/`from`
+  statements, a task's inferred dependency edges also pick up
+  `importlib.util.spec_from_file_location(name, path)` — where `path` is a repo-relative string
+  literal, an inline `Path(__file__)<.resolve()><.parent>* / "file.py"` expression, or a `Name`
+  bound to that same expression shape by an earlier assignment — and
+  `importlib.import_module("dotted.name")`. Any other path expression (a function call, a
+  runtime-computed string) is left unresolved rather than guessed at, consistent with the
+  module's "inference is additive and never fails a compile" contract: an edge only gets added
+  when the source can be resolved with certainty, never inferred speculatively.
 - **Task status vocab is not symmetric**: `"done"` = worker completed in the *current* run
   (branch exists, deliverable); `"completed"` = already integrated in a *prior* run (never
   re-merge). Conflating them re-merges dead branches.
@@ -233,6 +246,9 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
 
 ## Critical files
 - `conductor/runplan.py` — RunPlan safety rule and `unordered_file_collisions()` assertion
+- `conductor/import_deps.py` — infers RunPlan dependency edges from Python `ast` imports plus
+  dynamic `importlib.util.spec_from_file_location`/`importlib.import_module` calls, and from a
+  regex scan of TS/JS relative specifiers; unresolvable expressions are skipped, never guessed
 - `orchestrator/coordinator.py` — `runnable_frontier`/`plan_groups`, pure/side-effect-free;
   `IN_FLIGHT` is the status set the slot-refilling scheduler relies on
 - `taskformats/base.py` — `TaskSource` protocol; `orchestrator/` must never construct a
@@ -265,4 +281,4 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
   the free-rerun probe `wait_and_fix_ci` tries once before spawning a ci-fix worker
 
 ---
-**Last Updated:** 2026-09-06
+**Last Updated:** 2026-09-11
