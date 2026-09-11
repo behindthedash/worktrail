@@ -231,6 +231,98 @@ def test_repo_root_used_when_absent_under_src(repo: Path) -> None:
     assert edges == {"2.1": ["1.1"]}
 
 
+def test_dynamic_spec_from_file_location_via_local_variable(repo: Path) -> None:
+    _write(repo, "src/pkg/cron-environment-audit.py", "")
+    _write(
+        repo,
+        "src/pkg/a.py",
+        "import importlib.util\n"
+        "from pathlib import Path\n"
+        '_SCRIPT = Path(__file__).resolve().parent / "cron-environment-audit.py"\n'
+        '_spec = importlib.util.spec_from_file_location("cron_environment_audit", _SCRIPT)\n',
+    )
+    edges, warnings = import_dep_edges(
+        [
+            _task("1.1", "src/pkg/cron-environment-audit.py"),
+            _task("2.1", "src/pkg/a.py"),
+        ],
+        repo,
+    )
+    assert edges == {"2.1": ["1.1"]}
+    assert warnings == []
+
+
+def test_dynamic_spec_from_file_location_inline_path_expr(repo: Path) -> None:
+    _write(repo, "src/pkg/b-script.py", "")
+    _write(
+        repo,
+        "src/pkg/a.py",
+        "import importlib.util\n"
+        "from pathlib import Path\n"
+        "_spec = importlib.util.spec_from_file_location("
+        '"b", Path(__file__).parent / "b-script.py")\n',
+    )
+    edges, _ = import_dep_edges(
+        [_task("1.1", "src/pkg/b-script.py"), _task("2.1", "src/pkg/a.py")], repo
+    )
+    assert edges == {"2.1": ["1.1"]}
+
+
+def test_dynamic_spec_from_file_location_literal_string(repo: Path) -> None:
+    _write(repo, "src/pkg/b-script.py", "")
+    _write(
+        repo,
+        "src/pkg/a.py",
+        "import importlib.util\n"
+        '_spec = importlib.util.spec_from_file_location("b", "src/pkg/b-script.py")\n',
+    )
+    edges, _ = import_dep_edges(
+        [_task("1.1", "src/pkg/b-script.py"), _task("2.1", "src/pkg/a.py")], repo
+    )
+    assert edges == {"2.1": ["1.1"]}
+
+
+def test_dynamic_spec_from_file_location_unrecognized_expr_is_skipped(
+    repo: Path,
+) -> None:
+    _write(repo, "src/pkg/b.py", "")
+    _write(
+        repo,
+        "src/pkg/a.py",
+        "import importlib.util\n"
+        "def _path():\n"
+        "    return 'src/pkg/b.py'\n"
+        '_spec = importlib.util.spec_from_file_location("b", _path())\n',
+    )
+    edges, warnings = import_dep_edges(
+        [_task("1.1", "src/pkg/b.py"), _task("2.1", "src/pkg/a.py")], repo
+    )
+    assert edges == {}
+    assert warnings == []
+
+
+def test_dynamic_import_module(repo: Path) -> None:
+    _write(repo, "src/pkg/b.py", "")
+    _write(repo, "src/pkg/a.py", 'import importlib\nimportlib.import_module("pkg.b")\n')
+    edges, warnings = import_dep_edges(
+        [_task("1.1", "src/pkg/b.py"), _task("2.1", "src/pkg/a.py")], repo
+    )
+    assert edges == {"2.1": ["1.1"]}
+    assert warnings == []
+
+
+def test_dynamic_import_module_unresolvable_is_skipped(repo: Path) -> None:
+    _write(repo, "src/pkg/b.py", "")
+    _write(
+        repo, "src/pkg/a.py", 'import importlib\nimportlib.import_module("nope.mod")\n'
+    )
+    edges, warnings = import_dep_edges(
+        [_task("1.1", "src/pkg/b.py"), _task("2.1", "src/pkg/a.py")], repo
+    )
+    assert edges == {}
+    assert warnings == []
+
+
 def test_declared_file_outside_repo_is_ignored(repo: Path, tmp_path: Path) -> None:
     (tmp_path / "outside.py").write_text("from pkg.b import thing\n")
     _write(repo, "src/pkg/b.py", "")
