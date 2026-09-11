@@ -8,7 +8,12 @@ author said so. The change that motivated this (go-20260910-085218) had
 tasks, so the plan ran them in parallel and the importer's worktree never saw
 the module.
 
-Python imports are read with `ast`. TypeScript/JavaScript files are scanned
+Python imports are read with `ast`, including dynamic loading via
+`importlib.util.spec_from_file_location(name, path)` (path as a repo-relative string literal,
+an inline `Path(__file__)<.resolve()><.parent>* / "file.py"` expression, or a variable
+assigned from that same expression shape) and `importlib.import_module("dotted.name")`.
+Any other path expression is left unresolved rather than guessed at. TypeScript/JavaScript
+files are scanned
 with a regex for the string-literal specifier of `import ... from`, side-effect
 `import`, `export ... from`, dynamic `import(...)`, and `require(...)`; only
 `./` and `../` specifiers are resolved (against the importing file's directory,
@@ -143,8 +148,98 @@ def _js_imported_paths(text: str, file: Path, repo: Path) -> list[Path]:
     return [rel for p in out if (rel := _under_repo(p, repo)) is not None]
 
 
+def _path_from_file_hops(node: ast.AST) -> int | None:
+    """Number of `.parent` hops on top of `Path(__file__)` (an optional leading `.resolve()`
+    doesn't count as a hop), or None if `node` isn't that shape."""
+    hops = 0
+    cur = node
+    while isinstance(cur, ast.Attribute) and cur.attr == "parent":
+        hops += 1
+        cur = cur.value
+    if (
+        isinstance(cur, ast.Call)
+        and isinstance(cur.func, ast.Attribute)
+        and cur.func.attr == "resolve"
+    ):
+        cur = cur.func.value
+    if (
+        isinstance(cur, ast.Call)
+        and isinstance(cur.func, ast.Name)
+        and cur.func.id == "Path"
+        and len(cur.args) == 1
+        and isinstance(cur.args[0], ast.Name)
+        and cur.args[0].id == "__file__"
+    ):
+        return hops
+    return None
+
+
+def _dynamic_path_literal(node: ast.AST) -> tuple[int, str] | None:
+    """`(hops, filename)` for `Path(__file__)<.resolve()><.parent>* / "filename"`, else None."""
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        hops = _path_from_file_hops(node.left)
+        if (
+            hops is not None
+            and isinstance(node.right, ast.Constant)
+            and isinstance(node.right.value, str)
+        ):
+            return hops, node.right.value
+    return None
+
+
+def _assignment_dynamic_paths(tree: ast.AST) -> dict[str, tuple[int, str]]:
+    """Name -> `(hops, filename)` for `NAME = Path(__file__)<.resolve()><.parent>* / "x"`."""
+    out: dict[str, tuple[int, str]] = {}
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and (resolved := _dynamic_path_literal(node.value)) is not None
+        ):
+            out[node.targets[0].id] = resolved
+    return out
+
+
+def _dynamic_imported_paths(tree: ast.AST, file: Path, repo: Path) -> list[Path]:
+    """Repo-relative paths from `importlib.util.spec_from_file_location(...)` and
+    `importlib.import_module(...)` calls, in source order.
+
+    `spec_from_file_location`'s path argument is resolved when it is a string literal, an
+    inline `Path(__file__)<.resolve()><.parent>* / "x"` expression, or a Name bound to that
+    expression by an earlier assignment; any other expression is left unresolved.
+    """
+    abs_bases = [repo / root for root in _ABS_ROOTS]
+    name_paths = _assignment_dynamic_paths(tree)
+    out: list[Path] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            continue
+        if node.func.attr == "spec_from_file_location" and len(node.args) >= 2:
+            arg = node.args[1]
+            resolved = _dynamic_path_literal(arg)
+            if resolved is None and isinstance(arg, ast.Name):
+                resolved = name_paths.get(arg.id)
+            if resolved is not None:
+                hops, filename = resolved
+                if hops >= 1 and hops <= len(file.parents):
+                    out.append(file.parents[hops - 1] / filename)
+            elif isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                out.append(repo / arg.value)
+        elif node.func.attr == "import_module" and node.args:
+            arg = node.args[0]
+            if (
+                isinstance(arg, ast.Constant)
+                and isinstance(arg.value, str)
+                and (hit := _resolve(abs_bases, arg.value.split("."))) is not None
+            ):
+                out.append(hit)
+    return [rel for p in out if (rel := _under_repo(p, repo)) is not None]
+
+
 def _py_imported_paths(text: str, file: Path, repo: Path) -> list[Path]:
-    return _imported_paths(ast.parse(text, filename=str(file)), file, repo)
+    tree = ast.parse(text, filename=str(file))
+    return _imported_paths(tree, file, repo) + _dynamic_imported_paths(tree, file, repo)
 
 
 _SCANNERS = {
