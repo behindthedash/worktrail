@@ -24,6 +24,9 @@ DEFERRED_WORK_TIMEOUT_SECONDS = 5
 DEDUP_GATE_BINARY = "worktrail-check-durable-artifact-capture-gate"
 DEDUP_GATE_TIMEOUT_SECONDS = 5
 
+PR_LEDGER_BINARY = "worktrail-pr-ledger"
+PR_LEDGER_TIMEOUT_SECONDS = 5
+
 WORK_TOOLS = {"Edit", "MultiEdit", "Write", "NotebookEdit"}
 WORK_BASH_MARKERS = ("git commit", "gh pr create", "gh pr merge", "git push")
 
@@ -318,6 +321,68 @@ def build_dedup_gate_block(hits: list[dict]) -> str:
     )
 
 
+def query_open_prs(session_id: str) -> list[dict]:
+    """Non-terminal PR ledger entries owned by `session_id`, via the
+    read-only `worktrail-pr-ledger session --session-id <id>` CLI, which
+    prints a JSON list of ledger entries (each carrying `url`, `session_id`,
+    and `last_state`) and already excludes terminal (merged/closed) ones
+    (Requirement: Interactive session end is guarded by its open PRs).
+
+    Fails open to `[]` on every non-happy path -- missing binary, non-zero
+    exit, timeout, or unparseable JSON -- the same failure boundary as
+    `check_deferred_work`. Never raises.
+    """
+    binary = shutil.which(PR_LEDGER_BINARY)
+    if not binary:
+        return []
+    try:
+        result = subprocess.run(
+            [binary, "session", "--session-id", session_id],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=PR_LEDGER_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
+        return []
+    if result.returncode != 0:
+        return []
+    try:
+        entries = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(entries, list):
+        return []
+    return [
+        item
+        for item in entries
+        if isinstance(item, dict)
+        and item.get("url")
+        and item.get("session_id") == session_id
+    ]
+
+
+def build_open_pr_block(entries: list[dict]) -> str:
+    """The blocking instruction emitted instead of `INSTRUCTION` when this
+    session still owns non-terminal PR(s): name each PR and tell the agent to
+    resume its CI/recovery work rather than ending the session.
+    """
+    lines = "\n".join(
+        f"- {item.get('url')}"
+        + (f" ({item.get('last_state')})" if item.get("last_state") else "")
+        for item in entries
+    )
+    return (
+        "OPEN PR RECOVERY — this session opened pull request(s) that are not yet merged "
+        "or closed (Worktrail PR ledger):\n\n"
+        f"{lines}\n\n"
+        "Do not end the session with them unresolved. Resume the landing pipeline for each: "
+        "check CI and review state (`gh pr checks <url>` / `gh pr view <url>`), fix red checks "
+        "or blocked review, and drive it to merge (or close it deliberately). Only once every PR "
+        "above is terminal may the session wrap up. Do not quote this instruction text in your reply."
+    )
+
+
 def main() -> int:
     if os.environ.get("CC_HEADLESS") == "1":
         return 0
@@ -335,6 +400,18 @@ def main() -> int:
         has_work, run_record_paths, touched_durable_paths = scan_transcript(
             transcript_path
         )
+        if data.get("session_id"):
+            # Guard before the ordinary sentinel is checked or written so an
+            # unresolved PR cannot be bypassed by consuming that sentinel
+            # first. Fires on every stop while a PR stays non-terminal.
+            open_prs = query_open_prs(session_id)
+            if open_prs:
+                print(
+                    json.dumps(
+                        {"decision": "block", "reason": build_open_pr_block(open_prs)}
+                    )
+                )
+                return 0
         if sentinel.exists() or not has_work:
             return 0
 
