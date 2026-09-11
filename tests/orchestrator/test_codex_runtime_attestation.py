@@ -232,6 +232,19 @@ class TestSignalsAndIdentity(_AttestationHarness):
         self.assertNotIn("t1", result.report.diagnostic)
         self.assertIn("not an identity substitute", result.report.diagnostic)
 
+    def test_identity_reclassification_keeps_observed_report_back_signal(self):
+        # The probe DID reply with the sentinel; only the identity rule
+        # failed. The observed signal must survive into the result and entry.
+        for stream in (NO_IDENTITY_STREAM, OK_STREAM.replace('"codex"', '"other"')):
+            with self.subTest(stream=stream):
+                result = self.run_with(stream)
+                self.assertEqual(result.report.stage, StageOutcome.PROVIDER_SELECTION)
+                self.assertFalse(result.success)
+                self.assertTrue(result.report_back_success)
+                entry = att.build_entry(result, "nonce-1")
+                self.assertTrue(entry["report_back_success"])
+                self.assertFalse(entry["success"])
+
     def test_mismatched_provider_is_provider_selection(self):
         result = self.run_with(OK_STREAM.replace('"codex"', '"other"'))
         self.assertEqual(result.report.stage, StageOutcome.PROVIDER_SELECTION)

@@ -266,7 +266,7 @@ def run_attestation(timeout: float, repo_dir: str) -> AttestationResult:
         finally:
             shutil.rmtree(scratch_dir, ignore_errors=True)
         report = replace(outcome, codex_home=codex_home, automatic_home=automatic_home)
-        return _result(check_identity(report), child_ok)
+        return _result(check_identity(report), child_ok, observed=report)
     finally:
         if fixture is not None:
             try:
@@ -276,14 +276,22 @@ def run_attestation(timeout: float, repo_dir: str) -> AttestationResult:
         shutil.rmtree(scratch_root, ignore_errors=True)
 
 
-def _result(report: ProbeReport, child_ok: bool) -> AttestationResult:
+def _result(
+    report: ProbeReport, child_ok: bool, observed: ProbeReport | None = None
+) -> AttestationResult:
+    """Build the result. `report_back_success` is a directly-observed signal,
+    so it is read from `observed` -- the probe's report *before* the identity
+    rule -- never from the reclassified report: identity reclassification
+    changes the verdict, not what the probe saw."""
+    if observed is None:
+        observed = report
     return AttestationResult(
         report=report,
         child_home_isolated_writable=child_ok,
         runtime_ready=report.session_started_marker is not None,
         auth_usable=report.auth_usable is True,
         report_back_success=(
-            report.stage == StageOutcome.REPORT_BACK and report.success
+            observed.stage == StageOutcome.REPORT_BACK and observed.success
         ),
     )
 
