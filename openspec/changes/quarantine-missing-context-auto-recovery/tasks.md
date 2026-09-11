@@ -1,6 +1,6 @@
 ## 1. Detection and recovery (`missing-context-auto-recovery`)
 
-- [ ] 1.1 Add `_missing_context_recovery(task, report, wt, by_id, repo, remote, base)` to
+- [x] 1.1 Add `_missing_context_recovery(task, report, wt, by_id, repo, remote, base)` to
       `src/worktrail/orchestrator/live.py` beside `_scope_escalation_files`: validate paths per
       design D1 (repo-relative, declared by another task in `by_id`, absent from the worktree,
       non-empty blob on `_live_base_ref`), return the qualifying paths and sibling ids, and honor

@@ -884,6 +884,13 @@ def reconcile_from_journal(tasks: list, journal: dict) -> list:
     """
     entries = list(journal.get("entries", []))
     for e in entries:
+        if e.get("event") == MISSING_CONTEXT_RECOVERY_EVENT:
+            # Design D4: replay the auto-recovery exactly as the live run applied
+            # it -- back to pending, strikes cleared, once-only guard set.
+            task = next((t for t in tasks if t["id"] == e.get("task")), None)
+            if task and task.get("status") not in coordinator.DONE:
+                _reset_task_for_missing_context_recovery(task)
+            continue
         if e.get("event"):
             # Observability-only marker (e.g. a `dependency_file_drift` safety-net
             # fire from `_require_dependency_files`) -- not a role-transition step,
@@ -941,6 +948,10 @@ def _journaled_task_heads(entries: list) -> dict[str, str]:
     heads: dict[str, str] = {}
     for entry in entries:
         task_id = entry.get("task")
+        if entry.get("event") == MISSING_CONTEXT_RECOVERY_EVENT:
+            # The recovered task's branch was deleted; its old head is gone.
+            heads.pop(task_id, None)
+            continue
         head_sha = (entry.get("report") or {}).get("head_sha")
         if task_id and head_sha:
             heads[task_id] = str(head_sha)
@@ -3436,6 +3447,186 @@ def _scope_escalation_files(
     return candidates
 
 
+MISSING_CONTEXT_RECOVERY_EVENT = "missing_context_auto_recovery"
+
+
+def _would_land_terminal(task: dict, role: str, report: dict) -> bool:
+    """True when applying `report` would drive `task` to `failed`/`escalated`."""
+    try:
+        new, _ = dispatch.transition(role, report, task.get("retry_count", 0))
+    except (ValueError, KeyError):
+        return False
+    return new in ("failed", "escalated")
+
+
+def _missing_context_recovery(
+    task: dict,
+    report: dict,
+    wt: Path,
+    by_id: dict,
+    repo: Path,
+    remote: str | None,
+    base: str | None,
+) -> dict | None:
+    """Design D1: decide whether a report's `missing_context` is evidence that a
+    sibling task's file merged to base AFTER this task's worktree forked.
+
+    A path qualifies only when it is repo-relative, declared in `files` by
+    another task in `by_id`, absent from the task worktree (disjoint from
+    `_scope_escalation_files` by construction) and present as a non-empty blob
+    on the live base ref. Fires at most once per task per run
+    (`_missing_context_recovered`). Returns `{"paths", "sibling_tasks",
+    "base_ref", "base_sha"}` or None when nothing qualifies.
+    """
+    if task.get("_missing_context_recovered") or not report.get("missing_context"):
+        return None
+    if not remote or not base:
+        return None
+    root = wt.resolve()
+    declared: dict[str, set[str]] = {}
+    for other in by_id.values():
+        if other is task or other.get("id") == task.get("id"):
+            continue
+        for f in other.get("files") or []:
+            declared.setdefault(os.path.normpath(str(f)), set()).add(other["id"])
+    candidates: list[str] = []
+    for raw in report.get("missing_context") or []:
+        value = str(raw).strip()
+        path = Path(value)
+        if not value or path.is_absolute() or any(ch.isspace() for ch in value):
+            continue
+        resolved = (root / path).resolve()
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            continue
+        key = os.path.normpath(path.as_posix())
+        if key not in declared or resolved.exists():
+            continue
+        candidates.append(key)
+    candidates = sorted(set(candidates))
+    if not candidates:
+        return None
+    base_ref = _live_base_ref(repo, remote, base)
+    if base_ref is None:
+        return None
+    paths: list[str] = []
+    for c in candidates:
+        spec = f"{base_ref}:{c}"
+        if _git(repo, "cat-file", "-e", spec, check=False).returncode != 0:
+            continue
+        size = _git(repo, "cat-file", "-s", spec, check=False).stdout.strip()
+        if not size.isdigit() or int(size) == 0:
+            continue
+        paths.append(c)
+    if not paths:
+        return None
+    base_sha = _git(repo, "rev-parse", base_ref, check=False).stdout.strip() or None
+    siblings = sorted({tid for c in paths for tid in declared[c]})
+    return {
+        "paths": paths,
+        "sibling_tasks": siblings,
+        "base_ref": base_ref,
+        "base_sha": base_sha,
+    }
+
+
+def _apply_missing_context_recovery(
+    *,
+    tasks: list,
+    entries: list,
+    actives: dict,
+    record_fn,
+    task: dict,
+    role: str,
+    rep: dict,
+    hit: dict,
+    t0: float,
+    t1: float,
+    usage: dict | None = None,
+    tools_used: list | None = None,
+    skills_used: list | None = None,
+    agent: str | None = None,
+) -> None:
+    """Design D2 journal half: record the triggering report with
+    `auto_recovered: true` and NO terminal_status, append the
+    `missing_context_auto_recovery` event, persist, and reset the task to
+    pending with strikes and scope/extra-read state cleared. Caller must hold
+    state_lock; worktree/branch removal is the caller's job under git_lock."""
+    report_fields = {k: rep.get(k) for k in orchestrate._REPORT_FIELDS}
+    entry: dict = {
+        "task": rep["task"],
+        "role": rep["step"],
+        "report": report_fields,
+        "started_at": round(t0, 3),
+        "ended_at": round(t1, 3),
+        "duration_s": round(t1 - t0, 1),
+        "auto_recovered": True,
+    }
+    if usage:
+        entry["usage"] = usage
+    if tools_used:
+        entry["tools_used"] = tools_used
+    if skills_used:
+        entry["skills_used"] = skills_used
+    if agent:
+        entry["agent"] = agent
+    entries.append(entry)
+    entries.append(
+        {
+            "event": MISSING_CONTEXT_RECOVERY_EVENT,
+            "task": task["id"],
+            "role": role,
+            "paths": list(hit["paths"]),
+            "sibling_tasks": list(hit["sibling_tasks"]),
+            "base_ref": hit["base_ref"],
+            "base_sha": hit["base_sha"],
+            "category": "orchestrator_defect",
+            "at": round(t1, 3),
+        }
+    )
+    _reset_task_for_missing_context_recovery(task)
+    for k in ("_scope_added_files", "_pre_commit_restored", "_pre_commit_error"):
+        task.pop(k, None)
+    record_fn()
+    actives.pop(task["id"], None)
+
+
+def _reset_task_for_missing_context_recovery(task: dict) -> None:
+    """Shared by the live path and journal replay (design D4)."""
+    task["status"] = "pending"
+    task["retry_count"] = 0
+    task["_missing_context_recovered"] = True
+    for k in (
+        "_extra_reads",
+        "_scope_pending",
+        "_scope_escalated",
+        "_scope_escalation_files",
+        "_scope_added_files",
+    ):
+        task.pop(k, None)
+
+
+def _remove_task_worktree_and_branch(
+    repo: Path, wt: Path, spec_id: str, task_id: str
+) -> None:
+    """Design D2: drop the stale worktree AND its branch so `ensure_wt` forks a
+    clean stacked worktree from the current base. Caller holds git_lock."""
+    _git(repo, "worktree", "remove", "--force", str(wt), check=False)
+    if wt.exists():
+        shutil.rmtree(wt, ignore_errors=True)
+    _git(repo, "worktree", "prune", check=False)
+    _git(repo, "branch", "-D", f"{spec_id}/{task_id.lower()}", check=False)
+
+
+def _print_missing_context_recovery(task_id: str, hit: dict) -> None:
+    print(
+        f"{_ts()}   ↺ {task_id} auto-recovered (missing context merged to "
+        f"{hit['base_ref']}): {', '.join(hit['paths'])} from "
+        f"{', '.join(hit['sibling_tasks'])} -- worktree reset, re-dispatching"
+    )
+
+
 def _is_test_path(path: str) -> bool:
     """Heuristic used only by the small-diff skip's line count (design D3):
     a test file's own diff doesn't count toward "small", since a worker that
@@ -4610,6 +4801,43 @@ def live_run_real(
                 _apply_pre_commit_backstop(
                     wt, task, rep, getattr(spawn, "pre_commit_cmd", None)
                 )
+            # Design D1-D3: a report that would land terminal while naming a
+            # sibling's file that merged to base after this fork is an
+            # orchestrator defect, not a worker failure -- recover once, ahead
+            # of scope escalation and read-widening (both moot on a fresh fork).
+            recovery = (
+                _missing_context_recovery(task, rep, wt, by_id, repo, remote, base)
+                if _would_land_terminal(task, role, rep)
+                else None
+            )
+            if recovery:
+                t1 = time.time()
+                # Remove the worktree BEFORE the task flips to pending: the
+                # fan-out re-polls runnable_frontier on any future completion
+                # and would otherwise re-dispatch into a directory that is
+                # about to be deleted.
+                with git_lock:
+                    _remove_task_worktree_and_branch(repo, wt, spec_id, task["id"])
+                with state_lock:
+                    _apply_missing_context_recovery(
+                        tasks=tasks,
+                        entries=entries,
+                        actives=actives,
+                        record_fn=record,
+                        task=task,
+                        role=role,
+                        rep=rep,
+                        hit=recovery,
+                        t0=t0,
+                        t1=t1,
+                        usage=_usage,
+                        tools_used=_tools_used,
+                        skills_used=_skills_used,
+                        agent=getattr(spawn, "last_agent", None),
+                    )
+                    _publish_actives()
+                _print_missing_context_recovery(task["id"], recovery)
+                return
             # Adaptive read-widening: when review reports insufficient context, stage
             # the missing items so the next fix dispatch gets them in its prompt.
             # Never widen on sufficient/too_much — too_much means trim, not add.
@@ -5876,6 +6104,40 @@ def _pipeline_scheduler(
                 _apply_pre_commit_backstop(
                     wt, task, rep, getattr(spawn_fn, "pre_commit_cmd", None)
                 )
+            # Design D1-D3: see live_run_real's drive() -- same recovery, ahead
+            # of scope escalation and read-widening.
+            recovery = (
+                _missing_context_recovery(task, rep, wt, by_id, repo, remote, base)
+                if _would_land_terminal(task, role, rep)
+                else None
+            )
+            if recovery:
+                t1 = time.time()
+                # Remove the worktree BEFORE the task flips to pending: the
+                # fan-out re-polls runnable_frontier on any future completion
+                # and would otherwise re-dispatch into a directory that is
+                # about to be deleted.
+                with git_lock:
+                    _remove_task_worktree_and_branch(repo, wt, spec_id, task["id"])
+                with state_lock:
+                    _apply_missing_context_recovery(
+                        tasks=tasks,
+                        entries=entries,
+                        actives=actives,
+                        record_fn=_record,
+                        task=task,
+                        role=role,
+                        rep=rep,
+                        hit=recovery,
+                        t0=t0,
+                        t1=t1,
+                        usage=_usage,
+                        tools_used=_tools_used,
+                        skills_used=_skills_used,
+                        agent=getattr(spawn_fn, "last_agent", None),
+                    )
+                _print_missing_context_recovery(task["id"], recovery)
+                return
             # Adaptive read-widening: when review reports insufficient context, stage
             # the missing items so the next fix dispatch gets them in its prompt.
             if (
