@@ -1,6 +1,6 @@
 ## 1. Durable ledger and sweep (`pr-ledger-recovery`)
 
-- [ ] 1.1 Implement the atomic URL-keyed PR ledger, watcher-heartbeat helpers, live-state
+- [x] 1.1 Implement the atomic URL-keyed PR ledger, watcher-heartbeat helpers, live-state
       query/classification, idempotent recovery-brief creation, and the
       `worktrail-pr-ledger` CLI (`register`, session query, and `sweep`) in
       `src/worktrail/router/pr_ledger.py`; register the console entry point in
