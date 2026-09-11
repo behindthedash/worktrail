@@ -1351,6 +1351,9 @@ def _detached_owner_state(record: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(name, str) or not _detach.NAME_RE.match(name):
         owner["reason"] = "malformed_owner_name"
         return owner
+    if sd_raw is not None and not isinstance(sd_raw, str):
+        owner["reason"] = "malformed_owner_state_dir"
+        return owner
     try:
         st = _detach_status(name, _detach.state_dir(sd_raw or None), tail_lines=0)
     except (OSError, SystemExit, ValueError) as exc:

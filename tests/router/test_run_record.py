@@ -3083,6 +3083,26 @@ class TestDetachedOwnerReconciliation(unittest.TestCase):
         self.assertEqual(result["detached_owner"]["reason"], "malformed_owner_name")
         self.assertEqual(result["reconciliation"], "unknown_owner")
 
+    def test_malformed_persisted_state_dir_is_unknown_owner_and_never_probed(self):
+        """A non-string ``detached_owner_state_dir`` (e.g. a hand-edited list)
+        must be retained as unknown-owner evidence, not raise TypeError out of
+        liveness and abort a sweep."""
+        res = _start(self.tmp)
+        record = _load(Path(res["path"]))
+        record["detached_owner_name"] = "go-test"
+        record["detached_owner_state_dir"] = ["not", "a", "path"]
+        Path(res["path"]).write_text(run_record._render(record), encoding="utf-8")
+        self._backdate_updated_at(res["path"], seconds_ago=99999)
+        calls = []
+        with _stub_detach_status("exited", calls=calls):
+            result = self._liveness(res["path"])
+        self.assertEqual(calls, [])
+        self.assertEqual(result["detached_owner"]["state"], "unknown")
+        self.assertEqual(
+            result["detached_owner"]["reason"], "malformed_owner_state_dir"
+        )
+        self.assertEqual(result["reconciliation"], "unknown_owner")
+
     def test_fresh_heartbeat_after_owner_exit_is_not_orphan(self):
         res = _start(self.tmp)
         self._bind(res["path"])
