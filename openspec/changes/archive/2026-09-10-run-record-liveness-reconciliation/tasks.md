@@ -38,11 +38,11 @@
 
 ## 3. Verification
 
-- [ ] 3.1 [e2e] Run `pytest -q tests/router/test_run_record.py
+- [x] 3.1 [e2e] Run `pytest -q tests/router/test_run_record.py
       tests/test_plugin_surface.py`, then `pytest -q`, and confirm the liveness
       decision table and plugin contract pass without machine-wide state.
       depends on 1.1, 2.1. Verification-only; no file changes expected.
-- [ ] 3.2 [e2e] Run `openspec validate run-record-liveness-reconciliation
+- [x] 3.2 [e2e] Run `openspec validate run-record-liveness-reconciliation
       --strict` and `worktrail-compile
       openspec/changes/run-record-liveness-reconciliation`; confirm both pass.
       depends on 1.1, 2.1. Verification-only; no file changes expected.
