@@ -39,7 +39,7 @@
 
 ## 3. Drain launch site
 
-- [ ] 3.1 In `src/worktrail/drain/drain.py`, drop `danger-full-access` from `BASE_CMDS` and
+- [x] 3.1 In `src/worktrail/drain/drain.py`, drop `danger-full-access` from `BASE_CMDS` and
       `build_command`, add `repo_sandbox_roots(repos_root, repo)` enumerating `<child>/.git`
       and `<child>-worktrees` per git checkout under `--repos-root` (only `--repo` when
       given), and pass the shared helper's args for the scratch cwd with those roots at the
