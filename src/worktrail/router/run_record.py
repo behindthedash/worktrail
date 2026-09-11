@@ -104,16 +104,26 @@ finish PATH --status completed_pr_open [--pr URL] [--merge-result ...]
                 [--ttl-seconds N] [--note "..."] [--dry-run]
          -> bulk-close non-terminal run records abandoned mid-dispatch: a
             record with no `final_status` whose `liveness` (same check as the
-            `liveness` subcommand below) comes back stale is closed via the
-            same path `finish` uses, with the given --status and --merge-result
-            (defaults to an auto-reconciled note naming the liveness reason).
-            A record still `fresh` per liveness is left untouched -- it may be
-            legitimate in-progress work on another machine/session. Unlike
-            `reconcile` (which re-checks one record's worktree/base_branch
-            staleness), this is heartbeat-based and scoped to zero or more
+            `liveness` subcommand below) classifies as `confirmed_orphan` --
+            a stale heartbeat AND a bound detached owner that `worktrail-detach
+            status` reports `exited` or `gone` -- is closed via the same path
+            `finish` uses, with the given --status and --merge-result
+            (defaults to an auto-reconciled note naming the liveness reason
+            and reconciliation class). Everything else is retained with a
+            distinct summary list: a still-`fresh` heartbeat -> skipped_live
+            (may be legitimate in-progress work, or a record still completing
+            after its owner exited); a bound owner still `running` ->
+            skipped_active_process (regardless of heartbeat age); a stale
+            record with no bound owner, a malformed binding, or an `unknown`
+            owner probe -> skipped_unknown_owner (no affirmative dead-owner
+            evidence; left for Route E / operator review -- never closed
+            automatically). Unlike `reconcile` (which re-checks one record's
+            worktree/base_branch staleness), this is scoped to zero or more
             entire repo directories, matching `prune`'s --dir/--repo
             semantics. Prints one summary object per repo dir:
-            {"repo", "closed": [paths], "skipped_live": [paths], "warnings"}.
+            {"repo", "closed": [paths], "skipped_live": [paths],
+             "skipped_active_process": [paths], "skipped_unknown_owner":
+             [paths], "warnings"}.
             No existing tool covered this before (`reconcile`'s `_is_stale()`
             treats a record with no `base_branch` as live, not stale, which is
             true for most long-orphaned records -- see
@@ -146,6 +156,25 @@ finish PATH --status completed_pr_open [--pr URL] [--merge-result ...]
             procedure). A terminal record (final_status set) is always
             reported fresh: false, same_dispatch: false -- staleness/liveness
             only means anything for a run still in progress.
+            Additively, when the record carries a detached owner binding (see
+            `bind-detached-owner`), the result also reports `detached_owner`
+            ({"name", "state_dir", "state", "pid", "exit_code"} from the
+            `worktrail-detach status` contract, or null when unbound) and a
+            `reconciliation` class: `active_process` (owner `running`, any
+            heartbeat age), `confirmed_orphan` (owner `exited`/`gone` AND
+            stale heartbeat), `recently_updated_after_owner_exit` (owner
+            `exited`/`gone` but heartbeat still fresh -- may be completing),
+            `unknown_owner` (unbound, malformed, or owner `unknown` -- no
+            affirmative process evidence), or `terminal`. `same_dispatch` is
+            an identity hint only and never overrides that table.
+  bind-detached-owner RUN_PATH --name NAME [--state-dir DIR]
+         -> record the `worktrail-detach launch` handle that owns this run:
+            NAME (validated against detach's own name rule; malformed names
+            are rejected) and, when non-default, its state directory. No pid
+            is stored -- `liveness` queries `worktrail-detach status` through
+            this identity rather than probing pids itself. Call immediately
+            after a SUCCESSFUL launch, before monitoring; never bind a failed
+            or missing handle.
   find-by-worktree --dir DIR --repo REPO --worktree PATH
          -> read-only: which non-terminal run record (if any) owns this
             worktree path? Scans <dir>/<repo-name>/*.yaml with
@@ -204,6 +233,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from ..runtime import detach as _detach
 from ..shared.homedir import worktrail_home
 from . import invocation_context
 
@@ -527,6 +557,45 @@ def cmd_append(args: argparse.Namespace) -> int:
     else:
         raise SystemExit(f"field '{args.key}' is scalar; use `set`")
     _save(path, record)
+    return 0
+
+
+# Detached-owner binding (design D1): the run record stores the
+# `worktrail-detach launch` handle identity -- name plus, when non-default,
+# state directory -- and nothing else. Owner state is always read back through
+# `runtime.detach.status` (exit-sentinel precedence, conservative `unknown`),
+# never by re-implementing pid probing here.
+DETACHED_OWNER_NAME_FIELD = "detached_owner_name"
+DETACHED_OWNER_STATE_DIR_FIELD = "detached_owner_state_dir"
+
+
+def cmd_bind_detached_owner(args: argparse.Namespace) -> int:
+    path = Path(args.path)
+    record = _load(path)
+    name = args.name
+    if not _detach.NAME_RE.match(name):
+        raise SystemExit(
+            f"invalid detached owner name {name!r}: letters, digits, '.', '_', '-' only"
+        )
+    if record.get("final_status") is not None:
+        raise SystemExit(
+            f"run record {path} is already terminal; refusing to bind a detached owner"
+        )
+    record[DETACHED_OWNER_NAME_FIELD] = name
+    if args.state_dir:
+        record[DETACHED_OWNER_STATE_DIR_FIELD] = args.state_dir
+    else:
+        record.pop(DETACHED_OWNER_STATE_DIR_FIELD, None)
+    _save(path, record)
+    print(
+        json.dumps(
+            {
+                "run_id": record.get("run_id"),
+                "detached_owner_name": name,
+                "detached_owner_state_dir": args.state_dir or None,
+            }
+        )
+    )
     return 0
 
 
@@ -1244,14 +1313,79 @@ _DEFAULT_LIVENESS_TTL_SECONDS = 1200  # 20 minutes -- matches the harness's own
 # session touches its run record at least this often."
 
 
+# Seam for the detached-owner probe: tests stub this attribute so no real
+# pid/exit-sentinel files are consulted. Production always goes through
+# `runtime.detach.status`, which owns the running/exited/gone/unknown rule.
+_detach_status = _detach.status
+
+_DEAD_OWNER_STATES = frozenset({"exited", "gone"})
+
+RECONCILIATION_CLASSES = (
+    "active_process",  # owner running -- heartbeat age is diagnostic only
+    "confirmed_orphan",  # owner exited/gone AND heartbeat stale -- sweepable
+    "recently_updated_after_owner_exit",  # owner exited/gone but heartbeat fresh
+    "unknown_owner",  # unbound / malformed / owner `unknown` -- retain
+    "terminal",
+)
+
+
+def _detached_owner_state(record: dict[str, Any]) -> dict[str, Any] | None:
+    """Query the bound detached owner's state via the detach status contract.
+
+    Returns None when the record carries no binding (older callers, native
+    skill sessions). A malformed binding or a probe failure yields state
+    `unknown` rather than a guess -- absence of evidence is never dead-owner
+    evidence (design D2).
+    """
+    name = record.get(DETACHED_OWNER_NAME_FIELD)
+    if not name:
+        return None
+    sd_raw = record.get(DETACHED_OWNER_STATE_DIR_FIELD)
+    owner: dict[str, Any] = {
+        "name": name,
+        "state_dir": sd_raw or None,
+        "state": "unknown",
+        "pid": None,
+        "exit_code": None,
+    }
+    if not isinstance(name, str) or not _detach.NAME_RE.match(name):
+        owner["reason"] = "malformed_owner_name"
+        return owner
+    try:
+        st = _detach_status(name, _detach.state_dir(sd_raw or None), tail_lines=0)
+    except (OSError, SystemExit, ValueError) as exc:
+        owner["reason"] = f"status_probe_failed: {exc}"
+        return owner
+    state = st.get("state")
+    owner["state"] = state if state in ("running", "exited", "gone") else "unknown"
+    owner["pid"] = st.get("pid")
+    owner["exit_code"] = st.get("exit_code")
+    return owner
+
+
+def _reconcile(fresh: bool, owner: dict[str, Any] | None) -> str:
+    state = owner["state"] if owner is not None else None
+    if state == "running":
+        return "active_process"
+    if state in _DEAD_OWNER_STATES:
+        return "recently_updated_after_owner_exit" if fresh else "confirmed_orphan"
+    return "unknown_owner"
+
+
 def _run_liveness(
     record: dict[str, Any], ttl_seconds: int, caller_dispatch_id: str | None = None
 ) -> dict[str, Any]:
-    """Heartbeat freshness + dispatch-identity match for one run record.
+    """Heartbeat freshness + dispatch-identity match + detached-owner state
+    for one run record.
 
     A terminal record (`final_status` set) is always reported not-fresh and
     not-same-dispatch -- liveness only means anything for a run still in
     progress; a finished run has nothing left to collide with.
+
+    The heartbeat fields (`fresh`, `age_seconds`, `updated_at`, `reason`,
+    `same_dispatch`) are unchanged. `detached_owner` and `reconciliation` are
+    additive (design D2): only `reconciliation == "confirmed_orphan"` is
+    affirmative dead-owner evidence an automatic write may act on.
     """
     if record.get("final_status") is not None:
         return {
@@ -1260,12 +1394,15 @@ def _run_liveness(
             "age_seconds": None,
             "updated_at": record.get("updated_at"),
             "reason": "terminal",
+            "detached_owner": None,
+            "reconciliation": "terminal",
         }
     same_dispatch = (
         caller_dispatch_id is not None
         and record.get("dispatch_id") is not None
         and record.get("dispatch_id") == caller_dispatch_id
     )
+    owner = _detached_owner_state(record)
     updated_at = record.get("updated_at")
     if not updated_at:
         # No heartbeat ever recorded (a record predating this field) -- treat
@@ -1277,6 +1414,8 @@ def _run_liveness(
             "age_seconds": None,
             "updated_at": None,
             "reason": "no_heartbeat",
+            "detached_owner": owner,
+            "reconciliation": _reconcile(False, owner),
         }
     try:
         then = datetime.strptime(updated_at, "%Y-%m-%dT%H:%M:%S%z")
@@ -1288,13 +1427,18 @@ def _run_liveness(
             "age_seconds": None,
             "updated_at": updated_at,
             "reason": "unparsable_updated_at",
+            "detached_owner": owner,
+            "reconciliation": _reconcile(False, owner),
         }
+    fresh = age_seconds <= ttl_seconds
     return {
-        "fresh": age_seconds <= ttl_seconds,
+        "fresh": fresh,
         "same_dispatch": same_dispatch,
         "age_seconds": age_seconds,
         "updated_at": updated_at,
         "reason": None,
+        "detached_owner": owner,
+        "reconciliation": _reconcile(fresh, owner),
     }
 
 
@@ -1940,6 +2084,8 @@ def _sweep_orphans_repo_dir(
 ) -> dict[str, Any]:
     closed: list[str] = []
     skipped_live: list[str] = []
+    skipped_active_process: list[str] = []
+    skipped_unknown_owner: list[str] = []
     warnings: list[str] = []
     for path in sorted(repo_dir.glob("*.yaml")):
         record, warning = _load_lenient(path)
@@ -1949,16 +2095,30 @@ def _sweep_orphans_repo_dir(
         if record.get("final_status") is not None:
             continue  # already terminal -- nothing for this sweep to do
         liveness = _run_liveness(record, ttl_seconds, caller_dispatch_id=None)
+        klass = liveness["reconciliation"]
+        # Design D3: only affirmative dead-owner evidence reaches cmd_finish.
+        # A running owner wins over any heartbeat age; a fresh heartbeat wins
+        # over an exited owner (the record may be completing); no usable owner
+        # probe is retained for Route E / operator review, never auto-closed.
+        if klass == "active_process":
+            skipped_active_process.append(str(path))
+            continue
         if liveness["fresh"]:
             skipped_live.append(str(path))
+            continue
+        if klass != "confirmed_orphan":
+            skipped_unknown_owner.append(str(path))
             continue
         closed.append(str(path))
         if dry_run:
             continue
         liveness_reason = liveness["reason"] or "stale_heartbeat"
+        owner = liveness["detached_owner"] or {}
         merge_result = note or (
             f"auto-reconciled: orphan sweep closed run {record.get('run_id')} "
-            f"(liveness reason={liveness_reason}, age_seconds={liveness['age_seconds']})"
+            f"(liveness reason={liveness_reason}, age_seconds={liveness['age_seconds']}, "
+            f"reconciliation={klass}, detached_owner={owner.get('name')} "
+            f"state={owner.get('state')} exit_code={owner.get('exit_code')})"
         )
         finish_args = argparse.Namespace(
             path=str(path),
@@ -1975,6 +2135,8 @@ def _sweep_orphans_repo_dir(
         "repo": repo_dir.name,
         "closed": closed,
         "skipped_live": skipped_live,
+        "skipped_active_process": skipped_active_process,
+        "skipped_unknown_owner": skipped_unknown_owner,
         "warnings": warnings,
     }
 
@@ -2239,6 +2401,20 @@ def main(argv=None) -> int:
         help="this invocation's own dispatch_id, to check same_dispatch",
     )
     s.set_defaults(func=cmd_liveness)
+
+    s = sub.add_parser("bind-detached-owner")
+    s.add_argument("path")
+    s.add_argument(
+        "--name",
+        required=True,
+        help="the successful `worktrail-detach launch` handle name that owns this run",
+    )
+    s.add_argument(
+        "--state-dir",
+        default=None,
+        help="the handle's non-default --state-dir, if one was used at launch",
+    )
+    s.set_defaults(func=cmd_bind_detached_owner)
 
     s = sub.add_parser("find-by-worktree")
     s.add_argument("--dir", required=True, help="run records directory")
