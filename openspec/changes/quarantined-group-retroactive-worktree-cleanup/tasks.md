@@ -48,7 +48,7 @@
 
 ## 3. Verification
 
-- [ ] 3.1 [depends: 1.1, 2.1] [e2e] Run
+- [x] 3.1 [depends: 1.1, 2.1] [e2e] Run
       `PYTHONPATH=src pytest -q tests/router/test_sweep_stale_worktrees.py tests/router/test_quarantine_selfcheck.py tests/test_plugin_surface.py`,
       then `PYTHONPATH=src pytest -q` and
       `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`. Run
