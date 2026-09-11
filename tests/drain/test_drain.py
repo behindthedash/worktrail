@@ -46,6 +46,7 @@ from worktrail.drain.drain import (
     prune_stale_branch,
     release_lock,
     release_lock_slot,
+    repo_sandbox_roots,
     resolve_spec_rel,
     resume_quarantined_budget_exhausted,
     resume_sync_pending,
@@ -87,10 +88,45 @@ def test_build_command_opencode_and_codex_shapes():
     assert build_command("codex", []) == [
         "codex",
         "exec",
-        "-s",
-        "danger-full-access",
         PROMPT,
     ]
+
+
+def test_build_command_codex_splices_sandbox_args_after_exec():
+    sandbox = ["-s", "workspace-write", "--add-dir", "/scratch"]
+    assert build_command("codex", ["--x"], model="gpt-5", sandbox_args=sandbox) == [
+        "codex",
+        "exec",
+        "-s",
+        "workspace-write",
+        "--add-dir",
+        "/scratch",
+        "--x",
+        "--model",
+        "gpt-5",
+        PROMPT,
+    ]
+    assert "danger-full-access" not in build_command("codex", [], sandbox_args=sandbox)
+    # Other harnesses ignore the fragment.
+    assert build_command("claude", [], sandbox_args=sandbox) == ["claude", "-p", PROMPT]
+
+
+def test_repo_sandbox_roots_enumerates_git_checkouts_only(tmp_path):
+    (tmp_path / "alpha" / ".git").mkdir(parents=True)
+    (tmp_path / "beta" / ".git").mkdir(parents=True)
+    (tmp_path / "notes").mkdir()
+    assert repo_sandbox_roots(tmp_path) == [
+        tmp_path / "alpha" / ".git",
+        tmp_path / "alpha-worktrees",
+        tmp_path / "beta" / ".git",
+        tmp_path / "beta-worktrees",
+    ]
+    assert repo_sandbox_roots(tmp_path, "beta") == [
+        tmp_path / "beta" / ".git",
+        tmp_path / "beta-worktrees",
+    ]
+    assert repo_sandbox_roots(tmp_path, "notes") == []
+    assert repo_sandbox_roots(tmp_path / "missing") == []
 
 
 def test_build_command_template_overrides_agent_shape():
@@ -128,8 +164,6 @@ def test_build_command_model_appended_per_harness():
     assert build_command("codex", [], model="gpt-5") == [
         "codex",
         "exec",
-        "-s",
-        "danger-full-access",
         "--model",
         "gpt-5",
         PROMPT,
@@ -162,8 +196,6 @@ def test_build_command_effort_appended_per_harness():
     assert build_command("codex", [], model="gpt-5", effort="low") == [
         "codex",
         "exec",
-        "-s",
-        "danger-full-access",
         "--model",
         "gpt-5",
         "-c",
@@ -1203,6 +1235,37 @@ def write_run_record(runs_dir, name, final_status, pr=None, decisions=()):
         lines.append("pending_decisions:")
         lines.extend(f"  - {entry}" for entry in decisions)
     (repo / f"{name}.yaml").write_text("\n".join(lines) + "\n")
+
+
+def test_drain_codex_one_shot_uses_workspace_write_with_repo_roots(
+    tmp_path, monkeypatch
+):
+    repos_root = tmp_path / "projects"
+    (repos_root / "alpha" / ".git").mkdir(parents=True)
+    monkeypatch.delenv("WORKTRAIL_CODEX_SANDBOX_MODE", raising=False)
+    install_fake_queue(monkeypatch, FakeQueue([1, 0, 0]))
+    config = make_config(
+        tmp_path, agent="codex", repos_root=repos_root, seed_backlog=False
+    )
+    cmds: list[list[str]] = []
+
+    def spawner(cmd, timeout):
+        cmds.append(list(cmd))
+        write_run_record(
+            config.runs_dir, "go-1", "completed_pr_open", pr="https://pr/1"
+        )
+        return SpawnOutcome(0)
+
+    drain.drain(config, spawner=spawner, log=lambda _l: None)
+    assert len(cmds) == 1
+    cmd = cmds[0]
+    assert cmd[:4] == ["codex", "exec", "-s", "workspace-write"]
+    assert "danger-full-access" not in cmd
+    add_dirs = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--add-dir"]
+    assert str(drain.worker_scratch_dir(0)) in add_dirs
+    assert str(repos_root / "alpha" / ".git") in add_dirs
+    assert str(repos_root / "alpha-worktrees") in add_dirs
+    assert str(repos_root / "alpha") not in add_dirs
 
 
 def test_drain_two_briefs_then_empty(tmp_path, monkeypatch):
