@@ -322,6 +322,22 @@ _CI_CONFIG_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A CI/config mention introduced by a citation cue ("cites", "quotes",
+# "verbatim", "as a worked example", ...) is evidence quoted from elsewhere,
+# not the report's own change target -- so it must not trigger the J damping
+# above. Without this, a genuine self-referential bug report about the
+# classifier that quotes another brief's CI-config text as a worked example
+# gets wrongly demoted from J to F/C (brief 20260910-152514: confirmed
+# reproducible -- "classify.py's routing logic wrongly demotes true
+# positives; it quotes another brief's .github/rulesets promotion as a
+# worked example" scores J=9 undamped vs F=6, but the undiscriminated damp
+# zeroed J and let F win).
+_CITED_AS_EXAMPLE_RE = re.compile(
+    r"\bcit(?:e|es|ing|ed)\b|\bquot(?:e|es|ing|ed)\b|\bverbatim\b"
+    r"|\bworked example\b|\bas (?:a |an )?example\b",
+    re.IGNORECASE,
+)
+
 # CI/PR-repair signals force Route E (repair existing delivery) with F secondary.
 CI_REPAIR = [
     _sig(
@@ -619,6 +635,7 @@ def classify(
         and hits["J"]
         and set(hits["J"]) <= _MENTION_ONLY_J_LABELS
         and _CI_CONFIG_RE.search(text)
+        and not _CITED_AS_EXAMPLE_RE.search(text)
     ):
         reason_parts.append(
             f"J damped: signals {hits['J']} are filename/path mentions only, "

@@ -76,6 +76,19 @@ agents or writes task files — that is `orchestrator/`'s job.
   **not** the diff-blindness the `RISK_SIGNALS` table comment deliberately fails loud on.
   Underscore-joined identifiers (`require_auth`) were already excluded (`_` is a word character);
   `auth-related` still matches, because the guard looks only at what *precedes* the word.
+- **A J score built entirely from `_MENTION_ONLY_J_LABELS` (`routing-logic`, `classify-py`)
+  alongside a strong CI/config signal (`_CI_CONFIG_RE`: `.github/workflows`, `.github/rulesets`,
+  `required status check`, `branch protection`) is damped to zero** — that shape means the
+  routing/classifier file is cited as evidence for unrelated CI/branch-protection work, not the
+  actual change target (live incident 2026-09-10, brief 20260910-143657/run go-20260910-142322).
+  The damp does **not** fire when the same text also matches `_CITED_AS_EXAMPLE_RE` (`cites`,
+  `quotes`, `verbatim`, `worked example`, `as an example`, …): a genuine self-referential bug
+  report about `classify.py`'s own routing logic that happens to quote another brief's
+  CI-config text as a worked example was itself getting wrongly demoted from J to F (brief
+  20260910-152514: J=9 undamped vs F=6, confirmed reproducible). A citation cue means the
+  CI/config phrase is quoted evidence, not the report's own change target, so it must not
+  trigger the damp. Scoped narrowly to these two evidence-confirmed labels — do not widen
+  `_MENTION_ONLY_J_LABELS` without its own confirmed false-positive.
 - **The parser translates into the executor's vocabulary, not the user's.** `worktrail-sdd-workflow`
   still speaks `handoff:<id>`, `route:<X>`, and the v1 intent words (`V1_INTENTS`); so `spec
   explore` yields `intent: brainstorm`, and `spec fix` yields `route: F` (the executor has no `fix`
@@ -232,8 +245,9 @@ agents or writes task files — that is `orchestrator/`'s job.
   `NOUNS`, `MODES`, `render_forms`); never shells out or writes, reads `queue/` only when a folder
   is supplied, and delegates repo names to the caller (`--repos`) and brief-id resolution to
   `work_queue.resolve()` so nothing here becomes a second implementation
-- `router/classify.py` — `classify_risk()` and the `RISK_SIGNALS` table; the `authz` pattern's
-  `(?<![-@])` compound-token guard lives here
+- `router/classify.py` — `classify_risk()` and the `RISK_SIGNALS` table (the `authz` pattern's
+  `(?<![-@])` compound-token guard lives here); also `classify()`'s J-damping guard
+  (`_MENTION_ONLY_J_LABELS`, `_CI_CONFIG_RE`, `_CITED_AS_EXAMPLE_RE`)
 - `router/policy.py` — `load_policy()`; the single source of truth for a repo's resolved GO policy
 - `router/run_record.py` — `finish()`'s ten-state enforcement and its two code-enforced gates;
   `cmd_scope_review` write-time reason validation and `OUT_OF_SCOPE_REASON_PREFIXES`;
@@ -257,4 +271,4 @@ agents or writes task files — that is `orchestrator/`'s job.
   outcome→exit-code mapping for the `worktrail-close-stale-openspec` console script
 
 ---
-**Last Updated:** 2026-09-10
+**Last Updated:** 2026-09-11

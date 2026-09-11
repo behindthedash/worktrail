@@ -225,6 +225,21 @@ class TestOverridesAndSignals(unittest.TestCase):
         )
         self.assertNotEqual(r["route"], "J")
 
+    def test_classify_py_self_reference_quoting_ci_config_as_example_still_wins(self):
+        # Brief 20260910-152514: a genuine self-referential bug report about
+        # classify.py's own routing logic that quotes another brief's
+        # CI-config text as a worked example was wrongly demoted to F by the
+        # mention-only-J damping (confirmed reproducible: J=9 undamped vs
+        # F=6). The citation cue ("quotes ... as a worked example") means the
+        # CI-config phrase is cited evidence, not the change target, so it
+        # must not trigger the damp.
+        r = classify(
+            "A defect report about classify.py's routing logic said it "
+            "wrongly demotes true positives; it quotes another brief's "
+            ".github/rulesets promotion as a worked example."
+        )
+        self.assertEqual(r["route"], "J")
+
     def test_classify_py_mention_with_other_j_signal_still_wins(self):
         # Damping only fires when EVERY J hit is a mention-only label -- a
         # genuine workflow-evolution request that also cites a CI/config path
