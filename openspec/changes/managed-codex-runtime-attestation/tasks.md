@@ -44,7 +44,7 @@
 
 ## 3. Verification
 
-- [ ] 3.1 [e2e] Run `PYTHONPATH=src pytest -q tests/orchestrator/test_codex_probe.py tests/orchestrator/test_codex_runtime_attestation.py tests/router/test_run_record.py`.
+- [x] 3.1 [e2e] Run `PYTHONPATH=src pytest -q tests/orchestrator/test_codex_probe.py tests/orchestrator/test_codex_runtime_attestation.py tests/router/test_run_record.py`.
 - [ ] 3.2 [e2e] In the managed platform, run the documented attestation twice
       from fresh sessions and once with the controlled negative condition;
       inspect the owning run record after each invocation to confirm only
