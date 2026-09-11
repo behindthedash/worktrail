@@ -264,6 +264,58 @@ class TestSignalsAndIdentity(_AttestationHarness):
         )
         self.assertIs(att.check_identity(report), report)
 
+    def test_already_failing_report_keeps_stage_and_diagnostic(self):
+        # codex-cli 0.154.0 reports no effective identity, so the identity
+        # rule must not overwrite a failure the probe already classified.
+        for stage, diagnostic in (
+            (
+                StageOutcome.AUTHENTICATION,
+                "codex probe reported an authentication failure",
+            ),
+            (
+                StageOutcome.REPORT_BACK,
+                "no-op scope violated: repository working tree mutated",
+            ),
+        ):
+            with self.subTest(stage=stage):
+                report = ProbeReport(
+                    stage=stage,
+                    success=False,
+                    diagnostic=diagnostic,
+                    session_started_marker="t1",
+                    selected_provider="codex",
+                    effective_provider=None,
+                )
+                self.assertIs(att.check_identity(report), report)
+
+    def test_nested_auth_refusal_without_identity_stays_authentication(self):
+        result = self.run_with(
+            '{"type": "thread.started", "thread_id": "t1"}\n'
+            '{"type": "error", "message": "Not logged in, token=abc123"}\n',
+            returncode=1,
+        )
+        self.assertEqual(result.report.stage, StageOutcome.AUTHENTICATION)
+        self.assertIn("authentication", result.report.diagnostic)
+        self.assertNotIn("abc123", result.report.diagnostic)
+        self.assertTrue(result.runtime_ready)
+        self.assertIsNone(result.report.effective_provider)
+
+    def test_detected_no_op_violation_survives_into_the_recorded_entry(self):
+        def mutate_repo(*args, **kwargs):
+            Path(self.repo, "stray.txt").write_text("x")
+            return subprocess.CompletedProcess(
+                args=[], returncode=0, stdout=NO_IDENTITY_STREAM, stderr=""
+            )
+
+        result = self.run_with(side_effect=mutate_repo)
+        self.assertFalse(result.success)
+        self.assertEqual(result.report.stage, StageOutcome.REPORT_BACK)
+        self.assertIn("no-op scope violated", result.report.diagnostic)
+        self.assertIn("repository", result.report.diagnostic)
+        entry = att.build_entry(result, "nonce-1")
+        self.assertEqual(entry["stage"], "report_back")
+        self.assertIn("no-op scope violated", entry["diagnostic"])
+
     def test_authentication_rejection_is_classified_without_credential_text(self):
         result = self.run_with(
             OK_STREAM,

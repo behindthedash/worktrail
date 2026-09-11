@@ -158,11 +158,14 @@ def check_identity(report: ProbeReport) -> ProbeReport:
     and -- when a model was selected -- the effective model to equal it. An
     absent or mismatched effective identity is a `PROVIDER_SELECTION`
     failure: the session marker is never accepted as identity in its place.
-    Runs that never reached a session keep their earlier stage.
+    Runs that never reached a session, and runs the probe already classified
+    as failing (authentication refusal, no-op scope violation, ...), keep
+    their earlier stage and diagnostic: the identity rule only applies to a
+    report that is still passing, so it never masks earlier evidence.
     """
     if report.session_started_marker is None:
         return report
-    if report.stage == StageOutcome.PROVIDER_SELECTION:
+    if not report.success:
         return report
     problems = []
     if report.effective_provider is None:
