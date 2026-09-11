@@ -56,6 +56,13 @@ BLOCKED = {
     "mergeStateStatus": "BLOCKED",
     "statusCheckRollup": [{"name": "ci", "conclusion": "SUCCESS"}],
 }
+BLOCKED_AUTO_MERGE_CI_RUNNING = {
+    "state": "OPEN",
+    "mergedAt": None,
+    "autoMergeRequest": {"enabledBy": {"login": "bot"}, "mergeMethod": "SQUASH"},
+    "mergeStateStatus": "BLOCKED",
+    "statusCheckRollup": [{"name": "ci", "status": "IN_PROGRESS", "conclusion": ""}],
+}
 PENDING = {
     "state": "OPEN",
     "mergedAt": None,
@@ -182,6 +189,14 @@ class ClassifyTest(unittest.TestCase):
         self.assertEqual(pr_ledger.classify_state(GREEN_AUTO), "green-auto-merge")
         self.assertEqual(pr_ledger.classify_state(PENDING), "pending")
 
+    def test_auto_merge_wins_over_blocked_while_checks_run(self) -> None:
+        # GitHub reports BLOCKED while required checks are still pending; with
+        # auto-merge armed and nothing red, GitHub will land it -- not a recovery.
+        self.assertEqual(
+            pr_ledger.classify_state(BLOCKED_AUTO_MERGE_CI_RUNNING),
+            "green-auto-merge",
+        )
+
     def test_red_wins_over_auto_merge(self) -> None:
         payload = dict(RED, autoMergeRequest=GREEN_AUTO["autoMergeRequest"])
         self.assertEqual(pr_ledger.classify_state(payload), "red")
@@ -225,6 +240,14 @@ class SweepTest(LedgerBase):
         report = self._sweep(BLOCKED)
         self.assertEqual(report["recovered"][0]["state"], "blocked")
         self.assertEqual(len(self._briefs()), 1)
+
+    def test_blocked_with_auto_merge_armed_is_retained_unwatched(self) -> None:
+        report = self._sweep(
+            BLOCKED_AUTO_MERGE_CI_RUNNING, now=T0 + datetime.timedelta(hours=2)
+        )
+        self.assertEqual(report["recovered"], [])
+        self.assertEqual(report["retained"][0]["state"], "green-auto-merge")
+        self.assertEqual(self._briefs(), [])
 
     def test_red_with_fresh_watcher_is_retained(self) -> None:
         pr_ledger.heartbeat(URL, path=self.ledger, now=T0)

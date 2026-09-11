@@ -402,10 +402,14 @@ def classify_state(payload: dict[str, Any] | None) -> str:
         return STATE_CLOSED
     if _rollup_has_failure(payload.get("statusCheckRollup")):
         return STATE_RED
-    if (payload.get("mergeStateStatus") or "").upper() == "BLOCKED":
-        return STATE_BLOCKED
+    # Auto-merge wins over BLOCKED: GitHub reports mergeStateStatus BLOCKED while
+    # required checks are still running, and a single reading is not definitive
+    # (see land_pr._merge_state_guard). With auto-merge armed and nothing red,
+    # GitHub will land it once the checks finish -- do not recover it.
     if payload.get("autoMergeRequest"):
         return STATE_GREEN_AUTO_MERGE
+    if (payload.get("mergeStateStatus") or "").upper() == "BLOCKED":
+        return STATE_BLOCKED
     return STATE_PENDING
 
 
