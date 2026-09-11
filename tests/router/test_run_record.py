@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for run_record.py. Run: python3 test_run_record.py"""
 
+import contextlib
 import json
 import shutil
 import subprocess
@@ -2593,14 +2594,40 @@ def _sweep_orphans(tmp, **over):
     return rc, json.loads(out.getvalue())
 
 
+@contextlib.contextmanager
+def _stub_detach_status(state, pid=4242, exit_code=None, calls=None):
+    """Hermetically replace the detach-status seam: no pid/exit files are read.
+    `calls` (a list, if given) collects (name, state_dir) per probe."""
+
+    def fake(name, sd, tail_lines=5):
+        if calls is not None:
+            calls.append((name, str(sd)))
+        return {
+            "name": name,
+            "state": state,
+            "pid": pid,
+            "exit_code": exit_code,
+            "log": str(sd / f"{name}.log"),
+            "log_tail": [],
+        }
+
+    with patch.object(run_record, "_detach_status", fake):
+        yield
+
+
 class TestSweepOrphans(unittest.TestCase):
-    """Bulk-close non-terminal, heartbeat-stale run records -- the gap named in
+    """Bulk-close non-terminal run records -- the gap named in
     docs/specs/research/dead-dispatch-backlog-investigation.md: no existing
     tool bulk-closes a generic abandoned run record, since `reconcile`'s
-    `_is_stale()` treats a record with no `base_branch` as live."""
+    `_is_stale()` treats a record with no `base_branch` as live. Closure now
+    requires a stale heartbeat AND a bound detached owner reporting exited/
+    gone (design D3); the rest of the decision table lives in
+    TestDetachedOwnerReconciliation."""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
+        self._exit_stack = contextlib.ExitStack()
+        self.addCleanup(self._exit_stack.close)
 
     def _backdate_updated_at(self, path, seconds_ago):
         record = _load(Path(path))
@@ -2610,9 +2637,11 @@ class TestSweepOrphans(unittest.TestCase):
 
     def test_closes_stale_non_terminal_record_with_default_note(self):
         res = _start(self.tmp, request="orphaned dispatch")
+        main(["bind-detached-owner", res["path"], "--name", "go-orphan"])
         self._backdate_updated_at(res["path"], seconds_ago=99999)
 
-        rc, out = _sweep_orphans(self.tmp)
+        with _stub_detach_status("exited", exit_code=1):
+            rc, out = _sweep_orphans(self.tmp)
 
         self.assertEqual(rc, 0)
         repo = out["repos"][0]
@@ -2637,7 +2666,9 @@ class TestSweepOrphans(unittest.TestCase):
         rec = _load(Path(res["path"]))
         self.assertIsNone(rec["final_status"])
 
-    def test_no_heartbeat_ever_recorded_closes_as_stale(self):
+    def test_no_heartbeat_ever_recorded_is_unknown_owner_not_closed(self):
+        # A record predating `updated_at` has no bound owner either: stale,
+        # but with no affirmative dead-owner evidence -- retained (design D3).
         legacy_path = Path(self.tmp) / "legacy-repo" / "go-legacy.yaml"
         legacy_path.parent.mkdir(parents=True)
         legacy_path.write_text(_legacy_record_text(), encoding="utf-8")
@@ -2646,9 +2677,10 @@ class TestSweepOrphans(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         repo = out["repos"][0]
-        self.assertEqual(repo["closed"], [str(legacy_path)])
+        self.assertEqual(repo["closed"], [])
+        self.assertEqual(repo["skipped_unknown_owner"], [str(legacy_path)])
         rec = _load(legacy_path)
-        self.assertEqual(rec["final_status"], "failed_terminal")
+        self.assertIsNone(rec.get("final_status"))
 
     def test_already_terminal_record_is_left_alone(self):
         res = _start(self.tmp, request="already done")
@@ -2667,7 +2699,9 @@ class TestSweepOrphans(unittest.TestCase):
 
     def test_dry_run_reports_without_writing(self):
         res = _start(self.tmp, request="orphaned dispatch")
+        main(["bind-detached-owner", res["path"], "--name", "go-orphan"])
         self._backdate_updated_at(res["path"], seconds_ago=99999)
+        self._exit_stack.enter_context(_stub_detach_status("gone"))
 
         rc, out = _sweep_orphans(self.tmp, dry_run=True)
 
@@ -2679,7 +2713,9 @@ class TestSweepOrphans(unittest.TestCase):
 
     def test_explicit_note_used_as_merge_result(self):
         res = _start(self.tmp, request="orphaned dispatch")
+        main(["bind-detached-owner", res["path"], "--name", "go-orphan"])
         self._backdate_updated_at(res["path"], seconds_ago=99999)
+        self._exit_stack.enter_context(_stub_detach_status("gone"))
 
         rc, _out = _sweep_orphans(
             self.tmp, note="auto-reconciled: backlog cleanup 2026-08-21"
@@ -2695,7 +2731,9 @@ class TestSweepOrphans(unittest.TestCase):
         mine = _start(self.tmp, repo="/tmp/repo-a", request="mine")
         other = _start(self.tmp, repo="/tmp/repo-b", request="other")
         for res in (mine, other):
+            main(["bind-detached-owner", res["path"], "--name", "go-x"])
             self._backdate_updated_at(res["path"], seconds_ago=99999)
+        self._exit_stack.enter_context(_stub_detach_status("gone"))
 
         rc, out = _sweep_orphans(self.tmp, repo="/tmp/repo-a")
 
@@ -2707,7 +2745,9 @@ class TestSweepOrphans(unittest.TestCase):
 
     def test_malformed_record_is_skipped_and_never_closed(self):
         res = _start(self.tmp, request="orphaned dispatch")
+        main(["bind-detached-owner", res["path"], "--name", "go-orphan"])
         self._backdate_updated_at(res["path"], seconds_ago=99999)
+        self._exit_stack.enter_context(_stub_detach_status("gone"))
         corrupted = Path(self.tmp) / "fake-repo" / "go-corrupted.yaml"
         corrupted.write_text(
             "run_id: go-corrupted\n"
@@ -2742,11 +2782,12 @@ class TestSweepOrphans(unittest.TestCase):
         a = _start(self.tmp, request="orphan a")
         b = _start(self.tmp, request="orphan b")
         for res in (a, b):
+            main(["bind-detached-owner", res["path"], "--name", "go-orphan"])
             self._backdate_updated_at(res["path"], seconds_ago=99999)
 
         argv = ["sweep-orphans", "--dir", self.tmp, "--status", "failed_terminal"]
         out = StringIO()
-        with patch("sys.stdout", out):
+        with _stub_detach_status("gone"), patch("sys.stdout", out):
             rc = main(argv)
 
         self.assertEqual(rc, 0)
@@ -2885,6 +2926,343 @@ class TestLiveness(unittest.TestCase):
         self.assertTrue(payload["fresh"])
         self.assertTrue(payload["same_dispatch"])
         self.assertEqual(payload["run_id"], res["run_id"])
+
+
+class TestDetachedOwnerReconciliation(unittest.TestCase):
+    """design.md D1-D3: bind the detached launch handle, read owner state
+    through the detach status contract, classify, and let only
+    `confirmed_orphan` reach `cmd_finish`."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def _backdate_updated_at(self, path, seconds_ago):
+        record = _load(Path(path))
+        then = datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)
+        record["updated_at"] = then.strftime("%Y-%m-%dT%H:%M:%S%z")
+        Path(path).write_text(run_record._render(record), encoding="utf-8")
+
+    def _bind(self, path, name="go-run-1", state_dir=None):
+        argv = ["bind-detached-owner", path, "--name", name]
+        if state_dir:
+            argv += ["--state-dir", state_dir]
+        out = StringIO()
+        with patch("sys.stdout", out):
+            rc = main(argv)
+        return rc, json.loads(out.getvalue())
+
+    def _liveness(self, path, **kw):
+        return _run_liveness(_load(Path(path)), ttl_seconds=1200, **kw)
+
+    # ── binding ─────────────────────────────────────────────────────────
+
+    def test_bind_persists_name_and_optional_state_dir(self):
+        res = _start(self.tmp)
+        rc, payload = self._bind(res["path"], "go-run-1")
+        self.assertEqual(rc, 0)
+        self.assertEqual(payload["detached_owner_name"], "go-run-1")
+        self.assertIsNone(payload["detached_owner_state_dir"])
+        rec = _load(Path(res["path"]))
+        self.assertEqual(rec["detached_owner_name"], "go-run-1")
+        self.assertNotIn("detached_owner_state_dir", rec)
+
+        rc, payload = self._bind(res["path"], "go-run-2", state_dir="/tmp/det")
+        self.assertEqual(rc, 0)
+        rec = _load(Path(res["path"]))
+        self.assertEqual(rec["detached_owner_name"], "go-run-2")
+        self.assertEqual(rec["detached_owner_state_dir"], "/tmp/det")
+        self.assertEqual(payload["detached_owner_state_dir"], "/tmp/det")
+        # No pid is ever synthesized onto the record (D1).
+        self.assertFalse(any("pid" in k for k in rec))
+
+    def test_bind_rejects_malformed_name_without_writing(self):
+        res = _start(self.tmp)
+        before = Path(res["path"]).read_text()
+        for bad in ("../escape", "has space", "", "-leading", "a/b"):
+            with self.assertRaises(SystemExit):
+                main(["bind-detached-owner", res["path"], "--name", bad])
+        self.assertEqual(Path(res["path"]).read_text(), before)
+        self.assertNotIn("detached_owner_name", _load(Path(res["path"])))
+
+    def test_bind_refuses_terminal_record(self):
+        res = _start(self.tmp)
+        _complete_scope_review(res["path"])
+        main(["finish", res["path"], "--status", "completed_and_merged"])
+        with self.assertRaises(SystemExit):
+            main(["bind-detached-owner", res["path"], "--name", "go-late"])
+        self.assertNotIn("detached_owner_name", _load(Path(res["path"])))
+
+    def test_liveness_probes_through_detach_status_with_stored_identity(self):
+        res = _start(self.tmp)
+        self._bind(res["path"], "go-run-1", state_dir="/tmp/custom-det")
+        calls = []
+        with _stub_detach_status("running", calls=calls):
+            result = self._liveness(res["path"])
+        self.assertEqual(calls, [("go-run-1", "/tmp/custom-det")])
+        self.assertEqual(result["detached_owner"]["name"], "go-run-1")
+        self.assertEqual(result["detached_owner"]["state_dir"], "/tmp/custom-det")
+        self.assertEqual(result["detached_owner"]["pid"], 4242)
+
+    def test_liveness_uses_default_state_dir_when_none_bound(self):
+        res = _start(self.tmp)
+        self._bind(res["path"], "go-run-1")
+        calls = []
+        with _stub_detach_status("running", calls=calls):
+            self._liveness(res["path"])
+        self.assertEqual(calls, [("go-run-1", str(run_record._detach.state_dir(None)))])
+
+    # ── liveness decision table (D2) ────────────────────────────────────
+
+    def test_unbound_record_is_unknown_owner_and_keeps_heartbeat_fields(self):
+        res = _start(self.tmp)
+        self._backdate_updated_at(res["path"], seconds_ago=99999)
+        with _stub_detach_status("running") as _:
+            result = self._liveness(res["path"])
+        self.assertFalse(result["fresh"])
+        self.assertIsNone(result["detached_owner"])
+        self.assertEqual(result["reconciliation"], "unknown_owner")
+        for key in ("fresh", "age_seconds", "updated_at", "same_dispatch", "reason"):
+            self.assertIn(key, result)
+
+    def test_legacy_record_without_heartbeat_or_metadata_is_unknown_owner(self):
+        legacy_path = Path(self.tmp) / "go-legacy.yaml"
+        legacy_path.write_text(_legacy_record_text(), encoding="utf-8")
+        result = _run_liveness(_load(legacy_path), ttl_seconds=1200)
+        self.assertEqual(result["reason"], "no_heartbeat")
+        self.assertIsNone(result["detached_owner"])
+        self.assertEqual(result["reconciliation"], "unknown_owner")
+
+    def test_stale_heartbeat_running_owner_is_active_process(self):
+        res = _start(self.tmp)
+        self._bind(res["path"])
+        self._backdate_updated_at(res["path"], seconds_ago=99999)
+        with _stub_detach_status("running"):
+            result = self._liveness(res["path"])
+        self.assertFalse(result["fresh"])
+        self.assertEqual(result["detached_owner"]["state"], "running")
+        self.assertEqual(result["reconciliation"], "active_process")
+
+    def test_stale_heartbeat_exited_owner_is_confirmed_orphan(self):
+        res = _start(self.tmp)
+        self._bind(res["path"])
+        self._backdate_updated_at(res["path"], seconds_ago=99999)
+        with _stub_detach_status("exited", exit_code=1):
+            result = self._liveness(res["path"])
+        self.assertEqual(result["detached_owner"]["state"], "exited")
+        self.assertEqual(result["detached_owner"]["exit_code"], 1)
+        self.assertEqual(result["reconciliation"], "confirmed_orphan")
+
+    def test_stale_heartbeat_gone_owner_is_confirmed_orphan(self):
+        res = _start(self.tmp)
+        self._bind(res["path"])
+        self._backdate_updated_at(res["path"], seconds_ago=99999)
+        with _stub_detach_status("gone"):
+            result = self._liveness(res["path"])
+        self.assertEqual(result["reconciliation"], "confirmed_orphan")
+
+    def test_stale_heartbeat_unknown_owner_state_is_unknown_owner(self):
+        res = _start(self.tmp)
+        self._bind(res["path"])
+        self._backdate_updated_at(res["path"], seconds_ago=99999)
+        with _stub_detach_status("unknown", pid=None):
+            result = self._liveness(res["path"])
+        self.assertEqual(result["detached_owner"]["state"], "unknown")
+        self.assertEqual(result["reconciliation"], "unknown_owner")
+
+    def test_malformed_persisted_binding_is_unknown_owner_and_never_probed(self):
+        res = _start(self.tmp)
+        record = _load(Path(res["path"]))
+        record["detached_owner_name"] = "../not a name"
+        Path(res["path"]).write_text(run_record._render(record), encoding="utf-8")
+        self._backdate_updated_at(res["path"], seconds_ago=99999)
+        calls = []
+        with _stub_detach_status("exited", calls=calls):
+            result = self._liveness(res["path"])
+        self.assertEqual(calls, [])
+        self.assertEqual(result["detached_owner"]["state"], "unknown")
+        self.assertEqual(result["detached_owner"]["reason"], "malformed_owner_name")
+        self.assertEqual(result["reconciliation"], "unknown_owner")
+
+    def test_malformed_persisted_state_dir_is_unknown_owner_and_never_probed(self):
+        """A non-string ``detached_owner_state_dir`` (e.g. a hand-edited list)
+        must be retained as unknown-owner evidence, not raise TypeError out of
+        liveness and abort a sweep."""
+        res = _start(self.tmp)
+        record = _load(Path(res["path"]))
+        record["detached_owner_name"] = "go-test"
+        record["detached_owner_state_dir"] = ["not", "a", "path"]
+        Path(res["path"]).write_text(run_record._render(record), encoding="utf-8")
+        self._backdate_updated_at(res["path"], seconds_ago=99999)
+        calls = []
+        with _stub_detach_status("exited", calls=calls):
+            result = self._liveness(res["path"])
+        self.assertEqual(calls, [])
+        self.assertEqual(result["detached_owner"]["state"], "unknown")
+        self.assertEqual(
+            result["detached_owner"]["reason"], "malformed_owner_state_dir"
+        )
+        self.assertEqual(result["reconciliation"], "unknown_owner")
+
+    def test_fresh_heartbeat_after_owner_exit_is_not_orphan(self):
+        res = _start(self.tmp)
+        self._bind(res["path"])
+        self._backdate_updated_at(res["path"], seconds_ago=30)
+        with _stub_detach_status("exited", exit_code=0):
+            result = self._liveness(res["path"])
+        self.assertTrue(result["fresh"])
+        self.assertEqual(result["reconciliation"], "recently_updated_after_owner_exit")
+
+    def test_fresh_heartbeat_running_owner_is_active_process(self):
+        res = _start(self.tmp)
+        self._bind(res["path"])
+        with _stub_detach_status("running"):
+            result = self._liveness(res["path"])
+        self.assertTrue(result["fresh"])
+        self.assertEqual(result["reconciliation"], "active_process")
+
+    def test_terminal_record_is_terminal_class_and_never_probed(self):
+        res = _start(self.tmp)
+        self._bind(res["path"])
+        _complete_scope_review(res["path"])
+        main(["finish", res["path"], "--status", "completed_and_merged"])
+        calls = []
+        with _stub_detach_status("running", calls=calls):
+            result = self._liveness(res["path"])
+        self.assertEqual(calls, [])
+        self.assertFalse(result["fresh"])
+        self.assertEqual(result["reason"], "terminal")
+        self.assertEqual(result["reconciliation"], "terminal")
+        self.assertIsNone(result["detached_owner"])
+
+    def test_same_dispatch_does_not_override_owner_table(self):
+        res = _start(self.tmp, dispatch_id="go-abc")
+        self._bind(res["path"])
+        self._backdate_updated_at(res["path"], seconds_ago=99999)
+        with _stub_detach_status("gone"):
+            result = self._liveness(res["path"], caller_dispatch_id="go-abc")
+        self.assertTrue(result["same_dispatch"])
+        self.assertEqual(result["reconciliation"], "confirmed_orphan")
+
+    def test_cli_liveness_reports_additive_fields(self):
+        res = _start(self.tmp)
+        self._bind(res["path"], "go-cli")
+        self._backdate_updated_at(res["path"], seconds_ago=99999)
+        out = StringIO()
+        with _stub_detach_status("exited", exit_code=3), patch("sys.stdout", out):
+            rc = main(["liveness", res["path"]])
+        self.assertEqual(rc, 0)
+        payload = json.loads(out.getvalue())
+        self.assertFalse(payload["fresh"])
+        self.assertEqual(payload["reconciliation"], "confirmed_orphan")
+        self.assertEqual(payload["detached_owner"]["name"], "go-cli")
+        self.assertEqual(payload["detached_owner"]["exit_code"], 3)
+
+    # ── sweep-orphans (D3) ──────────────────────────────────────────────
+
+    def _sweep_state(self, state, *, seconds_ago, bind=True, dry_run=False, **stub):
+        res = _start(self.tmp, request=f"sweep {state}")
+        if bind:
+            self._bind(res["path"], "go-sweep")
+        self._backdate_updated_at(res["path"], seconds_ago=seconds_ago)
+        with _stub_detach_status(state, **stub):
+            rc, out = _sweep_orphans(self.tmp, dry_run=dry_run)
+        self.assertEqual(rc, 0)
+        return res, out["repos"][0]
+
+    def _assert_only(self, repo, category, path):
+        for key in (
+            "closed",
+            "skipped_live",
+            "skipped_active_process",
+            "skipped_unknown_owner",
+        ):
+            self.assertEqual(repo[key], [path] if key == category else [], key)
+
+    def test_sweep_closes_confirmed_orphan_with_informative_note(self):
+        res, repo = self._sweep_state("exited", seconds_ago=99999, exit_code=137)
+        self._assert_only(repo, "closed", res["path"])
+        rec = _load(Path(res["path"]))
+        self.assertEqual(rec["final_status"], "failed_terminal")
+        note = rec["merge_result"]
+        self.assertIn("auto-reconciled", note)
+        self.assertIn("reconciliation=confirmed_orphan", note)
+        self.assertIn("detached_owner=go-sweep", note)
+        self.assertIn("state=exited", note)
+        self.assertIn("exit_code=137", note)
+
+    def test_sweep_closes_gone_owner(self):
+        res, repo = self._sweep_state("gone", seconds_ago=99999)
+        self._assert_only(repo, "closed", res["path"])
+        self.assertEqual(_load(Path(res["path"]))["final_status"], "failed_terminal")
+
+    def test_sweep_dry_run_lists_confirmed_orphan_without_writing(self):
+        res, repo = self._sweep_state("gone", seconds_ago=99999, dry_run=True)
+        self._assert_only(repo, "closed", res["path"])
+        rec = _load(Path(res["path"]))
+        self.assertIsNone(rec["final_status"])
+        self.assertIsNone(rec["merge_result"])
+
+    def test_sweep_retains_running_owner_even_with_stale_heartbeat(self):
+        res, repo = self._sweep_state("running", seconds_ago=99999)
+        self._assert_only(repo, "skipped_active_process", res["path"])
+        self.assertIsNone(_load(Path(res["path"]))["final_status"])
+
+    def test_sweep_retains_fresh_record_after_owner_exit_as_live(self):
+        res, repo = self._sweep_state("exited", seconds_ago=30, exit_code=0)
+        self._assert_only(repo, "skipped_live", res["path"])
+        self.assertIsNone(_load(Path(res["path"]))["final_status"])
+
+    def test_sweep_retains_fresh_unbound_record_as_live(self):
+        res, repo = self._sweep_state("running", seconds_ago=30, bind=False)
+        self._assert_only(repo, "skipped_live", res["path"])
+
+    def test_sweep_retains_stale_unknown_owner_state(self):
+        res, repo = self._sweep_state("unknown", seconds_ago=99999, pid=None)
+        self._assert_only(repo, "skipped_unknown_owner", res["path"])
+        self.assertIsNone(_load(Path(res["path"]))["final_status"])
+
+    def test_sweep_retains_stale_unbound_record_as_unknown_owner(self):
+        res, repo = self._sweep_state("gone", seconds_ago=99999, bind=False)
+        self._assert_only(repo, "skipped_unknown_owner", res["path"])
+        self.assertIsNone(_load(Path(res["path"]))["final_status"])
+
+    def test_sweep_never_writes_active_or_unknown_records(self):
+        active = _start(self.tmp, request="active")
+        self._bind(active["path"], "go-active")
+        unknown = _start(self.tmp, request="unknown")
+        for res in (active, unknown):
+            self._backdate_updated_at(res["path"], seconds_ago=99999)
+        before = {r["path"]: Path(r["path"]).read_text() for r in (active, unknown)}
+        with _stub_detach_status("running"):
+            rc, out = _sweep_orphans(self.tmp)
+        self.assertEqual(rc, 0)
+        repo = out["repos"][0]
+        self.assertEqual(repo["closed"], [])
+        self.assertEqual(repo["skipped_active_process"], [active["path"]])
+        self.assertEqual(repo["skipped_unknown_owner"], [unknown["path"]])
+        for path, text in before.items():
+            self.assertEqual(Path(path).read_text(), text)
+
+    def test_sweep_ignores_terminal_records(self):
+        res = _start(self.tmp)
+        self._bind(res["path"])
+        _complete_scope_review(res["path"])
+        main(["finish", res["path"], "--status", "completed_and_merged"])
+        self._backdate_updated_at(res["path"], seconds_ago=99999)
+        with _stub_detach_status("gone"):
+            rc, out = _sweep_orphans(self.tmp)
+        self.assertEqual(rc, 0)
+        repo = out["repos"][0]
+        for key in (
+            "closed",
+            "skipped_live",
+            "skipped_active_process",
+            "skipped_unknown_owner",
+        ):
+            self.assertEqual(repo[key], [])
+        self.assertEqual(
+            _load(Path(res["path"]))["final_status"], "completed_and_merged"
+        )
 
 
 def _find_by_worktree(tmp, **over):
