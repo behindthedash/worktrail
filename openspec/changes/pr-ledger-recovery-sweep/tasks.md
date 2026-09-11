@@ -15,7 +15,7 @@
 
 ## 2. Register all opening paths (`pr-ledger-recovery`, `pr-landing-pipeline`)
 
-- [ ] 2.1 [depends: 1.1] Integrate the shared ledger helper into
+- [x] 2.1 [depends: 1.1] Integrate the shared ledger helper into
       `src/worktrail/router/land_pr.py` after find-or-create returns a PR URL, including the
       existing-PR resume path and watcher heartbeat lifecycle. Extend
       `tests/router/test_land_pr.py` and/or `tests/router/test_land_pr_resume.py` to prove a
@@ -24,7 +24,7 @@
       files: src/worktrail/router/land_pr.py, tests/router/test_land_pr.py, tests/router/test_land_pr_resume.py
       Covers: Every PR-opening path lands through the shared pipeline
 
-- [ ] 2.2 [depends: 1.1] Extend `src/worktrail/router/preflight.py`'s hook-facing successful
+- [x] 2.2 [depends: 1.1] Extend `src/worktrail/router/preflight.py`'s hook-facing successful
       `gh pr create` path to register the actual created PR through the shared ledger without
       recording a denied or failed command. Extend `tests/router/test_preflight.py` with command
       parsing and registration-success/failure cases, including session/run provenance when the

@@ -128,7 +128,7 @@ def _dispatch(argv) -> int:
         state["next_number"] = n + 1
         pr = {
             "number": n,
-            "url": f"https://fake.local/pr/{n}",
+            "url": f"https://fake.local/o/r/pull/{n}",
             "state": "OPEN",
             "checks": "SUCCESS",
         }
