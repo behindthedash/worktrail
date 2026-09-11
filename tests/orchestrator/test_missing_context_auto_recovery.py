@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -469,6 +470,34 @@ class MissingContextRecoveryEndToEnd(unittest.TestCase):
                 if e.get("task") == "TASK-002"
             )
         )
+
+    def test_worktree_is_removed_before_task_flips_to_pending(self):
+        """M1: the fan-out re-polls runnable_frontier on any completion, so the
+        stale worktree and branch must be gone before status becomes pending."""
+        real_apply = live._apply_missing_context_recovery
+        seen: dict = {}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _init_repo(Path(tmp))
+            wts: dict = {}
+
+            class Tracking(RecoverySpawn):
+                def __call__(self, role, task, wt):
+                    wts[task["id"]] = wt
+                    return super().__call__(role, task, wt)
+
+            def spy(**kw):
+                seen["wt_exists"] = wts["TASK-002"].exists()
+                seen["branch_exists"] = live._branch_exists(repo, "001-x/task-002")
+                return real_apply(**kw)
+
+            with unittest.mock.patch.object(
+                live, "_apply_missing_context_recovery", spy
+            ):
+                task, _ = self._run(Path(tmp), Tracking(repo))
+        self.assertEqual(task["status"], "done")
+        self.assertIs(seen["wt_exists"], False)
+        self.assertIs(seen["branch_exists"], False)
 
     def test_second_qualifying_report_is_an_ordinary_failure(self):
         with tempfile.TemporaryDirectory() as tmp:

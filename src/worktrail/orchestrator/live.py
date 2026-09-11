@@ -4812,6 +4812,12 @@ def live_run_real(
             )
             if recovery:
                 t1 = time.time()
+                # Remove the worktree BEFORE the task flips to pending: the
+                # fan-out re-polls runnable_frontier on any future completion
+                # and would otherwise re-dispatch into a directory that is
+                # about to be deleted.
+                with git_lock:
+                    _remove_task_worktree_and_branch(repo, wt, spec_id, task["id"])
                 with state_lock:
                     _apply_missing_context_recovery(
                         tasks=tasks,
@@ -4830,8 +4836,6 @@ def live_run_real(
                         agent=getattr(spawn, "last_agent", None),
                     )
                     _publish_actives()
-                with git_lock:
-                    _remove_task_worktree_and_branch(repo, wt, spec_id, task["id"])
                 _print_missing_context_recovery(task["id"], recovery)
                 return
             # Adaptive read-widening: when review reports insufficient context, stage
@@ -6109,6 +6113,12 @@ def _pipeline_scheduler(
             )
             if recovery:
                 t1 = time.time()
+                # Remove the worktree BEFORE the task flips to pending: the
+                # fan-out re-polls runnable_frontier on any future completion
+                # and would otherwise re-dispatch into a directory that is
+                # about to be deleted.
+                with git_lock:
+                    _remove_task_worktree_and_branch(repo, wt, spec_id, task["id"])
                 with state_lock:
                     _apply_missing_context_recovery(
                         tasks=tasks,
@@ -6126,8 +6136,6 @@ def _pipeline_scheduler(
                         skills_used=_skills_used,
                         agent=getattr(spawn_fn, "last_agent", None),
                     )
-                with git_lock:
-                    _remove_task_worktree_and_branch(repo, wt, spec_id, task["id"])
                 _print_missing_context_recovery(task["id"], recovery)
                 return
             # Adaptive read-widening: when review reports insufficient context, stage
