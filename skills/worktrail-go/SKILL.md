@@ -10,7 +10,7 @@ description: >
   worktrail-go spec fix, worktrail-go spec implement, worktrail-go spec route F,
   worktrail-go handoff new, worktrail-go handoff auto, worktrail-go decision answer,
   worktrail-go BRIEF-ID, bare worktrail-go, multi-repo orientation.
-argument-hint: "[help | BRIEF-ID | REPO | [REPO] handoff|spec|pr|decision <verb> [args] | free-text request]"
+argument-hint: "[help | <brief-id> | <repo> | [<repo>] handoff|spec|pr|decision <verb> [args] | free-text request]"
 allowed-tools: Read, Bash, AskUserQuestion, Skill, Agent
 ---
 
