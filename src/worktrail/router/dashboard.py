@@ -73,6 +73,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 _HERE = Path(__file__).resolve().parent
 
 # Reuse the orchestrator's task loader (same package) so we don't duplicate
@@ -324,9 +326,41 @@ def _task_dirs(spec_dir: Path) -> list[Path]:
     return dirs
 
 
+_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+
+
+def _provides_files(text: str) -> list[str]:
+    """Ordered, de-duplicated `file` strings from a TASK-*.md's `provides:`
+    list. _parse_fm cannot read nested maps, so the leading `---` block is
+    sliced and yaml.safe_load'd here. Returns [] on YAMLError, a non-list
+    `provides`, or when no entry is a map with a string `file`."""
+    m = _FRONTMATTER_RE.match(text)
+    if not m:
+        return []
+    try:
+        fm = yaml.safe_load(m.group(1))
+    except yaml.YAMLError:
+        return []
+    provides = fm.get("provides") if isinstance(fm, dict) else None
+    if not isinstance(provides, list):
+        return []
+    out: list[str] = []
+    for entry in provides:
+        if not isinstance(entry, dict):
+            continue
+        f = entry.get("file")
+        if isinstance(f, str) and f and f not in out:
+            out.append(f)
+    return out
+
+
 def _load_tasks(spec_dir: Path) -> list[dict[str, Any]] | None:
     """Union of task rows across every task-bearing dir under spec_dir (see
-    _task_dirs), or None when the spec has no task DAG at all. Parsed directly
+    _task_dirs), or None when the spec has no task DAG at all. A row's `files`
+    comes from the frontmatter `files:` list; when that is empty it falls back
+    to the `file` entries of `provides:` (via _provides_files), so a task that
+    declares scope only through its outputs still gets stale-probed. A
+    non-empty `files:` stays authoritative. Parsed directly
     via _parse_fm rather than the orchestrator's loader.load_spec: that loader
     correctly resolves exactly one changeset to fan out per orchestrator run,
     but the dashboard's stage detection must see every changeset's task state
@@ -346,7 +380,7 @@ def _load_tasks(spec_dir: Path) -> list[dict[str, Any]] | None:
                     "id": fm.get("id", f.stem),
                     "status": fm.get("status"),
                     "kind": fm.get("kind", "impl") or "impl",
-                    "files": fm.get("files", []),
+                    "files": fm.get("files", []) or _provides_files(text),
                     "deps": fm.get("dependencies", []),
                     "reconciled": _is_reconciled_task(fm, text),
                 }

@@ -3134,6 +3134,105 @@ class StaleBookkeeping(unittest.TestCase):
             ["git", "-C", str(self.repo), "commit", "-qm", "ship"], check=True
         )
 
+    def _provides_task(
+        self,
+        spec_dir: Path,
+        tid: str,
+        status: str,
+        provides: str,
+        kind: str = "impl",
+        files: list[str] | None = None,
+    ) -> None:
+        """Write a task whose scope is declared via a raw `provides:` YAML
+        block (no `files:` unless given), mirroring devkit task files that
+        only list their outputs."""
+        td = spec_dir / "tasks"
+        td.mkdir(exist_ok=True)
+        files_line = f"files: [{', '.join(files)}]\n" if files is not None else ""
+        (td / f"{tid}.md").write_text(
+            f"---\nid: {tid}\nstatus: {status}\nkind: {kind}\n"
+            f"{files_line}provides:{provides}\ndependencies: []\n---\n# {tid}\n"
+        )
+
+    def test_e2e_provides_only_shipped_output_is_stale_bookkeeping(self):
+        spec = self._spec_dir()
+        self._provides_task(
+            spec,
+            "TASK-068-30",
+            "pending",
+            "\n  - file: tests/e2e/flow.spec.ts\n    symbols: [flow]",
+            kind="e2e",
+        )
+        self._commit(["tests/e2e/flow.spec.ts"])
+        r = dashboard.detect_stage(spec)
+        self.assertEqual(r["stage"], "stale-bookkeeping")
+        self.assertIn("TASK-068-30", r["stale_task_ids"])
+
+    def test_provides_only_impl_two_shipped_outputs_is_stale(self):
+        spec = self._spec_dir()
+        self._provides_task(
+            spec,
+            "TASK-068-31",
+            "pending",
+            "\n  - file: app/src/a.tsx\n  - file: app/src/b.tsx",
+        )
+        self._commit(["app/src/a.tsx", "app/src/b.tsx"])
+        r = dashboard.detect_stage(spec)
+        self.assertEqual(r["stage"], "stale-bookkeeping")
+        self.assertEqual(r["stale_task_ids"], ["TASK-068-31"])
+
+    def test_provides_only_one_unshipped_output_stays_ready(self):
+        spec = self._spec_dir()
+        self._provides_task(
+            spec,
+            "TASK-068-31",
+            "pending",
+            "\n  - file: app/src/a.tsx\n  - file: app/src/missing.tsx",
+        )
+        self._commit(["app/src/a.tsx"])
+        r = dashboard.detect_stage(spec)
+        self.assertEqual(r["stage"], "ready-to-implement")
+        self.assertEqual(r["next_action"], "orchestrator")
+
+    def test_files_present_takes_precedence_over_provides(self):
+        # provides output shipped, files: entry not -> files: wins -> still ready.
+        spec = self._spec_dir()
+        self._provides_task(
+            spec,
+            "TASK-068-32",
+            "pending",
+            "\n  - file: app/src/shipped.tsx",
+            files=["app/src/missing.tsx"],
+        )
+        self._commit(["app/src/shipped.tsx"])
+        r = dashboard.detect_stage(spec)
+        self.assertEqual(r["stage"], "ready-to-implement")
+        self.assertEqual(r["next_action"], "orchestrator")
+
+    def test_scalar_provides_degrades_to_empty_scope(self):
+        spec = self._spec_dir()
+        self._provides_task(spec, "TASK-068-33", "pending", " done")
+        self._commit(["app/src/unrelated.tsx"])
+        r = dashboard.detect_stage(spec)
+        self.assertEqual(r["stage"], "ready-to-implement")
+        self.assertEqual(r["next_action"], "orchestrator")
+
+    def test_provides_entry_without_file_degrades_to_empty_scope(self):
+        spec = self._spec_dir()
+        self._provides_task(
+            spec, "TASK-068-34", "pending", "\n  - symbols: [thing]\n  - not-a-map"
+        )
+        self._commit(["app/src/unrelated.tsx"])
+        r = dashboard.detect_stage(spec)
+        self.assertEqual(r["stage"], "ready-to-implement")
+        self.assertEqual(r["next_action"], "orchestrator")
+
+    def test_provides_files_helper_dedupes_and_rejects_bad_yaml(self):
+        good = "---\nprovides:\n  - file: a.py\n  - file: b.py\n  - file: a.py\n---\n"
+        self.assertEqual(dashboard._provides_files(good), ["a.py", "b.py"])
+        self.assertEqual(dashboard._provides_files("---\nprovides: [\n---\n"), [])
+        self.assertEqual(dashboard._provides_files("no frontmatter"), [])
+
     def test_merged_files_pending_status_is_stale_bookkeeping(self):
         spec = self._spec_dir()
         files = ["app/src/page.tsx", "app/src/Comp.tsx"]
