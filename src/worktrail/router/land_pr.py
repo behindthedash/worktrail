@@ -38,11 +38,19 @@ itself is an uncommitted file until step 1 commits it):
 4. `_push` -- push the (now clean, gate-passed) branch.
 5. `open_or_update_pull_request` -- find or create the PR; ensure labels on
    an existing OPEN PR rather than re-creating it (idempotent re-invocation).
+   Every PR URL this returns (created, found-open, or resumed) is registered
+   in the shared PR ledger (`pr_ledger.register`, an upsert keyed by URL)
+   before anything else happens, so the external sweep can recover it if
+   this process dies. A registration failure is a `ceiling`, never `landed`:
+   the pipeline cannot claim durable recovery it does not have.
 6. `_ensure_run_record` -- start a run record for a caller that has none
    (queue-triage, drain), or reuse the caller's; record the PR immediately
    so a crash mid-watch still leaves it discoverable.
 7. `_watch_ci` -> `_merge_state_guard` -> `_review_thread_gate` ->
-   `_finish_or_checkpoint` -- watch CI to a terminal outcome, guard the
+   `_finish_or_checkpoint` -- watch CI to a terminal outcome (heartbeating
+   the ledger entry on every watch iteration and clearing the watcher when
+   the watch returns, so the sweep leaves an actively watched PR alone
+   and picks up an abandoned one), guard the
    merge state and review threads, then finish the run record (or, in
    checkpoint mode, append a decision instead of finishing).
 
@@ -78,6 +86,7 @@ from . import (
     check_compile_markers,
     check_review_threads,
     pr_labels,
+    pr_ledger,
     pre_pr_gate,
     preflight,
 )
@@ -157,6 +166,7 @@ class LandRequest:
     commit_message: str | None = None
     checkpoint: bool = False
     watch_timeout_s: int = 600
+    session_id: str | None = None
     runner: Runner = subprocess.run
 
 
@@ -785,7 +795,11 @@ def _checks_registered(repo: Path, pr_number: int, runner: Runner) -> bool | Non
 
 
 def _watch_ci(
-    repo: Path, pr_number: int, watch_timeout_s: int, runner: Runner
+    repo: Path,
+    pr_number: int,
+    watch_timeout_s: int,
+    runner: Runner,
+    heartbeat: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """CI watch -- ci-watch-loop.md cases 1/2/3/5, implemented in code (see
     module docstring step 7 / design.md D7). Returns `{"settled": bool,
@@ -803,8 +817,15 @@ def _watch_ci(
     was never actually observed (Requirement: CI watch runs to a classified
     terminal outcome) -- the exact PR #902 shape this module exists to
     close. A human/retry (ceiling), not a guessed pass, is the safe default
-    here."""
+    here.
+
+    `heartbeat`, when given, is called once per poll/watch iteration so the
+    ledger watcher stays fresh across a watch longer than one heartbeat
+    window (each `gh pr checks --watch` re-issue may run `watch_timeout_s`).
+    """
     for _ in range(_NO_CHECKS_GRACE_ATTEMPTS):
+        if heartbeat:
+            heartbeat()
         registered = _checks_registered(repo, pr_number, runner)
         if registered is not False:
             break
@@ -819,6 +840,8 @@ def _watch_ci(
 
     reruns = 0
     for _ in range(WATCH_REISSUE_MAX + 1):
+        if heartbeat:
+            heartbeat()
         watch = _gh(
             repo,
             runner,
@@ -1036,6 +1059,42 @@ def _finish_or_checkpoint(
         ]
     )
     return exit_code == 0, detail
+
+
+def _register_pr(
+    repo: Path, request: LandRequest, pr_url: str, branch: str | None
+) -> str | None:
+    """Register `pr_url` in the shared PR ledger. Returns an error detail on
+    failure, None on success. Upsert semantics: a resumed or re-invoked
+    landing re-registers the same URL into the same single entry."""
+    try:
+        pr_ledger.register(
+            pr_url,
+            repo,
+            branch=branch,
+            session_id=request.session_id,
+            run_id=request.run,
+            source="land_pr",
+        )
+    except (pr_ledger.LedgerError, OSError) as exc:
+        return f"PR ledger registration failed for {pr_url}: {exc}"
+    return None
+
+
+def _ledger_heartbeat(pr_url: str) -> None:
+    """Best-effort: a missed heartbeat only means the sweep may file a
+    (deduplicated) recovery brief early; it never changes the outcome."""
+    try:
+        pr_ledger.heartbeat(pr_url)
+    except (pr_ledger.LedgerError, OSError):
+        pass
+
+
+def _ledger_unwatch(pr_url: str) -> None:
+    try:
+        pr_ledger.unwatch(pr_url)
+    except (pr_ledger.LedgerError, OSError):
+        pass
 
 
 def _resume_state(
@@ -1291,6 +1350,16 @@ def land_pr(request: LandRequest) -> LandOutcome:
         # claim+close-on-any-outcome-with-a-pr_url path) must not lose track
         # of it. Same caller-supplied-run-only finishing rule as
         # `push_ambiguous` above -- this also fires before step 6.
+        #
+        # The PR is open on the remote, so it is registered in the ledger
+        # here too: the sweep, not this returning process, is what will
+        # notice it later. A ledger failure is folded into the detail --
+        # the outcome is already a ceiling.
+        detail = pr_result["detail"]
+        if pr_result["pr_url"]:
+            ledger_err = _register_pr(repo, request, pr_result["pr_url"], branch)
+            if ledger_err:
+                detail = f"{detail}; {ledger_err}"
         if request.run:
             _run_record_main(
                 [
@@ -1301,7 +1370,7 @@ def land_pr(request: LandRequest) -> LandOutcome:
                     "--pr",
                     pr_result["pr_url"] or "",
                     "--merge-result",
-                    pr_result["detail"] or "",
+                    detail or "",
                 ]
             )
         return LandOutcome(
@@ -1312,11 +1381,41 @@ def land_pr(request: LandRequest) -> LandOutcome:
             run=request.run,
             refused_step=pr_result["refused_step"],
             final_status="failed_recoverable",
-            merge_result=pr_result["detail"],
-            detail=pr_result["detail"],
+            merge_result=detail,
+            detail=detail,
         )
     pr_url = pr_result["pr_url"]
     pr_number = pr_result["pr_number"]
+
+    # Step 5b: durable ledger registration, before the run record and before
+    # the watch -- the PR exists on the remote from this point on, and the
+    # sweep must be able to find it even if nothing below ever runs.
+    ledger_err = _register_pr(repo, request, pr_url, branch)
+    if ledger_err:
+        if request.run:
+            _run_record_main(
+                [
+                    "finish",
+                    request.run,
+                    "--status",
+                    "failed_recoverable",
+                    "--pr",
+                    pr_url or "",
+                    "--merge-result",
+                    ledger_err,
+                ]
+            )
+        return LandOutcome(
+            outcome="ceiling",
+            pr_url=pr_url,
+            pr_number=pr_number,
+            labels=labels,
+            run=request.run,
+            refused_step="pr_ledger",
+            final_status="failed_recoverable",
+            merge_result="PR open but not registered in the PR ledger",
+            detail=ledger_err,
+        )
 
     run_path = _ensure_run_record(
         repo, request.route, request.risk, request.request_summary, request.run
@@ -1352,16 +1451,25 @@ def land_pr(request: LandRequest) -> LandOutcome:
             detail="run_record set pull_request failed",
         )
 
-    watch = (
-        _watch_ci(repo, pr_number, request.watch_timeout_s, runner)
-        if pr_number
-        else {
+    if pr_number:
+        _ledger_heartbeat(pr_url)
+        try:
+            watch = _watch_ci(
+                repo,
+                pr_number,
+                request.watch_timeout_s,
+                runner,
+                heartbeat=lambda: _ledger_heartbeat(pr_url),
+            )
+        finally:
+            _ledger_unwatch(pr_url)
+    else:
+        watch = {
             "settled": False,
             "failing_checks": [],
             "log_excerpt": "",
             "budget_exhausted": True,
         }
-    )
 
     if (
         watch["budget_exhausted"]
@@ -1654,6 +1762,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--commit-message", default=None)
     ap.add_argument("--checkpoint", action="store_true")
     ap.add_argument("--watch-timeout", type=int, default=600, dest="watch_timeout_s")
+    ap.add_argument(
+        "--session-id",
+        default=None,
+        dest="session_id",
+        help="opening session id recorded in the PR ledger (Stop-hook ownership)",
+    )
     ap.add_argument("--json", action="store_true", required=True)
     args = ap.parse_args(argv)
 
@@ -1675,6 +1789,7 @@ def main(argv: list[str] | None = None) -> int:
         commit_message=args.commit_message,
         checkpoint=args.checkpoint,
         watch_timeout_s=args.watch_timeout_s,
+        session_id=args.session_id,
     )
     outcome = land_pr(request)
     payload = {
