@@ -265,11 +265,47 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
         )
 
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
             # A real checkout: codex's workspace-write root set must include
             # the child cwd's git common dir (a linked worktree's objects live
-            # there), which only exists for a git checkout.
-            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            # there), which only exists for a git checkout. `root` is a linked
+            # worktree (not the canonical checkout itself) because codex
+            # dispatch now refuses a `-C`/`--add-dir` target that is a
+            # canonical checkout.
+            canonical = Path(tmp) / "canonical"
+            canonical.mkdir()
+            subprocess.run(["git", "init", "-q", str(canonical)], check=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(canonical),
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@example.com",
+                    "commit",
+                    "-q",
+                    "--allow-empty",
+                    "-m",
+                    "init",
+                ],
+                check=True,
+            )
+            root = Path(tmp) / "root"
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(canonical),
+                    "worktree",
+                    "add",
+                    "-q",
+                    str(root),
+                    "-b",
+                    "task",
+                ],
+                check=True,
+            )
             common_dir = codex_sandbox.git_common_dir(root)
             self.assertIsNotNone(common_dir)
             bin_dir = root / "bin"

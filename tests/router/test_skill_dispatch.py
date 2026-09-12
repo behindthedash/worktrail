@@ -19,6 +19,10 @@ from worktrail.shared import codex_sandbox
 from worktrail.workqueue import decisions as decisions_mod
 
 
+def _add_dir_values(command):
+    return [command[i + 1] for i, arg in enumerate(command) if arg == "--add-dir"]
+
+
 class SkillDispatchTests(unittest.TestCase):
     def test_claude_uses_native_style_prompt_and_provider(self):
         command = skill_dispatch.build_command(
@@ -59,10 +63,6 @@ class SkillDispatchTests(unittest.TestCase):
         )
         self.assertNotIn("claude", command)
 
-    @staticmethod
-    def _add_dirs(command):
-        return [command[i + 1] for i, arg in enumerate(command) if arg == "--add-dir"]
-
     def test_codex_receives_explicit_additional_writable_dirs(self):
         with patch.dict(
             os.environ,
@@ -80,7 +80,7 @@ class SkillDispatchTests(unittest.TestCase):
         # /repo is not a git checkout so no common dir appears).
         self.assertEqual(command[command.index("-C") + 1], "/repo")
         self.assertEqual(
-            self._add_dirs(command),
+            _add_dir_values(command),
             ["/repo", "/state", "/queue", "/runs", "/repo-worktrees"],
         )
         self.assertNotIn("danger-full-access", command)
@@ -115,7 +115,7 @@ class SkillDispatchTests(unittest.TestCase):
         self.assertEqual(command[:5], ["codex", "exec", "--json", "-C", "/repo"])
         self.assertEqual(command[5:7], ["-s", "workspace-write"])
         self.assertEqual(
-            self._add_dirs(command), ["/repo", "/state", "/queue", "/runs"]
+            _add_dir_values(command), ["/repo", "/state", "/queue", "/runs"]
         )
 
     def test_additional_writable_dirs_are_not_added_to_other_providers(self):
@@ -150,6 +150,123 @@ class SkillDispatchTests(unittest.TestCase):
                 ["--agent", "opencode", "--skill", "x:y", "--json", "--dry-run"]
             )
         self.assertEqual(json.loads(output.getvalue())[0], "opencode")
+
+
+class CodexCanonicalCheckoutGuardTests(unittest.TestCase):
+    """Codex is the only agent with a native working-root flag, so a `-C`/
+    `--add-dir` target that resolves into a canonical (non-worktree) checkout
+    must be refused before a command is built. A linked worktree or a
+    non-git directory is fine."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        root = Path(self._tmp.name)
+        self.canonical = root / "repo"
+        self.canonical.mkdir()
+        self._git(self.canonical, "init", "-q")
+        self._git(
+            self.canonical,
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        )
+        self.worktree = root / "repo-worktrees" / "task"
+        self._git(
+            self.canonical, "worktree", "add", "-q", str(self.worktree), "-b", "task"
+        )
+        self.plain = root / "plain"
+        self.plain.mkdir()
+
+    @staticmethod
+    def _git(cwd, *args):
+        subprocess.run(["git", "-C", str(cwd), *args], check=True)
+
+    def test_identity_distinguishes_canonical_from_linked_worktree(self):
+        canonical = skill_dispatch.resolve_checkout_identity(str(self.canonical))
+        linked = skill_dispatch.resolve_checkout_identity(str(self.worktree))
+        self.assertEqual(canonical[0], canonical[1])
+        self.assertNotEqual(linked[0], linked[1])
+        self.assertEqual(linked[1], canonical[1])
+        self.assertTrue(skill_dispatch.is_canonical_checkout(canonical))
+        self.assertFalse(skill_dispatch.is_canonical_checkout(linked))
+        self.assertIsNone(skill_dispatch.resolve_checkout_identity(str(self.plain)))
+        self.assertFalse(skill_dispatch.is_canonical_checkout(None))
+
+    def test_cwd_at_canonical_checkout_raises(self):
+        with self.assertRaisesRegex(ValueError, "canonical checkout") as ctx:
+            skill_dispatch.build_command(
+                "codex", "worktrail-sdd-workflow", cwd=str(self.canonical)
+            )
+        self.assertIn(str(self.canonical), str(ctx.exception))
+        self.assertIn("'repo'", str(ctx.exception))
+
+    def test_not_yet_existing_cwd_under_canonical_checkout_raises(self):
+        target = self.canonical / "not" / "yet"
+        with self.assertRaisesRegex(ValueError, "canonical checkout"):
+            skill_dispatch.build_command(
+                "codex", "worktrail-sdd-workflow", cwd=str(target)
+            )
+
+    def test_cwd_at_linked_worktree_builds_normally(self):
+        command = skill_dispatch.build_command(
+            "codex", "worktrail-sdd-workflow", cwd=str(self.worktree)
+        )
+        self.assertEqual(command[command.index("-C") + 1], str(self.worktree))
+
+    def test_add_dir_at_canonical_checkout_raises_even_with_worktree_cwd(self):
+        with self.assertRaisesRegex(ValueError, "--add-dir") as ctx:
+            skill_dispatch.build_command(
+                "codex",
+                "worktrail-sdd-workflow",
+                cwd=str(self.worktree),
+                add_dirs=(str(self.plain), str(self.canonical)),
+            )
+        self.assertIn(str(self.canonical), str(ctx.exception))
+
+    def test_targets_outside_any_git_repository_build_normally(self):
+        missing = self.plain / "not" / "yet"
+        command = skill_dispatch.build_command(
+            "codex",
+            "worktrail-sdd-workflow",
+            cwd=str(self.plain),
+            add_dirs=(str(missing),),
+        )
+        self.assertEqual(command[command.index("-C") + 1], str(self.plain))
+        self.assertIn(str(missing), _add_dir_values(command))
+
+    def test_non_codex_agents_are_unaffected_by_canonical_checkout_target(self):
+        # Neither agent raises; the guard is codex-only.
+        claude_command = skill_dispatch.build_command(
+            "claude",
+            "worktrail-sdd-workflow",
+            cwd=str(self.canonical),
+            add_dirs=(str(self.canonical),),
+        )
+        self.assertNotIn("-C", claude_command)
+        opencode_command = skill_dispatch.build_command(
+            "opencode",
+            "worktrail-sdd-workflow",
+            cwd=str(self.canonical),
+            add_dirs=(str(self.canonical),),
+        )
+        self.assertEqual(
+            opencode_command[opencode_command.index("--dir") + 1],
+            str(self.canonical),
+        )
+
+    def test_escape_hatch_allows_a_canonical_checkout_target(self):
+        with patch.dict(os.environ, {skill_dispatch.CANONICAL_CHECKOUT_ALLOW_ENV: "1"}):
+            command = skill_dispatch.build_command(
+                "codex", "worktrail-sdd-workflow", cwd=str(self.canonical)
+            )
+        self.assertEqual(command[command.index("-C") + 1], str(self.canonical))
 
 
 class OpsxCommandNamespacingTests(unittest.TestCase):
