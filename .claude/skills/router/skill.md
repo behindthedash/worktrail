@@ -34,6 +34,8 @@ triggers:
     - smoke_flakes
     - smoke_flake_aggregate
     - smoke_flake_selfcheck
+    - reconcile_pr_labels
+    - load_run_index
 ---
 
 You are working on **worktrail's GO v2 front door**: loading repo policy, classifying free-text
@@ -170,6 +172,12 @@ agents or writes task files — that is `orchestrator/`'s job.
   mutation also touches classic-Projects fields and fails outright on a repo/org with a legacy
   Projects (classic) board still attached (confirmed live 2026-08-07). `_current_pr_labels`'s
   read-only `gh pr view` call is unaffected and stays as-is.
+- **`reconcile_pr_labels.load_run_index()` now reads records through `run_record._load_lenient`,
+  not the raising `_load`** — a single unreadable/malformed record (hand-edited outside
+  `run_record.py`'s own renderer) is skipped with a `WARNING: skipping unreadable run record: ...`
+  line on stderr instead of aborting the whole scheduled sweep. Same tolerance policy `_load_lenient`
+  already applies to `active-conflicts` and the other directory-wide `run_record.py` scans (fixed
+  2026-09-12).
 - **`dashboard.py` detects spec artifacts by exclusion + content, never one strict filename
   pattern.** Known auxiliary files (`user-request.md`, `decision-log.md`,
   `traceability-matrix.md`, etc.) are named explicitly; any other top-level `*.md` is a candidate
@@ -251,11 +259,16 @@ agents or writes task files — that is `orchestrator/`'s job.
 - `router/policy.py` — `load_policy()`; the single source of truth for a repo's resolved GO policy
 - `router/run_record.py` — `finish()`'s ten-state enforcement and its two code-enforced gates;
   `cmd_scope_review` write-time reason validation and `OUT_OF_SCOPE_REASON_PREFIXES`;
-  `cmd_capacity_gate`'s `_iso_retry_after` timestamp validation
+  `cmd_capacity_gate`'s `_iso_retry_after` timestamp validation; `_load_lenient()`, the
+  skip-and-warn wrapper around the raising `_load()` that every directory-wide scan (including
+  `reconcile_pr_labels.load_run_index()`) should use instead of the raising loader
 - `router/pre_pr_gate.py` — `scope_review_failures()`, the latest-entry-per-item scope gate
   that `finish` calls
 - `router/pr_labels.py` — the one place that issues the `go:risk-*` REST label correction; both
   `drain.py` and sdd-workflow's Phase 8 call into it rather than reimplementing it
+- `router/reconcile_pr_labels.py` — `load_run_index()`, the scheduled sweep that maps every PR URL
+  under a runs dir to its `{risk_level, gates, route}`, tolerant of one malformed record via
+  `run_record._load_lenient`
 - `router/dashboard.py` — pure file inspection (no git, network, or agents); spec lifecycle stage
   and next-action detection; also the source of `_resolve_repo_dir()`, which `skill_dispatch.py`'s
   single-brief-triage path uses to resolve a bare `repo:` value to an on-disk checkout, and of
@@ -271,4 +284,4 @@ agents or writes task files — that is `orchestrator/`'s job.
   outcome→exit-code mapping for the `worktrail-close-stale-openspec` console script
 
 ---
-**Last Updated:** 2026-09-11
+**Last Updated:** 2026-09-12

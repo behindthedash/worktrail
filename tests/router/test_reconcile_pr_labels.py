@@ -142,6 +142,30 @@ def test_load_run_index_empty_when_dir_missing(tmp_path):
     assert rpl.load_run_index(tmp_path / "does-not-exist") == {}
 
 
+def test_load_run_index_skips_malformed_record_instead_of_raising(tmp_path):
+    """A hand-edited/non-line-based run record must not abort the whole
+    sweep -- skip and warn on that one file, index every other record."""
+    repo_dir = tmp_path / "worktrail"
+    repo_dir.mkdir()
+    (repo_dir / "malformed.yaml").write_text(
+        "run_id: bad\ntags:\n- foo\n- bar\n", encoding="utf-8"
+    )
+    _write_run_record(
+        repo_dir / "good.yaml",
+        pull_request="https://github.com/o/r/pull/1",
+        risk_level="high",
+    )
+
+    index = rpl.load_run_index(tmp_path)
+    assert index == {
+        "https://github.com/o/r/pull/1": {
+            "risk_level": "high",
+            "gates": None,
+            "route": None,
+        }
+    }
+
+
 def test_load_run_index_handles_list_form_pull_request(tmp_path):
     """A run that produces more than one PR (parallel-orchestrator group-PR
     path, or any run appended to more than once) records `pull_request` as a

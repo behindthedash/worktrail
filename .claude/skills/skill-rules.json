@@ -126,6 +126,8 @@
           "smoke_flakes",
           "smoke_flake_aggregate",
           "smoke_flake_selfcheck",
+          "reconcile_pr_labels",
+          "load_run_index",
           "router",
           "front",
           "door",
