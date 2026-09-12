@@ -475,6 +475,80 @@ def codex_sandbox_args(
         return codex_sandbox.codex_sandbox_args(cwd, extra_roots=extra_roots)
 
 
+CANONICAL_CHECKOUT_ALLOW_ENV = "WORKTRAIL_CODEX_CANONICAL_CHECKOUT_ALLOW"
+
+
+def _nearest_existing_ancestor(path: str) -> str:
+    """Return `path` or its closest existing ancestor.
+
+    A `-C`/`--add-dir` target may not exist yet (a worktree about to be
+    created), so identity is resolved from the nearest directory that does.
+    """
+    current = os.path.abspath(os.path.expanduser(path))
+    while not os.path.isdir(current):
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    return current
+
+
+def resolve_checkout_identity(path: str) -> tuple[str, str] | None:
+    """Resolve `path` to `(worktree_root, canonical_root)`, or None outside git.
+
+    `worktree_root` is the checkout containing `path`; `canonical_root` is the
+    checkout that owns its `.git` directory. They are equal for a canonical
+    (non-worktree) checkout and differ for a linked worktree.
+    """
+    start = _nearest_existing_ancestor(path)
+    with real_subprocess_run():
+        proc = subprocess.run(
+            ["git", "-C", start, "rev-parse", "--show-toplevel", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    if proc.returncode != 0:
+        return None
+    lines = proc.stdout.splitlines()
+    if len(lines) < 2:
+        return None
+    worktree_root = os.path.realpath(lines[0])
+    common_dir = lines[1]
+    if not os.path.isabs(common_dir):
+        common_dir = os.path.join(start, common_dir)
+    canonical_root = os.path.realpath(os.path.dirname(os.path.realpath(common_dir)))
+    return worktree_root, canonical_root
+
+
+def is_canonical_checkout(identity: tuple[str, str] | None) -> bool:
+    """True when a resolved identity is a canonical (non-worktree) checkout."""
+    if identity is None:
+        return False
+    worktree_root, canonical_root = identity
+    return worktree_root == canonical_root
+
+
+def _refuse_canonical_checkout(path: str, flag: str) -> None:
+    """Raise if `path` (a codex `-C`/`--add-dir` target) is a canonical checkout.
+
+    `WORKTRAIL_CODEX_CANONICAL_CHECKOUT_ALLOW` (any truthy value) is the
+    explicit, opt-in escape hatch that skips this refusal.
+    """
+    if os.environ.get(CANONICAL_CHECKOUT_ALLOW_ENV, "").strip():
+        return
+    identity = resolve_checkout_identity(path)
+    if not is_canonical_checkout(identity):
+        return
+    canonical_root = identity[1]
+    raise ValueError(
+        f"codex {flag} target {path!r} is the canonical checkout of "
+        f"{os.path.basename(canonical_root)!r} ({canonical_root}); dispatch codex "
+        f"against a linked worktree instead, or set "
+        f"{CANONICAL_CHECKOUT_ALLOW_ENV}=1 to override"
+    )
+
+
 def build_command(
     agent: str,
     skill: str,
@@ -511,6 +585,13 @@ def build_command(
     the work-queue root). It is intentionally explicit because these paths may
     contain run records, sibling worktrees, or other state outside the target
     checkout.
+
+    For `codex`, `cwd` and every `add_dirs` entry are resolved to their git
+    checkout identity; a target that is the canonical (non-worktree) checkout
+    of a git repository raises `ValueError` instead of building a command,
+    since granting write access there defeats confinement to the intended
+    worktree. Set `WORKTRAIL_CODEX_CANONICAL_CHECKOUT_ALLOW` (any truthy
+    value) to opt out of this refusal.
     """
     if agent not in SUPPORTED_AGENTS:
         raise ValueError(f"unsupported agent: {agent!r}")
@@ -534,7 +615,10 @@ def build_command(
     else:
         command = ["codex", "exec", "--json"]
         if cwd:
+            _refuse_canonical_checkout(cwd, "-C")
             command += ["-C", cwd]
+        for directory in add_dirs:
+            _refuse_canonical_checkout(directory, "--add-dir")
         command += codex_sandbox_args(cwd or os.getcwd(), extra_roots=add_dirs)
         if model:
             command += ["--model", model]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -10,6 +11,7 @@ from pathlib import Path
 
 from worktrail.drain.drain import build_command as build_drain_command
 from worktrail.router.cluster_detect import _AGENT_VERIFY_CMD
+from worktrail.router.skill_dispatch import CANONICAL_CHECKOUT_ALLOW_ENV
 from worktrail.router.skill_dispatch import build_command as build_skill_command
 from worktrail.runtime.selection import Cell
 
@@ -33,28 +35,43 @@ def command_matrix() -> dict[tuple[str, str], list[str]]:
     """Return representative argv for every built-in headless dispatch surface."""
     cwd = str(Path.cwd())
     commands: dict[tuple[str, str], list[str]] = {}
-    for provider in PROVIDERS:
-        commands[(provider, "cluster-detect")] = _AGENT_VERIFY_CMD[provider](_PROMPT)
-        commands[(provider, "drain")] = build_drain_command(provider, [])
-        commands[(provider, "skill-dispatch")] = build_skill_command(
-            provider,
-            "worktrail-go",
-            "auto",
-            model="worktrail-compat-probe",
-            cwd=cwd,
-            write=True,
-        )
-        commands[(provider, "spawnlib")] = build_spawn_command(
-            _PROMPT,
-            Cell(
-                target=provider,
-                harness=provider,
+    # `cwd` is wherever this process happens to run (a CI checkout root, a
+    # plain clone, or a worktree) -- never a real dispatch target, since every
+    # command built here is only ever run with `--help`. The canonical-checkout
+    # refusal exists to stop a real headless task from writing into the
+    # checkout it's probing from, which doesn't apply to this smoke test.
+    previous_allow = os.environ.get(CANONICAL_CHECKOUT_ALLOW_ENV)
+    os.environ[CANONICAL_CHECKOUT_ALLOW_ENV] = "1"
+    try:
+        for provider in PROVIDERS:
+            commands[(provider, "cluster-detect")] = _AGENT_VERIFY_CMD[provider](
+                _PROMPT
+            )
+            commands[(provider, "drain")] = build_drain_command(provider, [])
+            commands[(provider, "skill-dispatch")] = build_skill_command(
+                provider,
+                "worktrail-go",
+                "auto",
                 model="worktrail-compat-probe",
-                effort="high",
-                pool="subscription",
-            ),
-            output_last_message="/dev/null",
-        )
+                cwd=cwd,
+                write=True,
+            )
+            commands[(provider, "spawnlib")] = build_spawn_command(
+                _PROMPT,
+                Cell(
+                    target=provider,
+                    harness=provider,
+                    model="worktrail-compat-probe",
+                    effort="high",
+                    pool="subscription",
+                ),
+                output_last_message="/dev/null",
+            )
+    finally:
+        if previous_allow is None:
+            os.environ.pop(CANONICAL_CHECKOUT_ALLOW_ENV, None)
+        else:
+            os.environ[CANONICAL_CHECKOUT_ALLOW_ENV] = previous_allow
     return commands
 
 

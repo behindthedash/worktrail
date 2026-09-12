@@ -3,7 +3,7 @@
 Implements requirement: Codex dispatch refuses a canonical-checkout working root or
 additional directory.
 
-- [ ] 1.1 In `src/worktrail/router/skill_dispatch.py`, add helpers that resolve a target
+- [x] 1.1 In `src/worktrail/router/skill_dispatch.py`, add helpers that resolve a target
       directory to `(worktree_root, canonical_root)` via
       `git rev-parse --show-toplevel --git-common-dir` (mirroring `flagged-checkout.cjs`'s
       `getWorktreeIdentity`), walk upward to the nearest existing ancestor first (mirroring
@@ -25,7 +25,7 @@ additional directory.
 
 Implements requirement: Escape hatch overrides the canonical-checkout refusal.
 
-- [ ] 2.1 Define a worktrail-scoped environment variable (e.g.
+- [x] 2.1 Define a worktrail-scoped environment variable (e.g.
       `WORKTRAIL_CODEX_CANONICAL_CHECKOUT_ALLOW`) that, when set to a truthy value, skips the
       1.1 refusal and builds the command normally; document it in `build_command()`'s
       docstring alongside the existing `-s danger-full-access` explanation. Add matching
