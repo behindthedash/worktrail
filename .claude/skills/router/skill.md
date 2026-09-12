@@ -178,6 +178,13 @@ agents or writes task files — that is `orchestrator/`'s job.
   line on stderr instead of aborting the whole scheduled sweep. Same tolerance policy `_load_lenient`
   already applies to `active-conflicts` and the other directory-wide `run_record.py` scans (fixed
   2026-09-12).
+- **`check_deferred_work_handoff.load_deferred_work_entries()` and
+  `check_durable_artifact_capture_gate.find_planned_run_records()` — the two Stop-hook check
+  scripts — now surface that same `_load_lenient` warning too, instead of discarding it.**
+  Both previously unpacked `_warning` and threw it away, so a malformed run record failed silently
+  with no signal that the check had skipped data. Both now print
+  `WARNING: skipping unreadable run record: <detail>` to stderr and skip the record, matching the
+  tolerance-with-visibility policy above (fixed 2026-09-12).
 - **`dashboard.py` detects spec artifacts by exclusion + content, never one strict filename
   pattern.** Known auxiliary files (`user-request.md`, `decision-log.md`,
   `traceability-matrix.md`, etc.) are named explicitly; any other top-level `*.md` is a candidate
@@ -261,7 +268,8 @@ agents or writes task files — that is `orchestrator/`'s job.
   `cmd_scope_review` write-time reason validation and `OUT_OF_SCOPE_REASON_PREFIXES`;
   `cmd_capacity_gate`'s `_iso_retry_after` timestamp validation; `_load_lenient()`, the
   skip-and-warn wrapper around the raising `_load()` that every directory-wide scan (including
-  `reconcile_pr_labels.load_run_index()`) should use instead of the raising loader
+  `reconcile_pr_labels.load_run_index()`, `check_deferred_work_handoff.py`, and
+  `check_durable_artifact_capture_gate.py`) should use instead of the raising loader
 - `router/pre_pr_gate.py` — `scope_review_failures()`, the latest-entry-per-item scope gate
   that `finish` calls
 - `router/pr_labels.py` — the one place that issues the `go:risk-*` REST label correction; both
@@ -269,6 +277,12 @@ agents or writes task files — that is `orchestrator/`'s job.
 - `router/reconcile_pr_labels.py` — `load_run_index()`, the scheduled sweep that maps every PR URL
   under a runs dir to its `{risk_level, gates, route}`, tolerant of one malformed record via
   `run_record._load_lenient`
+- `router/check_deferred_work_handoff.py` — the Stop-hook deferred-work handoff guard;
+  `load_deferred_work_entries()` reads `deferred_work` entries via `_load_lenient` and now prints
+  its discarded warning to stderr instead of silently skipping a malformed record
+- `router/check_durable_artifact_capture_gate.py` — the Stop-hook durable-artifact capture gate;
+  `find_planned_run_records()` reads run records via `_load_lenient` and now prints its discarded
+  warning to stderr instead of silently skipping a malformed record
 - `router/dashboard.py` — pure file inspection (no git, network, or agents); spec lifecycle stage
   and next-action detection; also the source of `_resolve_repo_dir()`, which `skill_dispatch.py`'s
   single-brief-triage path uses to resolve a bare `repo:` value to an on-disk checkout, and of
