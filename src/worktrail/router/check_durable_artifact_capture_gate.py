@@ -39,6 +39,7 @@ suggestion behavior the hook applies on hits.
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -124,8 +125,13 @@ def find_planned_run_records(
             continue
         seen.add(key)
         try:
-            record, _warning = _load_lenient(path)
+            record, warning = _load_lenient(path)
         except (OSError, UnicodeDecodeError):
+            continue
+        if warning is not None:
+            print(
+                f"WARNING: skipping unreadable run record: {warning}", file=sys.stderr
+            )
             continue
         if record is None:
             continue

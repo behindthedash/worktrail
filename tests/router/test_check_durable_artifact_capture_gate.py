@@ -201,6 +201,21 @@ class FindPlannedRunRecordsTests(unittest.TestCase):
                 [],
             )
 
+    def test_malformed_file_warns_on_stderr(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bad_key = Path(tmp) / "bad-key.yaml"
+            bad_key.write_text(
+                "final_status: planned_ready_for_implementation\n"
+                "not a valid key!: oops\n",
+                encoding="utf-8",
+            )
+
+            err = StringIO()
+            with patch("sys.stderr", err):
+                find_planned_run_records([str(bad_key)])
+
+            self.assertIn(str(bad_key), err.getvalue())
+
     def test_non_utf8_file_degrades_to_zero(self):
         with tempfile.TemporaryDirectory() as tmp:
             binary = Path(tmp) / "binary.yaml"
