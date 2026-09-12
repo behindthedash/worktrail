@@ -55,7 +55,7 @@ from ..shared.homedir import worktrail_home
 from .policy import automerge_eligible, has_policy_file, load_policy
 from .policy_selfcheck import discover_repo_names
 from .pr_labels import ensure_pr_no_automerge_label, ensure_pr_risk_label
-from .run_record import _load as load_run_record
+from .run_record import _load_lenient
 
 
 def discover_managed_repos(repos_root: Path) -> list[str]:
@@ -106,12 +106,23 @@ def load_run_index(runs_dir: Path) -> dict[str, dict[str, Any]]:
     always present on any real record. On a duplicate PR URL across records,
     the later one wins (sorted path order) — not expected in practice, but
     no ambiguity if it happens.
+
+    A single unreadable/malformed record (e.g. hand-edited outside
+    `run_record.py`'s own renderer) is skipped and warned about, never
+    allowed to abort the whole sweep — this is a scheduled cron job, and
+    `AGENTS.md`'s sweep convention requires one bad record to never take
+    down every other repo's reconciliation.
     """
     index: dict[str, dict[str, Any]] = {}
     if not runs_dir.is_dir():
         return index
     for path in sorted(runs_dir.glob("**/*.yaml")):
-        record = load_run_record(path)
+        record, warning = _load_lenient(path)
+        if warning is not None:
+            print(
+                f"WARNING: skipping unreadable run record: {warning}", file=sys.stderr
+            )
+            continue
         risk_level = record.get("risk_level")
         if not risk_level:
             continue
