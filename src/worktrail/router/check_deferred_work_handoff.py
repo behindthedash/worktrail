@@ -20,6 +20,7 @@ never takes the whole check down.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -64,12 +65,17 @@ def load_deferred_work_entries(
     for raw_path in run_record_paths:
         path = Path(raw_path)
         try:
-            record, _warning = _load_lenient(path)
+            record, warning = _load_lenient(path)
         except (OSError, UnicodeDecodeError):
             # Missing/unreadable file, or non-UTF-8 content -- `_load_lenient`
             # only catches its own `RunRecordFormatError`, not an absent path,
             # a permissions failure, or a decode error; all are just as
             # fail-open here.
+            continue
+        if warning is not None:
+            print(
+                f"WARNING: skipping unreadable run record: {warning}", file=sys.stderr
+            )
             continue
         if record is None:
             continue

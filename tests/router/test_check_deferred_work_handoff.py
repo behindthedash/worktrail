@@ -104,6 +104,20 @@ class LoadDeferredWorkEntriesTests(unittest.TestCase):
 
             self.assertEqual(entries, [])
 
+    def test_malformed_record_skipped_and_warned_on_stderr(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "bad-key.yaml"
+            bad.write_text("run_id: bad\nnot a valid key!: oops\n", encoding="utf-8")
+            good = _start_record(tmp)
+            _append(good, "deferred_work", "clean up in a later pr")
+
+            err = StringIO()
+            with patch("sys.stderr", err):
+                entries = load_deferred_work_entries([str(bad), good])
+
+            self.assertEqual([e["text"] for e in entries], ["clean up in a later pr"])
+            self.assertIn(str(bad), err.getvalue())
+
 
 class FindFlaggedIgnoresScopeReviewTests(unittest.TestCase):
     def test_scope_review_deferral_vocabulary_never_flagged(self):
