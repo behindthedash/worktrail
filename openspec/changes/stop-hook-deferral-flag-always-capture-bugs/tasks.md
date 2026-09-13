@@ -5,7 +5,7 @@ chain (compile rejected a 5-task critical path over `hooks/suggest_next_step.py`
 `hooks/test_suggest_next_step.py`). Write every failing test first, confirm each fails against
 the current hook for the stated reason, then change the hook.
 
-- [ ] 1.1 Fix both Stop-hook defects test-first in `hooks/test_suggest_next_step.py` and
+- [x] 1.1 Fix both Stop-hook defects test-first in `hooks/test_suggest_next_step.py` and
       `hooks/suggest_next_step.py`.
 
       **A. Failing tests for mandatory defect capture.** Extend
