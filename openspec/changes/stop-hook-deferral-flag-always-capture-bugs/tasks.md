@@ -86,7 +86,7 @@ the current hook for the stated reason, then change the hook.
 
 ## 2. Verification
 
-- [ ] 2.1 [e2e] [depends: 1.1] Run the checks:
+- [x] 2.1 [e2e] [depends: 1.1] Run the checks:
       - `PYTHONPATH=src pytest -q`
       - `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`
       - `openspec validate stop-hook-deferral-flag-always-capture-bugs --strict`
