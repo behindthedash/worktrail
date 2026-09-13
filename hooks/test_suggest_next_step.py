@@ -163,6 +163,130 @@ def test_instruction_is_worktrail_native_and_value_gated():
         "No handoff captured; no exceptional next step identified." in hook.INSTRUCTION
     )
     assert "developer-kit" not in hook.INSTRUCTION
+    assert "discovered this session and did not fix" in hook.INSTRUCTION
+    assert "capture one brief per distinct verified defect" in hook.INSTRUCTION
+    assert (
+        "The EXCEPTIONAL-VALUE gate below does not apply to defects" in hook.INSTRUCTION
+    )
+    assert "applies only to forward-looking ideas" in hook.INSTRUCTION
+    assert (
+        "Do NOT capture routine polish"
+        in hook.INSTRUCTION.split("forward-looking ideas")[-1]
+    )
+    assert (
+        "and no defect brief was captured, say 'No handoff captured; no exceptional "
+        "next step identified.'" in hook.INSTRUCTION
+    )
+    assert (
+        "A defect inside the current request is not a handoff: fix it now"
+        in hook.INSTRUCTION
+    )
+
+
+def test_build_dedup_gate_block_never_suppresses_untracked_defect_capture():
+    block = hook.build_dedup_gate_block(
+        [{"kind": "session_touched_durable_artifact", "path": "docs/specs/x/spec.md"}]
+    )
+    assert "only for the follow-up those artifacts already track" in block
+    assert (
+        "never suppresses capturing a distinct verified defect those artifacts do not track"
+        in block
+    )
+    assert "Do NOT auto-capture" in block
+    assert "suggestion-only line naming the resume command" in block
+    assert "`worktrail-go <brief-id>`" in block
+    assert "## Dedup justification" in block
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git ls-tree --name-only origin/dev docs/specs/005-x/changes/ docs/specs/001-y/changes/ 2>/dev/null",
+        "npm ci >/dev/null && worktrail-run-record note --text 'see docs/specs/005/changes'",
+        "ls openspec/changes/foo 2>&1 | head",
+        "pytest -q > /tmp/out.txt && grep -r todo docs/specs/001-task/",
+        "cat > /tmp/notes.md <<'EOF'\nthen rm docs/specs/x/spec.md\ndon't forget\nEOF",
+        "echo 'unterminated docs/specs/x/spec.md > docs/specs/y",
+    ],
+)
+def test_bash_non_writes_to_durable_paths_yield_no_paths(tmp_path, command):
+    assert (
+        hook.durable_artifact_paths_from_entry(
+            _tool_entry("Bash", {"command": command})
+        )
+        == []
+    )
+    transcript = tmp_path / "t.jsonl"
+    _write_entries(transcript, [_tool_entry("Bash", {"command": command})])
+    assert hook.scan_transcript(str(transcript))[2] == []
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        (
+            "cp docs/specs/001-task/design.md openspec/changes/new-idea/design.md",
+            ["openspec/changes/new-idea/design.md"],
+        ),
+        (
+            "sed -i 's#docs/specs/old#docs/specs/new#' openspec/changes/new-idea/tasks.md",
+            ["openspec/changes/new-idea/tasks.md"],
+        ),
+        (
+            "echo x | tee -a docs/specs/001-task/notes.md",
+            ["docs/specs/001-task/notes.md"],
+        ),
+        (
+            "mv openspec/changes/a openspec/changes/archive/a",
+            ["openspec/changes/a", "openspec/changes/archive/a"],
+        ),
+        ("rm docs/specs/001-task/old.md", ["docs/specs/001-task/old.md"]),
+        ("touch openspec/changes/x/tasks.md", ["openspec/changes/x/tasks.md"]),
+        ("mkdir -p openspec/changes/x/specs", ["openspec/changes/x/specs"]),
+        ("pytest 2> docs/specs/001-task/err.log", ["docs/specs/001-task/err.log"]),
+        ("git mv docs/specs/a docs/specs/b", ["docs/specs/a", "docs/specs/b"]),
+        (
+            "ls docs/specs/001-task\ntouch openspec/changes/y/tasks.md",
+            ["openspec/changes/y/tasks.md"],
+        ),
+    ],
+)
+def test_bash_write_marks_only_written_paths(tmp_path, command, expected):
+    transcript = tmp_path / "t.jsonl"
+    _write_entries(transcript, [_tool_entry("Bash", {"command": command})])
+    assert hook.scan_transcript(str(transcript))[2] == expected
+
+
+def test_main_discarded_stderr_read_does_not_trigger_dedup_gate(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.delenv("CC_HEADLESS", raising=False)
+    monkeypatch.setattr(hook, "STATE_DIR", tmp_path / "state")
+    _install_check_durable_artifact_capture_gate_shim(tmp_path, monkeypatch)
+    transcript = tmp_path / "read.jsonl"
+    _write_entries(
+        transcript,
+        [
+            _tool_entry("Write", {"file_path": "/repo/src/main.py"}),
+            _tool_entry(
+                "Bash",
+                {
+                    "command": "git ls-tree --name-only origin/dev docs/specs/005-x/changes/ docs/specs/001-y/changes/ 2>/dev/null"
+                },
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        hook.sys,
+        "stdin",
+        io.StringIO(
+            json.dumps({"session_id": "read-only", "transcript_path": str(transcript)})
+        ),
+    )
+    assert hook.main() == 0
+    out = capsys.readouterr().out
+    assert out == json.dumps({"decision": "block", "reason": hook.INSTRUCTION}) + "\n"
+    assert "DEDUP GATE" not in out
 
 
 def test_main_blocks_once_per_session(tmp_path, monkeypatch, capsys):

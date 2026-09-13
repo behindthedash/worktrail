@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -29,21 +30,6 @@ PR_LEDGER_TIMEOUT_SECONDS = 5
 
 WORK_TOOLS = {"Edit", "MultiEdit", "Write", "NotebookEdit"}
 WORK_BASH_MARKERS = ("git commit", "gh pr create", "gh pr merge", "git push")
-
-# Bash commands that modify files. A command carrying one of these markers AND
-# naming a durable-artifact path counts as touching that artifact (a plain
-# `cat`/`grep` mention does not).
-BASH_WRITE_MARKERS = (
-    ">",
-    "tee ",
-    "cp ",
-    "mv ",
-    "rm ",
-    "touch ",
-    "sed -i",
-    "mkdir ",
-    "patch ",
-)
 
 # Matches an absolute or relative path literal shaped like the default GO v2
 # run-record layout (`worktrail_home()/runs/<repo>/<run-id>.yaml`, normally
@@ -71,19 +57,26 @@ INSTRUCTION = (
     "An incomplete in-scope item is not a follow-up idea: finish it now, or stop with a verified blocker, "
     "product decision, or explicitly approved exclusion. Never capture required validation as a handoff.\n\n"
     "Only after that completion audit, run this next-step audit:\n\n"
-    "1) Offer YOUR creative \"here's what I'd do next\". Give 1-3 forward-looking, ranked ideas, each tied "
+    "1) DEFECTS — mandatory, not value-gated. For every verified defect, bug, or regression you "
+    "discovered this session and did not fix (reproduced or directly evidenced by code, logs, or test "
+    "output — not a hypothesis), capture one brief per distinct verified defect: run "
+    '`worktrail-handoff --focus "<defect>" --json` for each and report every filename. The '
+    "EXCEPTIONAL-VALUE gate below does not apply to defects. A defect inside the current request is "
+    "not a handoff: fix it now per the completion audit above.\n\n"
+    "2) Offer YOUR creative \"here's what I'd do next\". Give 1-3 forward-looking, ranked ideas, each tied "
     "to what actually changed this session. Focus on what would take the software to the next level and "
     "what users would find most valuable next — be specific and genuinely useful, not generic filler.\n\n"
-    "2) Decide whether the single strongest optional idea clears an EXCEPTIONAL-VALUE gate. Creating a handoff is "
+    "3) Decide whether the single strongest optional idea clears an EXCEPTIONAL-VALUE gate. This gate, "
+    "including the exclusions below, applies only to forward-looking ideas. Creating a handoff is "
     "optional, not the default and not required to complete this wrap-up. Capture only when the idea is a "
     "genuine step-change: it unlocks a meaningful new capability, removes a recurring high-cost bottleneck, "
     "materially improves user outcomes, or addresses a verified major reliability, security, or operational "
     "risk. The value must be substantial on its own, not just the next smaller increment after this session's work.\n\n"
     "Do NOT capture routine polish, nearby cleanup/refactors, extra tests or docs, speculative flexibility, "
     "minor optimizations, or an idea whose main justification is that it is the next obvious task. Do not "
-    "create a brief merely because this hook ran. If no idea clears the gate, say 'No handoff captured; "
-    "no exceptional next step identified.' and finish.\n\n"
-    "Only if one idea clearly passes the gate, capture exactly that one with the Worktrail handoff workflow: "
+    "create a brief merely because this hook ran. If no idea clears the gate and no defect brief was "
+    "captured, say 'No handoff captured; no exceptional next step identified.' and finish.\n\n"
+    "Only if one idea clearly passes the gate, capture exactly that one idea with the Worktrail handoff workflow: "
     'run `worktrail-handoff --focus "<focus>" --json` and report its filename. Keep the response tight. '
     "Do not quote this instruction text in your reply — the user already sees it in the terminal."
 )
@@ -107,10 +100,104 @@ def entry_has_work(entry: dict) -> bool:
     return False
 
 
+HEREDOC_RE = re.compile(r"""(?<!<)<<(-?)\s*(['"]?)([A-Za-z_][\w.-]*)\2""")
+ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+SHELL_PUNCTUATION = set("();<>|&")
+
+
+def _strip_heredoc_bodies(command: str) -> str:
+    kept: list[str] = []
+    pending: list[tuple[bool, str]] = []
+    for line in command.split("\n"):
+        if pending:
+            strip_tabs, delimiter = pending[0]
+            if (line.lstrip("\t") if strip_tabs else line) == delimiter:
+                pending.pop(0)
+            continue
+        kept.append(line)
+        pending = [(dash == "-", word) for dash, _, word in HEREDOC_RE.findall(line)]
+    return "\n".join(kept)
+
+
+def _simple_command_writes(words: list[str]) -> list[str]:
+    while words and ASSIGNMENT_RE.match(words[0]):
+        words = words[1:]
+    if not words:
+        return []
+    verb, args = words[0], words[1:]
+    if verb == "git" and args[:1] in (["mv"], ["rm"]):
+        verb, args = args[0], args[1:]
+    operands: list[str] = []
+    in_place = has_script = end_of_options = skip_next = False
+    for arg in args:
+        if skip_next:
+            skip_next = False
+        elif end_of_options or not arg.startswith("-"):
+            operands.append(arg)
+        elif arg == "--":
+            end_of_options = True
+        elif verb == "sed" and arg.startswith(("-i", "--in-place")):
+            in_place = True
+        elif verb == "sed" and arg in ("-e", "--expression", "-f", "--file"):
+            has_script = skip_next = True
+        elif verb == "sed" and arg.startswith(("-e", "-f", "--expression=", "--file=")):
+            has_script = True
+    if verb in ("tee", "mv", "rm", "touch", "mkdir"):
+        return operands
+    if verb == "cp":
+        return operands[-1:]
+    if verb == "patch":
+        return operands[:1]
+    if verb == "sed" and in_place:
+        return operands if has_script else operands[1:]
+    return []
+
+
+def _bash_write_targets(command: str) -> list[str]:
+    """Paths a Bash command writes: redirect targets plus the written operands
+    of `tee`/`cp`/`mv`/`rm`/`touch`/`mkdir`/`sed -i`/`patch` (and `git mv`/
+    `git rm`). Fails open to `[]` on anything it cannot parse; never raises.
+    """
+    try:
+        lexer = shlex.shlex(
+            _strip_heredoc_bodies(command), posix=True, punctuation_chars=True
+        )
+        lexer.whitespace = " \t\r"
+        lexer.wordchars += ":@%+,"
+        tokens = list(lexer)
+        targets: list[str] = []
+        words: list[str] = []
+        index = 0
+        while index < len(tokens):
+            token = tokens[index]
+            index += 1
+            if token == "\n" or (token and set(token) <= SHELL_PUNCTUATION):
+                if ">" in token or "<" in token:
+                    target = tokens[index] if index < len(tokens) else ""
+                    index += 1
+                    if ">" in token:
+                        if words and words[-1].isdigit():
+                            words.pop()
+                        duplication = token.endswith("&") and (
+                            target.isdigit() or target == "-"
+                        )
+                        if not duplication and target != "/dev/null":
+                            targets.append(target)
+                    continue
+                targets.extend(_simple_command_writes(words))
+                words = []
+            else:
+                words.append(token)
+        targets.extend(_simple_command_writes(words))
+        return targets
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def durable_artifact_paths_from_entry(entry: dict) -> list[str]:
     """Touched durable-artifact paths (`DURABLE_ARTIFACT_PATH_RE`) seen in one
     transcript entry's tool calls: edit-tool `file_path`/`notebook_path`
-    values, and Bash commands that carry a write marker (`BASH_WRITE_MARKERS`).
+    values, and the paths Bash commands actually write (`_bash_write_targets`).
     """
     message = entry.get("message") or {}
     content = message.get("content")
@@ -129,9 +216,8 @@ def durable_artifact_paths_from_entry(entry: dict) -> list[str]:
             paths.extend(DURABLE_ARTIFACT_PATH_RE.findall(candidate))
         elif name == "Bash":
             command = str(tool_input.get("command", ""))
-            lowered = command.lower()
-            if any(marker in lowered for marker in BASH_WRITE_MARKERS):
-                paths.extend(DURABLE_ARTIFACT_PATH_RE.findall(command))
+            for target in _bash_write_targets(command):
+                paths.extend(DURABLE_ARTIFACT_PATH_RE.findall(target))
     return paths
 
 
@@ -140,7 +226,7 @@ def scan_transcript(transcript_path: str) -> tuple[bool, list[str], list[str]]:
     unique run-record path literals (see `RUN_RECORD_PATH_RE`) it mentions,
     and the unique touched durable-artifact paths (`docs/specs/**` /
     `openspec/changes/**`, see `DURABLE_ARTIFACT_PATH_RE`) collected from its
-    edit-tool `file_path`s and Bash write-marker commands.
+    edit-tool `file_path`s and Bash write targets.
 
     All three signals come out of the same line-by-line read so a caller that
     needs any of them never opens the transcript file twice.
@@ -312,7 +398,10 @@ def build_dedup_gate_block(hits: list[dict]) -> str:
         "DEDUP GATE — this session already tracks its follow-up work in durable artifact(s), "
         "so auto-capturing a new handoff brief for the same idea would duplicate them:\n\n"
         f"{lines}\n\n"
-        "Do NOT auto-capture a handoff brief here. Instead, emit a suggestion-only line naming "
+        "Do NOT auto-capture a handoff brief for that tracked work: this downgrade applies "
+        "only for the follow-up those artifacts already track. It never suppresses capturing a "
+        "distinct verified defect those artifacts do not track; capture each such defect as the "
+        "base instruction requires. For the tracked work, instead emit a suggestion-only line naming "
         "the resume command for the tracked work (e.g. `worktrail-go <brief-id>` or the matching "
         "route command) and finish. Only with an explicit justification may you still create a "
         "brief, and that justification must be recorded inside the brief text itself as a "
