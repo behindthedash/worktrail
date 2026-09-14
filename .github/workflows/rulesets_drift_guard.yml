@@ -46,7 +46,7 @@ jobs:
       - name: Generate rulesets-check bot token
         id: app-token
         if: ${{ env.RULESETS_APP_ID != '' && env.RULESETS_APP_PRIVATE_KEY != '' }}
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@v3.2.0
         with:
           client-id: ${{ env.RULESETS_APP_ID }}
           private-key: ${{ env.RULESETS_APP_PRIVATE_KEY }}
