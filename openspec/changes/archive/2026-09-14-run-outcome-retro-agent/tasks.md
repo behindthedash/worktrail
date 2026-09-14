@@ -49,7 +49,7 @@
 
 ## 4. Verification
 
-- [ ] 4.1 [e2e] Run `PYTHONPATH=src pytest -q`, `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`, and `openspec validate run-outcome-retro-agent --strict`.
+- [x] 4.1 [e2e] Run `PYTHONPATH=src pytest -q`, `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`, and `openspec validate run-outcome-retro-agent --strict`.
       Then, with a temporary `WORKTRAIL_HOME` and a scratch repo whose `.worktrail/policy.yaml` sets `agent_learning: true`:
       - Run the installed `worktrail-retro` for real against a fixture journal with one quarantined group. Confirm `MEMORY.md` exists at `retro_memory_path` with a `## Notes for workers` or `## Observations` entry citing that spec id, and that the journal gained a `retro` marker with `status: completed`.
       - Run it a second time against a second fixture journal repeating the same failure. Confirm the existing entry's evidence was refreshed or promoted rather than duplicated. This proves the memory reloaded.
