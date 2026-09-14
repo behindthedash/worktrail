@@ -90,6 +90,17 @@ Otherwise it SHALL create `worktrail_home()/learning/<repo-name>/` and call `spa
 
 The system SHALL NOT use the target repository, or any of its worktrees, as the retro cwd.
 
+`<repo-name>` SHALL be the directory name of the canonical checkout that owns `repo`'s git common
+directory, resolved with `gitnexus_preflight.canonical_repo_root`. It SHALL fall back to `repo`'s
+own resolved directory name only when that resolution returns `None`. A linked worktree and its
+canonical checkout therefore share one learning directory.
+
+#### Scenario: Worktree path shares the canonical checkout's learning directory
+
+- **WHEN** `learning_dir(repo)` is called once with a canonical checkout named `worktrail` and
+  once with a linked worktree of it named `agent-learning-epic`
+- **THEN** both calls return `worktrail_home()/learning/worktrail/`
+
 #### Scenario: Spawn arguments for a signal run
 
 - **WHEN** learning is enabled, the digest has signal, and the resolved cell harness is `claude`
