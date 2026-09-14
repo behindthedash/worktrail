@@ -1664,3 +1664,44 @@ class LiveSpawnBaseCommitTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class RetroBestEffortWiringTests(unittest.TestCase):
+    """A retro that raises never changes the run's completion result."""
+
+    def _run_pipeline(self, retro_fn):
+        import test_pipeline as tp
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            repo = tp._init_repo(Path(tmp))
+            integrate_one, _ = tp._make_integrate_one()
+            journal = str(Path(tmp) / "pipeline-journal.json")
+            with (
+                patch("worktrail.learning.retro.run_retro", side_effect=retro_fn) as m,
+                redirect_stdout(io.StringIO()),
+            ):
+                result = tp._run(
+                    repo,
+                    tmp,
+                    tp.FakeSpawn(fail_task="TASK-001"),
+                    integrate_one,
+                    tp.FakeVerifier(),
+                    journal_path=journal,
+                )
+            calls = [c.args for c in m.call_args_list]
+            return result, calls, repo, journal
+
+    def test_raising_retro_leaves_result_identical(self):
+        def boom(*_a, **_k):
+            raise RuntimeError("retro exploded")
+
+        stubbed, calls_ok, repo_ok, journal_ok = self._run_pipeline(
+            lambda *_a, **_k: {"status": "skipped", "reason": "disabled"}
+        )
+        raised, calls_bad, repo_bad, journal_bad = self._run_pipeline(boom)
+        self.assertEqual(
+            json.dumps(stubbed, sort_keys=True, default=str),
+            json.dumps(raised, sort_keys=True, default=str),
+        )
+        self.assertEqual(calls_ok, [(repo_ok, journal_ok)])
+        self.assertEqual(calls_bad, [(repo_bad, journal_bad)])
