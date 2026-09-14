@@ -100,3 +100,9 @@ def test_main_fails_when_distribution_is_missing(
     ):
         assert metadata.main(["--repo", str(repo)]) == 1
     assert "PACKAGING METADATA: FAIL" in capsys.readouterr().err
+
+
+def test_pyproject_declares_retro_script_and_package_data() -> None:
+    text = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text()
+    assert 'worktrail-retro = "worktrail.learning.retro:main"' in text
+    assert '"learning/*.md"' in text

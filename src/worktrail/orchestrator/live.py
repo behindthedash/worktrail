@@ -594,6 +594,17 @@ def _print_usage_report(journal_path: str | Path) -> None:
     print(progress.render_context_quality(journal))
 
 
+def _run_retro_best_effort(repo: str | Path, journal_path: str | Path) -> None:
+    """Run the post-run retro; never raises into, or changes, the run outcome."""
+    try:
+        from ..learning.retro import run_retro
+
+        result = run_retro(repo, journal_path)
+        print(f"{_ts()} retro: {result.get('status')} ({result.get('reason')})")
+    except Exception as e:  # noqa: BLE001 -- retro must never fail the run
+        print(f"{_ts()} retro: failed ({type(e).__name__}: {e})")
+
+
 def _format_automerge_evidence_note(evidence: dict[str, dict[str, str]]) -> str | None:
     """Human-readable note for `verify.run_all()`'s `automerge_evidence` -- explained
     self-merges (a group's PR flipped to MERGED mid-turn because external automation
@@ -6459,6 +6470,7 @@ def _pipeline_scheduler(
         print(f"{_ts()} {checkbox_note}")
     progress.set_phase(journal_path, "done")
     _print_usage_report(journal_path)
+    _run_retro_best_effort(repo, journal_path)
     print(f"{_ts()} === PIPELINE RUN COMPLETE ===")
     return {
         "group_prs": prs,
@@ -6773,6 +6785,7 @@ def _full_real_inner(
             print(checkbox_note)
         progress.set_phase(journal_path, "done")
         _print_usage_report(journal_path)
+        _run_retro_best_effort(repo, journal_path)
         print("=== FULL RUN COMPLETE ===")
         return {
             "group_prs": [
