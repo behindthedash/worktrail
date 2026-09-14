@@ -55,6 +55,8 @@ def default_run_record_dir() -> str:
 DEFAULTS: dict[str, Any] = {
     # None -> auto-detect from `git remote show origin` (HEAD branch).
     "base_branch": None,
+    # Opt-in: run the post-run retro agent that curates worker learning memory.
+    "agent_learning": False,
     # ENFORCEMENT SCOPE (2026-07 key-vs-consumer audit): only `automerge_eligible()`
     # below reads this — and it is itself only invoked by an agent following
     # sdd-workflow's Phase 8 merge-gate instructions (no script calls it).
