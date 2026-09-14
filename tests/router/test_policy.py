@@ -252,6 +252,14 @@ class TestValidation(unittest.TestCase):
             any("integrate_smoke_retries" in w for w in pol["_meta"]["warnings"])
         )
 
+    def test_agent_learning_absent_defaults_false(self):
+        self.assertIs(DEFAULTS["agent_learning"], False)
+        self.assertIs(load_policy(_repo_with(""))["agent_learning"], False)
+
+    def test_agent_learning_true_loaded(self):
+        pol = load_policy(_repo_with("agent_learning: true\n"))
+        self.assertIs(pol["agent_learning"], True)
+
     def test_integrate_smoke_retries_loaded(self):
         pol = load_policy(_repo_with("integrate_smoke_retries: 1\n"))
         self.assertEqual(pol["integrate_smoke_retries"], 1)
