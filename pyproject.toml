@@ -101,6 +101,7 @@ worktrail-quarantine-selfcheck = "worktrail.router.quarantine_selfcheck:main"
 worktrail-reconcile-pr-labels = "worktrail.router.reconcile_pr_labels:main"
 worktrail-resolve-repo = "worktrail.router.resolve_repo:main"
 worktrail-release-gate = "worktrail.router.release_gate:main"
+worktrail-retro = "worktrail.learning.retro:main"
 worktrail-run-record = "worktrail.router.run_record:main"
 worktrail-skill-dispatch = "worktrail.router.skill_dispatch:main"
 worktrail-skill-prose-scan = "worktrail.router.skill_prose_advisory_scan:main"
@@ -113,7 +114,7 @@ worktrail-tier-accuracy = "worktrail.router.tier_accuracy:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-worktrail = [".fixtures/**/*"]
+worktrail = [".fixtures/**/*", "learning/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "hooks"]
