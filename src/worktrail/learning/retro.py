@@ -105,19 +105,22 @@ def _curate(
         except BlockingIOError:
             return {"status": "skipped", "reason": "locked"}
         try:
-            spawn(
-                build_prompt(repo, digest),
-                ldir,
-                tier=REVIEW_DEFAULT_TIER,
-                prefer="claude",
-                timeout=timeout,
-                extra_args=[
-                    "--agents",
-                    json.dumps(agent_definition()),
-                    "--agent",
-                    RETRO_AGENT_NAME,
-                ],
-                log=log,
+            spawnlib.raise_if_exhausted(
+                spawn(
+                    build_prompt(repo, digest),
+                    ldir,
+                    tier=REVIEW_DEFAULT_TIER,
+                    prefer="claude",
+                    timeout=timeout,
+                    extra_args=[
+                        "--agents",
+                        json.dumps(agent_definition()),
+                        "--agent",
+                        RETRO_AGENT_NAME,
+                    ],
+                    log=log,
+                ),
+                context="retro",
             )
         except subprocess.TimeoutExpired:
             return {"status": "failed", "reason": "timeout"}
@@ -174,6 +177,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.dry_run:
         decision, digest = _gate(repo, Path(args.journal), select_cell)
+        if decision["reason"] == "disabled":
+            try:
+                journal = json.loads(Path(args.journal).read_text(encoding="utf-8"))
+                digest = build_outcome_digest(journal)
+            except (OSError, json.JSONDecodeError):
+                pass
         out: dict[str, Any] = {"digest": digest, "decision": decision}
         print(json.dumps(out, indent=2, sort_keys=True) if args.json else out)
         return 1 if decision["status"] == "failed" else 0

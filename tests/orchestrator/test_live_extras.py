@@ -1662,10 +1662,6 @@ class LiveSpawnBaseCommitTests(unittest.TestCase):
         self.assertEqual(ctx.get("base_commit"), "HEAD")
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
-
 class RetroBestEffortWiringTests(unittest.TestCase):
     """A retro that raises never changes the run's completion result."""
 
@@ -1705,3 +1701,67 @@ class RetroBestEffortWiringTests(unittest.TestCase):
         )
         self.assertEqual(calls_ok, [(repo_ok, journal_ok)])
         self.assertEqual(calls_bad, [(repo_bad, journal_bad)])
+
+    def _run_full_real_from_verify(self, retro_fn):
+        import test_quarantine_journal_persistence as tq
+
+        from worktrail.orchestrator import verify
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            repo = tq._init_repo(Path(tmp))
+            (repo.parent / f"{repo.name}-worktrees").mkdir(parents=True, exist_ok=True)
+            journal = live.journal_path_for(repo, "docs/specs/001-x")
+            journal.parent.mkdir(parents=True, exist_ok=True)
+            journal.write_text(
+                json.dumps(
+                    {
+                        "run_id": "full-test",
+                        "spec_id": "001-x",
+                        "entries": [],
+                        "groups": {
+                            name: {
+                                "pr_url": f"http://pr/{name}",
+                                "head_branch": f"full-test/{name}",
+                                "state": "OPEN",
+                            }
+                            for name in ("base", "feature-1", "feature-2")
+                        },
+                        "integrate_complete": True,
+                    }
+                )
+            )
+            with (
+                patch.object(
+                    verify,
+                    "verify_and_cleanup",
+                    lambda *a, **k: {"merged": ["base", "feature-1", "feature-2"]},
+                ),
+                patch("worktrail.learning.retro.run_retro", side_effect=retro_fn) as m,
+                redirect_stdout(io.StringIO()),
+            ):
+                result = live.full_real(
+                    str(repo), "docs/specs/001-x", base="main", from_verify=True
+                )
+            calls = [
+                (Path(a[0]), Path(a[1])) for a in (c.args for c in m.call_args_list)
+            ]
+            return result, calls, repo.resolve(), journal.resolve()
+
+    def test_full_real_from_verify_raising_retro_leaves_result_identical(self):
+        def boom(*_a, **_k):
+            raise RuntimeError("retro exploded")
+
+        stubbed, calls_ok, repo_ok, journal_ok = self._run_full_real_from_verify(
+            lambda *_a, **_k: {"status": "skipped", "reason": "disabled"}
+        )
+        raised, calls_bad, repo_bad, journal_bad = self._run_full_real_from_verify(boom)
+        self.assertEqual(
+            json.dumps(stubbed, sort_keys=True, default=str),
+            json.dumps(raised, sort_keys=True, default=str),
+        )
+        self.assertEqual(calls_ok, [(repo_ok, journal_ok)])
+        self.assertEqual(calls_bad, [(repo_bad, journal_bad)])
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

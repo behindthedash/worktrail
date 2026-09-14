@@ -6,7 +6,7 @@ import pytest
 
 from worktrail.learning import retro
 from worktrail.learning.paths import RETRO_AGENT_NAME, learning_dir, retro_memory_path
-from worktrail.orchestrator.spawnlib import SpawnExhausted
+from worktrail.orchestrator.spawnlib import SpawnExhausted, SpawnResult
 from worktrail.runtime.selection import Cell
 
 GOOD_MEMORY = (
@@ -79,6 +79,7 @@ def test_disabled_skips_without_spawn(env):
     result, spawn = _run(repo, journal)
     assert result == {"status": "skipped", "reason": "disabled"}
     assert spawn.calls == []
+    assert _markers(journal) == [{"event": "retro", **result}]
 
 
 def test_no_signal_skips_without_spawn(env):
@@ -89,6 +90,7 @@ def test_no_signal_skips_without_spawn(env):
     result, spawn = _run(repo, journal)
     assert result["reason"] == "no_signal"
     assert spawn.calls == []
+    assert _markers(journal) == [{"event": "retro", **result}]
 
 
 def test_codex_cell_skips(env):
@@ -96,6 +98,7 @@ def test_codex_cell_skips(env):
     result, spawn = _run(repo, journal, harness="codex")
     assert result == {"status": "skipped", "reason": "claude_harness_unavailable"}
     assert spawn.calls == []
+    assert _markers(journal) == [{"event": "retro", **result}]
 
 
 def test_spawn_arguments(env):
@@ -141,6 +144,7 @@ def test_locked_skips(env):
         holder.wait()
     assert result == {"status": "skipped", "reason": "locked"}
     assert spawn.calls == []
+    assert _markers(journal) == [{"event": "retro", **result}]
 
 
 @pytest.mark.parametrize(
@@ -185,6 +189,31 @@ def test_contract_violations_recorded_not_repaired(env, memory, violation):
     assert _markers(journal)[0]["contract_violations"] == result["contract_violations"]
 
 
+def test_exhausted_spawn_result_maps_to_failed(env):
+    repo, journal = env
+
+    class ExhaustedSpawn(FakeSpawn):
+        def __call__(self, prompt, cwd, **kw):
+            super().__call__(prompt, cwd, **kw)
+            return SpawnResult(text="usage limit", usage={}, exhausted=True)
+
+    result, _ = _run(repo, journal, spawn=ExhaustedSpawn(memory=None))
+    assert result == {"status": "failed", "reason": "SpawnExhausted"}
+    assert _markers(journal) == [{"event": "retro", **result}]
+
+
+def test_dry_run_disabled_still_prints_digest(env, capsys):
+    repo, journal = env
+    (repo / ".worktrail" / "policy.yaml").write_text("")
+    code = retro.main(
+        ["--repo", str(repo), "--journal", str(journal), "--dry-run", "--json"]
+    )
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["decision"] == {"status": "skipped", "reason": "disabled"}
+    assert out["digest"]["spec_id"] == "spec-x"
+
+
 def test_one_marker_per_call(env):
     repo, journal = env
     _run(repo, journal)
@@ -209,6 +238,10 @@ def test_dry_run_json(env, capsys, monkeypatch):
 
 def test_exit_codes(env, monkeypatch, tmp_path):
     repo, journal = env
+    monkeypatch.setattr(
+        retro, "run_retro", lambda *a, **k: {"status": "completed", "reason": "x"}
+    )
+    assert retro.main(["--repo", str(repo), "--journal", str(journal)]) == 0
     monkeypatch.setattr(
         retro, "run_retro", lambda *a, **k: {"status": "skipped", "reason": "x"}
     )
