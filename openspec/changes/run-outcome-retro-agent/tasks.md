@@ -10,7 +10,8 @@
       - `retro` and `learned_notes` markers are excluded from `events`;
       - a clean journal gives `has_signal` false;
       - output is identical across repeated calls;
-      - the memory path contract under a temporary `WORKTRAIL_HOME`.
+      - the memory path contract under a temporary `WORKTRAIL_HOME`;
+      - a real linked worktree (`git worktree add` under `tmp_path`) and its canonical checkout resolve to the same `learning_dir`, and a non-git directory falls back to its own name.
       files: src/worktrail/learning/__init__.py, src/worktrail/learning/paths.py, src/worktrail/learning/digest.py, tests/learning/__init__.py, tests/learning/test_digest.py
       Covers: Outcome Digest Is Deterministic And Bounded; Retro Runs As A Memory-Enabled Claude Agent Outside Any Repository
 

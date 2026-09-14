@@ -78,7 +78,12 @@ spike.
 - **The target repo:** dirties the canonical checkout, or leaks into PRs. Feature 1 exists to
   stop exactly that.
 
-Per-repo keying by directory name matches `worktrail_home()/runs/<repo-name>/`.
+The key is the name of the **canonical** checkout, resolved through
+`gitnexus_preflight.canonical_repo_root(repo)`, not the basename of whatever path was passed in.
+Keying by the given path's basename would split one repo's memory across every worktree name the
+retro is ever invoked with. Run records show that shape today: a PR landed from worktree
+`agent-learning-epic` recorded its run under `worktrail_home()/runs/agent-learning-epic/`. When
+the resolution returns `None` (not a git checkout), the resolved path's own name is used.
 
 ### D3: Inline `--agents` definition built from package data, not a plugin agent
 
