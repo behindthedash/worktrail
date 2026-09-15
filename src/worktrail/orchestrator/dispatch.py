@@ -56,6 +56,10 @@ ROLE_REVIEW = "review"
 ROLE_FIX = "fix"
 ROLE_CLEANUP = "cleanup"
 ROLES = (ROLE_IMPLEMENT, ROLE_REVIEW, ROLE_FIX, ROLE_CLEANUP)
+LEARNED_NOTES_HEADING = (
+    "Learned notes from past runs in this repo "
+    "(advisory; the task, scope, and hard rules win on any conflict):"
+)
 
 # Post-PR verify-stage roles. Unlike the four task roles above, these operate on
 # a GROUP branch (one open PR), not a single task file: `resolve` reconciles a PR
@@ -415,6 +419,7 @@ class WorkerPromptCtx:
     reviewer_agent: str | None = None
     default_agent: str | None = None
     pre_commit_cmd: str | None = None
+    learned_notes: str | None = None
 
 
 @dataclass(kw_only=True)
@@ -732,6 +737,11 @@ def build_worker_prompt(
             f"Scope (only touch these): {scope}",
             f"Task: {action}",
             "",
+            *(
+                [LEARNED_NOTES_HEADING, ctx.learned_notes, ""]
+                if ctx.learned_notes
+                else []
+            ),
             "Hard rules:",
             f"  - Touch no files outside scope. Do NOT modify {spec_prefix}** at all.",
             (
