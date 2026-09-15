@@ -220,6 +220,11 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
   the machine-local freshness marker when the CLI is present. An unconditional install replaced an
   operator's `npm link`ed fork with the registry build (2026-09-01) and reintroduced a destructive
   doc-sync rewrite — keep the PATH check.
+- **`AspensAddOn.configure` always passes `--mode all --strategy improve --yes`** to
+  `aspens doc init` (`addons/aspens.py`): without them, the CLI falls back to interactive
+  prompts (generation mode, existing-docs strategy, hook-install confirmation) that fail
+  immediately under this add-on's non-interactive `subprocess.run`, leaving `.aspens.json`
+  never created.
 - **Policy-sourced defaults for `full-real` flags live in code, not in agent prose.**
   `live._default_merge_method` (sibling of `_default_post_merge_smoke_cmd`) resolves
   `merge_method_by_base[--base]` via `router/policy.merge_method_for_branch` whenever
@@ -281,4 +286,4 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
   the free-rerun probe `wait_and_fix_ci` tries once before spawning a ci-fix worker
 
 ---
-**Last Updated:** 2026-09-11
+**Last Updated:** 2026-09-15
