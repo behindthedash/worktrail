@@ -4925,6 +4925,16 @@ class TestWorkDirectlyAccepted(unittest.TestCase):
         )
         self.assertTrue(qt._work_directly_accepted(v))
 
+    def test_true_on_past_tense_reproduced_via(self):
+        """1.1(f): past-tense evidence matches like the present-tense case."""
+        v = qt.Verdict(
+            brief_id="a",
+            verdict="work-directly",
+            duplicate_of=None,
+            evidence="Reproduced via pytest tests/foo.py -k bar",
+        )
+        self.assertTrue(qt._work_directly_accepted(v))
+
     def test_true_on_confirmed_premise_alone(self):
         v = qt.Verdict(
             brief_id="a",
