@@ -31,6 +31,6 @@
 
 ## 4. Verification
 
-- [ ] 4.1 [e2e] Run `PYTHONPATH=src pytest -q` and `openspec validate handoff-brief-capture-provenance --strict`.
+- [x] 4.1 [e2e] Run `PYTHONPATH=src pytest -q` and `openspec validate handoff-brief-capture-provenance --strict`.
       Then, against a temporary `--queue-dir`, run `worktrail-handoff --focus "provenance smoke" --captured-by detector:smoke --json`. Confirm the created brief's frontmatter shows `captured-by: detector:smoke` directly after `created`.
       depends: 1.1, 2.1, 3.1
