@@ -714,6 +714,46 @@ def _git_common_dir(cwd: str | Path) -> str | None:
     return str(common) if common is not None else None
 
 
+_AGENT_MEMORY_DIRS = (".claude/agent-memory", ".claude/agent-memory-local")
+
+
+def _ensure_agent_memory_ignored(cwd: str | Path, log: Callable[[str], None]) -> None:
+    """In a linked worktree, drop a self-ignoring `*` `.gitignore` into each agent
+    memory dir so a worker's `git add -A` never stages memory it wrote. Canonical
+    checkouts and non-git dirs are untouched; an existing `.gitignore` is kept
+    as-is; any probe/write failure is logged and skipped (fail open)."""
+    try:
+        with real_subprocess_run():
+            toplevel = subprocess.run(
+                ["git", "rev-parse", "--show-toplevel"],
+                check=False,
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+            )
+            git_dir = subprocess.run(
+                ["git", "rev-parse", "--git-dir"],
+                check=False,
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+            )
+        if toplevel.returncode != 0 or git_dir.returncode != 0:
+            return
+        common = _git_common_dir(cwd)
+        resolved = (Path(cwd) / git_dir.stdout.strip()).resolve()
+        if common is None or resolved == Path(common).resolve():
+            return
+        for rel in _AGENT_MEMORY_DIRS:
+            marker = Path(toplevel.stdout.strip()) / rel / ".gitignore"
+            if marker.exists():
+                continue
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text("*\n")
+    except (OSError, subprocess.SubprocessError) as exc:
+        log(f"agent-memory isolation skipped: {exc}")
+
+
 def _opencode_permission_config(cwd: str | Path, existing_content: str | None) -> dict:
     """Inline opencode config granting a headless worker non-interactive use of
     its tools inside the authorized roots: the worktree itself plus its git
@@ -979,6 +1019,7 @@ def spawn_agent(
 
     Raises `subprocess.TimeoutExpired` on a wall-clock timeout.
     """
+    _ensure_agent_memory_ignored(cwd, log)
     routing = resolve_routing(load_policy(worktrail_home()))
 
     def _select() -> Cell:
