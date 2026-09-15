@@ -1,6 +1,6 @@
 ## 1. Fix premise_check.py absence-claim polarity and broaden the reproduction regex, with tests (`Mechanical premise check precedes evaluation`, `Work-directly converts an intake brief into an execution brief`)
 
-- [ ] 1.1 Implement requirement: in `src/worktrail/workqueue/premise_check.py`: (a) add
+- [x] 1.1 Implement requirement: in `src/worktrail/workqueue/premise_check.py`: (a) add
       `_ABSENCE_INDICATOR_RE` and `_ABSENCE_WINDOW = 40` (design.md Decision 1); (b) add a
       `polarity: str = "presence"` field to the `Needle` dataclass (Decision 2); (c) in
       `_extract_path_needles()`, compute each path needle's polarity from the 40-character
