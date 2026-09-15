@@ -413,6 +413,7 @@ def seed_backlog(
                 repo=finding["repo_name"],
                 base_branch=_base_branch_for(finding["repo"]),
                 seeded_from=finding["seed_key"],
+                captured_by="seed-backlog",
                 **kwargs,
             )
         except Exception as exc:  # noqa: BLE001 -- one candidate must not
