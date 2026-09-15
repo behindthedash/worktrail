@@ -35,6 +35,9 @@ _OVERLAP_SCAN_GH_TIMEOUT_SECONDS = 5
 # plausible duplicate without burying the capturer in near-misses.
 _OVERLAP_WARNING_LIMIT = 5
 
+# `captured-by` value: a kebab-case source name, optionally `:<qualifier>`.
+_CAPTURED_BY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]*(:[A-Za-z0-9._/-]+)?$")
+
 
 def _slugify(text: str) -> str:
     return fallback_slugify(text, default="handoff")
@@ -359,6 +362,7 @@ def create_handoff(
     blocked_by: Iterable[str] | None = None,
     watch: Iterable[str] | None = None,
     seeded_from: str | None = None,
+    captured_by: str | None = None,
 ) -> dict[str, Any]:
     """Create one queued brief and auto-link high-confidence neighbours."""
     focus = focus.strip()
@@ -378,6 +382,11 @@ def create_handoff(
         raise ValueError("triage must be blocker or deferred")
     blocked_by_refs = _validate_blocked_by(blocked_by)
     target_task = _validate_target_task(target_task)
+    if captured_by is not None and not _CAPTURED_BY_PATTERN.match(captured_by):
+        raise ValueError(
+            "captured-by must be a kebab-case source name, optionally "
+            "followed by ':<qualifier>'"
+        )
 
     base = Path(queue_base or work_queue.base_dir()).expanduser()
     queue = base / "queue"
@@ -395,6 +404,7 @@ def create_handoff(
     frontmatter: dict[str, Any] = {
         "id": path.stem,
         "created": now.isoformat(timespec="seconds"),
+        "captured-by": captured_by or "unknown",
         "focus": focus,
         "repo": resolved_repo,
         "remote": remote or None,
@@ -589,6 +599,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--blocked-by", action="append", default=[])
     parser.add_argument("--watch", action="append", default=[])
+    parser.add_argument(
+        "--captured-by",
+        default="worktrail-handoff",
+        help="capture source stamped as captured-by (kebab-case[:qualifier])",
+    )
     parser.add_argument("--json", action="store_true", help="emit JSON")
     args = parser.parse_args(argv)
     try:
@@ -611,6 +626,7 @@ def main(argv: list[str] | None = None) -> int:
             triage=args.triage,
             blocked_by=args.blocked_by,
             watch=args.watch,
+            captured_by=args.captured_by,
         )
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)

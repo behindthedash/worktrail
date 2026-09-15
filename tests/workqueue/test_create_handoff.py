@@ -8,7 +8,11 @@ from pathlib import Path
 import pytest
 
 from worktrail.router.cluster_detect import OVERLAP_THRESHOLD
-from worktrail.shared.brief_frontmatter import read_frontmatter, validate_brief
+from worktrail.shared.brief_frontmatter import (
+    is_canonical_style,
+    read_frontmatter,
+    validate_brief,
+)
 from worktrail.workqueue.create_handoff import (
     _slugify,
     append_duplicate_signal,
@@ -16,6 +20,7 @@ from worktrail.workqueue.create_handoff import (
     create_handoff,
     main,
 )
+from worktrail.workqueue.work_queue import brief_kind
 
 
 def test_create_handoff_writes_valid_brief_and_classifies(tmp_path: Path):
@@ -36,6 +41,7 @@ def test_create_handoff_writes_valid_brief_and_classifies(tmp_path: Path):
     assert read_frontmatter(path) == {
         "id": path.stem,
         "created": read_frontmatter(path)["created"],
+        "captured-by": "unknown",
         "focus": "Fix the broken handoff dashboard",
         "repo": "/tmp/example",
         "remote": None,
@@ -47,6 +53,72 @@ def test_create_handoff_writes_valid_brief_and_classifies(tmp_path: Path):
     assert "## Suggested approach" in path.read_text(encoding="utf-8")
     assert validate_brief(path)[0]
     assert os.environ.get("WORK_QUEUE_DIR") != str(tmp_path)
+
+
+def test_create_handoff_stamps_explicit_captured_by_after_created(tmp_path: Path):
+    result = create_handoff(
+        "Fix the broken handoff dashboard",
+        queue_base=tmp_path,
+        captured_by="detector:smoke",
+    )
+
+    path = Path(result["path"])
+    content = path.read_text(encoding="utf-8")
+    keys = list(read_frontmatter(path))
+    assert read_frontmatter(path)["captured-by"] == "detector:smoke"
+    assert keys[keys.index("created") + 1] == "captured-by"
+    assert validate_brief(path)[0]
+    assert is_canonical_style(content)
+
+
+def test_create_handoff_defaults_captured_by_to_unknown(tmp_path: Path):
+    result = create_handoff("Fix the broken handoff dashboard", queue_base=tmp_path)
+
+    assert read_frontmatter(Path(result["path"]))["captured-by"] == "unknown"
+
+
+@pytest.mark.parametrize("value", ["", "Detector", "-lead", "a b", "src:", "x:y:z"])
+def test_create_handoff_rejects_malformed_captured_by_without_writing(
+    tmp_path: Path, value: str
+):
+    with pytest.raises(ValueError, match="captured-by"):
+        create_handoff("Fix the dashboard", queue_base=tmp_path, captured_by=value)
+
+    assert not list((tmp_path / "queue").glob("*.md"))
+
+
+def test_cli_captured_by_flag_and_default(tmp_path: Path, capsys):
+    assert main(["--focus", "Fix a", "--queue-dir", str(tmp_path), "--json"]) == 0
+    default_path = Path(json.loads(capsys.readouterr().out)["path"])
+    assert read_frontmatter(default_path)["captured-by"] == "worktrail-handoff"
+
+    argv = ["--focus", "Fix b", "--queue-dir", str(tmp_path), "--json"]
+    assert main([*argv, "--captured-by", "hook:post-merge"]) == 0
+    flagged_path = Path(json.loads(capsys.readouterr().out)["path"])
+    assert read_frontmatter(flagged_path)["captured-by"] == "hook:post-merge"
+
+
+def test_hand_written_brief_without_captured_by_still_valid(tmp_path: Path):
+    path = tmp_path / "20260101-000000-hand.md"
+    content = (
+        "---\n"
+        "id: 20260101-000000-hand\n"
+        "created: 2026-01-01T00:00:00+00:00\n"
+        "focus: Hand written brief\n"
+        "repo: null\n"
+        "remote: null\n"
+        "base-branch: null\n"
+        "status: queued\n"
+        "seeded-from: triage:2026-01-01:direct\n"
+        "---\n\nbody\n"
+    )
+    path.write_text(content, encoding="utf-8")
+
+    assert validate_brief(path)[0]
+    fm = read_frontmatter(path)
+    assert "captured-by" not in fm
+    assert brief_kind(fm) == "execution"
+    assert brief_kind({k: v for k, v in fm.items() if k != "seeded-from"}) == "intake"
 
 
 def test_create_handoff_omits_recommended_route_on_zero_signal_focus(tmp_path: Path):

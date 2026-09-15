@@ -237,6 +237,7 @@ def test_needs_tasks_spec_seeds_planning_brief(tmp_path):
     assert len(briefs) == 1
     _path, fm = briefs[0]
     assert fm["seeded-from"] == "repo-a:spec:010-alpha"
+    assert fm["captured-by"] == "seed-backlog"
     assert fm["recommended-route"] == "C"
     assert fm["implementation-intent"] == "planning-only"
     assert fm["target-spec"] == "010-alpha"
