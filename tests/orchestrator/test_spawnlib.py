@@ -2870,5 +2870,107 @@ class DispatchIdEnvVar(unittest.TestCase):
         self.assertNotIn("WORKTRAIL_DISPATCH_ID", captured["env"])
 
 
+_MEMORY_DIRS = (".claude/agent-memory", ".claude/agent-memory-local")
+
+
+def _git(cwd, *args):
+    return subprocess.run(
+        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
+    ).stdout
+
+
+class AgentMemoryIsolation(unittest.TestCase):
+    """spawn_agent self-ignores `.claude/agent-memory*` in linked worktrees only."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        root = Path(self._tmp.name)
+        self.main = root / "repo"
+        self.main.mkdir()
+        _git(self.main, "init", "-q", "-b", "main")
+        _git(self.main, "config", "user.email", "t@example.com")
+        _git(self.main, "config", "user.name", "t")
+        tracked = self.main / ".claude/agent-memory/tracked/MEMORY.md"
+        tracked.parent.mkdir(parents=True)
+        tracked.write_text("v1\n")
+        _git(self.main, "add", "-A")
+        _git(self.main, "commit", "-q", "-m", "init")
+        self.wt = root / "wt"
+        _git(self.main, "worktree", "add", "-q", str(self.wt), "-b", "feat")
+        self.logs = []
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _ensure(self, cwd):
+        spawnlib._ensure_agent_memory_ignored(cwd, self.logs.append)
+
+    def test_new_memory_files_and_markers_are_not_staged(self):
+        self._ensure(self.wt)
+        for d in _MEMORY_DIRS:
+            f = self.wt / d / "probe" / "MEMORY.md"
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text("x\n")
+        _git(self.wt, "add", "-A")
+        self.assertEqual(_git(self.wt, "diff", "--cached", "--name-only"), "")
+        for d in _MEMORY_DIRS:
+            self.assertEqual((self.wt / d / ".gitignore").read_text(), "*\n")
+
+    def test_tracked_memory_modification_still_visible(self):
+        self._ensure(self.wt)
+        (self.wt / ".claude/agent-memory/tracked/MEMORY.md").write_text("v2\n")
+        self.assertIn(
+            ".claude/agent-memory/tracked/MEMORY.md",
+            _git(self.wt, "status", "--porcelain"),
+        )
+
+    def test_canonical_checkout_and_non_git_cwd_untouched(self):
+        self._ensure(self.main)
+        for d in _MEMORY_DIRS:
+            self.assertFalse((self.main / d / ".gitignore").exists())
+        self.assertFalse((self.main / ".claude/agent-memory-local").exists())
+        plain = Path(self._tmp.name) / "plain"
+        plain.mkdir()
+        self._ensure(plain)
+        self.assertEqual(list(plain.iterdir()), [])
+        # The helper itself must still exist and have run against a worktree.
+        self._ensure(self.wt)
+        self.assertTrue((self.wt / _MEMORY_DIRS[0] / ".gitignore").exists())
+
+    def test_existing_gitignore_left_unchanged(self):
+        existing = self.wt / ".claude/agent-memory/.gitignore"
+        existing.write_bytes(b"keep-me\n!x\n")
+        self._ensure(self.wt)
+        self.assertEqual(existing.read_bytes(), b"keep-me\n!x\n")
+
+    def test_oserror_is_logged_and_spawn_still_launches(self):
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return Proc(0, "ok", "")
+
+        cache = tempfile.TemporaryDirectory()
+        self.addCleanup(cache.cleanup)
+        logs = []
+        with (
+            patch.dict(
+                os.environ,
+                {"GO_AGENT_CAPACITY_CACHE": os.path.join(cache.name, "c.json")},
+            ),
+            _patch_routing(SINGLE_CLAUDE_ROUTING),
+            patch.object(Path, "write_text", side_effect=OSError("disk full")),
+            patch.object(spawnlib.subprocess, "run", side_effect=fake_run),
+        ):
+            result = spawnlib.spawn_agent(
+                "prompt", self.wt, tier="t2-build", retries=0, log=logs.append
+            )
+        self.assertEqual(result.text, "ok")
+        self.assertEqual(captured["cmd"][0:3], ["claude", "-p", "prompt"])
+        self.assertTrue(
+            any("agent-memory isolation skipped: " in m for m in logs), logs
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

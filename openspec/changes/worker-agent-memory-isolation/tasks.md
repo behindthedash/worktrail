@@ -1,6 +1,6 @@
 ## 1. Agent-memory isolation at the spawn choke point (`worker-agent-memory-isolation`)
 
-- [ ] 1.1 In `src/worktrail/orchestrator/spawnlib.py`, add a private helper `_ensure_agent_memory_ignored(cwd, log)` per design D2-D4 and call it once at the top of `spawn_agent`, before cell resolution; write the failing tests first in `tests/orchestrator/test_spawnlib.py`.
+- [x] 1.1 In `src/worktrail/orchestrator/spawnlib.py`, add a private helper `_ensure_agent_memory_ignored(cwd, log)` per design D2-D4 and call it once at the top of `spawn_agent`, before cell resolution; write the failing tests first in `tests/orchestrator/test_spawnlib.py`.
       Tests use a real `git init` repo plus `git worktree add` under `tmp_path`, and cover:
       a new `MEMORY.md` under each memory directory is not staged by `git add -A`;
       the `.gitignore` markers themselves are not staged;
