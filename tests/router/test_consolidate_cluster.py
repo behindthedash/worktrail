@@ -467,6 +467,28 @@ class ExecuteConsolidationConfirm(ConsolidateClusterTestCase):
         fm = self._frontmatter(new_brief_path)
         self.assertEqual(fm.get("status"), "queued")
 
+    def test_new_brief_carries_captured_by_consolidate_cluster(self):
+        """The consolidated brief stamps its own capture source, written
+        canonical-style (plain scalar, right after `created:`)."""
+        m1 = _write_brief(
+            self.queue_dir, "20260701-100000-alpha.md", focus="Alpha work"
+        )
+        m2 = _write_brief(self.queue_dir, "20260701-100100-beta.md", focus="Beta work")
+        draft = cc.draft_consolidated_brief([m1, m2], self.queue_dir)
+
+        result = cc.execute_consolidation(
+            True, [m1, m2], draft, self.queue_dir, self.picked_dir
+        )
+
+        new_brief_path = Path(result["new_brief_path"])
+        self.assertEqual(
+            self._frontmatter(new_brief_path).get("captured-by"),
+            "consolidate-cluster",
+        )
+        lines = new_brief_path.read_text(encoding="utf-8").splitlines()
+        created_idx = next(i for i, ln in enumerate(lines) if ln.startswith("created:"))
+        self.assertEqual(lines[created_idx + 1], "captured-by: consolidate-cluster")
+
 
 # --------------------------------------------------------------------------- #
 # Write verification (root-cause bug regression: --draft contract mismatch,

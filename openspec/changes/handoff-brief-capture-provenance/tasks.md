@@ -19,7 +19,7 @@
 
 ## 2. Cluster consolidation (`handoff-brief-capture-provenance`)
 
-- [ ] 2.1 In `src/worktrail/router/consolidate_cluster.py`, add `"captured-by": "consolidate-cluster"` right after `created` in the consolidated brief's frontmatter dict. Write the failing test first in `tests/router/test_consolidate_cluster.py`: the written brief carries `captured-by: consolidate-cluster` and stays canonical-style.
+- [x] 2.1 In `src/worktrail/router/consolidate_cluster.py`, add `"captured-by": "consolidate-cluster"` right after `created` in the consolidated brief's frontmatter dict. Write the failing test first in `tests/router/test_consolidate_cluster.py`: the written brief carries `captured-by: consolidate-cluster` and stays canonical-style.
       files: src/worktrail/router/consolidate_cluster.py, tests/router/test_consolidate_cluster.py
       Covers: In-Repo Minting Callers Stamp Their Own Source
 
