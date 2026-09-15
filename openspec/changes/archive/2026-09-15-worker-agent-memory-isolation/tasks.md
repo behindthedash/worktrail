@@ -14,7 +14,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [e2e] Run `PYTHONPATH=src pytest -q`, `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`, and `openspec validate worker-agent-memory-isolation --strict`.
+- [x] 2.1 [e2e] Run `PYTHONPATH=src pytest -q`, `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`, and `openspec validate worker-agent-memory-isolation --strict`.
       Then, in a scratch repo under `$TMPDIR`, create a linked worktree and launch a real Claude probe agent with `memory: project` in it through `spawnlib.spawn_agent`.
       Run `git add -A` and confirm nothing under `.claude/agent-memory/` is staged, and that the probe's `MEMORY.md` exists on disk.
       depends: 1.1
