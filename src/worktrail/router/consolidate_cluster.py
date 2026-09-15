@@ -441,6 +441,7 @@ def _build_consolidated_brief_content(draft: dict[str, Any]) -> tuple[str, str]:
     frontmatter: dict[str, Any] = {
         "id": new_brief_id,
         "created": now.isoformat(timespec="seconds"),
+        "captured-by": "consolidate-cluster",
         "focus": focus,
         "status": "queued",
     }
