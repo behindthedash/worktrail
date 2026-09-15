@@ -213,6 +213,14 @@ def build_command(
     override, `--add-dir` roots); it is spliced in right after `codex exec`
     and ignored for the other harnesses.
 
+    Every codex spawn built here always adds `--skip-git-repo-check`: the
+    cwd is `worker_scratch_dir()`, never a git checkout (that's what
+    `codex_probe.py`'s own use of the same flag documents for its scratch
+    dir), so `codex exec` otherwise refuses outright with "Not inside a
+    trusted directory" before emitting any classifiable output -- confirmed
+    live from `~/.worktrail/drain-logs/transcripts/*-codex.log` on every
+    codex iteration back to 2026-09-08.
+
     `model`/`effort` are the routing-selected cell's own fields (task 5.1); a
     per-harness `--model`/effort flag is appended in the same position
     `spawnlib.build_cmd()` uses for the orchestrator's own spawns (claude:
@@ -245,6 +253,7 @@ def build_command(
         "codex",
         "exec",
         *(sandbox_args or []),
+        "--skip-git-repo-check",
         *permission_args,
         *model_flag,
         *effort_flag,
