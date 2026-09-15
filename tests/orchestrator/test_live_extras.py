@@ -1765,3 +1765,104 @@ class RetroBestEffortWiringTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class LiveSpawnLearnedNotesTests(unittest.TestCase):
+    """LiveSpawn snapshots opted-in learned notes once and journals one marker."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.repo = Path(self._tmp.name) / "repo"
+        self.repo.mkdir()
+        self.memory = Path(self._tmp.name) / "MEMORY.md"
+        self.memory.write_text("## Notes for workers\n- run ruff first\n")
+
+    def _spawn_many(self, policy: dict, n: int):
+        from worktrail.router.policy import load_policy as real_load
+
+        ctxs, events = [], []
+        fake_result = type(
+            "R",
+            (),
+            {
+                "text": "ok",
+                "usage": {},
+                "tools_used": [],
+                "skills_used": [],
+                "paused_s": 0.0,
+            },
+        )()
+        with (
+            patch(
+                "worktrail.router.policy.load_policy",
+                side_effect=lambda repo, **kw: {**real_load(repo, **kw), **policy},
+            ),
+            patch(
+                "worktrail.learning.notes.retro_memory_path", return_value=self.memory
+            ),
+            patch(
+                "worktrail.orchestrator.live.dependency_start_ref",
+                return_value=("main", None),
+            ),
+            patch(
+                "worktrail.orchestrator.live._merge_base_with_worktree_head",
+                return_value="abc",
+            ),
+            patch(
+                "worktrail.orchestrator.live.dispatch.build_worker_prompt",
+                side_effect=lambda r, t, ctx, **_: ctxs.append(dict(ctx)) or "prompt",
+            ),
+            patch(
+                "worktrail.orchestrator.live.progress.append_safety_net_events",
+                side_effect=lambda _p, evs: events.extend(evs),
+            ),
+            patch(
+                "worktrail.orchestrator.live.spawnlib.spawn_claude_p",
+                return_value=fake_result,
+            ),
+            patch(
+                "worktrail.orchestrator.live.spawnlib.spawn_agent",
+                return_value=fake_result,
+            ),
+        ):
+            spawn = live.LiveSpawn(
+                "spec-001", "docs/specs/001-spec", agent="claude", repo=self.repo
+            )
+            for i in range(n):
+                if i == 1:
+                    self.memory.write_text("## Notes for workers\n- rewritten\n")
+                spawn("implement", {"id": f"T{i}", "files": []}, Path("/tmp/wt"))
+        return ctxs, events
+
+    def test_disabled_policy_reads_no_file_and_passes_none(self):
+        with patch("worktrail.learning.notes.load_learned_notes") as loader:
+            ctxs, events = self._spawn_many({}, 1)
+        loader.assert_not_called()
+        self.assertIsNone(ctxs[0]["learned_notes"])
+        self.assertEqual(events, [])
+
+    def test_notes_snapshotted_across_rewrite(self):
+        ctxs, _ = self._spawn_many({"agent_learning": True}, 3)
+        self.assertEqual([c["learned_notes"] for c in ctxs], ["- run ruff first"] * 3)
+
+    def test_three_spawns_append_one_marker(self):
+        import hashlib
+
+        _, events = self._spawn_many({"agent_learning": True}, 3)
+        self.assertEqual(
+            events,
+            [
+                {
+                    "event": "learned_notes",
+                    "sha256": hashlib.sha256(b"- run ruff first").hexdigest(),
+                    "bullets": 1,
+                }
+            ],
+        )
+
+    def test_none_notes_append_no_marker(self):
+        self.memory.unlink()
+        ctxs, events = self._spawn_many({"agent_learning": True}, 2)
+        self.assertIsNone(ctxs[0]["learned_notes"])
+        self.assertEqual(events, [])
