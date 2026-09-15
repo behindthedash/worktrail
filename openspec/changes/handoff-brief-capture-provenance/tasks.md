@@ -1,6 +1,6 @@
 ## 1. Capture-source stamp in `create_handoff` and the seeder (`handoff-brief-capture-provenance`)
 
-- [ ] 1.1 In `src/worktrail/workqueue/create_handoff.py`:
+- [x] 1.1 In `src/worktrail/workqueue/create_handoff.py`:
       - add `captured_by: str | None = None` to `create_handoff()`;
       - validate it against `^[a-z0-9][a-z0-9-]*(:[A-Za-z0-9._/-]+)?$`, raising `ValueError` alongside the existing argument checks (before `queue.mkdir`);
       - stamp `captured-by` right after `created`, defaulting to `unknown`;
@@ -25,7 +25,7 @@
 
 ## 3. Skill documentation (`handoff-brief-capture-provenance`)
 
-- [ ] 3.1 In `skills/worktrail-handoff/SKILL.md` Step 2, add `[--captured-by "$SOURCE"]` to the `worktrail-handoff` invocation. Add one sentence telling hooks, detectors, and other automated callers to pass their own kebab-case source name. The default is `worktrail-handoff`.
+- [x] 3.1 In `skills/worktrail-handoff/SKILL.md` Step 2, add `[--captured-by "$SOURCE"]` to the `worktrail-handoff` invocation. Add one sentence telling hooks, detectors, and other automated callers to pass their own kebab-case source name. The default is `worktrail-handoff`.
       files: skills/worktrail-handoff/SKILL.md
       depends: 1.1
 
