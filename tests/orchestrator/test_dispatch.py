@@ -1501,5 +1501,61 @@ class TestReviewRoundAwareness(unittest.TestCase):
         self.assertEqual(task["review_notes"], "all AC verified")
 
 
+class TestLearnedNotesRendering(unittest.TestCase):
+    NOTES = "- prefer rg over grep\n- run ruff before commit"
+
+    def _ctx(self, **extra):
+        ctx = _make_ctx()
+        ctx["gitnexus_capability"] = {"available": False, "reason": "test"}
+        ctx.update(extra)
+        return ctx
+
+    def test_every_role_renders_notes_between_task_and_hard_rules(self):
+        from worktrail.orchestrator.dispatch import LEARNED_NOTES_HEADING, ROLES
+
+        for role in ROLES:
+            with self.subTest(role=role):
+                prompt = build_worker_prompt(
+                    role, _make_task(), self._ctx(learned_notes=self.NOTES)
+                )
+                heading = prompt.index(LEARNED_NOTES_HEADING)
+                self.assertLess(prompt.index("\nTask: "), heading)
+                self.assertLess(heading, prompt.index(self.NOTES))
+                self.assertLess(prompt.index(self.NOTES), prompt.index("Hard rules:"))
+
+    def test_codex_default_agent_still_renders_notes(self):
+        from worktrail.orchestrator.dispatch import LEARNED_NOTES_HEADING
+
+        task = _make_task()
+        del task["agent"]
+        prompt = build_worker_prompt(
+            ROLE_IMPLEMENT,
+            task,
+            self._ctx(learned_notes=self.NOTES, default_agent="codex"),
+        )
+        self.assertIn("Agent: codex", prompt)
+        self.assertIn(LEARNED_NOTES_HEADING, prompt)
+        self.assertIn(self.NOTES, prompt)
+
+    def test_absent_notes_are_byte_identical(self):
+        from worktrail.orchestrator.dispatch import ROLES
+
+        for role in ROLES:
+            with self.subTest(role=role):
+                base = build_worker_prompt(role, _make_task(), self._ctx())
+                self.assertEqual(
+                    base,
+                    build_worker_prompt(
+                        role, _make_task(), self._ctx(learned_notes=None)
+                    ),
+                )
+                self.assertEqual(
+                    base,
+                    build_worker_prompt(
+                        role, _make_task(), self._ctx(learned_notes="")
+                    ),
+                )
+
+
 if __name__ == "__main__":
     unittest.main()
