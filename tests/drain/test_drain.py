@@ -88,8 +88,16 @@ def test_build_command_opencode_and_codex_shapes():
     assert build_command("codex", []) == [
         "codex",
         "exec",
+        "--skip-git-repo-check",
         PROMPT,
     ]
+
+
+def test_build_command_codex_always_skips_git_repo_check():
+    # The cwd is always worker_scratch_dir(), never a git checkout, so codex
+    # would otherwise refuse with "Not inside a trusted directory" before
+    # emitting any classifiable output.
+    assert "--skip-git-repo-check" in build_command("codex", [])
 
 
 def test_build_command_codex_splices_sandbox_args_after_exec():
@@ -101,6 +109,7 @@ def test_build_command_codex_splices_sandbox_args_after_exec():
         "workspace-write",
         "--add-dir",
         "/scratch",
+        "--skip-git-repo-check",
         "--x",
         "--model",
         "gpt-5",
@@ -164,6 +173,7 @@ def test_build_command_model_appended_per_harness():
     assert build_command("codex", [], model="gpt-5") == [
         "codex",
         "exec",
+        "--skip-git-repo-check",
         "--model",
         "gpt-5",
         PROMPT,
@@ -196,6 +206,7 @@ def test_build_command_effort_appended_per_harness():
     assert build_command("codex", [], model="gpt-5", effort="low") == [
         "codex",
         "exec",
+        "--skip-git-repo-check",
         "--model",
         "gpt-5",
         "-c",

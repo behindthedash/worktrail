@@ -30,6 +30,13 @@ construction — nothing accumulates across iterations.
   own `no_pick` classification then reads as "nothing was eligible to claim" rather than "the
   one-shot never even started." Using the wrong prompt form silently no-ops every drain
   iteration that uses `agent=claude`.
+- **`build_command` always adds `--skip-git-repo-check` to every codex spawn.** The cwd for a
+  codex one-shot is always `worker_scratch_dir()`, never a git checkout, so `codex exec`
+  otherwise refuses outright with "Not inside a trusted directory" before emitting any
+  classifiable output — confirmed live from `~/.worktrail/drain-logs/transcripts/*-codex.log`
+  on every codex iteration back to 2026-09-08. The flag is spliced in right after `sandbox_args`
+  and before `permission_args`, for every `build_command("codex", ...)` call regardless of
+  template/model/effort.
 - **Seven distinct stop conditions, each printed, never silent**: `queue_empty`, `no_pick`,
   `capacity_gated` (every configured agent — primary + `--fallback-agent` chain — is gated),
   `circuit_breaker` (N consecutive failed iterations, default 2), `max_items`,
@@ -81,4 +88,4 @@ construction — nothing accumulates across iterations.
   fallback selection, and `_land_remediation_pr` (the single `land_pr` seam for remediation PRs)
 
 ---
-**Last Updated:** 2026-09-09
+**Last Updated:** 2026-09-15
