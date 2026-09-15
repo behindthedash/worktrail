@@ -2753,6 +2753,12 @@ class LiveSpawn:
         # was given, matching base_commit's own fallback.
         self._pre_commit_cmd: str | None = None
         self._pre_commit_cmd_loaded = False
+        # Same lazy read-once contract for the retro agent's worker notes: the
+        # first access snapshots them for the whole run, and only when the
+        # repo policy opts in via `agent_learning`.
+        self._learned_notes: str | None = None
+        self._learned_notes_loaded = False
+        self._learned_notes_recorded = False
         self.timeout = timeout
         # Accepted for CLI/caller backward compatibility only -- __call__'s
         # tier-based dispatch (task 4.2) never reads self.model; a spawn's
@@ -2840,6 +2846,39 @@ class LiveSpawn:
         self._pre_commit_cmd = value
         self._pre_commit_cmd_loaded = True
 
+    @property
+    def learned_notes(self) -> str | None:
+        """The repo's learned worker notes, snapshotted once on first access."""
+        if not self._learned_notes_loaded:
+            from ..learning.notes import load_learned_notes
+            from ..router.policy import load_policy as _load_policy
+
+            if self.repo and _load_policy(self.repo).get("agent_learning"):
+                self._learned_notes = load_learned_notes(self.repo)
+            self._learned_notes_loaded = True
+        return self._learned_notes
+
+    def _record_learned_notes(self, notes: str | None) -> None:
+        """Journal one `learned_notes` marker for the first prompt carrying notes."""
+        if not notes or self._learned_notes_recorded or self.repo is None:
+            return
+        import hashlib
+
+        bullets = sum(
+            1 for ln in notes.splitlines() if ln.lstrip().startswith(("- ", "* "))
+        )
+        progress.append_safety_net_events(
+            journal_path_for(self.repo, self.spec_folder_rel),
+            [
+                {
+                    "event": "learned_notes",
+                    "sha256": hashlib.sha256(notes.encode("utf-8")).hexdigest(),
+                    "bullets": bullets,
+                }
+            ],
+        )
+        self._learned_notes_recorded = True
+
     def _task_brief_ctx(self) -> dict:
         """Format templates for where a worker reads its brief.
 
@@ -2895,6 +2934,7 @@ class LiveSpawn:
             "spec_root_prefix": taskformats.spec_root_prefix_for(self.spec_folder_rel),
             "task_brief": self._task_brief_ctx(),
             "pre_commit_cmd": self.pre_commit_cmd,
+            "learned_notes": self.learned_notes,
         }
         prompt = dispatch.build_worker_prompt(
             role,
@@ -2904,6 +2944,7 @@ class LiveSpawn:
             by_id=self.by_id,
             external_deps_by_ref=self.external_deps_by_ref,
         )
+        self._record_learned_notes(ctx["learned_notes"])
         # Resolve every spawn's tier through the single precedence function
         # (routing-target-selector task 4.1/4.2, replacing the old
         # dispatch.agent_for()): explicit task tier > role tier for judgment
