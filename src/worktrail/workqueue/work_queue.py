@@ -517,8 +517,20 @@ def _fm_field_lines(key: str, value: Any) -> list[str]:
 def _is_fm_continuation(line: str) -> bool:
     """Whether `line` continues the previous key's value (block scalar body,
     block sequence item, or a blank line inside a block scalar) rather than
-    starting a new top-level key."""
-    return line.startswith(("  ", "\t")) or not line.strip()
+    starting a new top-level key.
+
+    A zero-indent block-sequence item (`- foo`, dash aligned with the parent
+    key, no leading spaces) also continues the previous key: it is PyYAML's
+    own default rendering for a list nested under a mapping key
+    (`serialize_frontmatter`'s canonical style), and a top-level frontmatter
+    key can never itself start with `-`. Without this, splicing a key whose
+    existing value used that style left its zero-indent list items behind as
+    orphaned top-level lines -- invalid YAML the next parse chokes on.
+    """
+    if line.startswith(("  ", "\t")) or not line.strip():
+        return True
+    stripped = line.rstrip("\r\n")
+    return stripped == "-" or stripped.startswith("- ")
 
 
 def _splice_fm_key(

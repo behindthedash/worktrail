@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 from worktrail.conductor import compile as runplan_compile
 from worktrail.conductor import runplan
-from worktrail.shared.brief_frontmatter import is_canonical_style
+from worktrail.shared.brief_frontmatter import is_canonical_style, serialize_frontmatter
 from worktrail.workqueue import work_queue as q
 
 
@@ -2313,6 +2313,45 @@ class TestSetFmListField(QueueTestBase):
         self.assertEqual(fm.get("related"), ["new-id"])
         self.assertEqual(fm.get("blocked-by"), ["dep-id"])
 
+    def test_zero_indent_existing_list_stays_valid_yaml(self):
+        """A pre-existing list field rendered in PyYAML's zero-indent block-
+        sequence style (`serialize_frontmatter`'s own canonical style -- the
+        dash aligns with the key, no 2-space indent) must still be spliced
+        out correctly, not left behind as an orphaned top-level line.
+
+        Regression for a live incident (2026-09-14, brief
+        20260914-183750-link-yaml-round-trip-block): `_is_fm_continuation`
+        only recognized a 2-space-indented `  - item` as a continuation line,
+        so a zero-indent `- item` following the field being replaced was
+        treated as a new top-level line and left in place -- producing a
+        bare `-` sequence item at the mapping's top level, which PyYAML
+        cannot parse ("expected <block end>, but found '-'").
+        """
+        fm_text = serialize_frontmatter(
+            {
+                "id": "20260101-000000-a",
+                "focus": "a fairly long focus line: with a colon, so it "
+                "renders as a |- literal block scalar the way a real "
+                "brief's focus does",
+                "related": ["existing-id"],
+                "status": "queued",
+            }
+        )
+        p = self.queue / "20260101-000000-a.md"
+        p.write_text(f"---\n{fm_text}---\n\n## Focus\n\nsome work\n", encoding="utf-8")
+
+        # Sanity check: the fixture really does use the zero-indent style.
+        self.assertIn("\nrelated:\n- existing-id\n", p.read_text(encoding="utf-8"))
+
+        q._set_fm_list_field(p, "related", ["existing-id", "new-id"])
+
+        content = p.read_text(encoding="utf-8")
+        fm = q._read_frontmatter(p)
+        self.assertEqual(fm.get("related"), ["existing-id", "new-id"])
+        self.assertEqual(fm.get("status"), "queued")
+        # No orphaned top-level "- existing-id" line left behind after the split.
+        self.assertNotIn("\n- existing-id\n", content)
+
 
 class TestLink(QueueTestBase):
     """Tests for work_queue.link() — AC-007..011."""
@@ -2442,6 +2481,43 @@ class TestLink(QueueTestBase):
         self.assertEqual(result["status"], "linked")
         fm_a = q._read_frontmatter(self.queue / "20260101-000001-alpha.md")
         self.assertIn("20260101-000002-done-brief", fm_a.get("related", []))
+
+    def test_link_target_with_canonical_zero_indent_related_list(self):
+        """link() against a target brief whose `related:` list was written in
+        `serialize_frontmatter`'s canonical zero-indent style -- exactly the
+        real-world shape of a brief already carrying `suggested-skills:` /
+        `related:` from triage -- must not corrupt the target's frontmatter.
+
+        Regression for 2026-09-14 live incident: `worktrail-work-queue link`
+        against such a brief failed with "write verification failed (rolled
+        back): invalid YAML frontmatter" and the link never happened.
+        """
+        self.write("20260101-000001-alpha.md", focus="alpha task")
+        target_fm = serialize_frontmatter(
+            {
+                "id": "20260101-000002-beta",
+                "focus": "a fairly long focus line: with a colon, so it "
+                "renders as a |- literal block scalar the way a real "
+                "brief's focus does",
+                "related": ["some-other-brief"],
+                "suggested-skills": ["worktrail-repo-init"],
+                "status": "queued",
+            }
+        )
+        target_path = self.queue / "20260101-000002-beta.md"
+        target_path.write_text(
+            f"---\n{target_fm}---\n\n## Focus\n\nbeta task\n", encoding="utf-8"
+        )
+
+        result = q.link("20260101-000001-alpha", "20260101-000002-beta")
+
+        self.assertEqual(result["status"], "linked")
+        fm_a = q._read_frontmatter(self.queue / "20260101-000001-alpha.md")
+        fm_b = q._read_frontmatter(target_path)
+        self.assertIn("20260101-000002-beta", fm_a.get("related", []))
+        self.assertIn("20260101-000001-alpha", fm_b.get("related", []))
+        self.assertIn("some-other-brief", fm_b.get("related", []))
+        self.assertEqual(fm_b.get("suggested-skills"), ["worktrail-repo-init"])
 
 
 class TestRelatedAndLink(QueueTestBase):
