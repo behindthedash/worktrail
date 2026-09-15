@@ -67,12 +67,27 @@ class AspensAddOn:
         detached, non-committing mechanism this add-on exists to replace, so
         the shared runner's own stage-and-commit step must stay the only
         thing that ever commits aspens' output.
+
+        Always passes `--mode`/`--strategy`/`--yes`: without them, `aspens doc
+        init` falls back to interactive prompts (generation mode, existing-docs
+        strategy, hook-install confirmation) that fail immediately under this
+        add-on's non-interactive subprocess, leaving `.aspens.json` never
+        created.
         """
         worktree = Path(ctx.worktree)
         if (worktree / ".aspens.json").exists():
             return
         config = getattr(ctx, "config", None) or {}
-        cmd = ["aspens", "doc", "init"]
+        cmd = [
+            "aspens",
+            "doc",
+            "init",
+            "--mode",
+            "all",
+            "--strategy",
+            "improve",
+            "--yes",
+        ]
         if config.get("target"):
             cmd += ["--target", str(config["target"])]
         if config.get("backend"):

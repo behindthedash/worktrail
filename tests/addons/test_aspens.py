@@ -121,6 +121,20 @@ class ConfigureTests(_MarkerIsolation):
             args = mock_run.call_args.args[0]
             self.assertEqual(args[:3], ["aspens", "doc", "init"])
 
+    def test_configure_passes_noninteractive_flags(self):
+        with tempfile.TemporaryDirectory() as t:
+            worktree = Path(t)
+            ctx = SimpleNamespace(worktree=worktree, config={})
+
+            with patch("worktrail.addons.aspens.subprocess.run") as mock_run:
+                mock_run.return_value = SimpleNamespace(returncode=0)
+                AspensAddOn().configure(ctx)
+
+            args = mock_run.call_args.args[0]
+            self.assertIn("--mode", args)
+            self.assertIn("--strategy", args)
+            self.assertIn("--yes", args)
+
     def test_configure_never_installs_aspens_own_hook(self):
         with tempfile.TemporaryDirectory() as t:
             worktree = Path(t)
