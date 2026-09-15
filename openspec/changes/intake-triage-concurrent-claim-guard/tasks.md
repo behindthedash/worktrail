@@ -2,7 +2,7 @@
 
 ## 1. Claim-first concurrency guard
 
-- [ ] 1.1 In `src/worktrail/workqueue/queue_triage.py`, move the `claim(v.brief_id,
+- [x] 1.1 In `src/worktrail/workqueue/queue_triage.py`, move the `claim(v.brief_id,
       by="queue-triage")` call in `_worktree_pr_close()` to the very start of the function
       (before the `git fetch` step), returning an error result immediately (no worktree, no
       `prepare()`, no `land_pr`) when the claim does not succeed. Wrap the remaining body
@@ -24,7 +24,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [e2e] Run `PYTHONPATH=src pytest -q tests/workqueue/test_queue_triage.py`, then
+- [x] 2.1 [e2e] Run `PYTHONPATH=src pytest -q tests/workqueue/test_queue_triage.py`, then
       `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`,
       and confirm all pass.
       depends: 1.1

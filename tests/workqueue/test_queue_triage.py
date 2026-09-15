@@ -2297,7 +2297,7 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
         self.assertEqual(entry["branch"], self.branch)
         self.assertNotIn("pr_url", entry)
 
-        # brief is completely untouched -- still queued, no claim/close attempted
+        # claimed then released back to queue/ -- still queued, no close attempted
         self.assertTrue((self.queue / "a.md").exists())
         fm = qt.read_frontmatter(self.queue / "a.md")
         self.assertEqual(fm["status"], "queued")
@@ -2386,7 +2386,6 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
 
     def test_compile_failure_blocks_pr_and_leaves_brief_untouched(self):
         run = self._dispatcher(compile_returncode=1)
-        before = self.brief_path.read_text(encoding="utf-8")
         with mock.patch(
             "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
         ):
@@ -2394,7 +2393,13 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
 
         self.assertEqual(log[0]["status"], "error")
         self.assertIn("worktrail-compile failed", log[0]["error"])
-        self.assertEqual(self.brief_path.read_text(encoding="utf-8"), before)
+        # Claimed then released back to queue/ -- same focus/body content and
+        # `status: queued`, but not byte-identical (claim/release stamp
+        # housekeeping frontmatter fields as they round-trip).
+        self.assertTrue((self.queue / "a.md").exists())
+        fm = qt.read_frontmatter(self.queue / "a.md")
+        self.assertEqual(fm["status"], "queued")
+        self.assertNotIn("triaged-to", fm)
 
     def test_fetch_failure_leaves_brief_untouched_and_reports_branch(self):
         """A failed `git fetch origin <base>` short-circuits before any
@@ -2417,11 +2422,50 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
         self.assertFalse(any("worktree" in c and "add" in c for c in self.seen))
         self.assertFalse(self.worktree_dir.exists())
 
-        # brief is completely untouched -- still queued, no claim/close attempted
+        # claimed then released back to queue/ -- still queued, no close attempted
         self.assertTrue((self.queue / "a.md").exists())
         fm = qt.read_frontmatter(self.queue / "a.md")
         self.assertEqual(fm["status"], "queued")
         self.assertNotIn("triaged-to", fm)
+
+    def test_already_claimed_brief_skips_the_pipeline_entirely(self):
+        """A concurrent triage run (or anything else) that already claimed
+        this brief must stop the second `apply --confirm` before any git
+        fetch, worktree, or `land_pr` work -- the fix for the duplicate-PR
+        incident where two concurrent applies each opened their own pull
+        request for the same brief. `_repo_base_branch()`'s own read-only
+        `symbolic-ref` lookup happens in the caller before `_worktree_pr_close`
+        is ever reached, so it alone is allowed through."""
+        qt.claim("a", by="a-concurrent-run")
+        seen: list[list[str]] = []
+
+        def run(cmd, **kwargs):
+            seen.append(list(cmd))
+            if cmd[:4] == ["git", "-C", str(self.repo), "symbolic-ref"]:
+                return self._completed(0, stdout="origin/main\n")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+            ),
+            mock.patch("worktrail.workqueue.queue_triage.land_pr") as mock_land_pr,
+        ):
+            log = qt.apply_verdicts([self.verdict], confirm=True)
+
+        entry = log[0]
+        self.assertEqual(entry["status"], "error")
+        self.assertIn("already-claimed", entry["error"])
+        self.assertIn("concurrent triage run", entry["error"])
+        mock_land_pr.assert_not_called()
+        self.assertFalse(any("fetch" in c for c in seen))
+        self.assertFalse(any("worktree" in c and "add" in c for c in seen))
+
+        # the concurrent run's own claim is untouched -- still in picked/
+        self.assertFalse((self.queue / "a.md").exists())
+        fm = qt.read_frontmatter(self.base / "picked" / "a.md")
+        self.assertEqual(fm["status"], "picked")
+        self.assertEqual(fm["claimed-by"], "a-concurrent-run")
 
     def test_worktree_is_created_off_the_fetched_remote_base_ref(self):
         """Branching off the *local* base branch in a long-lived checkout
@@ -2461,7 +2505,6 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
         editing a stale tree; brief untouched, no worktree created."""
         self.ahead = 2
         run = self._dispatcher()
-        before = self.brief_path.read_text(encoding="utf-8")
         with mock.patch(
             "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
         ):
@@ -2480,8 +2523,13 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
         self.assertLess(self.seen.index(fetch), self.seen.index(rev_list))
         self.assertFalse(any("worktree" in c and "add" in c for c in self.seen))
         self.assertFalse(self.worktree_dir.exists())
-        self.assertEqual(self.brief_path.read_text(encoding="utf-8"), before)
+        # Claimed then released back to queue/ -- not byte-identical (claim/
+        # release stamp housekeeping frontmatter fields), but same status
+        # and no PR attributed.
         self.assertTrue((self.queue / "a.md").exists())
+        fm = qt.read_frontmatter(self.queue / "a.md")
+        self.assertEqual(fm["status"], "queued")
+        self.assertNotIn("triaged-to", fm)
 
     def test_missing_local_base_branch_is_not_treated_as_unpushed(self):
         """`git rev-list` failing (no local base branch to compare) must not
@@ -2741,11 +2789,50 @@ class TestApplyProposeChange(QueueTriageTestBase):
         self.assertEqual(entry["branch"], self.branch)
         self.assertNotIn("pr_url", entry)
 
-        # brief is completely untouched -- still queued, no claim/close attempted
+        # claimed then released back to queue/ -- still queued, no close attempted
         self.assertTrue((self.queue / "a.md").exists())
         fm = qt.read_frontmatter(self.queue / "a.md")
         self.assertEqual(fm["status"], "queued")
         self.assertNotIn("triaged-to", fm)
+
+    def test_already_claimed_brief_skips_the_pipeline_entirely(self):
+        """Same claim-first guard as the fold path (`_worktree_pr_close()` is
+        shared): a concurrent triage run that already claimed this brief
+        must stop `propose-change`'s apply before any git, agent-spawn, or
+        `land_pr` work. `_repo_base_branch()`'s own read-only `symbolic-ref`
+        lookup happens in the caller before `_worktree_pr_close` is ever
+        reached, so it alone is allowed through."""
+        qt.claim("a", by="a-concurrent-run")
+        seen: list[list[str]] = []
+
+        def run(cmd, **kwargs):
+            seen.append(list(cmd))
+            if cmd[:4] == ["git", "-C", str(self.repo), "symbolic-ref"]:
+                return self._completed(0, stdout="origin/main\n")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+            ),
+            mock.patch("worktrail.workqueue.queue_triage.land_pr") as mock_land_pr,
+            mock.patch("worktrail.orchestrator.spawnlib.spawn_agent") as mock_spawn,
+        ):
+            log = qt.apply_verdicts([self.verdict], confirm=True)
+
+        entry = log[0]
+        self.assertEqual(entry["status"], "error")
+        self.assertIn("already-claimed", entry["error"])
+        self.assertIn("concurrent triage run", entry["error"])
+        mock_land_pr.assert_not_called()
+        mock_spawn.assert_not_called()
+        self.assertFalse(any("fetch" in c for c in seen))
+        self.assertFalse(any("worktree" in c and "add" in c for c in seen))
+
+        self.assertFalse((self.queue / "a.md").exists())
+        fm = qt.read_frontmatter(self.base / "picked" / "a.md")
+        self.assertEqual(fm["status"], "picked")
+        self.assertEqual(fm["claimed-by"], "a-concurrent-run")
 
     def test_worktree_is_created_off_the_fetched_remote_base_ref(self):
         """`_worktree_pr_close()` is shared with the fold path: propose must

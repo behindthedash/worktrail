@@ -2551,9 +2551,16 @@ def _worktree_pr_close(
 ) -> dict:
     """Shared worktree + validate + landing via router.land_pr + claim/close sequence.
 
-    Per the spec's "Fold and propose are applied as a pull request,
-    fail-closed" requirement: fetches `origin/<base_branch>` and creates a
-    fresh worktree on `branch` off *that* remote ref -- the local
+    Claims the brief atomically before any other work starts, so a second
+    concurrent triage run for the same brief id sees `already-claimed` and
+    returns immediately instead of racing this one through its own
+    worktree/PR pipeline -- the fix for the duplicate-PR incident this
+    guards against (two concurrent triage runs each evaluated and applied
+    the same intake brief, producing two separate merged OpenSpec proposal
+    PRs for the same feature before either could see the other's work).
+    Once claimed, per the spec's "Fold and propose are applied as a pull
+    request, fail-closed" requirement: fetches `origin/<base_branch>` and
+    creates a fresh worktree on `branch` off *that* remote ref -- the local
     `base_branch` in a long-lived checkout is routinely behind the remote, and
     branching off it opens a PR carrying unrelated regressions of already-
     merged work. The converse also fails closed: if the local `base_branch`
@@ -2567,12 +2574,12 @@ def _worktree_pr_close(
     `worktrail-compile` on the change so its `.compile-ok` marker matches the
     edited `tasks.md`. Then lands the change via `router.land_pr` which commits,
     pushes, opens the pull request, watches CI, and completes the run record.
-    Only once a PR URL is returned does this claim and close the brief (via
-    `claim()`/`done(..., triaged_to=pr_url)`, with rollback on `done()`
-    failure) -- any failure before that point returns `status="error"` with
-    the brief left completely untouched and the `branch` name it would have
-    used, so a caller can diagnose or retry without the queue and the target
-    repo disagreeing about what happened. The local worktree is cleaned up
+    Any failure before a PR URL is obtained releases the claimed brief back
+    to `queue/` (`release()`) and returns `status="error"` with the `branch`
+    name it would have used, so a caller can diagnose or retry without the
+    queue and the target repo disagreeing about what happened. Once a PR URL
+    exists, closes the brief (`done(..., triaged_to=pr_url)`), with rollback
+    (`release()`) on `done()` failure. The local worktree is cleaned up
     in a `finally` except on `code_defect` or `review_threads_blocking` outcomes
     where it is left on disk for manual review, otherwise it is always
     removed regardless of outcome.
@@ -2586,179 +2593,201 @@ def _worktree_pr_close(
         "note": v.evidence,
     }
 
-    fetch = subprocess.run(
-        ["git", "-C", str(repo_path), "fetch", "origin", base_branch],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    if fetch.returncode != 0:
+    claim_res = claim(v.brief_id, by="queue-triage")
+    if claim_res["status"] != "claimed":
+        detail = claim_res.get("error")
         return {
             **result,
             "status": "error",
-            "path": None,
+            "path": claim_res.get("path"),
             "error": (
-                f"git fetch origin {base_branch} failed: "
-                f"{(fetch.stderr or fetch.stdout).strip()}"
+                f"claim: {claim_res['status']}"
+                + (f" ({detail})" if detail else "")
+                + " -- brief already actioned by a concurrent triage run"
             ),
-            "branch": branch,
-        }
-
-    unpushed_error = _unpushed_base_error(repo_path, base_branch)
-    if unpushed_error:
-        return {
-            **result,
-            "status": "error",
-            "path": None,
-            "error": unpushed_error,
-            "branch": branch,
-        }
-
-    add = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(repo_path),
-            "worktree",
-            "add",
-            "-b",
-            branch,
-            str(worktree_dir),
-            f"origin/{base_branch}",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    if add.returncode != 0:
-        return {
-            **result,
-            "status": "error",
-            "path": None,
-            "error": f"git worktree add failed: {(add.stderr or add.stdout).strip()}",
             "branch": branch,
         }
 
     pr_url = None
     outcome = None
     try:
-        prepare_error = prepare(worktree_dir)
-        if prepare_error:
-            return {
-                **result,
-                "status": "error",
-                "path": None,
-                "error": prepare_error,
-                "branch": branch,
-            }
-
-        validate = subprocess.run(
-            ["openspec", "validate", validate_target, "--strict"],
+        fetch = subprocess.run(
+            ["git", "-C", str(repo_path), "fetch", "origin", base_branch],
             check=False,
             capture_output=True,
             text=True,
-            cwd=str(worktree_dir),
             timeout=120,
         )
-        if validate.returncode != 0:
+        if fetch.returncode != 0:
             return {
                 **result,
                 "status": "error",
                 "path": None,
                 "error": (
-                    "openspec validate failed: "
-                    f"{(validate.stderr or validate.stdout).strip()}"
+                    f"git fetch origin {base_branch} failed: "
+                    f"{(fetch.stderr or fetch.stdout).strip()}"
                 ),
                 "branch": branch,
             }
 
-        compiled = subprocess.run(
+        unpushed_error = _unpushed_base_error(repo_path, base_branch)
+        if unpushed_error:
+            return {
+                **result,
+                "status": "error",
+                "path": None,
+                "error": unpushed_error,
+                "branch": branch,
+            }
+
+        add = subprocess.run(
             [
-                "worktrail-compile",
-                str(worktree_dir / "openspec" / "changes" / validate_target),
+                "git",
+                "-C",
+                str(repo_path),
+                "worktree",
+                "add",
+                "-b",
+                branch,
+                str(worktree_dir),
+                f"origin/{base_branch}",
             ],
             check=False,
             capture_output=True,
             text=True,
-            cwd=str(worktree_dir),
-            timeout=_COMPILE_TIMEOUT_S,
+            timeout=60,
         )
-        if compiled.returncode != 0:
+        if add.returncode != 0:
             return {
                 **result,
                 "status": "error",
                 "path": None,
-                "error": (
-                    "worktrail-compile failed: "
-                    f"{(compiled.stderr or compiled.stdout).strip()}"
-                ),
+                "error": f"git worktree add failed: {(add.stderr or add.stdout).strip()}",
                 "branch": branch,
             }
 
-        land_request = LandRequest(
-            repo=str(worktree_dir),
-            base_branch=base_branch,
-            title=_planned_fold_propose_pr_title(v),
-            summary=pr_body,
-            route="C",
-            risk="low",
-            run=None,
-            request_summary=f"queue-triage {v.verdict} {v.brief_id}",
-            commit_message=commit_message,
-            watch_timeout_s=600,
-        )
-        outcome = land_pr(land_request)
+        try:
+            prepare_error = prepare(worktree_dir)
+            if prepare_error:
+                return {
+                    **result,
+                    "status": "error",
+                    "path": None,
+                    "error": prepare_error,
+                    "branch": branch,
+                }
 
-        pr_url = outcome.pr_url or ""
-        if outcome.outcome == "refused":
-            return {
-                **result,
-                "status": "error",
-                "path": None,
-                "error": f"land_pr refused at {outcome.refused_step}"
-                + (f": {outcome.detail}" if outcome.detail else ""),
-                "branch": branch,
-            }
+            validate = subprocess.run(
+                ["openspec", "validate", validate_target, "--strict"],
+                check=False,
+                capture_output=True,
+                text=True,
+                cwd=str(worktree_dir),
+                timeout=120,
+            )
+            if validate.returncode != 0:
+                return {
+                    **result,
+                    "status": "error",
+                    "path": None,
+                    "error": (
+                        "openspec validate failed: "
+                        f"{(validate.stderr or validate.stdout).strip()}"
+                    ),
+                    "branch": branch,
+                }
 
-        if not pr_url:
-            return {
-                **result,
-                "status": "error",
-                "path": None,
-                "error": f"land_pr {outcome.outcome} but no pr_url returned",
-                "branch": branch,
-            }
-    finally:
-        # Keep worktree on code_defect/review_threads_blocking for manual review
-        if outcome is None or outcome.outcome not in (
-            "code_defect",
-            "review_threads_blocking",
-        ):
-            subprocess.run(
+            compiled = subprocess.run(
                 [
-                    "git",
-                    "-C",
-                    str(repo_path),
-                    "worktree",
-                    "remove",
-                    "--force",
-                    str(worktree_dir),
+                    "worktrail-compile",
+                    str(worktree_dir / "openspec" / "changes" / validate_target),
                 ],
                 check=False,
                 capture_output=True,
                 text=True,
-                timeout=60,
+                cwd=str(worktree_dir),
+                timeout=_COMPILE_TIMEOUT_S,
             )
+            if compiled.returncode != 0:
+                return {
+                    **result,
+                    "status": "error",
+                    "path": None,
+                    "error": (
+                        "worktrail-compile failed: "
+                        f"{(compiled.stderr or compiled.stdout).strip()}"
+                    ),
+                    "branch": branch,
+                }
+
+            land_request = LandRequest(
+                repo=str(worktree_dir),
+                base_branch=base_branch,
+                title=_planned_fold_propose_pr_title(v),
+                summary=pr_body,
+                route="C",
+                risk="low",
+                run=None,
+                request_summary=f"queue-triage {v.verdict} {v.brief_id}",
+                commit_message=commit_message,
+                watch_timeout_s=600,
+            )
+            outcome = land_pr(land_request)
+
+            pr_url = outcome.pr_url or ""
+            if outcome.outcome == "refused":
+                return {
+                    **result,
+                    "status": "error",
+                    "path": None,
+                    "error": f"land_pr refused at {outcome.refused_step}"
+                    + (f": {outcome.detail}" if outcome.detail else ""),
+                    "branch": branch,
+                }
+
             if not pr_url:
+                return {
+                    **result,
+                    "status": "error",
+                    "path": None,
+                    "error": f"land_pr {outcome.outcome} but no pr_url returned",
+                    "branch": branch,
+                }
+        finally:
+            # Keep worktree on code_defect/review_threads_blocking for manual review
+            if outcome is None or outcome.outcome not in (
+                "code_defect",
+                "review_threads_blocking",
+            ):
                 subprocess.run(
-                    ["git", "-C", str(repo_path), "branch", "-D", branch],
+                    [
+                        "git",
+                        "-C",
+                        str(repo_path),
+                        "worktree",
+                        "remove",
+                        "--force",
+                        str(worktree_dir),
+                    ],
                     check=False,
                     capture_output=True,
                     text=True,
                     timeout=60,
                 )
+                if not pr_url:
+                    subprocess.run(
+                        ["git", "-C", str(repo_path), "branch", "-D", branch],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                    )
+    finally:
+        # No PR was ever created -- release the claimed brief back to queue/
+        # so the fold/propose pipeline never races a second concurrent apply
+        # for the same brief, while leaving a failed attempt retryable.
+        if not pr_url:
+            release(v.brief_id)
 
     # Build the landing sub-dict for outcomes with a PR
     landing_dict = {
@@ -2775,20 +2804,7 @@ def _worktree_pr_close(
 
     # A PR now exists -- from here on, closing the brief is safe to attempt.
     # Any failure past this point is reported against the now-real branch/PR,
-    # never against a not-yet-opened one.
-    claim_res = claim(v.brief_id, by="queue-triage")
-    if claim_res["status"] != "claimed":
-        detail = claim_res.get("error")
-        return {
-            **result,
-            "status": "error",
-            "path": claim_res.get("path"),
-            "error": f"claim: {claim_res['status']}"
-            + (f" ({detail})" if detail else ""),
-            "branch": branch,
-            "pr_url": pr_url,
-            "landing": landing_dict,
-        }
+    # never against a not-yet-opened one. The brief was already claimed above.
     done_res = done(v.brief_id, note=v.evidence, triaged_to=pr_url)
     if done_res["status"] != "done":
         detail = done_res.get("error")
