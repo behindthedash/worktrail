@@ -96,8 +96,11 @@ worktrail-handoff --focus "$FOCUS_TEXT" --queue-dir "$BASE" \
   [--repo "$REPO"] [--remote "$REMOTE"] [--base-branch "$BASE_BRANCH"] \
   [--context "$CONTEXT"] [--approach "$APPROACH"] \
   [--artifacts "$ARTIFACTS"] [--questions "$QUESTIONS"] \
-  [--suggested-skill skill.name]... --json
+  [--suggested-skill skill.name]... [--captured-by "$SOURCE"] --json
 ```
+
+Hooks, detectors, and other automated callers should pass their own kebab-case source name via
+`--captured-by` (optionally `name:<qualifier>`); it defaults to `worktrail-handoff`.
 
 Use `--recommended-route`, `--implementation-intent`, `--change-kind`, `--target-spec`,
 `--blocked-by`, or `--watch` when the capturing agent has direct evidence. The command omits
