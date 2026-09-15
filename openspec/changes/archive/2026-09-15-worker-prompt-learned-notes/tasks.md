@@ -32,6 +32,6 @@
 
 ## 4. Verification
 
-- [ ] 4.1 [e2e] Run `PYTHONPATH=src pytest -q`, `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` with no learning directory under `WORKTRAIL_HOME`, and `openspec validate worker-prompt-learned-notes --strict`.
+- [x] 4.1 [e2e] Run `PYTHONPATH=src pytest -q`, `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` with no learning directory under `WORKTRAIL_HOME`, and `openspec validate worker-prompt-learned-notes --strict`.
       Then, with a temporary `WORKTRAIL_HOME` holding a seeded `MEMORY.md` for a scratch repo whose `.worktrail/policy.yaml` sets `agent_learning: true`, build implement and review prompts through `LiveSpawn`. Confirm each prompt carries the notes block before `Hard rules:`, and that the journal holds one `learned_notes` marker whose `sha256` matches the notes text.
       depends: 3.1
