@@ -72,6 +72,18 @@ move-a-brief mechanism never diverges between callers.
   `done(..., triaged=True, duplicate_of=...)`; if `done()` still refuses (ownership mismatch, an
   unbacked re-verification claim, ...) it `release()`s the brief back to `queue/` rather than
   leaving it stranded in `picked/` under a `queue-triage` claim nobody will release.
+- **`_worktree_pr_close()` (fold-into-change / propose-change) also claims first, before any
+  git/worktree/`land_pr` work, and `release()`s on any failure prior to a PR URL.** Previously the
+  claim happened only after a PR was opened, leaving a window where two concurrent triage runs
+  could each evaluate and apply the same brief through their own worktree/PR pipeline before
+  either saw the other's work, producing two separate merged OpenSpec proposal PRs for the same
+  feature (the duplicate-PR incident this guards against). Now a second concurrent run sees
+  `already-claimed` and returns an `error` status immediately — no fetch, no worktree, no
+  `land_pr` — instead of racing through to its own PR. A failure after claiming but before a PR
+  URL exists still `release()`s the brief back to `queue/` (retryable, not byte-identical to the
+  pre-claim state since claim/release stamp housekeeping frontmatter fields on the round trip,
+  but same `status: queued` and no `triaged-to`); once a PR URL exists, closing proceeds as
+  before via `done(..., triaged_to=pr_url)`.
 - **A `work-directly` verdict is downgraded to `keep` unless its evidence names a command.**
   `queue_triage._REPRODUCTION_EVIDENCE_RE` gates the stamp: it accepts test runners and lint
   tools (`pytest`, `tests/`, `make lint`, `mypy`, ...), `gh` with a known read subcommand
@@ -97,8 +109,9 @@ move-a-brief mechanism never diverges between callers.
   change before committing** so the `.compile-ok` marker matches the edited `tasks.md` — CI's
   Scope check (`check_compile_markers.py`) refuses a change PR without one (live 2026-09-02:
   worktrail #897/#898 both failed it). A compile failure returns `status="error"` before any
-  push or `gh pr create`, and the brief is untouched. Bounded by `_COMPILE_TIMEOUT_S` (900s)
-  since an OpenSpec change may need one model inference pass.
+  push or `gh pr create`, and the brief is released back to `queue/` per the claim-first guard
+  above. Bounded by `_COMPILE_TIMEOUT_S` (900s) since an OpenSpec change may need one model
+  inference pass.
 - **The fold-into-change task declares an explicit `files:` scope line derived from its
   evidence.** `_fold_task_file_scope(worktree_dir, evidence)` takes every path probe from
   `router.brief_probes.extract_probes()` (a `:120-140` line-number suffix stripped) that exists
@@ -141,7 +154,9 @@ move-a-brief mechanism never diverges between callers.
   `_check_fm_fields`; add new frontmatter mutations on top of those, not with fresh line-matching
 - `workqueue/queue_triage.py` — intake-triage verdict apply actions (stale-close, duplicate-of,
   fold-into-change, propose-change, keep); the only caller that closes briefs with `triaged=True`.
-  `_fold_task_file_scope` derives the folded task's `files:` scope from evidence paths
+  `_fold_task_file_scope` derives the folded task's `files:` scope from evidence paths.
+  `_worktree_pr_close()` is the shared fold-into-change/propose-change pipeline and claims the
+  brief before any git/worktree/`land_pr` work (see the claim-first guard above)
 - `workqueue/create_handoff.py` (via `worktrail-handoff`) — brief creation entrypoint; delegates
   repo inference to `repo_inference.infer_repo()` with a prefix-match fallback
 - `workqueue/repo_inference.py` — `InferenceResult(repo, rule, candidates)` + `infer_repo()`; the
@@ -156,6 +171,9 @@ move-a-brief mechanism never diverges between callers.
   `--implementation-complete`.
 - Never replace a frontmatter `key:` line by itself — a block-scalar or list value has
   continuation lines that must go with it; use `_splice_fm_key`.
+- Never move the `claim()` call in `_worktree_pr_close()` later in the pipeline — it must stay
+  first, before `git fetch`/worktree creation, so a concurrent triage run on the same brief is
+  rejected before any duplicate work starts.
 
 ---
-**Last Updated:** 2026-09-05
+**Last Updated:** 2026-09-15
