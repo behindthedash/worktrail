@@ -3,13 +3,13 @@ name: worktrail-repo-init
 description: >
   Bootstrap a new repo, or migrate an existing single-branch repo, onto the
   workspace's repo-standards doctrine (~/rules/CLAUDE.repo.md): the
-  AGENTS.md-is-truth/CLAUDE.md-imports-it split, a dev/prd or dev/stg/prd
-  branch model with matching GitHub rulesets, an OpenSpec scaffold, an
+  AGENTS.md-is-truth/CLAUDE.md-imports-it split, a dev/prd, dev/stg/prd, or
+  main-only (trunk) branch model with matching GitHub rulesets, an OpenSpec scaffold, an
   auto-merge workflow, and a seeded .worktrail/policy.yaml. Trigger phrases: "onboard this
   repo", "apply repo standards", "initialize repo standards", "set up this
   repo like the rest of the fleet", "bring this repo into line with the repo
   standards doctrine".
-argument-hint: "propose --repo <path> [--branch-model 2|3] | apply --repo <path>"
+argument-hint: "propose --repo <path> [--branch-model 2|3|main] | apply --repo <path>"
 allowed-tools: Read, Write, Bash, AskUserQuestion
 ---
 
@@ -51,6 +51,20 @@ CI/CD already provides an equivalent gate (e.g. Vercel preview deployments
 per-PR), stays at 2. If it's not obvious from the repo's README/AGENTS.md
 which applies, ask the user with `AskUserQuestion` rather than guessing —
 this changes the shape of every `.github/rulesets/*.json` file generated.
+
+**`--branch-model main`** is the third choice, for trunk-only repos that
+should stay on a single `main` branch (a library, a tooling repo, anything
+with no deployed environment to promote between). It generates one ruleset,
+`.github/rulesets/protect-main.json` (squash-only, linear history, the
+required checks you add), and nothing else changes shape. Its defining
+property is on the `apply` side: `apply` never creates, renames, or
+default-flips a branch for a main-only repo — it only sets
+delete-branch-on-merge, applies the ruleset, and seeds labels. If the repo's
+current default branch is not already `main` (e.g. `master`), `apply` exits
+non-zero without touching anything; rename it to `main` first. A rulesets
+directory that mixes `protect-main.json` with `protect-dev.json`/
+`protect-prd.json` is rejected by `apply` — a repo is either main-only or
+dev/prd, never both.
 
 ### Step 2 — Create a worktree and propose
 
@@ -110,13 +124,18 @@ Standard worktree workflow: `git add`, commit, push, `gh pr create` targeting
 the repo's current default branch. State in the PR body that a follow-up
 `worktrail-repo-init apply` run will create `dev`/`stg`, rename the current
 default to `prd`, and flip the GitHub default branch to `dev` — reviewers
-should know the branch structure is about to change underneath this PR.
+should know the branch structure is about to change underneath this PR. For
+`--branch-model main` say instead that `apply` will only add branch
+protection on `main`; no branch is created or renamed.
 
 ### Step 4 — Apply, after the PR merges
 
 This step mutates live GitHub state (branch creation/rename, default branch,
 delete-branch-on-merge, branch protection) — **get explicit user confirmation
-before running it**, especially on a public repo. Run from the canonical
+before running it**, especially on a public repo. `apply` infers the branch
+model from the committed `.github/rulesets/*.json` files: `protect-main.json`
+alone means main-only, and the branch migration steps are skipped entirely
+(see Step 1). Run from the canonical
 checkout (not the worktree, which may be torn down already):
 
 ```bash
@@ -146,6 +165,10 @@ treating it as a failure.
 GitHub Releases):** `--branch-model 2`. `ci_jobs_discovered` comes back empty
 — the generated rulesets carry zero required status checks, which is correct
 until real CI exists.
+
+**Library or tooling repo with no deployed environment, already on `main`:**
+`--branch-model main`. `propose` writes only `protect-main.json`; `apply`
+adds protection to `main` and leaves the branch layout untouched.
 
 **Existing repo with a Vercel-deployed frontend and per-PR preview
 deployments:** `--branch-model 2` — Vercel's preview URL already gives a
