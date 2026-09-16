@@ -2,7 +2,7 @@
 
 ## 1. Main-only branch model
 
-- [ ] 1.1 In `src/worktrail/onboarding/repo_init.py`: add `"main"` to `--branch-model`
+- [x] 1.1 In `src/worktrail/onboarding/repo_init.py`: add `"main"` to `--branch-model`
       choices; teach `build_ruleset_for_branch()` to return a `protect-main` ruleset
       (`refs/heads/main`, `["squash"]`, `linear_history=True`); make `propose`/drift use
       `["main"]` as the branch list for model `main`; in `cmd_apply`, detect model `main`
@@ -18,7 +18,7 @@
       (Requirement: Apply on a main-only repo never migrates branches)
       files: src/worktrail/onboarding/repo_init.py tests/onboarding/test_repo_init.py
 
-- [ ] 1.2 Document `--branch-model main` (trunk-only repos, no branch migration on apply)
+- [x] 1.2 Document `--branch-model main` (trunk-only repos, no branch migration on apply)
       in `skills/worktrail-repo-init/SKILL.md`, including the usage line.
       (Requirement: Main-only branch model is a supported repo-init choice)
       files: skills/worktrail-repo-init/SKILL.md
