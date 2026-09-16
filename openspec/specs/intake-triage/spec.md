@@ -158,6 +158,19 @@ raw verdict retained as evidence.
 - **THEN** the brief's repo is inferred as that checkout, the evaluation's verdict is
   `work-directly`, and applying it stamps `seeded-from: triage:<run-date>:direct`
 
+#### Scenario: Work-directly accepted on a confirmed absence-claim premise
+- **WHEN** an evaluator returns `work-directly` for a brief whose `premise_check` carries a
+  `confirmed: true` entry for an absence-claim `path` needle (the referenced file confirmed
+  absent), and whose evidence contains no test, check, or command reference
+- **THEN** the verdict is applied and the brief is stamped `seeded-from:
+  triage:<run-date>:direct`
+
+#### Scenario: Work-directly accepted on past-tense reproduction evidence
+- **WHEN** an evaluator returns `work-directly` with evidence phrased "Reproduced via
+  python scripts/ci/dependabot/test_dependabot_config.py"
+- **THEN** the evidence is accepted as citing a reproducible defect, exactly as
+  present-tense "reproduces via" phrasing is accepted
+
 ### Requirement: Needs-decision files a pending decision and keeps the brief queued
 Applying a `needs-decision` verdict SHALL file a pending-decision envelope in the human
 decision queue whose subject is the brief id and whose question is the evaluator's stated
@@ -289,6 +302,15 @@ The evaluator prompt SHALL instruct the evaluator to cite log or error output al
 in the brief as reproduction evidence when the premise check confirms it. A brief with no
 extractable needles SHALL carry an empty `premise_check`.
 
+When a `path` needle's focus text carries an absence indicator (phrasing such as "has no",
+"missing", "lacks"/"lacking", "without", "no such", "does not exist"/"doesn't exist", "does
+not have"/"doesn't have") within 40 characters immediately before the path's mention, the
+check SHALL treat that needle as an absence claim and invert its confirmation: `confirmed`
+SHALL be `true` when the path does NOT exist (the absence claim is confirmed) and `false`
+when it does exist (the claim is refuted). A `path` needle with no absence indicator in that
+window SHALL retain the existing presence-claim semantics unchanged: `confirmed: true` when
+the path exists (and, when a line number is given, the file has at least that many lines).
+
 #### Scenario: Quoted log line confirmed by fragment
 - **WHEN** a brief's focus quotes `close-stale-bookkeeping error: datalena
   continue-on-error-required-check-ci-guardrail: no TASK-*.md found ... 2.1, 2.2 ...`, the
@@ -333,6 +355,18 @@ extractable needles SHALL carry an empty `premise_check`.
 #### Scenario: No repo means no premise check
 - **WHEN** a brief is evaluated in the no-repo group
 - **THEN** no checkout is searched, no command runs, and `premise_check` is empty
+
+#### Scenario: Absence-claim path needle confirms on non-existence
+- **WHEN** a brief's focus states "wake-up-sooner has no `.github/dependabot.yml`" and that
+  path does not exist in the checkout
+- **THEN** `premise_check` carries an entry of kind `path` for that needle with
+  `confirmed: true` and a detail stating the path does not exist
+
+#### Scenario: Absence-claim path needle is refuted by existence
+- **WHEN** a brief's focus states "X is missing `path/to/file.py`" and that path DOES exist
+  in the checkout
+- **THEN** `premise_check` carries an entry of kind `path` for that needle with
+  `confirmed: false` and a detail stating the absence claim is refuted
 
 ### Requirement: Keep verdicts are bounded and escalate deterministically
 Every `keep` verdict, whether from a scheduled run or an interactive pickup, SHALL, when
