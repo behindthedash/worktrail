@@ -323,3 +323,36 @@ def test_format_premise_block_renders_confirmed_and_unconfirmed(repo: Path) -> N
     block = format_premise_block(results)
 
     assert "[UNCONFIRMED] quoted:" in block
+
+
+def test_absence_claim_path_needle_confirms_when_path_absent(repo: Path) -> None:
+    """1.1: "X has no `p`" confirms exactly when `p` really is absent."""
+    focus = "wake-up-sooner has no `path/that/does/not/exist.py` in its tree."
+
+    needle = next(n for n in extract_needles(focus) if n.kind == "path")
+    assert needle.polarity == "absence"
+
+    result = next(r for r in run_premise_check(focus, repo) if r["kind"] == "path")
+    assert result["confirmed"] is True
+    assert "absence confirmed" in result["detail"]
+
+
+def test_absence_claim_path_needle_refuted_when_path_exists(repo: Path) -> None:
+    _add(repo, "path/that/does/not/exist.py", "x = 1\n")
+    focus = "wake-up-sooner has no `path/that/does/not/exist.py` in its tree."
+
+    result = next(r for r in run_premise_check(focus, repo) if r["kind"] == "path")
+    assert result["confirmed"] is False
+    assert "absence claim refuted" in result["detail"]
+
+
+def test_presence_claim_path_needle_keeps_confirm_on_exists(repo: Path) -> None:
+    _add(repo, "src/present.py", "x = 1\n")
+    focus = "See `src/present.py` for the retry loop."
+
+    needle = next(n for n in extract_needles(focus) if n.kind == "path")
+    assert needle.polarity == "presence"
+
+    result = next(r for r in run_premise_check(focus, repo) if r["kind"] == "path")
+    assert result["confirmed"] is True
+    assert "path exists" in result["detail"]

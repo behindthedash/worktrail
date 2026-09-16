@@ -118,6 +118,7 @@ _REPRODUCTION_EVIDENCE_RE = re.compile(
     r"|\bgit\s+(?:log|status|show|diff|grep|ls-files|rev-parse|branch|cherry|blame|worktree|fetch)\b"
     r"|\b(?:grep|rg)\s+-"
     r"|\breproduces?\s+via\b"
+    r"|\breproduced\s+via\b"
     r"|\bconfirmed\s+via\b",
     re.IGNORECASE,
 )

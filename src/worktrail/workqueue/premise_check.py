@@ -68,6 +68,17 @@ def _looks_command_shaped(stripped: str) -> bool:
     return first in _COMMAND_LOOKING_VERBS or first.startswith("worktrail-")
 
 
+# Vocabulary marking a nearby path mention as an *absence* claim ("X has no
+# `path/to/thing`"), matched case-insensitively against a short window of text
+# immediately before the path -- not the whole focus, so an unrelated missing
+# thing elsewhere in a long brief cannot flip an unrelated path's polarity.
+_ABSENCE_INDICATOR_RE = re.compile(
+    r"\bhas\s+no\b|\bmissing\b|\blacks?\b|\blacking\b|\bwithout\b|\bno\s+such\b"
+    r"|\bdoes(?:n't|\s+not)\s+(?:have|exist)\b|\bdoesn't\s+exist\b",
+    re.IGNORECASE,
+)
+_ABSENCE_WINDOW = 40
+
 _QUOTED_RE = re.compile(r"'([^']+)'|\"([^\"]+)\"|`([^`]+)`")
 
 _MIN_QUOTED_LEN = 12
@@ -81,6 +92,7 @@ class Needle:
     kind: str  # "quoted" | "path" | "command"
     needle: str
     line: int
+    polarity: str = "presence"  # "presence" | "absence"; only path needles vary
 
 
 def _line_of(text: str, index: int) -> int:
@@ -103,7 +115,9 @@ def _extract_path_needles(focus: str) -> list[Needle]:
     for path in probes.get("paths", []):
         index = focus.find(path)
         line = _line_of(focus, index) if index >= 0 else 1
-        needles.append(Needle("path", path, line))
+        window = focus[max(0, index - _ABSENCE_WINDOW) : index] if index >= 0 else ""
+        polarity = "absence" if _ABSENCE_INDICATOR_RE.search(window) else "presence"
+        needles.append(Needle("path", path, line, polarity))
     return needles
 
 
@@ -196,13 +210,27 @@ def _check_quoted(repo_path: Path, needle: str) -> dict[str, Any]:
     return _git_grep_fragments(repo_path, needle)
 
 
-def _check_path(repo_path: Path, needle: str) -> dict[str, Any]:
+def _check_path(
+    repo_path: Path, needle: str, polarity: str = "presence"
+) -> dict[str, Any]:
     rel, _, line_str = needle.rpartition(":")
     if rel and line_str.isdigit():
         candidate, line_num = rel, int(line_str)
     else:
         candidate, line_num = needle, None
     target = repo_path / candidate
+    if polarity == "absence":
+        # An absence claim never carries a meaningful `:LINE` suffix, so the
+        # line-count refinement below stays scoped to the presence branches.
+        if not target.exists():
+            return {
+                "confirmed": True,
+                "detail": f"absence confirmed: path does not exist: {candidate}",
+            }
+        return {
+            "confirmed": False,
+            "detail": f"absence claim refuted: path exists: {candidate}",
+        }
     if not target.exists():
         return {"confirmed": False, "detail": f"path does not exist: {candidate}"}
     if line_num is None:
@@ -314,7 +342,7 @@ def run_premise_check(
         if n.kind == "quoted":
             outcome = _check_quoted(repo_path, n.needle)
         elif n.kind == "path":
-            outcome = _check_path(repo_path, n.needle)
+            outcome = _check_path(repo_path, n.needle, n.polarity)
         elif n.kind == "command":
             outcome = _check_command(
                 repo_path, n.needle, timeout_s, command_ran, dependency_freshness
