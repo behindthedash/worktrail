@@ -20,7 +20,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [e2e] Run `PYTHONPATH=src pytest -q` and confirm it is green, including the
+- [x] 2.1 [e2e] Run `PYTHONPATH=src pytest -q` and confirm it is green, including the
       new tests from section 1. Verification-only — no file changes expected.
-- [ ] 2.2 [e2e] Run `openspec validate queue-triage-fix-absence-claim-premise-confirmation
+- [x] 2.2 [e2e] Run `openspec validate queue-triage-fix-absence-claim-premise-confirmation
       --strict` and confirm it passes. Verification-only — no file changes expected.
