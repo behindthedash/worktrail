@@ -185,6 +185,15 @@ class BuildRulesetTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             repo_init.build_ruleset_for_branch("staging", "2")
 
+    def test_main_model_protects_main_with_squash_and_linear_history(self):
+        rs = repo_init.build_ruleset_for_branch("main", "main")
+        self.assertEqual(rs["name"], "protect-main")
+        self.assertEqual(rs["conditions"]["ref_name"]["include"], ["refs/heads/main"])
+        pr_rule = next(r for r in rs["rules"] if r["type"] == "pull_request")
+        self.assertEqual(pr_rule["parameters"]["allowed_merge_methods"], ["squash"])
+        types = [r["type"] for r in rs["rules"]]
+        self.assertIn("required_linear_history", types)
+
 
 class BuildAutomergeWorkflowTests(unittest.TestCase):
     def test_is_valid_yaml_with_expected_shape(self):
@@ -792,6 +801,23 @@ class ProposeTests(unittest.TestCase):
         rc, result = self._run_propose(repo, branch_model="3")
         self.assertEqual(rc, 0)
         self.assertIn(".github/rulesets/protect-stg.json", result["written"])
+
+    def test_main_model_writes_only_protect_main(self):
+        repo = _tmp_repo()
+        rc, result = self._run_propose(repo, branch_model="main")
+        self.assertEqual(rc, 0)
+        rulesets_dir = repo / ".github" / "rulesets"
+        self.assertEqual(
+            sorted(f.name for f in rulesets_dir.glob("protect-*.json")),
+            ["protect-main.json"],
+        )
+        self.assertIn(".github/rulesets/protect-main.json", result["written"])
+        ruleset = json.loads((rulesets_dir / "protect-main.json").read_text())
+        self.assertEqual(ruleset["name"], "protect-main")
+        drift_guard = yaml.safe_load(
+            (repo / repo_init.RULESETS_DRIFT_GUARD_WORKFLOW_RELPATH).read_text()
+        )
+        self.assertEqual(drift_guard[True]["pull_request"]["branches"], ["main"])
 
     def test_rerun_skips_already_written_files(self):
         repo = _tmp_repo()
@@ -1602,6 +1628,90 @@ class ApplyTests(unittest.TestCase):
             any("RELEASE_NOTES_APP_ID" in w for w in result["warnings"]),
             result["warnings"],
         )
+
+
+class ApplyMainOnlyTests(unittest.TestCase):
+    def _repo_with_rulesets(self, branches) -> Path:
+        repo = _tmp_repo()
+        rulesets_dir = repo / ".github" / "rulesets"
+        rulesets_dir.mkdir(parents=True)
+        for branch in branches:
+            ruleset = repo_init.build_ruleset_for_branch(branch, "main")
+            (rulesets_dir / f"protect-{branch}.json").write_text(json.dumps(ruleset))
+        return repo
+
+    def test_main_only_apply_never_migrates_branches(self):
+        repo = self._repo_with_rulesets(["main"])
+        args = mock.Mock(repo=str(repo), as_json=True)
+        with (
+            mock.patch.object(repo_init, "resolve_gh_repo", return_value="acme/widget"),
+            mock.patch.object(repo_init, "current_default_branch", return_value="main"),
+            mock.patch.object(repo_init, "branch_sha") as sha,
+            mock.patch.object(repo_init, "branch_exists") as exists,
+            mock.patch.object(repo_init, "create_branch") as create,
+            mock.patch.object(repo_init, "rename_branch") as rename,
+            mock.patch.object(repo_init, "set_default_branch") as set_default,
+            mock.patch.object(
+                repo_init, "get_delete_branch_on_merge", return_value=False
+            ),
+            mock.patch.object(
+                repo_init, "set_delete_branch_on_merge", return_value=True
+            ),
+            mock.patch.object(
+                repo_init, "apply_ruleset", return_value=(True, "created (id 1)")
+            ) as apply_rs,
+            mock.patch.object(
+                repo_init, "app_credentials_configured", return_value=True
+            ),
+            mock.patch("builtins.print") as printed,
+        ):
+            rc = repo_init.cmd_apply(args)
+
+        self.assertEqual(rc, 0)
+        for helper in (sha, exists, create, rename, set_default):
+            helper.assert_not_called()
+        apply_rs.assert_called_once()
+        self.assertEqual(apply_rs.call_args[0][1]["name"], "protect-main")
+        result = json.loads(printed.call_args[0][0])
+        self.assertEqual(result["branch_model"], "main")
+        self.assertEqual(result["branches"], {})
+        self.assertEqual(result["default_branch"], "already main")
+        self.assertEqual(result["delete_branch_on_merge"], "enabled")
+        self.assertEqual(result["rulesets"], {"protect-main.json": "created (id 1)"})
+
+    def test_main_only_apply_fails_closed_when_default_is_not_main(self):
+        repo = self._repo_with_rulesets(["main"])
+        args = mock.Mock(repo=str(repo), as_json=True)
+        with (
+            mock.patch.object(repo_init, "resolve_gh_repo", return_value="acme/widget"),
+            mock.patch.object(
+                repo_init, "current_default_branch", return_value="master"
+            ),
+            mock.patch.object(repo_init, "create_branch") as create,
+            mock.patch.object(repo_init, "rename_branch") as rename,
+            mock.patch.object(repo_init, "set_default_branch") as set_default,
+            mock.patch.object(repo_init, "apply_ruleset") as apply_rs,
+        ):
+            rc = repo_init.cmd_apply(args)
+        self.assertEqual(rc, 1)
+        for helper in (create, rename, set_default, apply_rs):
+            helper.assert_not_called()
+
+    def test_mixed_main_and_dev_prd_declaration_errors(self):
+        repo = self._repo_with_rulesets(["main", "dev", "prd"])
+        args = mock.Mock(repo=str(repo), as_json=True)
+        with mock.patch.object(repo_init, "resolve_gh_repo") as resolve:
+            rc = repo_init.cmd_apply(args)
+        self.assertEqual(rc, 1)
+        resolve.assert_not_called()
+
+    def test_main_alone_with_only_dev_errors(self):
+        repo = self._repo_with_rulesets(["main", "dev"])
+        args = mock.Mock(repo=str(repo), as_json=True)
+        with mock.patch.object(repo_init, "resolve_gh_repo") as resolve:
+            rc = repo_init.cmd_apply(args)
+        self.assertEqual(rc, 1)
+        resolve.assert_not_called()
 
 
 class ResolveRepoDisplayNameTests(unittest.TestCase):

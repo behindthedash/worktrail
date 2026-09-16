@@ -41,7 +41,7 @@ one job is seeded as the ruleset's sole required check -- see
 `build_ruleset_for_branch` and `patch_ruleset_required_check`.
 
 Usage:
-  worktrail-repo-init propose --repo /path/to/repo [--branch-model 2|3] [--check] [--json]
+  worktrail-repo-init propose --repo /path/to/repo [--branch-model 2|3|main] [--check] [--json]
   worktrail-repo-init apply --repo /path/to/repo [--json]
 """
 
@@ -234,7 +234,8 @@ def build_ruleset_for_branch(
     extra_required_status_check: str | None = None,
 ) -> dict[str, Any]:
     """branch_model "2" = dev/prd (GGB pattern); "3" = dev/stg/prd (datalena
-    pattern, dev is squash + required_linear_history).
+    pattern, dev is squash + required_linear_history); "main" = trunk-only
+    (a single protected `main`, squash + required_linear_history).
 
     extra_required_status_check, when given, is the sole entry ever placed in
     the generated ruleset's required_status_checks -- callers pass it only
@@ -244,6 +245,10 @@ def build_ruleset_for_branch(
     is ever passed in here; `propose` still deliberately never
     auto-populates required_status_checks from CI discovery otherwise."""
     checks = [extra_required_status_check] if extra_required_status_check else []
+    if branch == "main":
+        return build_ruleset(
+            "protect-main", "main", ["squash"], checks, linear_history=True
+        )
     if branch == "dev":
         return build_ruleset(
             "protect-dev",
@@ -257,6 +262,12 @@ def build_ruleset_for_branch(
     if branch == "prd":
         return build_ruleset("protect-prd", "prd", ["merge"], checks)
     raise ValueError(f"unknown branch {branch!r}")
+
+
+def branches_for_model(branch_model: str) -> list[str]:
+    if branch_model == "main":
+        return ["main"]
+    return ["dev", "stg", "prd"] if branch_model == "3" else ["dev", "prd"]
 
 
 def _ruleset_structural_view(ruleset: dict[str, Any]) -> dict[str, Any]:
@@ -1161,9 +1172,7 @@ def cmd_propose(args: argparse.Namespace) -> int:
 
     state = detect_state(repo)
     if args.check:
-        check_branches = (
-            ["dev", "stg", "prd"] if args.branch_model == "3" else ["dev", "prd"]
-        )
+        check_branches = branches_for_model(args.branch_model)
         check_result = dict(
             state, drift=compute_drift(repo, state, check_branches, args.branch_model)
         )
@@ -1182,7 +1191,7 @@ def cmd_propose(args: argparse.Namespace) -> int:
     else:
         skipped.append("CLAUDE.md/AGENTS.md (already split)")
 
-    branches = ["dev", "stg", "prd"] if args.branch_model == "3" else ["dev", "prd"]
+    branches = branches_for_model(args.branch_model)
     rulesets_dir = repo / ".github" / "rulesets"
     openspec_validate_newly_written = not state["openspec_validate_workflow_exists"]
     required_check_configured = False
@@ -1402,14 +1411,26 @@ def cmd_apply(args: argparse.Namespace) -> int:
         sorted(rulesets_dir.glob("protect-*.json")) if rulesets_dir.is_dir() else []
     )
     declared = {f.stem.removeprefix("protect-") for f in ruleset_files}
-    if not {"dev", "prd"} <= declared:
+    if "main" in declared and declared & {"dev", "prd"}:
         print(
-            f"error: expected protect-dev.json and protect-prd.json under {rulesets_dir} "
+            f"error: {rulesets_dir} declares protect-main.json alongside "
+            "protect-dev.json/protect-prd.json -- a repo is either main-only or "
+            "dev/prd, not both",
+            file=sys.stderr,
+        )
+        return 1
+    if declared == {"main"}:
+        branch_model = "main"
+    elif {"dev", "prd"} <= declared:
+        branch_model = "3" if "stg" in declared else "2"
+    else:
+        print(
+            f"error: expected protect-dev.json and protect-prd.json (or a lone "
+            f"protect-main.json) under {rulesets_dir} "
             "-- run `propose` first and merge its PR",
             file=sys.stderr,
         )
         return 1
-    branch_model = "3" if "stg" in declared else "2"
 
     gh_repo = resolve_gh_repo(repo)
     if not gh_repo:
@@ -1435,7 +1456,19 @@ def cmd_apply(args: argparse.Namespace) -> int:
         )
         return 1
 
-    if current_default in ("dev", "prd"):
+    if branch_model == "main":
+        # Trunk-only: no branch is ever created, renamed, or flipped. Fail
+        # closed if the repo's default is not already `main`.
+        if current_default != "main":
+            print(
+                f"error: branch model is main-only but the default branch of "
+                f"{gh_repo} is '{current_default}', not 'main' -- apply never "
+                "migrates branches; rename it to main first",
+                file=sys.stderr,
+            )
+            return 1
+        result["default_branch"] = "already main"
+    elif current_default in ("dev", "prd"):
         # Idempotent re-run: either the whole migration already succeeded
         # (default is 'dev') or it's mid-way (renamed to 'prd' but the
         # default flip below hasn't landed yet). Either way `current_default`
@@ -1464,12 +1497,13 @@ def cmd_apply(args: argparse.Namespace) -> int:
             "renamed to prd" if ok else "FAILED to rename to prd"
         )
 
-    new_default = current_default_branch(gh_repo)
-    if new_default == "dev":
-        result["default_branch"] = "already dev"
-    else:
-        ok = set_default_branch(gh_repo, "dev")
-        result["default_branch"] = "set to dev" if ok else "FAILED to set to dev"
+    if branch_model != "main":
+        new_default = current_default_branch(gh_repo)
+        if new_default == "dev":
+            result["default_branch"] = "already dev"
+        else:
+            ok = set_default_branch(gh_repo, "dev")
+            result["default_branch"] = "set to dev" if ok else "FAILED to set to dev"
 
     if get_delete_branch_on_merge(gh_repo):
         result["delete_branch_on_merge"] = "already enabled"
@@ -1516,10 +1550,13 @@ def cmd_apply(args: argparse.Namespace) -> int:
             print(f"  label {name}: {status}")
         for w in result["warnings"]:
             print(f"  warning: {w}")
-        print()
-        print("Manual follow-up:")
-        print("  - retarget any other open PRs from the old default branch onto dev")
-        print("  - local clones: git fetch origin && git switch dev")
+        if branch_model != "main":
+            print()
+            print("Manual follow-up:")
+            print(
+                "  - retarget any other open PRs from the old default branch onto dev"
+            )
+            print("  - local clones: git fetch origin && git switch dev")
 
     failed = (
         any("FAILED" in str(v) for v in result["branches"].values())
@@ -1550,10 +1587,11 @@ def main(argv: list[str] | None = None) -> int:
     propose_p.add_argument("--repo", required=True)
     propose_p.add_argument(
         "--branch-model",
-        choices=("2", "3"),
+        choices=("2", "3", "main"),
         default="2",
         help="2 = dev/prd (default -- use unless the repo has a real staging environment "
-        "to gate against); 3 = dev/stg/prd",
+        "to gate against); 3 = dev/stg/prd; main = trunk-only (protect main, "
+        "apply never creates/renames branches)",
     )
     propose_p.add_argument(
         "--check", action="store_true", help="report current state only; write nothing"
