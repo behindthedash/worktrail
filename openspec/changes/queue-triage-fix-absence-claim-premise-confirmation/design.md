@@ -74,13 +74,21 @@ never set it.
 ### 3. `_check_path()` takes polarity and flips only the absence branch
 
 ```python
-def _check_path(repo_path: Path, needle: str, polarity: str = "presence") -> dict[str, Any]:
+def _check_path(
+    repo_path: Path, needle: str, polarity: str = "presence"
+) -> dict[str, Any]:
     ...
     exists = target.exists()
     if polarity == "absence":
         if not exists:
-            return {"confirmed": True, "detail": f"absence confirmed: path does not exist: {candidate}"}
-        return {"confirmed": False, "detail": f"absence claim refuted: path exists: {candidate}"}
+            return {
+                "confirmed": True,
+                "detail": f"absence confirmed: path does not exist: {candidate}",
+            }
+        return {
+            "confirmed": False,
+            "detail": f"absence claim refuted: path exists: {candidate}",
+        }
     # unchanged presence-claim branches below (not-exists / line-count / exists)
 ```
 
@@ -92,6 +100,7 @@ the presence branch only — no behavior to define for "absence claim with a lin
 
 ```python
 r"|\breproduces?\s+via\b"
+
 r"|\breproduced\s+via\b"
 ```
 
