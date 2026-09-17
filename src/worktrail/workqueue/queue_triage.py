@@ -57,6 +57,16 @@ NO_REPO_KEY = "__none__"
 # beyond the question text itself.
 REPO_ASSIGNMENT_QUESTION = "Which repo should this brief target?"
 
+# A re-home directive inside a free-form decision answer ("Re-home to the
+# devops repo", "move it to worktrail") -- what `consume_repo_decision()`
+# looks for when the answered question is *not* `REPO_ASSIGNMENT_QUESTION`.
+# Group 1 is the repo name token, resolved via `_resolve_repo_dir()`.
+_REHOME_DIRECTIVE_RE = re.compile(
+    r"\b(?:re-?home|move|retarget|reassign)\b[^.\n]*?\bto\s+(?:the\s+)?"
+    r"([A-Za-z0-9][A-Za-z0-9._/~-]*)(?:\s+repo\b)?",
+    re.IGNORECASE,
+)
+
 # Tier the evaluator worker spawns under (design D3): routing, not this
 # caller, owns the harness/model choice for a given tier.
 DEFAULT_TIER = "t2-build"
@@ -291,9 +301,11 @@ def group_queue_by_repo(
     `consume_repo_decision()`, and failing that, `repo_inference.infer_repo()`
     is tried against the brief's focus text. Either path that resolves a repo
     stamps it onto the brief (`_write_repo_inference()`) and uses it as this
-    brief's group key instead of `"__none__"`; a brief already carrying a
-    `repo:` value skips this pre-pass entirely, so it is never re-inferred or
-    re-noted on a later call.
+    brief's group key instead of `"__none__"`. A brief already carrying a
+    `repo:` value is never re-inferred, but an answered decision whose answer
+    carries a re-home directive is still consumed for it: on success the brief
+    is regrouped under its new repo in this same call, anything else leaves it
+    in its existing group (never reported as `unresolvable`).
 
     Returns `(groups, inferred, unresolvable)`: `inferred` is one entry per
     brief the pre-pass resolved this call (decision or inference alike),
@@ -327,6 +339,11 @@ def group_queue_by_repo(
                     inferred.append(
                         {"path": path, "repo": result.repo, "rule": result.rule}
                     )
+        else:
+            decision_outcome = consume_repo_decision(path, repos_root)
+            if decision_outcome is not None and decision_outcome.get("resolved"):
+                key = decision_outcome["repo"]
+                inferred.append(decision_outcome)
         groups.setdefault(key, []).append(path)
     return groups, inferred, unresolvable
 
@@ -722,7 +739,8 @@ def _write_repo_inference(path: Path, result: InferenceResult) -> None:
     determined for this brief outside evaluation", recorded the same way.
     Shares `_apply_keep()`'s in-place `## Triage <date>` append shape;
     `is_recently_triaged()` already excludes `verdict: repo-inferred` notes
-    from its dedup window, per design D2.
+    from its dedup window, per design D2. An existing `repo:` value is
+    replaced in place (a re-home), never duplicated.
     """
     _set_fm_fields(path, {"repo": result.repo})
     run_date = datetime.date.today().isoformat()  # noqa: DTZ011
@@ -740,12 +758,19 @@ def consume_repo_decision(
 ) -> dict[str, Any] | None:
     """Consume `path`'s answered repo-assignment decision, if it has one (design D8).
 
-    Returns `None` when `path` carries no `awaiting-decision` link, the linked
-    decision is not (yet) answered, or its question is not
-    `REPO_ASSIGNMENT_QUESTION` -- there is nothing for this function to do,
-    and the brief falls through to `repo_inference.infer_repo()` instead.
+    Returns `None` when `path` carries no `awaiting-decision` link or the
+    linked decision is not (yet) answered -- there is nothing for this
+    function to do, and the brief falls through to
+    `repo_inference.infer_repo()` instead.
 
-    Otherwise resolves the answer text to an on-disk checkout via
+    A question other than `REPO_ASSIGNMENT_QUESTION` is consumed only when its
+    free-form answer carries a re-home directive (`_REHOME_DIRECTIVE_RE`)
+    naming a repo that resolves; no directive, or one that does not resolve,
+    returns `None` with brief and decision untouched. A directive that does
+    resolve is stamped/noted/archived exactly like the canonical path below,
+    overwriting any existing `repo:`.
+
+    For the canonical question, resolves the answer text to an on-disk checkout via
     `dashboard._resolve_repo_dir()`. On success, stamps `repo:` and appends the
     `repo-inferred` note (`_write_repo_inference()`, `rule="decision"`),
     archives the decision record (`decisions.resolve_decision()`), and
@@ -761,11 +786,18 @@ def consume_repo_decision(
     if not decision_id or info["decision_status"] != "answered":
         return None
     envelope = decisions.load_decision_envelope(decision_id)
-    if envelope is None or envelope.get("question") != REPO_ASSIGNMENT_QUESTION:
+    if envelope is None:
         return None
 
     answer = (envelope.get("answer") or "").strip()
-    repo_dir = _resolve_repo_dir(answer, repos_root)
+    canonical = envelope.get("question") == REPO_ASSIGNMENT_QUESTION
+    if canonical:
+        repo_dir = _resolve_repo_dir(answer, repos_root)
+    else:
+        m = _REHOME_DIRECTIVE_RE.search(answer)
+        repo_dir = _resolve_repo_dir(m.group(1).rstrip("."), repos_root) if m else None
+        if repo_dir is None:
+            return None
     if repo_dir is None:
         return {
             "resolved": False,

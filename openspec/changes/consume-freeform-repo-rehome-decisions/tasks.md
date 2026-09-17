@@ -1,6 +1,6 @@
 ## 1. Free-form re-home consumption (`queue-triage`)
 
-- [ ] 1.1 In `src/worktrail/workqueue/queue_triage.py`, add a module-level re-home directive
+- [x] 1.1 In `src/worktrail/workqueue/queue_triage.py`, add a module-level re-home directive
       regex (verbs re-home/rehome/move/retarget/reassign, then `to`, optional `the`, a repo
       name token, optional `repo`) and extend `consume_repo_decision()`: when the question
       is not `REPO_ASSIGNMENT_QUESTION`, extract the directive's repo name from the answer
