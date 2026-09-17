@@ -2,7 +2,7 @@
 
 ## 1. Use the push remote for the triage base ref
 
-- [ ] 1.1 In `src/worktrail/workqueue/queue_triage.py`, make `_worktree_pr_close()` call
+- [x] 1.1 In `src/worktrail/workqueue/queue_triage.py`, make `_worktree_pr_close()` call
       `_push_target(repo_path)` once (right after the successful claim) and bind the returned
       remote name; use it in place of the `"origin"` literal for the `git fetch <remote>
       <base_branch>` call and its failure error text, pass it to `_unpushed_base_error()`,
