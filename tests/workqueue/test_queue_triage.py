@@ -5280,6 +5280,112 @@ class TestConsumeRepoDecision(QueueTriageTestBase):
         self.assertEqual(decisions.decision_status(result["id"], self.base), "answered")
 
 
+class TestConsumeFreeformRehomeDecision(QueueTriageTestBase):
+    """Free-form re-home directives in `consume_repo_decision()`."""
+
+    def _answered(self, question: str, answer: str) -> str:
+        from worktrail.workqueue import decisions
+
+        result = decisions.ask(
+            question,
+            background="unclear",
+            why="ambiguous scope",
+            context="checked and unsure",
+            options=["Option A", "Option B"],
+            brief="a",
+            queue_base=self.base,
+        )
+        decisions.answer(result["id"], answer, queue_base=self.base)
+        return result["id"]
+
+    def test_freeform_rehome_answer_is_consumed(self):
+        from worktrail.workqueue import decisions
+
+        old = self.base / "worktrail"
+        old.mkdir()
+        target = self.base / "devops"
+        target.mkdir()
+        path = self.write("a.md", repo=str(old))
+        decision_id = self._answered(
+            "Where does this belong?", "Re-home to the devops repo."
+        )
+
+        outcome = qt.consume_repo_decision(path, str(self.base))
+
+        self.assertTrue(outcome["resolved"])
+        self.assertEqual(outcome["repo"], str(target.resolve()))
+        self.assertEqual(qt.read_frontmatter(path)["repo"], str(target.resolve()))
+        self.assertEqual(path.read_text(encoding="utf-8").count("\nrepo:"), 1)
+        self.assertEqual(qt.triage_history(path)[-1].verdict, "repo-inferred")
+        self.assertEqual(decisions.decision_status(decision_id, self.base), "resolved")
+
+    def test_freeform_answer_without_directive_is_ignored(self):
+        from worktrail.workqueue import decisions
+
+        (self.base / "devops").mkdir()
+        path = self.write("a.md", repo=str(self.base / "worktrail"))
+        decision_id = self._answered("Should we keep the retry?", "Yes, keep it")
+        before = path.read_text(encoding="utf-8")
+
+        self.assertIsNone(qt.consume_repo_decision(path, str(self.base)))
+        _groups, _inferred, unresolvable = qt.group_queue_by_repo(str(self.base))
+
+        self.assertEqual(unresolvable, [])
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+        self.assertEqual(decisions.decision_status(decision_id, self.base), "answered")
+
+    def test_directive_naming_unknown_repo_is_ignored(self):
+        from worktrail.workqueue import decisions
+
+        path = self.write("a.md", repo=str(self.base / "worktrail"))
+        decision_id = self._answered(
+            "Where does this belong?", "Move it to the nonesuch repo"
+        )
+        before = path.read_text(encoding="utf-8")
+
+        self.assertIsNone(qt.consume_repo_decision(path, str(self.base)))
+        _groups, _inferred, unresolvable = qt.group_queue_by_repo(str(self.base))
+
+        self.assertEqual(unresolvable, [])
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+        self.assertEqual(decisions.decision_status(decision_id, self.base), "answered")
+
+    def test_canonical_question_still_resolves_whole_answer(self):
+        target = self.base / "devops"
+        target.mkdir()
+        path = self.write("a.md")
+        self._answered(qt.REPO_ASSIGNMENT_QUESTION, "devops")
+
+        outcome = qt.consume_repo_decision(path, str(self.base))
+
+        self.assertTrue(outcome["resolved"])
+        self.assertEqual(outcome["repo"], str(target.resolve()))
+
+    def test_canonical_question_unresolvable_is_still_reported(self):
+        path = self.write("a.md")
+        self._answered(qt.REPO_ASSIGNMENT_QUESTION, "Move it to the nonesuch repo")
+
+        outcome = qt.consume_repo_decision(path, str(self.base))
+
+        self.assertFalse(outcome["resolved"])
+
+    def test_repo_carrying_brief_is_regrouped_in_same_run(self):
+        old = self.base / "worktrail"
+        old.mkdir()
+        target = self.base / "devops"
+        target.mkdir()
+        path = self.write("a.md", repo=str(old))
+        self._answered("Where does this belong?", "retarget to devops")
+
+        groups, _skipped, _escalate, inferred, unresolvable = qt.inventory(
+            7, str(self.base)
+        )
+
+        self.assertEqual(unresolvable, [])
+        self.assertEqual(groups, {str(target.resolve()): [path]})
+        self.assertEqual([i["path"] for i in inferred], [path])
+
+
 class TestGroupQueueByRepoPrePass(QueueTriageTestBase):
     """4.1(c): `group_queue_by_repo()`'s decision-consumption/inference pre-pass."""
 
