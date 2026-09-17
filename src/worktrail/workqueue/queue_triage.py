@@ -2499,9 +2499,10 @@ def _push_target(repo_path: Path) -> tuple[str, str | None]:
     return remote, slug
 
 
-def _unpushed_base_error(repo_path: Path, base_branch: str) -> str | None:
+def _unpushed_base_error(repo_path: Path, base_branch: str, remote: str) -> str | None:
     """Error string when the local `base_branch` is ahead of the just-fetched
-    `origin/<base_branch>`, else `None`.
+    `<remote>/<base_branch>` (`remote` being the push remote `_push_target()`
+    resolved), else `None`.
 
     The worktree is branched off the remote ref, so any commit that exists
     only locally -- typically the very change a fold targets -- would be
@@ -2516,7 +2517,7 @@ def _unpushed_base_error(repo_path: Path, base_branch: str) -> str | None:
             str(repo_path),
             "rev-list",
             "--count",
-            f"origin/{base_branch}..{base_branch}",
+            f"{remote}/{base_branch}..{base_branch}",
         ],
         check=False,
         capture_output=True,
@@ -2532,8 +2533,8 @@ def _unpushed_base_error(repo_path: Path, base_branch: str) -> str | None:
     if ahead == 0:
         return None
     return (
-        f"local {base_branch} is {ahead} commit(s) ahead of origin/{base_branch}; "
-        f"the triage worktree is created from origin/{base_branch}, so push "
+        f"local {base_branch} is {ahead} commit(s) ahead of {remote}/{base_branch}; "
+        f"the triage worktree is created from {remote}/{base_branch}, so push "
         f"{base_branch} first (or the PR would miss the target change)"
     )
 
@@ -2560,12 +2561,14 @@ def _worktree_pr_close(
     the same intake brief, producing two separate merged OpenSpec proposal
     PRs for the same feature before either could see the other's work).
     Once claimed, per the spec's "Fold and propose are applied as a pull
-    request, fail-closed" requirement: fetches `origin/<base_branch>` and
-    creates a fresh worktree on `branch` off *that* remote ref -- the local
+    request, fail-closed" requirement: resolves the push remote once via
+    `_push_target()` (`remote.pushDefault`, else `origin`), fetches
+    `<remote>/<base_branch>` and creates a fresh worktree on `branch` off
+    *that* remote ref -- the local
     `base_branch` in a long-lived checkout is routinely behind the remote, and
     branching off it opens a PR carrying unrelated regressions of already-
     merged work. The converse also fails closed: if the local `base_branch`
-    carries commits that `origin/<base_branch>` does not (live 2026-09-03: a
+    carries commits that `<remote>/<base_branch>` does not (live 2026-09-03: a
     fold target committed locally but never pushed, so the worktree lacked
     files present at local HEAD), this returns `status="error"` naming the
     unpushed count rather than branching off a remote ref that predates the
@@ -2611,9 +2614,10 @@ def _worktree_pr_close(
 
     pr_url = None
     outcome = None
+    remote, _slug = _push_target(repo_path)
     try:
         fetch = subprocess.run(
-            ["git", "-C", str(repo_path), "fetch", "origin", base_branch],
+            ["git", "-C", str(repo_path), "fetch", remote, base_branch],
             check=False,
             capture_output=True,
             text=True,
@@ -2625,13 +2629,13 @@ def _worktree_pr_close(
                 "status": "error",
                 "path": None,
                 "error": (
-                    f"git fetch origin {base_branch} failed: "
+                    f"git fetch {remote} {base_branch} failed: "
                     f"{(fetch.stderr or fetch.stdout).strip()}"
                 ),
                 "branch": branch,
             }
 
-        unpushed_error = _unpushed_base_error(repo_path, base_branch)
+        unpushed_error = _unpushed_base_error(repo_path, base_branch, remote)
         if unpushed_error:
             return {
                 **result,
@@ -2651,7 +2655,7 @@ def _worktree_pr_close(
                 "-b",
                 branch,
                 str(worktree_dir),
-                f"origin/{base_branch}",
+                f"{remote}/{base_branch}",
             ],
             check=False,
             capture_output=True,
