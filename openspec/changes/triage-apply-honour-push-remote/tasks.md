@@ -27,7 +27,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [e2e] Run `PYTHONPATH=src pytest -q tests/workqueue/test_queue_triage.py`, then
+- [x] 2.1 [e2e] Run `PYTHONPATH=src pytest -q tests/workqueue/test_queue_triage.py`, then
       `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`,
       and confirm all pass.
       depends: 1.1
