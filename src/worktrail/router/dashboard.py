@@ -2641,14 +2641,33 @@ def _constitution_hint(con: dict[str, bool] | None) -> str | None:
 def _find_worktrees(parent: Path, repo_name: str) -> list[Path]:
     """Worktree checkouts live at <parent>/<repo_name>-worktrees/<branch>/.
     Each is a git worktree with a .git FILE (not dir) pointing back to the
-    canonical repo. Returns sorted list; empty if the directory doesn't exist
-    or is_git_repo is unavailable."""
+    canonical repo. A direct child that is a plain directory (not a git
+    checkout) is a container: its git-checkout children are collected too
+    (one level only; a git checkout is never descended into). Returns sorted
+    list; empty if the directory doesn't exist or is_git_repo is unavailable."""
     if _is_git_repo is None:
         return []
     wt_parent = parent / f"{repo_name}-worktrees"
     if not wt_parent.is_dir():
         return []
-    return sorted(d for d in wt_parent.iterdir() if d.is_dir() and _is_git_repo(d))
+    found: list[Path] = []
+    for d in wt_parent.iterdir():
+        if not d.is_dir():
+            continue
+        if _is_git_repo(d):
+            found.append(d)
+        else:
+            found.extend(c for c in d.iterdir() if c.is_dir() and _is_git_repo(c))
+    return sorted(found)
+
+
+def _worktree_names(parent: Path, repo_name: str) -> list[str]:
+    """Each worktree as its POSIX path relative to <repo_name>-worktrees/."""
+    wt_parent = parent / f"{repo_name}-worktrees"
+    return [
+        wt.relative_to(wt_parent).as_posix()
+        for wt in _find_worktrees(parent, repo_name)
+    ]
 
 
 def _detect_for_repo(args: tuple) -> tuple:
@@ -2751,7 +2770,7 @@ def scan_repos(
             "name": repo.name,
             "path": str(repo),
             "has_specs": specs_root.is_dir() or bool(_openspec_change_dirs(repo)),
-            "worktrees": [wt.name for wt in _find_worktrees(parent, repo.name)],
+            "worktrees": _worktree_names(parent, repo.name),
             "policy_findings": policy_findings,
             "automerge_findings": automerge_findings,
             "drift_findings": drift_findings,
@@ -4029,7 +4048,7 @@ def main(argv=None) -> int:
         if not b.get("blocked") and _repo_scope_match(b.get("repo"), repo_dir.name)
     )
     epic_rows = scan_epics(repo_dir)
-    worktrees = [wt.name for wt in _find_worktrees(repo_dir.parent, repo_dir.name)]
+    worktrees = _worktree_names(repo_dir.parent, repo_dir.name)
     backlog_total = sum(1 for r in rows if r["stage"] in _BACKLOG)
     inflight = inflight_briefs(picked_dir, stale_hours=args.inflight_stale_hours)
     recent_runs = load_recent_runs(repo_dir, runs_dir=run_record_dir)

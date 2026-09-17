@@ -6468,3 +6468,57 @@ class AutoPickDependencyDiagnostics(unittest.TestCase):
         self.assertIn("bad ref [dep-ref?]", out)
         self.assertNotIn("bad ref [blocked]", out)
         self.assertIn("plain wait [blocked]", out)
+
+
+class NestedWorktreeScanTests(unittest.TestCase):
+    """_find_worktrees descends one level into plain container dirs."""
+
+    def _repo(self, parent: Path) -> Path:
+        repo = parent / "repo-a"
+        repo.mkdir()
+        git = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(
+            [*git, "commit", "-q", "--allow-empty", "-m", "init"], cwd=repo, check=True
+        )
+        return repo
+
+    def _add(self, repo: Path, rel: str, branch: str) -> Path:
+        wt = repo.parent / "repo-a-worktrees" / rel
+        wt.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "worktree", "add", "-q", str(wt), "-b", branch],
+            cwd=repo,
+            check=True,
+        )
+        return wt
+
+    def test_nested_and_direct_worktrees_found(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            repo = self._repo(parent)
+            direct = self._add(repo, "feature-x", "feature-x")
+            n1 = self._add(repo, "030-spec-worktrees/task-1", "task-1")
+            n2 = self._add(repo, "030-spec-worktrees/task-2", "task-2")
+            (parent / "repo-a-worktrees" / "runplans" / "cache").mkdir(parents=True)
+            found = dashboard._find_worktrees(parent, "repo-a")
+            self.assertEqual(found, sorted([direct, n1, n2]))
+
+    def test_plain_dir_without_checkouts_contributes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            self._repo(parent)
+            (parent / "repo-a-worktrees" / "runplans" / "cache").mkdir(parents=True)
+            self.assertEqual(dashboard._find_worktrees(parent, "repo-a"), [])
+
+    def test_scan_repos_reports_relative_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            repo = self._repo(parent)
+            self._add(repo, "feature-x", "feature-x")
+            self._add(repo, "030-spec-worktrees/task-1", "task-1")
+            rows = dashboard.scan_repos(parent)
+            ra = next(r for r in rows if r["repo"] == "repo-a")
+            self.assertEqual(
+                ra["worktrees"], ["030-spec-worktrees/task-1", "feature-x"]
+            )

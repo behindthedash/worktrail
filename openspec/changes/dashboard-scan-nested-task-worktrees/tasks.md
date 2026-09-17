@@ -1,6 +1,6 @@
 ## 1. Nested worktree scan (`dashboard-nested-worktree-scan`)
 
-- [ ] 1.1 In `src/worktrail/router/dashboard.py`, make `_find_worktrees` also
+- [x] 1.1 In `src/worktrail/router/dashboard.py`, make `_find_worktrees` also
       descend one level into each direct child of `<repo>-worktrees/` that is a
       directory but not a git checkout, collecting the git checkouts inside it;
       never descend into a git checkout, keep the result sorted, update the
