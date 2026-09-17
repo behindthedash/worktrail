@@ -1906,6 +1906,9 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
                 if "symbolic-ref" in cmd:
                     return self._completed(0, stdout="origin/main\n")
                 if "config" in cmd and "remote.pushDefault" in cmd:
+                    push_default = getattr(self, "push_default", None)
+                    if push_default:
+                        return self._completed(0, stdout=f"{push_default}\n")
                     return self._completed(1)
                 if "remote" in cmd and "get-url" in cmd:
                     return self._completed(
@@ -2330,6 +2333,8 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
             if cmd[0] == "git" and "-C" in cmd:
                 if "symbolic-ref" in cmd:
                     return self._completed(0, stdout="origin/main\n")
+                if "config" in cmd and "remote.pushDefault" in cmd:
+                    return self._completed(1)
                 if "rev-list" in cmd:
                     return self._completed(0, stdout=f"{getattr(self, 'ahead', 0)}\n")
                 if "fetch" in cmd:
@@ -2497,6 +2502,63 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
         add = next(c for c in self.seen if "worktree" in c and "add" in c)
         self.assertEqual(add[-1], "origin/main")
         self.assertLess(self.seen.index(fetch), self.seen.index(add))
+
+    def test_push_default_remote_is_used_for_base_ref(self):
+        """With `remote.pushDefault=fork`, the fetch, ahead-check, and
+        worktree base ref all name `fork/<base>`; `origin/<base>` is never
+        consulted."""
+        self.push_default = "fork"
+        pr_url = "https://github.com/acme/widgets/pull/42"
+        run = self._dispatcher()
+        land_outcome = LandOutcome(
+            outcome="landed",
+            pr_url=pr_url,
+            pr_number=42,
+            labels=["go:risk-low"],
+            run=None,
+            final_status="completed_pr_open",
+        )
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+            ),
+            mock.patch(
+                "worktrail.workqueue.queue_triage.land_pr", return_value=land_outcome
+            ),
+        ):
+            log = qt.apply_verdicts([self.verdict], confirm=True)
+
+        self.assertEqual(log[0]["status"], "executed", log[0])
+        fetch = next(c for c in self.seen if "fetch" in c)
+        self.assertEqual(fetch[3:], ["fetch", "fork", "main"])
+        rev_list = next(c for c in self.seen if "rev-list" in c)
+        self.assertEqual(rev_list[3:], ["rev-list", "--count", "fork/main..main"])
+        add = next(c for c in self.seen if "worktree" in c and "add" in c)
+        self.assertEqual(add[-1], "fork/main")
+        self.assertFalse(
+            any("origin/main" in arg for c in self.seen for arg in c), self.seen
+        )
+
+    def test_unpushed_local_base_error_names_push_default_remote(self):
+        """The ahead-of-remote error text names the resolved push remote, and
+        the brief is released back to `queue/`."""
+        self.push_default = "fork"
+        self.ahead = 2
+        run = self._dispatcher()
+        with mock.patch(
+            "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+        ):
+            log = qt.apply_verdicts([self.verdict], confirm=True)
+
+        entry = log[0]
+        self.assertEqual(entry["status"], "error", entry)
+        self.assertIn("ahead of fork/main", entry["error"])
+        self.assertNotIn("origin/main", entry["error"])
+        self.assertFalse(any("worktree" in c and "add" in c for c in self.seen))
+        self.assertTrue((self.queue / "a.md").exists())
+        fm = qt.read_frontmatter(self.queue / "a.md")
+        self.assertEqual(fm["status"], "queued")
+        self.assertNotIn("triaged-to", fm)
 
     def test_unpushed_local_base_fails_closed_before_worktree_add(self):
         """Live 2026-09-03: the fold target was committed on local `main` but
@@ -2681,7 +2743,14 @@ class TestApplyProposeChange(QueueTriageTestBase):
                 if "symbolic-ref" in cmd:
                     return self._completed(0, stdout="origin/main\n")
                 if "config" in cmd and "remote.pushDefault" in cmd:
+                    push_default = getattr(self, "push_default", None)
+                    if push_default:
+                        return self._completed(0, stdout=f"{push_default}\n")
                     return self._completed(1)
+                if "remote" in cmd and "get-url" in cmd:
+                    return self._completed(
+                        0, stdout="git@github.com:acme-fork/widgets.git\n"
+                    )
                 if "rev-list" in cmd:
                     return self._completed(0, stdout=f"{getattr(self, 'ahead', 0)}\n")
                 if "fetch" in cmd:
@@ -2866,6 +2935,44 @@ class TestApplyProposeChange(QueueTriageTestBase):
         add = next(c for c in self.seen if "worktree" in c and "add" in c)
         self.assertEqual(add[-1], "origin/main")
         self.assertLess(self.seen.index(fetch), self.seen.index(add))
+
+    def test_push_default_remote_is_used_for_base_ref(self):
+        """Propose shares `_worktree_pr_close()`: with `remote.pushDefault=fork`
+        every base-ref git call names `fork/<base>`, never `origin/<base>`."""
+        self.push_default = "fork"
+        pr_url = "https://github.com/acme/widgets/pull/43"
+        run = self._dispatcher()
+        land_outcome = LandOutcome(
+            outcome="landed",
+            pr_url=pr_url,
+            pr_number=43,
+            labels=["go:risk-low"],
+            run=None,
+            final_status="completed_pr_open",
+        )
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+            ),
+            mock.patch(
+                "worktrail.workqueue.queue_triage.land_pr", return_value=land_outcome
+            ),
+            mock.patch(
+                "worktrail.orchestrator.spawnlib.spawn_agent", side_effect=self._spawn()
+            ),
+        ):
+            log = qt.apply_verdicts([self.verdict], confirm=True)
+
+        self.assertEqual(log[0]["status"], "executed", log[0])
+        fetch = next(c for c in self.seen if "fetch" in c)
+        self.assertEqual(fetch[3:], ["fetch", "fork", "main"])
+        rev_list = next(c for c in self.seen if "rev-list" in c)
+        self.assertEqual(rev_list[3:], ["rev-list", "--count", "fork/main..main"])
+        add = next(c for c in self.seen if "worktree" in c and "add" in c)
+        self.assertEqual(add[-1], "fork/main")
+        self.assertFalse(
+            any("origin/main" in arg for c in self.seen for arg in c), self.seen
+        )
 
     def test_openspec_new_change_failure_is_an_error_before_agent_spawns(self):
         run = self._dispatcher(new_change_returncode=1)
