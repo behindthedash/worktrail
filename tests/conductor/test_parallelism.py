@@ -94,11 +94,6 @@ def test_a_new_module_with_no_test_counterpart_passes(tmp_path):
     assert parallelism.shape_problems(tasks, tmp_path, {}) == []
 
 
-def test_empty_fanout_passes(tmp_path):
-    tasks = [_task("v", files=["src/hot.py"], kind="e2e")]
-    assert parallelism.shape_problems(tasks, tmp_path, {}) == []
-
-
 def test_serial_rule_fires_naming_the_longest_chain(tmp_path):
     tasks = [
         _task(f"t{i}", deps=[f"t{i - 1}"] if i else [], files=[f"f{i}.py"])
@@ -188,14 +183,20 @@ def test_missing_test_scope_rule_exempt_for_non_src_paths_like_docs(tmp_path):
 def test_missing_test_scope_rule_exempt_for_docs_kind_task(tmp_path):
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_foo.py").write_text("")
-    tasks = [_task("a", files=["src/foo.py"], kind="docs")]
+    tasks = [
+        _task("impl", files=["src/bar.py"]),
+        _task("a", files=["src/foo.py"], kind="docs"),
+    ]
     assert parallelism.shape_problems(tasks, tmp_path, {}) == []
 
 
 def test_missing_test_scope_rule_exempt_for_tail_kinds(tmp_path):
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_foo.py").write_text("")
-    tasks = [_task("a", files=["src/foo.py"], kind="e2e")]
+    tasks = [
+        _task("impl", files=["src/bar.py"]),
+        _task("a", files=["src/foo.py"], kind="e2e"),
+    ]
     assert parallelism.shape_problems(tasks, tmp_path, {}) == []
 
 
@@ -249,7 +250,8 @@ def test_a_fully_pending_plan_evaluates_exactly_as_before(tmp_path):
 # --------------------------------------------------------------------------- #
 def test_cleanup_task_with_backticked_command_is_rejected(tmp_path):
     tasks = [
-        _task("v", kind="cleanup", title="Run `pytest -q` and confirm it is green")
+        _task("impl", files=["src/bar.py"]),
+        _task("v", kind="cleanup", title="Run `pytest -q` and confirm it is green"),
     ]
     problems = parallelism.shape_problems(tasks, tmp_path, {})
     assert len(problems) == 1
@@ -277,17 +279,26 @@ def test_cleanup_task_with_live_incident_wording_is_rejected(tmp_path):
 
 
 def test_genuinely_inert_cleanup_task_passes(tmp_path):
-    tasks = [_task("v", kind="cleanup", title="Remove debug logging left in tasks 1-4")]
+    tasks = [
+        _task("impl", files=["src/bar.py"]),
+        _task("v", kind="cleanup", title="Remove debug logging left in tasks 1-4"),
+    ]
     assert parallelism.shape_problems(tasks, tmp_path, {}) == []
 
 
 def test_equivalent_e2e_task_is_unaffected(tmp_path):
-    tasks = [_task("v", kind="e2e", title="Run `pytest -q` and confirm it is green")]
+    tasks = [
+        _task("impl", files=["src/bar.py"]),
+        _task("v", kind="e2e", title="Run `pytest -q` and confirm it is green"),
+    ]
     assert parallelism.shape_problems(tasks, tmp_path, {}) == []
 
 
 def test_docs_tail_task_is_unaffected(tmp_path):
-    tasks = [_task("v", kind="docs", title="Run `pytest -q` and confirm it is green")]
+    tasks = [
+        _task("impl", files=["src/bar.py"]),
+        _task("v", kind="docs", title="Run `pytest -q` and confirm it is green"),
+    ]
     assert parallelism.shape_problems(tasks, tmp_path, {}) == []
 
 
@@ -297,3 +308,43 @@ def test_cleanup_mismatch_fires_even_when_fanout_is_empty(tmp_path):
     ]
     problems = parallelism.shape_problems(tasks, tmp_path, {})
     assert any("cleanup verification mismatch" in p for p in problems)
+    assert any("no fan-out task" in p and "(v)" in p for p in problems)
+
+
+def test_e2e_only_plan_is_rejected_naming_the_id(tmp_path):
+    tasks = [_task("2.1", kind="e2e", title="Run the suite")]
+    problems = parallelism.shape_problems(tasks, tmp_path, {})
+    assert len(problems) == 1
+    assert "no fan-out task" in problems[0]
+    assert "(2.1)" in problems[0]
+    assert "files:" in problems[0]
+
+
+def test_all_tail_plan_is_rejected_naming_every_id_with_the_cleanup_line(tmp_path):
+    tasks = [
+        _task("2.1", kind="e2e", title="Run the suite"),
+        _task("2.2", kind="docs", title="Update the README"),
+        _task("2.3", kind="cleanup", title="Run `pytest -q` and confirm it is green"),
+    ]
+    problems = parallelism.shape_problems(tasks, tmp_path, {})
+    fanout_lines = [p for p in problems if "no fan-out task" in p]
+    assert len(fanout_lines) == 1
+    assert "(2.1, 2.2, 2.3)" in fanout_lines[0]
+    assert any("cleanup verification mismatch" in p for p in problems)
+
+
+def test_completed_impl_tasks_plus_pending_e2e_is_not_rejected(tmp_path):
+    tasks = [
+        _task("1.1", files=["src/a.py"], status="completed"),
+        _task("1.2", files=["src/b.py"], status="completed"),
+        _task("2.1", kind="e2e", deps=["1.1", "1.2"], title="Run the suite"),
+    ]
+    assert parallelism.shape_problems(tasks, tmp_path, {}) == []
+
+
+def test_pending_impl_task_plus_e2e_is_not_rejected(tmp_path):
+    tasks = [
+        _task("1.1", files=["src/a.py"]),
+        _task("2.1", kind="e2e", deps=["1.1"], title="Run the suite"),
+    ]
+    assert parallelism.shape_problems(tasks, tmp_path, {}) == []

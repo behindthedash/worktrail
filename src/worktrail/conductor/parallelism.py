@@ -219,6 +219,18 @@ def shape_problems(
         for t in merged
         if t.get("kind") not in TAIL_KINDS and t.get("status") != "completed"
     ]
+    # Status is deliberately ignored here: a plan whose implementation tasks
+    # are all `completed` still *has* fan-out work, it just already ran.
+    # `docs` joins the tail kinds because, like them, it is never
+    # implementation work (`live.py` exempts it alongside e2e/cleanup).
+    if not any(t.get("kind") not in TAIL_KINDS | {"docs"} for t in merged):
+        tail = ", ".join(t["id"] for t in merged) or "plan has no tasks"
+        line = (
+            f"no fan-out task: every task is a tail kind ({tail}); add at least "
+            "one implementation task with `files:` scope, or retag a tail task "
+            "whose body is implementation work"
+        )
+        return [line, *_cleanup_verification_mismatches(merged)]
     if not fanout:
         return _cleanup_verification_mismatches(merged)
 

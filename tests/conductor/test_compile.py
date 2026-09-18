@@ -2009,6 +2009,29 @@ def test_the_cleanup_verification_mismatch_fixture_is_rejected(tmp_path, capsys)
     assert not (d / conductor_compile.COMPILE_MARKER_NAME).exists()
 
 
+def test_a_single_e2e_task_plan_is_rejected_with_no_marker(tmp_path, capsys):
+    """A `tasks.md` with no fan-out task at all (only an `[e2e]` tail) must
+    fail loud at compile rather than produce an empty plan."""
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    d = repo / "openspec" / "changes" / "add-thing"
+    d.mkdir(parents=True)
+    (d / "proposal.md").write_text("## Why\nBecause.\n")
+    (d / "tasks.md").write_text(
+        "## 1. Verification\n\n- [ ] 1.1 [e2e] Run `pytest -q` end to end\n"
+    )
+
+    rc = conductor_compile.main([str(d), "--no-llm"])
+    _, err = capsys.readouterr()
+    assert rc == 1
+    assert "no fan-out task" in err
+    assert "1.1" in err
+    assert not (d / conductor_compile.COMPILE_MARKER_NAME).exists()
+
+
 def test_compile_run_plan_raises_plan_shape_error_on_a_cache_hit(tmp_path):
     """A plan cached by an earlier, laxer policy must still be rejected on a
     later cache-hit read, not only the first time it is compiled."""
