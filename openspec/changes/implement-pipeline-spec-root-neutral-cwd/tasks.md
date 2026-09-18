@@ -23,7 +23,7 @@
 
 ## 2. Throwaway checkout parent-dir cleanup
 
-- [ ] 2.1 In `src/worktrail/orchestrator/integrate.py`, add a module-level
+- [x] 2.1 In `src/worktrail/orchestrator/integrate.py`, add a module-level
       `_rmdir_if_empty(path: Path) -> None` that calls `os.rmdir(path)` and swallows `OSError`
       (non-empty, missing, or permission). Call it on `wt.parent` at the three teardown sites,
       inside the existing `with lock:` block right after the leaf's `git worktree remove` and a
