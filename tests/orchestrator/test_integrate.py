@@ -2570,5 +2570,187 @@ class EmptyDiffGuard(unittest.TestCase):
         )
 
 
+class ForeignRepoTargetQuarantine(unittest.TestCase):
+    """Empty-diff quarantine distinguishes foreign-repo targets, and reports
+    unmanaged default-branch commits in the sibling repo (read-only)."""
+
+    _real_run = staticmethod(subprocess.run)
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.repo = root / "repo"
+        self.repo.mkdir()
+        self.journal_path = str(root / "journal.json")
+
+    def _make_sibling(self, name="note-forth", ahead=0, branch="main"):
+        """Real temp git repo with an `origin` remote whose HEAD points at main."""
+        root = Path(self.tmp.name)
+        origin = root / f"{name}-origin.git"
+        self._real_run(
+            ["git", "init", "--bare", "-b", "main", str(origin)],
+            check=True,
+            capture_output=True,
+        )
+        sib = root / name
+        _run(root, "clone", "-q", str(origin), str(sib))
+        _run(sib, "config", "user.email", "t@t")
+        _run(sib, "config", "user.name", "t")
+        _run(sib, "checkout", "-q", "-b", "main")
+        (sib / "README").write_text("x\n")
+        _run(sib, "add", "README")
+        _run(sib, "commit", "-q", "-m", "init")
+        _run(sib, "push", "-q", "-u", "origin", "main")
+        _run(sib, "remote", "set-head", "origin", "main")
+        for i in range(ahead):
+            (sib / f"f{i}").write_text("y\n")
+            _run(sib, "add", f"f{i}")
+            _run(sib, "commit", "-q", "-m", f"unmanaged {i}")
+        if branch != "main":
+            _run(sib, "checkout", "-q", "-b", branch)
+            # Give the branch an upstream so `@{u}..HEAD` resolves: the
+            # exemption must come from the default-branch check, not from a
+            # git failure. Push only the pre-`ahead` base so HEAD stays ahead.
+            _run(
+                sib,
+                "push",
+                "-q",
+                "-u",
+                "origin",
+                f"{branch}~{ahead}:refs/heads/{branch}",
+            )
+            _run(sib, "branch", "-q", "--set-upstream-to", f"origin/{branch}", branch)
+        return sib
+
+    def _run_group(self, task):
+        run = FakeRun(pr_view_responses={}, ls_remote_responses={})
+        real = self._real_run
+
+        def routed(*args, **kwargs):
+            cmd = (
+                list(args[1:])
+                if args and isinstance(args[0], (str, Path))
+                else (args[0] if args else [])
+            )
+            if cmd[:2] == ["diff", "--quiet"]:
+                return Proc(0, "", "")  # zero diff vs base
+            if cmd[:2] == ["git", "-C"] and not str(cmd[2]).startswith(str(self.repo)):
+                return real(*args, **kwargs)  # read-only probe of the foreign repo
+            return run(*args, **kwargs)
+
+        with (
+            patch(
+                "worktrail.orchestrator.integrate.coordinator.plan_groups"
+            ) as mock_groups,
+            patch("worktrail.orchestrator.integrate._git", side_effect=routed),
+            patch(
+                "worktrail.orchestrator.integrate.subprocess.run", side_effect=routed
+            ),
+        ):
+            mock_groups.return_value = [mock_group("base", ["T001"])]
+            _, _, quarantined = integrate_groups(
+                self.repo,
+                "spec-001",
+                [task],
+                "origin",
+                "run-foreign",
+                "main",
+                cleanup=False,
+                pr_labels=["go:risk-low"],
+                journal_path=self.journal_path,
+            )
+        record = json.loads(Path(self.journal_path).read_text())["groups"]["base"]
+        self.assertEqual(record["state"], "QUARANTINED")
+        self.assertEqual(run.find_calls("gh", "pr", "create"), [])
+        return record["quarantine_reason"], quarantined["base"]
+
+    def _task(self, files):
+        t = mock_task("T001")
+        t["files"] = files
+        return t
+
+    def test_group_targeting_sibling_repo(self):
+        sib = self._make_sibling()
+        reason, msg = self._run_group(
+            self._task(["../note-forth/.github/workflows/ci.yml"])
+        )
+        self.assertEqual(reason, integrate.QUARANTINE_FOREIGN_REPO_TARGET)
+        self.assertIn(str(sib.resolve()), msg)
+
+    def test_true_no_op_stays_empty_diff(self):
+        reason, msg = self._run_group(self._task(["src/a.py", "./docs/b.md"]))
+        self.assertEqual(reason, integrate.QUARANTINE_EMPTY_DIFF)
+        self.assertIn("no changes to integrate", msg)
+
+    def test_tasks_with_no_declared_scope_stay_empty_diff(self):
+        reason, _ = self._run_group(self._task([]))
+        self.assertEqual(reason, integrate.QUARANTINE_EMPTY_DIFF)
+
+    def test_worker_committed_onto_sibling_local_main(self):
+        sib = self._make_sibling(ahead=2)
+        before = _run(sib, "rev-parse", "HEAD").stdout
+        reason, msg = self._run_group(self._task(["../note-forth/x.txt"]))
+        self.assertEqual(reason, integrate.QUARANTINE_FOREIGN_REPO_TARGET)
+        self.assertIn("UNMANAGED DEFAULT-BRANCH COMMIT", msg)
+        self.assertIn(str(sib.resolve()), msg)
+        self.assertIn("'main'", msg)
+        self.assertIn("2 unpushed commit", msg)
+        self.assertEqual(_run(sib, "rev-parse", "HEAD").stdout, before)
+
+    def test_foreign_repo_is_clean(self):
+        self._make_sibling(ahead=0)
+        reason, msg = self._run_group(self._task(["../note-forth/x.txt"]))
+        self.assertEqual(reason, integrate.QUARANTINE_FOREIGN_REPO_TARGET)
+        self.assertNotIn("UNMANAGED", msg)
+
+    def test_foreign_repo_on_feature_branch_is_not_flagged(self):
+        self._make_sibling(ahead=2, branch="feature")
+        reason, msg = self._run_group(self._task(["../note-forth/x.txt"]))
+        self.assertEqual(reason, integrate.QUARANTINE_FOREIGN_REPO_TARGET)
+        self.assertNotIn("UNMANAGED", msg)
+
+    def test_foreign_repo_cannot_be_inspected(self):
+        sib = self._make_sibling(ahead=2)
+        before = _run(sib, "rev-parse", "HEAD").stdout
+        real = self._real_run
+
+        def failing_git(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args")
+            if cmd[:2] == ["git", "-C"] and cmd[3] == "rev-list":
+                return Proc(128, "", "fatal: boom")
+            return real(*args, **kwargs)
+
+        with patch("subprocess.run", side_effect=failing_git):
+            foreign = integrate.foreign_repo_targets(
+                self.repo, [self._task(["../note-forth/x.txt"])]
+            )
+        self.assertEqual([f["repo"] for f in foreign], [str(sib.resolve())])
+        self.assertIsNone(foreign[0]["unmanaged"])
+        self.assertEqual(_run(sib, "rev-parse", "HEAD").stdout, before)
+
+    def test_helper_classifies_paths(self):
+        # Not a git repo: the path itself is named.
+        loose = Path(self.tmp.name) / "loose"
+        loose.mkdir()
+        foreign = integrate.foreign_repo_targets(
+            self.repo,
+            [self._task([str(loose / "f.txt"), "src/ok.py", "../repo/inside.py"])],
+        )
+        self.assertEqual(
+            [f["repo"] for f in foreign], [str((loose / "f.txt").resolve())]
+        )
+        # `~` expands under $HOME and resolves outside the repo.
+        home = Path(self.tmp.name) / "home"
+        home.mkdir()
+        with patch.dict(os.environ, {"HOME": str(home)}):
+            foreign = integrate.foreign_repo_targets(
+                self.repo, [self._task(["~/tilde/f.txt"])]
+            )
+        self.assertEqual(
+            [f["repo"] for f in foreign], [str((home / "tilde" / "f.txt").resolve())]
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

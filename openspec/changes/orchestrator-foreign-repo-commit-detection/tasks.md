@@ -1,6 +1,6 @@
 ## 1. Foreign-repo detection at the empty-diff guard
 
-- [ ] 1.1 In `src/worktrail/orchestrator/integrate.py`, add
+- [x] 1.1 In `src/worktrail/orchestrator/integrate.py`, add
       `QUARANTINE_FOREIGN_REPO_TARGET = "foreign_repo_target"` beside `QUARANTINE_EMPTY_DIFF`
       and a helper that, given `repo` and the group's deliverable tasks, returns the foreign
       repos behind their declared `files` (absolute, `~`, or `..` paths resolving outside

@@ -67,6 +67,13 @@ QUARANTINE_ADDON_FAILURE = "addon_failure"
 # prose-only and relied on an agent remembering to run its own `git status`
 # check before trusting a delegate's report.
 QUARANTINE_EMPTY_DIFF = "empty_diff"
+# Same zero-diff symptom as QUARANTINE_EMPTY_DIFF, but the deliverable tasks
+# declared `files` that resolve *outside* `repo` (absolute, `~`, or `..` paths):
+# the worker most likely did its work in a sibling repository, where it is
+# invisible to this integration and -- if committed straight onto that repo's
+# checked-out default branch -- unmanaged. Reported, never remediated: the
+# foreign repo is only ever inspected read-only.
+QUARANTINE_FOREIGN_REPO_TARGET = "foreign_repo_target"
 
 
 _HERE = Path(__file__).resolve().parent
@@ -187,6 +194,104 @@ def _run_gh_with_retry(cmd: list, cwd) -> subprocess.CompletedProcess:
 
 def _git(repo, *args, check=True):
     return live._git(Path(repo), *args, check=check)
+
+
+def _foreign_git(repo: Path, *args) -> str | None:
+    """Read-only `git -C <foreign repo> ...`; None on any failure (never raises)."""
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    return r.stdout.strip()
+
+
+def _is_foreign_path(repo: Path, declared: str) -> Path | None:
+    """Resolved path when `declared` (absolute, `~`, or `..`) lands outside `repo`."""
+    expanded = os.path.expanduser(declared)
+    climbs = ".." in Path(expanded).parts
+    if not (os.path.isabs(expanded) or expanded.startswith("~") or climbs):
+        return None
+    resolved = (Path(repo) / expanded).resolve()
+    root = Path(repo).resolve()
+    if resolved == root or root in resolved.parents:
+        return None
+    return resolved
+
+
+def _unmanaged_default_branch_commits(top: Path) -> tuple[str, int] | None:
+    """(branch, unpushed count) when `top` sits on its default branch with commits
+    ahead of upstream; None when clean or when any git call fails."""
+    branch = _foreign_git(top, "symbolic-ref", "--short", "HEAD")
+    if not branch:
+        return None
+    default = _foreign_git(top, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+    if default:
+        default = default.split("/", 1)[-1]
+    else:
+        default = next(
+            (
+                b
+                for b in ("main", "master")
+                if _foreign_git(top, "rev-parse", "--verify", "--quiet", b) is not None
+            ),
+            None,
+        )
+    if default is None or branch != default:
+        return None
+    count = _foreign_git(top, "rev-list", "--count", "@{u}..HEAD")
+    if count is None or not count.isdigit() or int(count) == 0:
+        return None
+    return branch, int(count)
+
+
+def foreign_repo_targets(repo: Path, deliverable_tasks: list[dict]) -> list[dict]:
+    """Foreign repositories behind the deliverable tasks' declared `files`.
+
+    Each entry is ``{"repo": <git top-level or the path itself>, "unmanaged":
+    (branch, count) | None}``, one per distinct foreign repo, in first-seen order.
+    The foreign repo is only ever read; any git failure yields no finding.
+    """
+    found: dict[str, dict] = {}
+    for t in deliverable_tasks:
+        for declared in t.get("files") or []:
+            resolved = _is_foreign_path(repo, str(declared))
+            if resolved is None:
+                continue
+            probe = resolved
+            while not probe.is_dir() and probe.parent != probe:
+                probe = probe.parent
+            top = _foreign_git(probe, "rev-parse", "--show-toplevel")
+            key = str(Path(top).resolve()) if top else str(resolved)
+            if key in found:
+                continue
+            found[key] = {
+                "repo": key,
+                "unmanaged": (
+                    _unmanaged_default_branch_commits(Path(key)) if top else None
+                ),
+            }
+    return list(found.values())
+
+
+def _foreign_repo_message(foreign: list[dict]) -> str:
+    names = ", ".join(f["repo"] for f in foreign)
+    msg = f"deliverable tasks declare files in foreign repo(s): {names}"
+    for f in foreign:
+        if f["unmanaged"]:
+            branch, count = f["unmanaged"]
+            msg += (
+                f"; UNMANAGED DEFAULT-BRANCH COMMIT: {f['repo']} is on '{branch}' "
+                f"with {count} unpushed commit(s)"
+            )
+    return msg
 
 
 def current_branch(repo) -> str:
@@ -1540,12 +1645,23 @@ def integrate_one(
             # would otherwise mask a true no-op as a non-empty diff.
             empty_diff = _git(iw, "diff", "--quiet", target, check=False)
             if empty_diff.returncode == 0:
-                quarantined[name] = (
-                    f"empty diff vs {target} after merging "
-                    f"{', '.join(deliverable)} -- no changes to integrate"
+                foreign = foreign_repo_targets(
+                    repo, [t for t in tasks if t.get("id") in deliverable]
                 )
+                if foreign:
+                    quarantined[name] = (
+                        f"empty diff vs {target} after merging "
+                        f"{', '.join(deliverable)} -- {_foreign_repo_message(foreign)}"
+                    )
+                    reason = QUARANTINE_FOREIGN_REPO_TARGET
+                else:
+                    quarantined[name] = (
+                        f"empty diff vs {target} after merging "
+                        f"{', '.join(deliverable)} -- no changes to integrate"
+                    )
+                    reason = QUARANTINE_EMPTY_DIFF
                 print(f"  SKIP [{name:9}] -- {quarantined[name]}")
-                _do_journal(name, "", gb, "QUARANTINED", QUARANTINE_EMPTY_DIFF)
+                _do_journal(name, "", gb, "QUARANTINED", reason)
                 return None
             if strip_spec_folder:
                 _strip_spec_folder_to_base(iw, spec_id, target)
