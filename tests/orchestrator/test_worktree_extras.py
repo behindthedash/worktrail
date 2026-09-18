@@ -148,6 +148,17 @@ class HasTaskWorktreesTests(unittest.TestCase):
         (base / "003-payments-task-001").mkdir()
         self.assertTrue(worktree.has_task_worktrees(self.repo, "003-payments"))
 
+    def test_the_spec_level_worktree_alone_does_not_count(self):
+        base = worktree.default_worktree_base(self.repo)
+        (base / "003-payments-spec").mkdir(parents=True)
+        self.assertFalse(worktree.has_task_worktrees(self.repo, "003-payments"))
+
+    def test_true_when_a_task_worktree_sits_beside_the_spec_worktree(self):
+        base = worktree.default_worktree_base(self.repo)
+        (base / "003-payments-spec").mkdir(parents=True)
+        (base / "003-payments-task-001").mkdir()
+        self.assertTrue(worktree.has_task_worktrees(self.repo, "003-payments"))
+
     def test_a_file_with_a_matching_name_does_not_count(self):
         base = worktree.default_worktree_base(self.repo)
         base.mkdir(parents=True)

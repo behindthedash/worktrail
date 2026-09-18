@@ -82,7 +82,9 @@ def has_task_worktrees(
     convention, not a `git worktree list` call. Used as a guard before an
     operation (a forced RunPlan recompile) that would silently change the
     plan a live run's worktrees were already fanned out under -- see
-    `conductor/compile.py`'s `force` handling.
+    `conductor/compile.py`'s `force` handling. The spec-level worktree
+    (`<spec_id>-spec`, where the compile itself runs) shares the prefix but is
+    not a task worktree, so it is excluded.
     """
     base = (
         Path(worktree_base) if worktree_base else default_worktree_base(Path(repo_root))
@@ -90,7 +92,11 @@ def has_task_worktrees(
     if not base.is_dir():
         return False
     prefix = f"{spec_id}-"
-    return any(p.is_dir() and p.name.startswith(prefix) for p in base.iterdir())
+    spec_worktree = f"{spec_id}-spec"
+    return any(
+        p.is_dir() and p.name.startswith(prefix) and p.name != spec_worktree
+        for p in base.iterdir()
+    )
 
 
 # --------------------------------------------------------------------------- #
