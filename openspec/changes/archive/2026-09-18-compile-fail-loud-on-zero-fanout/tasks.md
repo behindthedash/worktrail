@@ -30,7 +30,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [depends: 1.1, 1.2] [e2e] Run `PYTHONPATH=src pytest -q tests/conductor`, then
+- [x] 2.1 [depends: 1.1, 1.2] [e2e] Run `PYTHONPATH=src pytest -q tests/conductor`, then
       `PYTHONPATH=src pytest -q` and
       `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`. Run
       `openspec validate compile-fail-loud-on-zero-fanout --strict` and
