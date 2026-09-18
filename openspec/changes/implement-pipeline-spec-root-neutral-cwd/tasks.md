@@ -1,6 +1,6 @@
 ## 1. Neutral cwd for the implement pipeline (skill text)
 
-- [ ] 1.1 In `skills/worktrail-sdd-workflow/references/pipeline-details.md` `#implement-pipeline`,
+- [x] 1.1 In `skills/worktrail-sdd-workflow/references/pipeline-details.md` `#implement-pipeline`,
       add a step `0. **Neutral cwd**` before 1a: set `NEUTRAL_CWD="$(dirname "$REPO")"`, and if
       `git -C "$NEUTRAL_CWD" rev-parse --is-inside-work-tree` succeeds use `NEUTRAL_CWD=$(mktemp -d)`
       instead; then `cd "$NEUTRAL_CWD"`. State that no later step may `cd "$REPO"`, `cd "$SPEC_ROOT"`
