@@ -132,6 +132,30 @@ class CheckboxStatusDivergence(unittest.TestCase):
             self.assertEqual(findings[0]["task"], "1.2")
             self.assertEqual(findings[0]["base_status"], "pending")
 
+    def test_checkbox_check_parent_dir_removed_and_worktrees_dir_untouched(self):
+        """Throwaway checkout parent directories are removed when empty: after the
+        detector returns, `<repo>-checkbox-check/` is gone, while the sibling
+        `<repo>-worktrees/` (the task worktree root) is never touched."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = self._init_repo_with_tasks_md(
+                tmpdir, "add-export", TASKS_MD_ALL_TICKED
+            )
+            worktrees_root = repo.parent / f"{repo.name}-worktrees"
+            worktrees_root.mkdir()
+            marker = worktrees_root / "marker.txt"
+            marker.write_text("keep me\n")
+
+            integrate.detect_checkbox_status_divergence(
+                repo, "origin", "main", "add-export", [_task("1.1"), _task("1.2")]
+            )
+
+            self.assertFalse(
+                (repo.parent / f"{repo.name}-checkbox-check").exists(),
+                "empty checkbox-check parent dir must be removed",
+            )
+            self.assertTrue(worktrees_root.is_dir())
+            self.assertEqual(marker.read_text(), "keep me\n")
+
     def test_non_terminal_task_is_not_flagged(self):
         """A task still in flight has no delivery obligation yet -- only
         coordinator.DONE statuses are subject to the invariant."""
