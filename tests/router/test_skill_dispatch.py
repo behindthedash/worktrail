@@ -1913,6 +1913,41 @@ class SingleBriefLinkedDecisionTests(unittest.TestCase):
         self.assertIsNone(json.loads(stdout.getvalue()))
         self.assertIn(f"blocked_pending_decision: {dec_id} (open)", stderr.getvalue())
 
+    def test_repo_less_brief_with_unconsumable_answer_is_inferred_then_blocked(self):
+        """`infer_repo()` is gated only on "still repo-less": a canonical
+        repo-assignment answer that names an unknown repo leaves the brief
+        repo-less and unresolved, so inference still runs (and stamps the
+        brief) before the pending decision blocks the pickup."""
+        from worktrail.workqueue import queue_triage as qt
+        from worktrail.workqueue.repo_inference import InferenceResult
+
+        self.brief.write_text(
+            "---\nfocus: example brief\nstatus: queued\n---\n\nBody.\n",
+            encoding="utf-8",
+        )
+        dec_id = self._ask(qt.REPO_ASSIGNMENT_QUESTION)
+        decisions_mod.answer(dec_id, "no-such-repo", queue_base=self.base)
+        inferred = InferenceResult(repo=str(self.repo), rule="focus-mentions-repo")
+
+        with (
+            patch(
+                "worktrail.workqueue.repo_inference.infer_repo", return_value=inferred
+            ) as infer,
+            patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn,
+            self.assertRaises(qt.PendingDecision) as ctx,
+        ):
+            skill_dispatch.evaluate_single_brief(
+                self.brief, repo=None, repos_root=str(self.base / "repos")
+            )
+
+        infer.assert_called_once()
+        spawn.assert_not_called()
+        self.assertEqual(ctx.exception.decision_id, dec_id)
+        self.assertEqual(ctx.exception.status, "answered")
+        fm = qt.read_frontmatter(self.brief)
+        self.assertEqual(fm["repo"], str(self.repo))
+        self.assertEqual(fm["awaiting-decision"], dec_id)
+
     def test_answered_rehome_decision_overrides_the_passed_repo(self):
         from worktrail.workqueue import queue_triage as qt
 

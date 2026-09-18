@@ -244,7 +244,10 @@ def evaluate_single_brief(
     If `has_unresolved_decision()` is still true after the pre-pass (the
     linked decision is `open`, or `answered` but unconsumable), raises
     `queue_triage.PendingDecision` -- a brief genuinely waiting on a human
-    must not be evaluated, and nothing about it has changed.
+    must not be evaluated. The pre-pass has already run by then, so a
+    repo-less blocked brief may have been stamped with an inferred `repo:`
+    (the same thing a scheduled `evaluate` run would do); the decision link
+    itself is never touched, and no evaluator is spawned.
 
     A brief that still has no repo after the pre-pass and is due for
     escalation (`escalation_due()`) is verdicted directly by the escalation
@@ -296,7 +299,7 @@ def evaluate_single_brief(
             resolved_repo = decision_outcome["repo"]
     else:
         consume_answered_guidance(path)
-    if resolved_repo is None and decision_outcome is None:
+    if resolved_repo is None:
         result = repo_inference.infer_repo(_brief_focus(path), repos_root)
         if result.repo:
             _write_repo_inference(path, result)
