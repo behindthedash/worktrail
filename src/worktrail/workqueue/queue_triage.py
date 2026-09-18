@@ -201,7 +201,7 @@ repo), `fold-into-change` is never valid for these briefs. {propose_target_rule}
 If the brief needs to land somewhere but none of these repos fit, or you \
 cannot tell which one does, use `needs-decision` with a `question` asking \
 which repo it belongs to, rather than guessing a target. A brief that \
-lists a `Human decision` line below has that question settled by a human: \
+lists a `Human decision` line above has that question settled by a human: \
 treat the answer as binding, and never re-ask it via `needs-decision`.
 
 Step 2b — work-directly requires reproduction evidence:
@@ -1358,10 +1358,11 @@ def evaluate_group(
     through as a soft `prefer` hint (design D3: routing, not this caller, owns
     the tier's harness/model choice). `cwd` is the group's target repo checkout
     when `repo` is not `NO_REPO_KEY` (so the evaluator's `git`/`gh` calls run
-    against real repo state), else the worktrail repo itself. A brief whose
-    most recent note is `decision-answered` (`_answered_guidance()`) gets a
-    `Human decision: Q: <q> A: <a>` line so the evaluator treats that question
-    as settled rather than re-asking it via `needs-decision`.
+    against real repo state), else the worktrail repo itself. A brief with a
+    `decision-answered` note anywhere in its history gets a `Human decision:
+    Q: <q> A: <a>` line from its most recent such note (`_answered_guidance()`),
+    on every later evaluation too, so the evaluator treats that question as
+    settled rather than re-asking it via `needs-decision`.
 
     Before spawning, and only when `repo` is not `NO_REPO_KEY`, runs
     `_check_repo_archived()`. A confirmed `True` short-circuits: every brief in

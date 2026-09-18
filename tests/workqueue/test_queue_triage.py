@@ -5331,19 +5331,28 @@ class TestConsumeFreeformRehomeDecision(QueueTriageTestBase):
         self.assertEqual(decisions.decision_status(decision_id, self.base), "resolved")
 
     def test_freeform_answer_without_directive_is_ignored(self):
+        """A directive-less answer is not a re-home: `consume_repo_decision()`
+        leaves the brief and decision untouched. (`group_queue_by_repo()` then
+        consumes it as guidance via `consume_answered_guidance()` -- covered in
+        `test_queue_triage_inventory.py` -- without changing the repo.)"""
         from worktrail.workqueue import decisions
 
         (self.base / "devops").mkdir()
-        path = self.write("a.md", repo=str(self.base / "worktrail"))
+        repo = str(self.base / "worktrail")
+        path = self.write("a.md", repo=repo)
         decision_id = self._answered("Should we keep the retry?", "Yes, keep it")
         before = path.read_text(encoding="utf-8")
 
         self.assertIsNone(qt.consume_repo_decision(path, str(self.base)))
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+        self.assertEqual(decisions.decision_status(decision_id, self.base), "answered")
+
         _groups, _inferred, unresolvable = qt.group_queue_by_repo(str(self.base))
 
         self.assertEqual(unresolvable, [])
-        self.assertEqual(path.read_text(encoding="utf-8"), before)
-        self.assertEqual(decisions.decision_status(decision_id, self.base), "answered")
+        self.assertEqual(qt.read_frontmatter(path)["repo"], repo)
+        self.assertEqual(qt.triage_history(path)[-1].verdict, "decision-answered")
+        self.assertEqual(decisions.decision_status(decision_id, self.base), "resolved")
 
     def test_directive_naming_unknown_repo_is_ignored(self):
         from worktrail.workqueue import decisions
