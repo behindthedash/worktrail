@@ -43,7 +43,7 @@
 
 ## 3. Verification
 
-- [ ] 3.1 [depends: 1.1, 2.1] [e2e] Run `PYTHONPATH=src pytest -q tests/test_plugin_surface.py
+- [x] 3.1 [depends: 1.1, 2.1] [e2e] Run `PYTHONPATH=src pytest -q tests/test_plugin_surface.py
       tests/orchestrator/test_integrate.py tests/orchestrator/test_checkbox_status_divergence.py`,
       then `PYTHONPATH=src pytest -q` and
       `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`. Run
