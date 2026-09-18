@@ -180,6 +180,36 @@ def test_force_is_refused_when_task_worktrees_already_exist_for_the_spec(
     assert any("refused" in line for line in logs)
 
 
+def test_force_is_not_refused_by_the_spec_level_worktree_alone(change, tmp_path):
+    from worktrail.orchestrator import worktree as wt
+
+    spec_id, tasks = _load(change)
+    repo = change.parents[2]
+    kwargs = {"spec_id": spec_id, "repo": repo, "cache_dir": tmp_path / "plans"}
+
+    conductor_compile.compile_run_plan(
+        change,
+        tasks,
+        spawn=RecordingSpawn(
+            _reply(**{t["id"]: {"files": ["a.py"], "deps": []} for t in tasks})
+        ),
+        **kwargs,
+    )
+
+    (wt.default_worktree_base(repo) / f"{spec_id}-spec").mkdir(parents=True)
+
+    second_spawn = RecordingSpawn(
+        _reply(**{t["id"]: {"files": ["b.py"], "deps": []} for t in tasks})
+    )
+    logs: list[str] = []
+    second = conductor_compile.compile_run_plan(
+        change, tasks, force=True, spawn=second_spawn, log=logs.append, **kwargs
+    )
+    assert second_spawn.calls == 1
+    assert second.by_id()[tasks[0]["id"]].files == ("b.py",)
+    assert not any("refused" in line for line in logs)
+
+
 def test_allow_force_over_active_worktrees_overrides_the_guard(change, tmp_path):
     from worktrail.orchestrator import worktree as wt
 
