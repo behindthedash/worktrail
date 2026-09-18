@@ -1022,27 +1022,37 @@ def main(argv: list[str] | None = None) -> int:
         "per-repo evaluator, print the parsed verdict JSON, and exit "
         "without spawning a dispatch child",
     )
-    parser.add_argument(
+    apply_group = parser.add_mutually_exclusive_group()
+    apply_group.add_argument(
         "--apply-brief-triage",
         metavar="VERDICT_JSON",
         default=None,
         help="apply (or, without --confirm, only preview) one verdict JSON "
         "object -- as printed by --evaluate-brief-triage -- via "
         "queue_triage's apply path, print the action-log entry, and exit "
-        "without spawning a dispatch child",
+        "without spawning a dispatch child (see --apply-brief-triage-file "
+        "to read the same JSON from a file instead of retyping it)",
+    )
+    apply_group.add_argument(
+        "--apply-brief-triage-file",
+        metavar="VERDICT_PATH",
+        default=None,
+        help="like --apply-brief-triage, but read the verdict JSON from "
+        "VERDICT_PATH (e.g. --evaluate-brief-triage's redirected stdout) "
+        "instead of an inline argument; mutually exclusive with it",
     )
     parser.add_argument(
         "--triage-repo",
         default=None,
-        help="repo: value for --evaluate-brief-triage/--apply-brief-triage "
-        "(omit for a repo-less brief)",
+        help="repo: value for --evaluate-brief-triage/--apply-brief-triage/"
+        "--apply-brief-triage-file (omit for a repo-less brief)",
     )
     parser.add_argument(
         "--triage-agent",
         default="claude",
         choices=SUPPORTED_AGENTS,
         help="evaluator/proposer agent hint for --evaluate-brief-triage/"
-        "--apply-brief-triage (default claude)",
+        "--apply-brief-triage/--apply-brief-triage-file (default claude)",
     )
     parser.add_argument(
         "--triage-repos-root",
@@ -1054,8 +1064,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--confirm",
         action="store_true",
-        help="with --apply-brief-triage, execute the verdict's action "
-        "instead of only previewing it",
+        help="with --apply-brief-triage/--apply-brief-triage-file, execute "
+        "the verdict's action instead of only previewing it",
     )
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
@@ -1063,11 +1073,13 @@ def main(argv: list[str] | None = None) -> int:
     triage_mode = (
         parsed.evaluate_brief_triage is not None
         or parsed.apply_brief_triage is not None
+        or parsed.apply_brief_triage_file is not None
     )
     if parsed.present_decision is None and not triage_mode and not parsed.skill:
         parser.error(
             "--skill is required unless --present-decision, "
-            "--evaluate-brief-triage, or --apply-brief-triage is used"
+            "--evaluate-brief-triage, --apply-brief-triage, or "
+            "--apply-brief-triage-file is used"
         )
     if (
         parsed.present_decision is None
@@ -1077,7 +1089,8 @@ def main(argv: list[str] | None = None) -> int:
     ):
         parser.error(
             "--agent is required unless --present-decision, "
-            "--evaluate-brief-triage, --apply-brief-triage, or --routing is used"
+            "--evaluate-brief-triage, --apply-brief-triage, "
+            "--apply-brief-triage-file, or --routing is used"
         )
     if parsed.no_inherit_codex_auth and parsed.agent != "codex":
         parser.error("--no-inherit-codex-auth is only valid with --agent codex")
@@ -1111,10 +1124,31 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         print(json.dumps(asdict(verdict) if verdict is not None else None))
         return 0 if verdict is not None else 1
-    if parsed.apply_brief_triage is not None:
+    if (
+        parsed.apply_brief_triage is not None
+        or parsed.apply_brief_triage_file is not None
+    ):
         from ..workqueue.queue_triage import Verdict
 
-        payload = json.loads(parsed.apply_brief_triage)
+        if parsed.apply_brief_triage_file is not None:
+            verdict_path = parsed.apply_brief_triage_file
+            try:
+                payload = json.loads(Path(verdict_path).read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                print(
+                    json.dumps(
+                        {
+                            "brief_id": None,
+                            "verdict": None,
+                            "status": "error",
+                            "path": None,
+                            "error": f"cannot read verdict file {verdict_path}: {exc}",
+                        }
+                    )
+                )
+                return 1
+        else:
+            payload = json.loads(parsed.apply_brief_triage)
         reason = None
         if payload is None:
             reason = "payload is null -- no verdict to apply"
