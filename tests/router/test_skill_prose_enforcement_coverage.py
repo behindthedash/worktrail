@@ -244,13 +244,47 @@ class TestPhase2IntakeGateNoConfirmationPrompt(unittest.TestCase):
 
     def test_apply_call_passes_confirm(self):
         gate_text = _phase_2_intake_gate_text()
-        apply_start = gate_text.index("--apply-brief-triage")
+        apply_start = gate_text.index("--apply-brief-triage-file")
         apply_call = gate_text[apply_start : apply_start + 200]
         self.assertIn(
             "--confirm",
             apply_call,
-            "Phase 2 intake-brief triage gate's --apply-brief-triage call no "
-            "longer passes --confirm",
+            "Phase 2 intake-brief triage gate's --apply-brief-triage-file call "
+            "no longer passes --confirm",
+        )
+
+    def test_gate_carries_only_the_verdict_path_between_steps(self):
+        """apply-brief-triage-verdict-from-file: step 1 redirects the
+        evaluator's stdout to a file and step 2 applies from that file, so
+        the verdict JSON is never captured into a shell variable and
+        re-typed into the apply command."""
+        gate_text = _phase_2_intake_gate_text()
+        self.assertIn(
+            "--apply-brief-triage-file",
+            gate_text,
+            "Phase 2 intake-brief triage gate no longer applies the verdict "
+            "via --apply-brief-triage-file",
+        )
+        evaluate_start = gate_text.index("--evaluate-brief-triage")
+        evaluate_block_end = gate_text.index("```", evaluate_start)
+        evaluate_block = gate_text[evaluate_start:evaluate_block_end]
+        self.assertIn(
+            '> "$VERDICT_FILE"',
+            evaluate_block,
+            "Phase 2 intake-brief triage gate's evaluate block no longer "
+            "redirects the evaluator's stdout to $VERDICT_FILE",
+        )
+        self.assertNotIn(
+            "VERDICT_JSON=$(",
+            gate_text,
+            "Phase 2 intake-brief triage gate captures the verdict JSON into "
+            "a shell variable again",
+        )
+        self.assertNotIn(
+            '--apply-brief-triage "$VERDICT_JSON"',
+            gate_text,
+            "Phase 2 intake-brief triage gate passes the verdict JSON inline "
+            "to --apply-brief-triage again",
         )
 
     def test_names_work_directly_and_never_continues_to_phase_3_claim(self):

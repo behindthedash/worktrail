@@ -276,11 +276,17 @@ repo token in the invocation itself) before doing anything else:
      evaluator, so the same evidence-required verdict rule (2.x) governs an interactive
      pickup as a scheduled `evaluate` run:
      ```bash
-     VERDICT_JSON=$(worktrail-skill-dispatch \
+     VERDICT_FILE="${TMPDIR:-/tmp}/triage-verdict-${BRIEF_ID}.json"
+     worktrail-skill-dispatch \
        --evaluate-brief-triage "$BRIEF_PATH" \
        ${BRIEF_REPO:+--triage-repo "$BRIEF_REPO"} \
-       --triage-agent "$INVOCATION_CONTEXT_AGENT")
+       --triage-agent "$INVOCATION_CONTEXT_AGENT" > "$VERDICT_FILE"
+     echo "exit=$?"; cat "$VERDICT_FILE"
      ```
+     The verdict JSON is never captured into a shell variable or re-typed: the
+     evaluator's stdout goes straight to `$VERDICT_FILE`, and the exit code plus the
+     file's contents are printed so both branches below are judged from that one
+     call's output.
      A brief with no `repo:` frontmatter (`$BRIEF_REPO` empty) omits `--triage-repo`;
      the evaluator then runs it in the repo-less (`__none__`) group, exactly as a
      scheduled `evaluate` run does, and returns `needs-decision` asking which repo owns
@@ -288,12 +294,12 @@ repo token in the invocation itself) before doing anything else:
 
      Two non-zero exits are distinct cases, and neither one proceeds to step 2:
      - **Exit 2** with a `blocked_no_capacity: <repo>/<failure_class>: <detail>` line on
-       stderr (`VERDICT_JSON` prints `null`) means no model ever evaluated the brief —
+       stderr (`$VERDICT_FILE` prints `null`) means no model ever evaluated the brief —
        the evaluator spawn gave up on capacity (e.g. a provider usage cap). Report the
        capacity block to the user, do **not** run the apply step below, and leave the
        brief queued exactly as it is; nothing about it has changed, so re-running later
        is the whole remedy.
-     - **Exit 1** with `VERDICT_JSON` printing `null` means a model did evaluate the
+     - **Exit 1** with `$VERDICT_FILE` printing `null` means a model did evaluate the
        brief but produced no identifiable verdict for this brief id at all — report that
        and stop rather than guessing one.
   2. Apply the verdict unconditionally via the same `queue_triage` apply path 3.x's
@@ -303,11 +309,15 @@ repo token in the invocation itself) before doing anything else:
      interactive pickup applies it the same way a scheduled `evaluate`/`apply` pair
      does:
      ```bash
+     VERDICT_FILE="${TMPDIR:-/tmp}/triage-verdict-${BRIEF_ID}.json"
      ACTION_LOG_JSON=$(worktrail-skill-dispatch \
-       --apply-brief-triage "$VERDICT_JSON" \
+       --apply-brief-triage-file "$VERDICT_FILE" \
        --triage-agent "$INVOCATION_CONTEXT_AGENT" \
        --confirm)
      ```
+     The apply reads the verdict from the file step 1 wrote. The path is re-derived
+     from the brief id (the same `$VERDICT_FILE` expression as step 1) — the verdict
+     JSON is never re-typed into the command.
      Run the apply with the Bash tool's `timeout` parameter set to 600000 (the apply can
      itself drive a PR through `worktrail-land-pr`'s CI-watch to a terminal outcome).
      Report the resulting `pr_url` and `landing.outcome` to the user. On a
