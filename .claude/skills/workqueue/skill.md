@@ -146,6 +146,15 @@ move-a-brief mechanism never diverges between callers.
   `--triage-repos-root` flag, and a brief with no `repo:` frontmatter reaching evaluation is
   still evaluated in the repo-less `__none__` group and comes back `needs-decision` when the
   target cannot be told from the brief.
+- **`cmd_evaluate()` resolves a group's `repo:` frontmatter against `repos_root` before using it
+  as the evaluator subprocess `cwd` — never the raw frontmatter string.** It calls the same
+  `dashboard._resolve_repo_dir(repo, repos_root)` already used elsewhere in this module (e.g. the
+  WIP-cap check, `_apply_close`), not a second resolution path. When a group's `repo` value
+  doesn't resolve to a real directory under `repos_root` (a bare non-canonical name like
+  `repo: aspens`, or a typo), that group is skipped — logged and counted in `groups_unevaluated`
+  — instead of using it directly as `subprocess.run()`'s `cwd`, which previously raised
+  `FileNotFoundError` and aborted the *entire* `evaluate` run, including every other group that
+  would otherwise have evaluated fine.
 
 ## Critical files
 - `workqueue/work_queue.py` — the single implementation every consumer shares; do not reimplement
@@ -156,7 +165,9 @@ move-a-brief mechanism never diverges between callers.
   fold-into-change, propose-change, keep); the only caller that closes briefs with `triaged=True`.
   `_fold_task_file_scope` derives the folded task's `files:` scope from evidence paths.
   `_worktree_pr_close()` is the shared fold-into-change/propose-change pipeline and claims the
-  brief before any git/worktree/`land_pr` work (see the claim-first guard above)
+  brief before any git/worktree/`land_pr` work (see the claim-first guard above). `cmd_evaluate()`
+  resolves each group's `repo:` via `_resolve_repo_dir()` before using it as the evaluator `cwd`,
+  skipping (not crashing on) a group whose repo doesn't resolve
 - `workqueue/create_handoff.py` (via `worktrail-handoff`) — brief creation entrypoint; delegates
   repo inference to `repo_inference.infer_repo()` with a prefix-match fallback
 - `workqueue/repo_inference.py` — `InferenceResult(repo, rule, candidates)` + `infer_repo()`; the
@@ -174,6 +185,10 @@ move-a-brief mechanism never diverges between callers.
 - Never move the `claim()` call in `_worktree_pr_close()` later in the pipeline — it must stay
   first, before `git fetch`/worktree creation, so a concurrent triage run on the same brief is
   rejected before any duplicate work starts.
+- Never use a group's raw `repo:` frontmatter string directly as a subprocess `cwd` in
+  `cmd_evaluate()` — always resolve it through `_resolve_repo_dir(repo, repos_root)` first and
+  skip the group if it doesn't resolve, so one bad `repo:` value can't abort every other group's
+  evaluation.
 
 ---
-**Last Updated:** 2026-09-15
+**Last Updated:** 2026-09-18
