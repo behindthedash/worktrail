@@ -200,7 +200,9 @@ this repo, use `propose-change` with a `target_repo` and a kebab-case \
 repo), `fold-into-change` is never valid for these briefs. {propose_target_rule} \
 If the brief needs to land somewhere but none of these repos fit, or you \
 cannot tell which one does, use `needs-decision` with a `question` asking \
-which repo it belongs to, rather than guessing a target.
+which repo it belongs to, rather than guessing a target. A brief that \
+lists a `Human decision` line below has that question settled by a human: \
+treat the answer as binding, and never re-ask it via `needs-decision`.
 
 Step 2b — work-directly requires reproduction evidence:
 Use `work-directly` only when your evidence cites a specific test, check, or \
@@ -307,6 +309,12 @@ def group_queue_by_repo(
     is regrouped under its new repo in this same call, anything else leaves it
     in its existing group (never reported as `unresolvable`).
 
+    In either branch, whenever `consume_repo_decision()` returns `None` the
+    brief's answered decision (if any) is consumed as free-form guidance via
+    `consume_answered_guidance()` instead -- noted on the brief and archived,
+    but joining neither `inferred` nor `unresolvable`. A repo-less brief only
+    falls through to `infer_repo()` after both consumers have declined.
+
     Returns `(groups, inferred, unresolvable)`: `inferred` is one entry per
     brief the pre-pass resolved this call (decision or inference alike),
     `unresolvable` is one entry per brief whose answered repo-assignment
@@ -332,6 +340,7 @@ def group_queue_by_repo(
                 else:
                     unresolvable.append(decision_outcome)
             else:
+                consume_answered_guidance(path)
                 result = repo_inference.infer_repo(_brief_focus(path), repos_root)
                 if result.repo:
                     _write_repo_inference(path, result)
@@ -341,7 +350,9 @@ def group_queue_by_repo(
                     )
         else:
             decision_outcome = consume_repo_decision(path, repos_root)
-            if decision_outcome is not None and decision_outcome.get("resolved"):
+            if decision_outcome is None:
+                consume_answered_guidance(path)
+            elif decision_outcome.get("resolved"):
                 key = decision_outcome["repo"]
                 inferred.append(decision_outcome)
         groups.setdefault(key, []).append(path)
@@ -430,17 +441,26 @@ def consecutive_keep_count(path: Path) -> int:
     return count
 
 
+# `## Triage` notes that record queue-time bookkeeping rather than an
+# evaluator's outcome: they never count toward `is_recently_triaged()`.
+_NON_TRIAGE_VERDICTS = frozenset({"repo-inferred", "decision-answered"})
+
+
 def is_recently_triaged(path: Path, within_days: int) -> bool:
-    """True if `path`'s most recent non-`repo-inferred` ``## Triage`` section is within `within_days`.
+    """True if `path`'s most recent triage-outcome ``## Triage`` section is within `within_days`.
 
     Lenient like the rest of this module's date handling (`work_queue._is_not_yet_due`,
     `_recently_released_info`): an unreadable file, a body with no `## Triage` section, or
     every such section carrying an unparsable date all fall through to False rather than
     raising, since a dedup check that can't confirm recency must not block a brief from
     being evaluated. Per design D2, a `verdict: repo-inferred` note (queue-time repo
-    inference, not a triage outcome) never counts toward this window on its own.
+    inference, not a triage outcome) never counts toward this window on its own, and
+    neither does a `verdict: decision-answered` note (`consume_answered_guidance()`'s
+    record of a human answer, which exists precisely so the brief *is* re-evaluated).
     """
-    dates = [n.date for n in triage_history(path) if n.verdict != "repo-inferred"]
+    dates = [
+        n.date for n in triage_history(path) if n.verdict not in _NON_TRIAGE_VERDICTS
+    ]
     if not dates:
         return False
 
@@ -816,6 +836,99 @@ def consume_repo_decision(
         "rule": result.rule,
         "decision_id": decision_id,
     }
+
+
+def consume_answered_guidance(path: Path) -> dict[str, Any] | None:
+    """Consume `path`'s answered decision as free-form human guidance.
+
+    The complement of `consume_repo_decision()`: that function owns any answer
+    that assigns or re-homes a repo, this one owns everything else -- the
+    "keep it here", "proceed as scoped", "yes" answers a `needs-decision`
+    verdict's question gets, which change nothing about the brief's repo but
+    must still reach the next evaluator run instead of being re-asked.
+
+    Returns `None` when `path` has no `awaiting-decision` link, the link is
+    not `answered`, the envelope does not load, the question is
+    `REPO_ASSIGNMENT_QUESTION` (its unresolvable answer stays reported by
+    `consume_repo_decision()`, never consumed here), or the answer carries a
+    re-home directive (`_REHOME_DIRECTIVE_RE` -- an unknown-repo directive
+    stays untouched for a later human correction). Otherwise appends a
+    `## Triage <date>` note (`verdict: decision-answered`, `decision: <id>`,
+    `question: <q>`, `answer: <whitespace-collapsed answer>`), archives the
+    decision via `decisions.resolve_decision()` (which also clears the
+    brief's link), and returns `{"answered": True, "path", "decision_id",
+    "question", "answer"}`. `_answered_guidance()` reads the note back for
+    `evaluate_group()`'s prompt.
+    """
+    info = _awaiting_decision_info(path)
+    decision_id = info["awaiting_decision"]
+    if not decision_id or info["decision_status"] != "answered":
+        return None
+    envelope = decisions.load_decision_envelope(decision_id)
+    if envelope is None:
+        return None
+    question = " ".join((envelope.get("question") or "").split())
+    if question == REPO_ASSIGNMENT_QUESTION:
+        return None
+    answer = " ".join((envelope.get("answer") or "").split())
+    if _REHOME_DIRECTIVE_RE.search(answer):
+        return None
+
+    run_date = datetime.date.today().isoformat()  # noqa: DTZ011
+    content = path.read_text(encoding="utf-8")
+    path.write_text(
+        content.rstrip("\n") + f"\n\n## Triage {run_date}\n\nverdict: decision-answered"
+        f"\ndecision: {decision_id}\nquestion: {question}\nanswer: {answer}\n",
+        encoding="utf-8",
+    )
+    decisions.resolve_decision(decision_id)
+    return {
+        "answered": True,
+        "path": path,
+        "decision_id": decision_id,
+        "question": question,
+        "answer": answer,
+    }
+
+
+_GUIDANCE_QUESTION_LINE_RE = re.compile(r"^question:\s*(.*?)\s*$")
+_GUIDANCE_ANSWER_LINE_RE = re.compile(r"^answer:\s*(.*?)\s*$")
+
+
+def _answered_guidance(path: Path) -> tuple[str, str] | None:
+    """`(question, answer)` from `path`'s most recent `decision-answered` note, or `None`.
+
+    Reads back what `consume_answered_guidance()` wrote so `evaluate_group()`
+    can hand the settled human decision to the evaluator. Lenient like
+    `triage_history()`: an unreadable file, no such note, or a note missing
+    either line all return `None`.
+    """
+    try:
+        content = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    _, body = split_frontmatter(content)
+    headings = list(_TRIAGE_HEADING_RE.finditer(body))
+    for i in range(len(headings) - 1, -1, -1):
+        start = headings[i].end()
+        end = headings[i + 1].start() if i + 1 < len(headings) else len(body)
+        lines = [ln.strip() for ln in body[start:end].splitlines() if ln.strip()]
+        if not lines:
+            continue
+        vm = _TRIAGE_VERDICT_LINE_RE.match(lines[0])
+        if not vm or vm.group(1) != "decision-answered":
+            continue
+        question = answer = None
+        for line in lines[1:]:
+            qm = _GUIDANCE_QUESTION_LINE_RE.match(line)
+            am = _GUIDANCE_ANSWER_LINE_RE.match(line)
+            if qm and question is None:
+                question = qm.group(1)
+            elif am and answer is None:
+                answer = am.group(1)
+        if question is not None and answer is not None:
+            return question, answer
+    return None
 
 
 _MIN_CANDIDATE_SCORE = 0.45
@@ -1210,6 +1323,24 @@ class EvaluatorUnavailable(Exception):
         )
 
 
+class PendingDecision(Exception):
+    """A brief still carries an unresolved `awaiting-decision` link.
+
+    Raised by the single-brief pickup gate (`skill_dispatch.evaluate_single_brief()`)
+    after `consume_repo_decision()` and `consume_answered_guidance()` both declined
+    and `has_unresolved_decision()` is still true: the brief must not be evaluated
+    until a human answers. Carries `decision_id` and the record's `status`
+    (`open`, or `answered` but unconsumable) for the caller to report.
+    """
+
+    def __init__(self, decision_id: str, status: str | None):
+        self.decision_id = decision_id
+        self.status = status
+        super().__init__(
+            f"brief blocked on pending decision {decision_id} ({status or 'unknown'})"
+        )
+
+
 def evaluate_group(
     repo: str,
     briefs: list[Path],
@@ -1227,7 +1358,10 @@ def evaluate_group(
     through as a soft `prefer` hint (design D3: routing, not this caller, owns
     the tier's harness/model choice). `cwd` is the group's target repo checkout
     when `repo` is not `NO_REPO_KEY` (so the evaluator's `git`/`gh` calls run
-    against real repo state), else the worktrail repo itself.
+    against real repo state), else the worktrail repo itself. A brief whose
+    most recent note is `decision-answered` (`_answered_guidance()`) gets a
+    `Human decision: Q: <q> A: <a>` line so the evaluator treats that question
+    as settled rather than re-asking it via `needs-decision`.
 
     Before spawning, and only when `repo` is not `NO_REPO_KEY`, runs
     `_check_repo_archived()`. A confirmed `True` short-circuits: every brief in
@@ -1324,6 +1458,11 @@ def evaluate_group(
         f"  Candidate targets: {_format_candidates(candidates_by_path[path])}\n"
         f"  Premise check: "
         f"{premise_check.format_premise_block(premise_by_path[path])}"
+        + (
+            f"\n  Human decision: Q: {guidance[0]} A: {guidance[1]}"
+            if (guidance := _answered_guidance(path)) is not None
+            else ""
+        )
         for path in briefs
     )
     known_repos = _known_repos(repos_root) if repo == NO_REPO_KEY else []
