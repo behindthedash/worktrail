@@ -18,7 +18,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [depends: 1.1] [e2e] Run `PYTHONPATH=src pytest -q tests/orchestrator`, then
+- [x] 2.1 [depends: 1.1] [e2e] Run `PYTHONPATH=src pytest -q tests/orchestrator`, then
       `PYTHONPATH=src pytest -q` and
       `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`. Run
       `openspec validate orchestrator-foreign-repo-commit-detection --strict` and
