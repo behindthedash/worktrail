@@ -211,6 +211,9 @@ class TestCmdEvaluateExhaustedGroup(ExhaustionTestBase):
             ]
 
         out_dir = self.base / "out-run"
+        repos_root = self.base / "repos"
+        (repos_root / "repo-a").mkdir(parents=True)
+        (repos_root / "repo-b").mkdir(parents=True)
         buf = io.StringIO()
         with (
             mock.patch(
@@ -219,7 +222,16 @@ class TestCmdEvaluateExhaustedGroup(ExhaustionTestBase):
             ),
             redirect_stdout(buf),
         ):
-            exit_code = qt.main(["evaluate", "--out-dir", str(out_dir), "--json"])
+            exit_code = qt.main(
+                [
+                    "evaluate",
+                    "--out-dir",
+                    str(out_dir),
+                    "--json",
+                    "--repos-root",
+                    str(repos_root),
+                ]
+            )
 
         self.assertNotEqual(exit_code, 0)
 
@@ -251,6 +263,9 @@ class TestCmdEvaluateExhaustedGroup(ExhaustionTestBase):
             ]
 
         out_dir = self.base / "out-text"
+        repos_root = self.base / "repos"
+        (repos_root / "repo-a").mkdir(parents=True)
+        (repos_root / "repo-b").mkdir(parents=True)
         buf = io.StringIO()
         with (
             mock.patch(
@@ -259,13 +274,92 @@ class TestCmdEvaluateExhaustedGroup(ExhaustionTestBase):
             ),
             redirect_stdout(buf),
         ):
-            exit_code = qt.main(["evaluate", "--out-dir", str(out_dir)])
+            exit_code = qt.main(
+                [
+                    "evaluate",
+                    "--out-dir",
+                    str(out_dir),
+                    "--repos-root",
+                    str(repos_root),
+                ]
+            )
 
         self.assertNotEqual(exit_code, 0)
         self.assertIn("groups unevaluated: 2", buf.getvalue())
         self.assertEqual(
             json.loads((out_dir / "verdict.json").read_text(encoding="utf-8")), []
         )
+
+
+class TestCmdEvaluateUnresolvedRepo(ExhaustionTestBase):
+    """A bare `repo:` frontmatter value (e.g. `repo: aspens`, not resolved
+    against `repos_root`) must not crash the whole `evaluate` run. Before this
+    fix, `cmd_evaluate()` used the raw frontmatter string directly as the
+    evaluator subprocess `cwd`, which raised `FileNotFoundError` out of
+    `subprocess.run()` for a non-existent directory -- aborting every other
+    group's evaluation too, not just the unresolved one.
+    """
+
+    def test_unresolved_repo_group_is_skipped_not_crashed(self):
+        self.write("a1.md", repo="behindthedash/repo-a")
+        self.write("b1.md", repo="does-not-exist-anywhere")
+
+        def fake_evaluate_group(repo, briefs, **kwargs):
+            ids = [p.stem for p in briefs]
+            raw = json.dumps(
+                {
+                    "brief_id": ids[0],
+                    "verdict": "stale-close",
+                    "duplicate_of": None,
+                    "evidence": "PR #42 already shipped this",
+                    "confidence": "high",
+                }
+            )
+            return [
+                {
+                    "repo": repo,
+                    "brief_ids": ids,
+                    "raw_text": raw,
+                    "candidates_by_brief": {bid: [] for bid in ids},
+                    "known_repos_by_brief": {},
+                }
+            ]
+
+        out_dir = self.base / "out-run"
+        repos_root = self.base / "repos"
+        (repos_root / "repo-a").mkdir(parents=True)
+        buf = io.StringIO()
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.evaluate_group",
+                side_effect=fake_evaluate_group,
+            ) as mock_eval,
+            redirect_stdout(buf),
+        ):
+            exit_code = qt.main(
+                [
+                    "evaluate",
+                    "--out-dir",
+                    str(out_dir),
+                    "--json",
+                    "--repos-root",
+                    str(repos_root),
+                ]
+            )
+
+        # Non-zero (a group was unevaluated), but every other group still ran
+        # -- an unresolved repo never aborts the whole run.
+        self.assertNotEqual(exit_code, 0)
+        payload = json.loads(buf.getvalue())
+        self.assertEqual(payload["groups_unevaluated"], 1)
+        self.assertEqual(payload["groups_evaluated"], 1)
+        self.assertEqual(
+            {call.args[0] for call in mock_eval.call_args_list},
+            {"behindthedash/repo-a"},
+        )
+
+        entries = json.loads((out_dir / "verdict.json").read_text(encoding="utf-8"))
+        self.assertEqual([e["brief_id"] for e in entries], ["a1"])
 
 
 class TestDrainAppliesPartiallyEvaluatedRun(unittest.TestCase):

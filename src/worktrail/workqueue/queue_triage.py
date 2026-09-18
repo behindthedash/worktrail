@@ -3651,7 +3651,20 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
     verdicts: list[Verdict] = []
     groups_unevaluated = 0
     for repo, briefs in groups.items():
-        cwd = repo if repo != NO_REPO_KEY else _worktrail_repo_root()
+        if repo == NO_REPO_KEY:
+            cwd = _worktrail_repo_root()
+        else:
+            resolved = _resolve_repo_dir(repo, repos_root)
+            if resolved is None:
+                groups_unevaluated += 1
+                logger.warning(
+                    "group not evaluated: repo %r did not resolve to a directory "
+                    "under repos_root %r",
+                    repo,
+                    repos_root,
+                )
+                continue
+            cwd = resolved
         try:
             verdicts.extend(
                 evaluate_briefs(
