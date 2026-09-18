@@ -1,6 +1,6 @@
 ## 1. Re-scope verb in the re-home directive (`queue-triage`)
 
-- [ ] 1.1 In `src/worktrail/workqueue/queue_triage.py`, extend `_REHOME_DIRECTIVE_RE`'s verb
+- [x] 1.1 In `src/worktrail/workqueue/queue_triage.py`, extend `_REHOME_DIRECTIVE_RE`'s verb
       alternation from `(?:re-?home|move|retarget|reassign)` to also accept `re-?scope`, and
       mention the new phrasing in the comment above it. No other part of the pattern or of
       `consume_repo_decision()` changes.
