@@ -24,6 +24,7 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from ..orchestrator.live import WorktreeAddError, bootstrap_worktree
 from ..router import brief_probes, overlap_check
 from ..router.dashboard import _resolve_repo_dir
 from ..router.land_pr import LandRequest, land_pr
@@ -2744,7 +2745,11 @@ def _worktree_pr_close(
     fold target committed locally but never pushed, so the worktree lacked
     files present at local HEAD), this returns `status="error"` naming the
     unpushed count rather than branching off a remote ref that predates the
-    target change -- then calls `prepare(worktree_dir)` to let the caller author the
+    target change -- then bootstraps the fresh worktree with the repo policy's
+    `worktree_bootstrap_cmd` (via `orchestrator.live.bootstrap_worktree`,
+    `required=True`; unset/empty runs nothing, a failure returns
+    `status="error"` naming the bootstrap and never reaches `land_pr`) --
+    then calls `prepare(worktree_dir)` to let the caller author the
     change in place (returning an error string on failure, `None` on
     success), runs `openspec validate <validate_target> --strict`, and runs
     `worktrail-compile` on the change so its `.compile-ok` marker matches the
@@ -2844,6 +2849,27 @@ def _worktree_pr_close(
             }
 
         try:
+            from ..router import policy as policy_mod
+
+            bootstrap_cmd = policy_mod.load_policy(repo_path).get(
+                "worktree_bootstrap_cmd"
+            )
+            try:
+                bootstrap_worktree(
+                    worktree_dir,
+                    bootstrap_cmd,
+                    log=lambda msg: print(msg, file=sys.stderr),
+                    required=True,
+                )
+            except WorktreeAddError as e:
+                return {
+                    **result,
+                    "status": "error",
+                    "path": None,
+                    "error": f"worktree bootstrap failed: {e}",
+                    "branch": branch,
+                }
+
             prepare_error = prepare(worktree_dir)
             if prepare_error:
                 return {

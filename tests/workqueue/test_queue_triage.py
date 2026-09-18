@@ -3036,6 +3036,130 @@ class TestApplyProposeChange(QueueTriageTestBase):
         self.assertIn("missing repo or proposed_change_name", entry["error"])
         self.assertTrue((self.queue / "a.md").exists())
 
+    def _write_policy(self, text: str) -> None:
+        from worktrail.router import policy as policy_mod
+
+        policy_path = policy_mod.policy_file_path(self.repo)
+        policy_path.parent.mkdir(parents=True, exist_ok=True)
+        policy_path.write_text(text, encoding="utf-8")
+
+    def _patch_bootstrap(self, *, fail: bool = False):
+        """Patch `queue_triage.bootstrap_worktree` with a recorder that appends a
+        `["<bootstrap>", cmd, cwd]` marker to `self.seen` so ordering against
+        the git/openspec calls can be asserted, optionally raising
+        `WorktreeAddError` like the real helper does under `required=True`."""
+        from worktrail.orchestrator.live import WorktreeAddError
+
+        def _bootstrap(wt, cmd, log=print, *, required=False):
+            if not cmd:
+                return False
+            self.seen.append(["<bootstrap>", cmd, str(wt)])
+            self.assertTrue(required)
+            if fail:
+                raise WorktreeAddError(f"required worktree bootstrap failed in {wt}")
+            return True
+
+        return mock.patch(
+            "worktrail.workqueue.queue_triage.bootstrap_worktree",
+            side_effect=_bootstrap,
+        )
+
+    def _landed(self) -> LandOutcome:
+        return LandOutcome(
+            outcome="landed",
+            pr_url="https://github.com/acme/widgets/pull/43",
+            pr_number=43,
+            labels=["go:risk-low"],
+            run=None,
+            final_status="completed_pr_open",
+        )
+
+    def test_bootstrap_runs_in_worktree_after_add_and_before_land_pr(self):
+        self._write_policy("worktree_bootstrap_cmd: npm ci\n")
+        run = self._dispatcher()
+        land_calls: list[str] = []
+
+        def _land(request):
+            land_calls.append("land_pr")
+            self.seen.append(["<land_pr>"])
+            return self._landed()
+
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+            ),
+            mock.patch("worktrail.workqueue.queue_triage.land_pr", side_effect=_land),
+            mock.patch(
+                "worktrail.orchestrator.spawnlib.spawn_agent", side_effect=self._spawn()
+            ),
+            self._patch_bootstrap(),
+        ):
+            log = qt.apply_verdicts([self.verdict], confirm=True)
+
+        entry = log[0]
+        self.assertEqual(entry["status"], "executed", entry)
+        bootstraps = [c for c in self.seen if c[0] == "<bootstrap>"]
+        self.assertEqual(len(bootstraps), 1)
+        self.assertEqual(bootstraps[0][1], "npm ci")
+        self.assertEqual(bootstraps[0][2], str(self.worktree_dir))
+        add_idx = next(
+            i for i, c in enumerate(self.seen) if "worktree" in c and "add" in c
+        )
+        boot_idx = self.seen.index(bootstraps[0])
+        land_idx = self.seen.index(["<land_pr>"])
+        self.assertLess(add_idx, boot_idx)
+        self.assertLess(boot_idx, land_idx)
+        self.assertEqual(land_calls, ["land_pr"])
+
+    def test_no_bootstrap_cmd_runs_no_bootstrap(self):
+        run = self._dispatcher()
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+            ),
+            mock.patch(
+                "worktrail.workqueue.queue_triage.land_pr",
+                return_value=self._landed(),
+            ),
+            mock.patch(
+                "worktrail.orchestrator.spawnlib.spawn_agent", side_effect=self._spawn()
+            ),
+            self._patch_bootstrap(),
+        ):
+            log = qt.apply_verdicts([self.verdict], confirm=True)
+
+        self.assertEqual(log[0]["status"], "executed", log[0])
+        self.assertFalse(any(c[0] == "<bootstrap>" for c in self.seen))
+        # the real helper's shell call would be a string command, never a list
+        self.assertTrue(all(isinstance(c, list) for c in self.seen))
+
+    def test_bootstrap_failure_releases_brief_and_never_lands(self):
+        self._write_policy("worktree_bootstrap_cmd: npm ci\n")
+        run = self._dispatcher()
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+            ),
+            mock.patch("worktrail.workqueue.queue_triage.land_pr") as mock_land_pr,
+            mock.patch(
+                "worktrail.orchestrator.spawnlib.spawn_agent", side_effect=self._spawn()
+            ),
+            self._patch_bootstrap(fail=True),
+        ):
+            log = qt.apply_verdicts([self.verdict], confirm=True)
+
+        entry = log[0]
+        self.assertEqual(entry["status"], "error")
+        self.assertIn("worktree bootstrap failed", entry["error"])
+        self.assertEqual(entry["branch"], self.branch)
+        self.assertNotIn("pr_url", entry)
+        mock_land_pr.assert_not_called()
+        self.assertTrue((self.queue / "a.md").exists())
+        self.assertEqual(qt.read_frontmatter(self.queue / "a.md")["status"], "queued")
+        self.assertTrue(
+            any("worktree" in c and "remove" in c for c in self.seen), self.seen
+        )
+
 
 class TestApplyRepoResolution(QueueTriageTestBase):
     """1.1: `repo` must be resolved to an on-disk checkout (via
