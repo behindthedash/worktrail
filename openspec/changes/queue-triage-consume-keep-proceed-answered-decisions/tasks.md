@@ -51,7 +51,7 @@
 
 ## 3. Verification
 
-- [ ] 3.1 [depends: 1.1, 2.1] [e2e] Run `PYTHONPATH=src pytest -q tests/workqueue tests/router`,
+- [x] 3.1 [depends: 1.1, 2.1] [e2e] Run `PYTHONPATH=src pytest -q tests/workqueue tests/router`,
       then `PYTHONPATH=src pytest -q` and
       `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`. Run
       `openspec validate queue-triage-consume-keep-proceed-answered-decisions --strict` and

@@ -4,9 +4,10 @@
 During inventory, `evaluate` SHALL consider every brief that links an answered decision,
 whether or not the brief already has a `repo:` value. When the decision's question is not
 the canonical repo-assignment question, the decision SHALL be consumed as a re-home only if
-its answer contains an explicit re-home directive — a re-home, move, retarget, or reassign
-verb followed by "to" and a repo name, optionally preceded by "the" and followed by "repo" —
-and that name resolves to an on-disk checkout under the repos root. Consuming a re-home SHALL
+its answer contains an explicit re-home directive — a re-home, move, retarget, reassign, or
+re-scope verb (hyphen optional in "re-home" and "re-scope", matched case-insensitively)
+followed by "to" and a repo name, optionally preceded by "the" and followed by "repo" — and
+that name resolves to an on-disk checkout under the repos root. Consuming a re-home SHALL
 write the checkout path as the brief's `repo:` (replacing any existing value), append a
 `verdict: repo-inferred` triage note with rule `decision`, archive the decision, and group
 the brief under the new repo in the same run. When the answer contains such a directive but
@@ -22,6 +23,18 @@ decisions are consumed"), and SHALL NOT be reported as an unresolvable repo assi
 - **THEN** the brief's `repo:` becomes the `devops` checkout path, a `verdict: repo-inferred`
   note with rule `decision` is appended, the decision is archived, and the brief is grouped
   under `devops` in that run
+
+#### Scenario: Re-scope answer is consumed
+- **WHEN** a brief with `repo: /repos/devops` links an answered decision whose question is
+  not the canonical repo-assignment question and whose answer is "Re-scope the brief's repo
+  to worktrail", and a `worktrail` checkout exists under the repos root
+- **THEN** the brief's `repo:` becomes the `worktrail` checkout path, a
+  `verdict: repo-inferred` note with rule `decision` is appended, the decision is archived,
+  and the brief is grouped under `worktrail` in that run
+
+#### Scenario: Unhyphenated rescope answer is consumed
+- **WHEN** the answer is "rescope it to the worktrail repo" and a `worktrail` checkout exists
+- **THEN** the decision is consumed exactly as for the hyphenated form
 
 #### Scenario: Free-form answer without a directive is ignored
 - **WHEN** a brief links an answered decision whose question is "Should we keep the retry?"
