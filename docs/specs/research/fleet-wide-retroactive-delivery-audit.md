@@ -132,52 +132,79 @@ gracefully-giving-back --repos-root ~/projects --json`.
 
 ## Unknowns / Missing Evidence
 
-- The remaining 176 `confirmed_dropped` candidates (after all three automated
-  filters) have **not** been individually verified beyond the ~30-item sample
-  above. Their file-extension mix (worktrail: 105/115 are `.py`; datalena:
-  66/55 files across 55 tasks are `.py`/`.yml`; gracefully-giving-back: all 6
-  are `.tsx`/`.ts`) suggests most are edits to an *existing* function/file
-  rather than a new definition — the identifier-survival filter has no
-  distinctive new symbol to search for in that case, so it cannot resolve
-  them the way it resolved the rename/reorg samples. Given a 100%
-  false-positive rate across every sample checked so far (squash-rewrite,
-  rename/reorg, regeneration, or trivial-file divergence in every case), the
-  prior is that most of the remainder are the same, but this is not proven
-  per-item.
-- 356 tasks are `unverifiable` (object evicted from the store) — including
-  the one originally-known real incident. Whether any *other* genuinely
-  dropped task hides among these 356 cannot be determined from git objects
-  alone; it would require independently cross-referencing each task's spec
-  against current source (the same file:line evidence approach used for the
-  admin-chrome-style.tsx near-miss above), which was not done at this scale
-  in this session.
+- 512 tasks are `unverifiable` (object evicted from the store, per the
+  2026-09-17 re-run below) — including the one originally-known real
+  incident. Whether any *other* genuinely dropped task hides among these
+  cannot be determined from git objects alone; it would require independently
+  cross-referencing each task's spec against current source (the same
+  file:line evidence approach used for the admin-chrome-style.tsx near-miss
+  above), which remains out of scope for this audit (git-object-based, by
+  design).
+
+## Exhaustive re-verification (2026-09-17)
+
+Follow-up to the explicit scope decision below: the deferred exhaustive
+per-item review (`worktrail-handoff` brief
+`20260830-193057-fleet-wide-retroactive-delivery-audit`) was picked up and
+completed. Re-ran `worktrail-audit-delivery --repo worktrail --repo datalena
+--repo gracefully-giving-back --repos-root ~/projects --json`: `confirmed_dropped`
+had dropped from 176 (2026-08-30) to **146** (86 worktrail, 51 datalena, 9
+gracefully-giving-back) as more commits landed on base in the interim.
+
+Every one of the 146 remaining candidates was manually verified — reading
+each commit's diff (`git show <head_sha>`) and checking whether its
+functional intent is present in base today, per file, via content diff or
+identifier/behavior search. **Result: 146/146 non-drops. Zero
+`genuinely_missing`, zero `inconclusive`.** This extends the prior ~30-item
+sample's 100% false-positive rate to full fleet-wide coverage of every
+`confirmed_dropped` candidate whose object still exists.
+
+Two false-positive categories emerged that the tool's existing three
+automated filters (content-rewrite, identifier-survival, policy-exclusion)
+do not model:
+
+- **Deliberate deletion.** Several candidates were tasks whose own commit
+  *removed* a file (e.g. an out-of-scope test flagged in review, or a
+  superseded catalog module) — the file's absence on base today is the
+  correct, intended end state, not a drop. The automated filters only check
+  for *positive* content presence, so they can't recognize "this task's job
+  was to delete something."
+- **Systemic monorepo restructuring events.** In datalena, a same-day
+  Alembic migration-baseline squash (PR #2902, merged 2026-09-17) collapsed
+  every prior migration file into one baseline and moved most schema
+  definition to `SQLModel.metadata.create_all()`, and an earlier
+  `api/app/models.py` → `api/app/models/` package split relocated model
+  classes to new files — both legitimately orphan old migration/model file
+  paths at fleet scale while the underlying schema/behavior persists. In
+  worktrail, one documented refactor (PR #739, "replace heuristic staleness
+  guards with a source-read check") retired 4 files that had genuinely
+  shipped, accounting for 19 of the 86 worktrail candidates in a single
+  cluster; a separate PR (#781) documented that 4 `routing-target-selector`
+  tasks were reviewed PASSED but left genuinely incomplete, then redone from
+  scratch — the one cluster across all 146 where the original reviewed
+  commit's content didn't hold up, though the eventual feature did ship via
+  the follow-up fix, so it does not count as a currently-missing gap.
+
+Full per-item verification tables (spec_id/task, head_sha, verdict, evidence)
+are preserved as `worktrail-handoff` run-record decisions on run
+`go-20260917-170159`; not duplicated here to avoid drift between two copies
+of the same evidence.
 
 ## Hypotheses
 
-- **Hypothesis:** the true rate of currently-unremediated silent drops
-  across all three repos is very low (plausibly zero beyond the
-  already-independently-fixed task 1.3), based on the 100% false-positive
-  rate in every manually-verified sample and the fact that the one near-miss
-  found (admin-chrome-style.tsx) turned out to have been functionally
-  re-delivered by unrelated later work rather than genuinely missing today.
-  This is an inference from a ~17% sample (~30/176, measured against the
-  final candidate count) plus the two later automated filters each of
-  which independently corroborated the same finding at fleet scale (571 of
-  486 originally-raw candidates resolved as non-drops), not a proven
-  fleet-wide fact for the remaining 176.
+- ~~**Hypothesis:** the true rate of currently-unremediated silent drops
+  across all three repos is very low...~~ **Confirmed** by the 2026-09-17
+  exhaustive re-verification above: 0 genuine drops across all 146
+  `confirmed_dropped` candidates whose object still exists. The only
+  remaining unknown is the `unverifiable` bucket (git objects evicted),
+  which is out of this audit's reach by design (absence of proof is never
+  presented as proof of a drop).
 
 ## Validation Steps
 
-To confirm or refute the hypothesis above, for each of the remaining 176
-flagged candidates: read the task's own diff (`git show <head_sha>`), then
-check whether its functional intent is present in the base branch's current
-equivalent module/behavior (not just the same file path, and not just a
-renamed top-level symbol) — the same manual procedure used for every case
-verified in this session. This is straightforwardly repeatable via
-`worktrail-audit-delivery --json` plus manual review of its
-`confirmed_dropped` array; it is the natural next unit of work if a
-still-lower false-positive rate is wanted before treating this tool's raw
-`confirmed_dropped` count as fully triaged.
+Superseded — see "Exhaustive re-verification (2026-09-17)" above. The
+per-item procedure this section originally specified is what that pass ran
+against all 146 remaining candidates.
 
 ## Confirmed Root Cause
 
@@ -187,25 +214,21 @@ in PR #420's own description and is not re-litigated here.
 
 ## Recommended Fix / Scope Decision
 
-No remediation PR opened. No task with currently-missing functionality was
-found in the manually-verified sample; the one near-miss (admin-chrome-style.tsx)
-has its functionality already present on `origin/dev` via later independent
-commits. `worktrail-audit-delivery` is delivered as a repeatable console
-script (deliverable 1) with three layered, tested false-positive filters
-(deliverable 3's automatable portion), and its raw `confirmed_dropped` output
-for all three repos is the per-repo candidate list (deliverable 2).
+No remediation PR opened. Across the full audit (initial ~30-item sample plus
+the 2026-09-17 exhaustive re-verification of all 146 remaining candidates),
+zero tasks with currently-missing functionality were found; the one near-miss
+(admin-chrome-style.tsx) has its functionality already present on
+`origin/dev` via later independent commits. `worktrail-audit-delivery` is
+delivered as a repeatable console script (deliverable 1) with three layered,
+tested false-positive filters (deliverable 3's automatable portion), and its
+raw `confirmed_dropped` output for all three repos is the per-repo candidate
+list (deliverable 2).
 
-**Explicit scope decision:** exhaustive per-item manual judgment of the
-remaining 176 candidates (deliverable 3's full scope) is not completed in
-this session, and is deliberately not treated as a required-but-deferred
-item. Justification: three independent, principled automated filters plus a
-~30-item manual sample spanning every failure category observed (squash-
-rewrite, rename/reorg, regeneration, trivial-file divergence, and the one
-genuine-drop-but-functionally-superseded near-miss) found a 0% confirmed-drop
-rate; continuing to hand-verify the remaining 176 one at a time has sharply
-diminishing expected value against a large, linear time cost. This is a
-recorded product/scope call, not silent deferral — the follow-up triage
-(`worktrail-handoff` brief `20260830-193057-fleet-wide-retroactive-delivery-
-audit`) is optional further validation work a future session or the
-repository owner can pick up at their discretion, not an incomplete
-requirement of this brief.
+**Scope decision closed:** the exhaustive per-item manual judgment deferred
+by the original session (deliverable 3's full scope) is now complete — see
+"Exhaustive re-verification (2026-09-17)" above. `worktrail-handoff` brief
+`20260830-193057-fleet-wide-retroactive-delivery-audit` is closed
+accordingly. A separate, narrower follow-up was captured for the two new
+false-positive categories this pass surfaced (deliberate-deletion and
+monorepo-restructuring-event detection) as a tool-enhancement item, distinct
+in purpose from this audit's own completion.
