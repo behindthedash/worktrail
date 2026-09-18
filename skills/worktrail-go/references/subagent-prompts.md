@@ -768,9 +768,12 @@ if [ -d "$SPEC_ROOT/openspec/changes/$SPEC_ID" ]; then
   fi
   # Exit 0 can still mean a degraded (baseline) plan — compile prints the reason as
   # a `note:` line (indented two spaces, so no `^note:` anchor) that no `||` branch
-  # can see. Surface it and record the degrade per #compile-gate.
-  if grep -q '^ *note:' "$COMPILE_LOG"; then
-    COMPILE_NOTE=$(grep -m1 '^ *note:' "$COMPILE_LOG" | sed 's/^ *//')
+  # can see. Surface it and record the degrade per #compile-gate. Compile also prints
+  # `note:` lines on a healthy plan (`run plan applied (...)`, `auto-repaired ...`),
+  # so those are not degrades; the first remaining note is the reason.
+  COMPILE_NOTE=$(sed -n 's/^ *note: *//p' "$COMPILE_LOG" \
+    | grep -v -e '^run plan applied (' -e '^auto-repaired ' | head -n 1)
+  if [ -n "$COMPILE_NOTE" ]; then
     echo "WARNING: worktrail-compile degraded to the baseline plan for $SPEC_ID — $COMPILE_NOTE — see #compile-gate." >&2
     worktrail-run-record append "$RUN" decisions "compile degraded to baseline plan: $COMPILE_NOTE"
   fi
@@ -1826,7 +1829,12 @@ normal.
 ### Precheck DAG validation {#precheck-gate}
 
 ```bash
-worktrail-live precheck --repo "$SPEC_ROOT" docs/specs/$SPEC_ID
+# `precheck` loads the spec through the same format detection as `full-real`
+# (`#orchestrator`), so hand it the format-resolved ref -- a hardcoded
+# `docs/specs/$SPEC_ID` raises FileNotFoundError for an OpenSpec change.
+SPEC_REF="docs/specs/$SPEC_ID"
+[ -d "$SPEC_ROOT/openspec/changes/$SPEC_ID" ] && SPEC_REF="openspec/changes/$SPEC_ID"
+worktrail-live precheck --repo "$SPEC_ROOT" "$SPEC_REF"
 ```
 
 On a non-zero exit, print the precheck output, then ask with the
@@ -1878,8 +1886,9 @@ adding context the model can actually use.
 
 *Exit 0, degraded plan*: `compile_run_plan` can give up and fall back to the baseline plan
 while still exiting 0, printing its reason as a `note:` line. A `||` branch cannot see this —
-read the `note:` line in the compile output. The run proceeds on the baseline plan; expect
-`validate_task_metadata()` to refuse to fan scope-less tasks out later.
+read the `note:` line in the compile output. A healthy plan prints `note:` lines too (`run plan
+applied (...)`, `auto-repaired ...`); any other note is the degrade reason. The run proceeds on
+the baseline plan; expect `validate_task_metadata()` to refuse to fan scope-less tasks out later.
 
 `$AUTO_MODE=true`: no ask. A compile failure over a change the run did not author is a call
 about prior work, exactly like `#precheck-gate` — finish `blocked_product_decision` quoting the

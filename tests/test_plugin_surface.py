@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -570,6 +571,166 @@ def test_orchestrator_invocation_branches_spec_ref_on_detected_format():
         "Route C-continuing-inline-D and Route D dispatch loads the wrong adapter"
     )
     assert "--spec docs/specs/$SPEC_ID" not in block
+
+
+def _first_bash_block_after(text: str, marker: str) -> str:
+    block_start = text.index("```bash", text.index(marker)) + len("```bash\n")
+    return text[block_start : text.index("```", block_start)]
+
+
+def _run_doc_bash(
+    script: str, tmp_path: Path, stubs: dict[str, str], env: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    """Run a skill-doc bash block with `stubs` (command name -> script body) on PATH."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name, body in stubs.items():
+        stub = bin_dir / name
+        stub.write_text("#!/bin/bash\n" + body)
+        stub.chmod(0o755)
+    return subprocess.run(
+        ["bash", "-c", script],
+        env={"PATH": f"{bin_dir}:{os.environ['PATH']}", **env},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("change_dir", "expected_ref"),
+    [
+        ("openspec/changes/chg-1", "openspec/changes/chg-1"),
+        ("docs/specs/chg-1", "docs/specs/chg-1"),
+    ],
+)
+def test_precheck_gate_passes_format_resolved_spec_ref(
+    tmp_path, change_dir, expected_ref
+):
+    """`worktrail-live precheck` loads the spec through the same format
+    detection as `full-real`, so a hardcoded `docs/specs/$SPEC_ID` raises
+    FileNotFoundError for an OpenSpec change (found in go-20260918-095024).
+    `#precheck-gate` must hand it the ref `#orchestrator` resolves instead."""
+    doc = SKILLS_DIR / "worktrail-go" / "references" / "subagent-prompts.md"
+    block = _first_bash_block_after(
+        doc.read_text(), "### Precheck DAG validation {#precheck-gate}"
+    )
+    spec_root = tmp_path / "root"
+    (spec_root / change_dir).mkdir(parents=True)
+    argv_log = tmp_path / "argv.log"
+
+    result = _run_doc_bash(
+        block,
+        tmp_path,
+        {"worktrail-live": 'printf "%s\\n" "$@" > "$STUB_LOG"'},
+        {"SPEC_ROOT": str(spec_root), "SPEC_ID": "chg-1", "STUB_LOG": str(argv_log)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert argv_log.read_text().splitlines() == [
+        "precheck",
+        "--repo",
+        str(spec_root),
+        expected_ref,
+    ]
+
+
+_COMPILE_HEADER = (
+    "chg-1  source={source}  fingerprint=abcdef012345\n  cache: /tmp/c.json"
+)
+_COMPILE_TASKS = "  1.1  deps=-  files=1"
+_REJECTED_NOTE = (
+    "run plan rejected: task set drifted from the artifact "
+    "(missing=['1.3'], unknown=-); using the format's own deps and file scope"
+)
+
+
+@pytest.mark.parametrize(
+    ("source", "notes", "degrade_note"),
+    [
+        pytest.param(
+            "seed",
+            ["run plan applied (seed, abcdef012345): 3/3 tasks scoped, 0 loosened"],
+            None,
+            id="healthy-seed-plan",
+        ),
+        pytest.param(
+            "compiled",
+            [
+                (
+                    "auto-repaired 1 ordering edge(s) to close same-file collision(s): "
+                    "a.py: 1.2 now depends on 1.1"
+                ),
+                "run plan applied (compiled, abcdef012345): 3/3 tasks scoped, 1 loosened",
+            ],
+            None,
+            id="healthy-compiled-plan-with-repair",
+        ),
+        pytest.param(
+            "baseline",
+            [
+                "compile failed (RuntimeError: boom); using the artifact's own deps",
+                "run plan applied (baseline, abcdef012345): 0/3 tasks scoped, 0 loosened",
+            ],
+            "compile failed (RuntimeError: boom); using the artifact's own deps",
+            id="degraded-compile-failure",
+        ),
+        pytest.param(
+            "compiled",
+            [_REJECTED_NOTE],
+            _REJECTED_NOTE,
+            id="degraded-plan-rejected",
+        ),
+    ],
+)
+def test_orchestrator_records_compile_degrade_only_for_real_degrades(
+    tmp_path, source, notes, degrade_note
+):
+    """`worktrail-compile` prints every note as `  note: ...`, including the
+    healthy `run plan applied (...)` summary it always emits. The launch block
+    must record `compile degraded to baseline plan` only for a real degrade, not
+    for any note (false positive on a healthy seed plan, go-20260918-095024)."""
+    doc = SKILLS_DIR / "worktrail-go" / "references" / "subagent-prompts.md"
+    block = _first_bash_block_after(
+        doc.read_text(), "## Orchestrator invocation {#orchestrator}"
+    )
+    if_start = block.index('if [ -d "$SPEC_ROOT/openspec/changes/$SPEC_ID" ]; then')
+    format_switch = block[if_start : block.index("\nfi\n", if_start) + len("\nfi\n")]
+    spec_root = tmp_path / "root"
+    (spec_root / "openspec" / "changes" / "chg-1").mkdir(parents=True)
+    compile_out = "\n".join(
+        [_COMPILE_HEADER.format(source=source)]
+        + [f"  note: {n}" for n in notes]
+        + [_COMPILE_TASKS]
+    )
+    record_log = tmp_path / "record.log"
+
+    result = _run_doc_bash(
+        format_switch,
+        tmp_path,
+        {
+            "worktrail-compile": 'printf "%s\\n" "$COMPILE_OUT"',
+            "worktrail-run-record": 'printf "%s\\n" "$*" >> "$STUB_LOG"',
+        },
+        {
+            "SPEC_ROOT": str(spec_root),
+            "SPEC_ID": "chg-1",
+            "RUN": "/tmp/run.yaml",
+            "COMPILE_OUT": compile_out,
+            "STUB_LOG": str(record_log),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    recorded = record_log.read_text().splitlines() if record_log.exists() else []
+    if degrade_note is None:
+        assert recorded == []
+        assert "degraded" not in result.stderr
+    else:
+        assert recorded == [
+            f"append /tmp/run.yaml decisions compile degraded to baseline plan: {degrade_note}"
+        ]
+        assert "degraded to the baseline plan" in result.stderr
 
 
 def test_implement_pipeline_runs_from_neutral_cwd():
