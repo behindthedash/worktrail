@@ -693,6 +693,8 @@ committed on base; same convention as `#orchestrator-gates`). On a Codex host
 (the `CODEX_*` check) stay in-session via
 `Skill("worktrail-sdd-workflow", args="<repo-path> route:<X> [spec-folder]")`
 instead of the CLI call — `Skill(...)` is a tool invocation, not a shell command.
+The block assumes the shell's cwd is outside every checkout (`implement` step 0 /
+`new`'s workspace cwd); never prefix it with `cd "$SPEC_ROOT" &&`.
 
 ```bash
 POLICY_AGENT_CLI=$(echo "$POLICY" | python3 -c "import json,sys; print(json.load(sys.stdin).get('agent_cli') or '')")

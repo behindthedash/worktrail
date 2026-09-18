@@ -572,6 +572,29 @@ def test_orchestrator_invocation_branches_spec_ref_on_detected_format():
     assert "--spec docs/specs/$SPEC_ID" not in block
 
 
+def test_implement_pipeline_runs_from_neutral_cwd():
+    """The `implement` pipeline must move the shell to a neutral cwd (outside
+    every checkout) before anything else, and never `cd` back into $REPO or
+    $SPEC_ROOT: the host worktree write guard otherwise denies the
+    mktemp/tee/rm -f/detach calls in `#orchestrator`, and a linked worktree used
+    as $SPEC_ROOT derives `<repo>-worktrees/` etc. from the wrong name."""
+    doc = SKILLS_DIR / "worktrail-sdd-workflow" / "references" / "pipeline-details.md"
+    text = doc.read_text()
+    heading = "## `implement` pipeline {#implement-pipeline}"
+    start = text.index(heading)
+    end = text.index("\n---\n", start)
+    section = text[start:end]
+
+    precheck = section.index("#precheck-gate")
+    before_precheck = section[:precheck]
+    assert "NEUTRAL_CWD" in before_precheck
+    assert 'cd "$NEUTRAL_CWD"' in before_precheck
+    assert 'cd "$REPO"' not in section.replace('may `cd "$REPO"`', "")
+    assert 'cd "$SPEC_ROOT"' not in section.replace('`cd "$SPEC_ROOT"`', "")
+    orch = section.index("#orchestrator")
+    assert "SPEC_ROOT=$REPO" in section[orch:]
+
+
 def test_modify_pipeline_runs_scope_check_before_uncommitted_output_guard():
     """The `modify` pipeline's pre-launch uncommitted-output guard only ever
     catches files present -- and uncommitted -- at the moment it runs. Before
