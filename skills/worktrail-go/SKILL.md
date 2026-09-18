@@ -286,13 +286,25 @@ repo token in the invocation itself) before doing anything else:
      scheduled `evaluate` run does, and returns `needs-decision` asking which repo owns
      it when the target cannot be told from the brief itself.
 
-     Two non-zero exits are distinct cases, and neither one proceeds to step 2:
+     Before evaluating, the gate consumes any answered decision linked to the brief
+     (`awaiting-decision:`) the same way a scheduled `evaluate` run does: a repo
+     assignment or re-home answer overrides `--triage-repo`, and a free-form "keep it" /
+     "proceed" answer is recorded on the brief and handed to the evaluator as a settled
+     human decision it must not re-ask.
+
+     Three non-zero exits are distinct cases, and none of them proceeds to step 2:
      - **Exit 2** with a `blocked_no_capacity: <repo>/<failure_class>: <detail>` line on
        stderr (`VERDICT_JSON` prints `null`) means no model ever evaluated the brief —
        the evaluator spawn gave up on capacity (e.g. a provider usage cap). Report the
        capacity block to the user, do **not** run the apply step below, and leave the
        brief queued exactly as it is; nothing about it has changed, so re-running later
        is the whole remedy.
+     - **Exit 2** with a `blocked_pending_decision: <decision-id> (<status>)` line on
+       stderr (`VERDICT_JSON` prints `null`) means the brief still waits on a human:
+       its linked decision is `open`, or `answered` with an answer the gate could not
+       consume (an unknown repo). No model looked at it. Report the pending decision to
+       the user, do **not** run the apply step below, and stop — answering (or
+       correcting) that decision is the whole remedy.
      - **Exit 1** with `VERDICT_JSON` printing `null` means a model did evaluate the
        brief but produced no identifiable verdict for this brief id at all — report that
        and stop rather than guessing one.
