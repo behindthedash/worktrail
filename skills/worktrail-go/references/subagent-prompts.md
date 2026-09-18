@@ -1873,6 +1873,7 @@ adding context the model can actually use.
 | Failure class | Recovery |
 |---|---|
 | plan shape rejected (`PlanShapeError`) | edit `tasks.md` exactly as the problem line says — consolidate the tasks, declare disjoint file scope, add the test file, retag `[cleanup]` → `[e2e]`. Never a bare retry. |
+| no fan-out task (`PlanShapeError`) | every task is a tail kind (`[e2e]`/`[cleanup]`), so nothing would fan out — add at least one implementation task with `files:` scope, or retag the tail task that actually carries the implementation work. Never a bare retry. |
 | scope gaps — task has no file scope | add `files:` to the named task ids, or the tail kind matching what the task executes; `--force` only after `proposal.md`/`design.md` carry enough context to infer scope. |
 | unordered file collision | two tasks write the same file with no ordering — add an explicit `deps` edge in either direction. |
 | uncovered requirement | add or extend a task that cites the uncovered requirement. |
