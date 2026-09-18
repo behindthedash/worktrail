@@ -76,7 +76,7 @@ def test_scan_transcript_collects_touched_durable_paths_from_edit_tools(tmp_path
             ),
         ],
     )
-    has_work, run_records, durable_paths = hook.scan_transcript(str(transcript))
+    has_work, run_records, durable_paths, _ = hook.scan_transcript(str(transcript))
     assert has_work
     assert run_records == []
     assert durable_paths == [
@@ -111,7 +111,7 @@ def test_scan_transcript_collects_touched_durable_paths_from_bash_write_markers(
             _tool_entry("Bash", {"command": "pytest -q > /tmp/out.txt"}),
         ],
     )
-    _, _, durable_paths = hook.scan_transcript(str(transcript))
+    _, _, durable_paths, _ = hook.scan_transcript(str(transcript))
     assert durable_paths == [
         "openspec/changes/new-idea",
         "openspec/changes/new-idea/proposal.md",
@@ -143,13 +143,32 @@ def test_scan_transcript_collects_all_signals_in_one_pass_and_dedupes(tmp_path):
             _tool_entry("Edit", {"file_path": "/repo/docs/specs/late-entry.md"}),
         ],
     )
-    has_work, run_records, durable_paths = hook.scan_transcript(str(transcript))
+    has_work, run_records, durable_paths, _ = hook.scan_transcript(str(transcript))
     assert has_work
     assert run_records == [str(record)]
     assert durable_paths == ["/repo/docs/specs/late-entry.md"]
 
     missing = hook.scan_transcript(str(tmp_path / "nope.jsonl"))
-    assert missing == (False, [], [])
+    assert missing == (False, [], [], [])
+
+
+def test_scan_transcript_collects_bash_command_text_in_order(tmp_path):
+    """Every Bash tool call's raw `command` text is collected as the fourth
+    signal, in transcript order, alongside the other three -- so
+    `check_dedup_gate` can forward it for merge-marker detection (Requirement:
+    Merged Docs-Only Spec PR Detection Is Transcript-Local)."""
+    transcript = tmp_path / "bash_commands.jsonl"
+    _write_entries(
+        transcript,
+        [
+            _tool_entry("Edit", {"file_path": "/repo/docs/specs/x/spec.md"}),
+            _tool_entry("Bash", {"command": "pytest -q"}),
+            _tool_entry("Bash", {"command": "gh pr merge 42 --squash"}),
+            _tool_entry("Read", {"file_path": "/repo/README.md"}),
+        ],
+    )
+    _, _, _, bash_commands = hook.scan_transcript(str(transcript))
+    assert bash_commands == ["pytest -q", "gh pr merge 42 --squash"]
 
 
 def test_instruction_is_worktrail_native_and_value_gated():
@@ -750,6 +769,86 @@ def test_main_hit_appends_dedup_gate_block_naming_artifact(
     assert "suggestion-only line naming the resume command" in reason
     assert "`worktrail-go <brief-id>`" in reason
     assert "## Dedup justification" in reason
+
+
+def test_main_hit_merged_docs_only_spec_pr_via_bash_command(
+    tmp_path, monkeypatch, capsys
+):
+    """An Edit touching a `docs/specs/**` path plus a `gh pr merge` Bash
+    command must produce a `merged_docs_only_spec_pr` dedup-gate hit through
+    `main()` end to end -- the scenario `merge_markers_in` always saw `[]`
+    for before the hook collected and forwarded Bash command text (Requirement:
+    Merged Docs-Only Spec PR Detection Is Transcript-Local, Scenario
+    "In-session spec merge detected"). The gate runs for real against the
+    shim installed by `_install_check_durable_artifact_capture_gate_shim`,
+    not a stub.
+    """
+    monkeypatch.delenv("CC_HEADLESS", raising=False)
+    monkeypatch.setattr(hook, "STATE_DIR", tmp_path / "state")
+    _install_check_durable_artifact_capture_gate_shim(tmp_path, monkeypatch)
+
+    spec_path = "/repo/docs/specs/001-task/design.md"
+    transcript = tmp_path / "merged_pr.jsonl"
+    _write_entries(
+        transcript,
+        [
+            _tool_entry("Edit", {"file_path": spec_path}),
+            _tool_entry("Bash", {"command": "gh pr merge 42 --squash"}),
+        ],
+    )
+
+    expected_hits = hook.check_dedup_gate([spec_path], [], ["gh pr merge 42 --squash"])
+    assert expected_hits == [
+        {"kind": "session_touched_durable_artifact", "path": spec_path},
+        {
+            "kind": "merged_docs_only_spec_pr",
+            "spec_paths": [spec_path],
+            "merge_markers": ["gh pr merge"],
+        },
+    ]
+
+    monkeypatch.setattr(
+        hook.sys,
+        "stdin",
+        io.StringIO(
+            json.dumps(
+                {"session_id": "merged-pr-hit", "transcript_path": str(transcript)}
+            )
+        ),
+    )
+    assert hook.main() == 0
+    reason = json.loads(capsys.readouterr().out)["reason"]
+
+    assert reason.startswith(hook.INSTRUCTION)
+    assert "DEDUP GATE" in reason
+    assert (
+        f"- merged docs-only spec PR (merge marker(s): gh pr merge): {spec_path}"
+        in reason
+    )
+
+
+def test_check_dedup_gate_forwards_bash_commands_as_repeated_flags(
+    tmp_path, monkeypatch
+):
+    """`check_dedup_gate` passes each collected Bash command as its own
+    `--bash-command` argument to the checker binary, so `merge_markers_in`
+    actually receives command text instead of always seeing `[]`."""
+    _install_check_durable_artifact_capture_gate_shim(tmp_path, monkeypatch)
+    spec_path = "/repo/docs/specs/001-task/design.md"
+
+    no_commands = hook.check_dedup_gate([spec_path], [], [])
+    assert no_commands == [
+        {"kind": "session_touched_durable_artifact", "path": spec_path}
+    ]
+
+    with_merge_command = hook.check_dedup_gate(
+        [spec_path], [], ["gh pr merge 7 --squash"]
+    )
+    assert {
+        "kind": "merged_docs_only_spec_pr",
+        "spec_paths": [spec_path],
+        "merge_markers": ["gh pr merge"],
+    } in with_merge_command
 
 
 def test_build_dedup_gate_block_renders_every_hit_kind():
