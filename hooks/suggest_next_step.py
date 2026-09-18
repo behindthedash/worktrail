@@ -221,22 +221,49 @@ def durable_artifact_paths_from_entry(entry: dict) -> list[str]:
     return paths
 
 
-def scan_transcript(transcript_path: str) -> tuple[bool, list[str], list[str]]:
+def bash_commands_from_entry(entry: dict) -> list[str]:
+    """Raw Bash tool-call `command` text in one transcript entry, so the
+    dedup check's merge-marker detection (Requirement: Merged Docs-Only Spec
+    PR Detection Is Transcript-Local) can scan the same commands
+    `durable_artifact_paths_from_entry` already inspects for write targets,
+    without a second transcript read.
+    """
+    message = entry.get("message") or {}
+    content = message.get("content")
+    if not isinstance(content, list):
+        return []
+    commands: list[str] = []
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "tool_use":
+            continue
+        if block.get("name") != "Bash":
+            continue
+        command = (block.get("input") or {}).get("command")
+        if command:
+            commands.append(str(command))
+    return commands
+
+
+def scan_transcript(
+    transcript_path: str,
+) -> tuple[bool, list[str], list[str], list[str]]:
     """One pass over the transcript: whether it shows substantive work, the
     unique run-record path literals (see `RUN_RECORD_PATH_RE`) it mentions,
-    and the unique touched durable-artifact paths (`docs/specs/**` /
+    the unique touched durable-artifact paths (`docs/specs/**` /
     `openspec/changes/**`, see `DURABLE_ARTIFACT_PATH_RE`) collected from its
-    edit-tool `file_path`s and Bash write targets.
+    edit-tool `file_path`s and Bash write targets, and every Bash tool call's
+    raw command text.
 
-    All three signals come out of the same line-by-line read so a caller that
+    All four signals come out of the same line-by-line read so a caller that
     needs any of them never opens the transcript file twice.
     """
     has_work = False
     run_record_paths: list[str] = []
     durable_artifact_paths: list[str] = []
+    bash_commands: list[str] = []
     seen_paths: set[str] = set()
     if not transcript_path or not os.path.exists(transcript_path):
-        return has_work, run_record_paths, durable_artifact_paths
+        return has_work, run_record_paths, durable_artifact_paths, bash_commands
     try:
         with open(transcript_path, "r", encoding="utf-8", errors="ignore") as handle:
             for line in handle:
@@ -257,13 +284,14 @@ def scan_transcript(transcript_path: str) -> tuple[bool, list[str], list[str]]:
                     if path not in seen_paths:
                         seen_paths.add(path)
                         durable_artifact_paths.append(path)
+                bash_commands.extend(bash_commands_from_entry(entry))
     except OSError:
-        return False, [], []
-    return has_work, run_record_paths, durable_artifact_paths
+        return False, [], [], []
+    return has_work, run_record_paths, durable_artifact_paths, bash_commands
 
 
 def substantive_work(transcript_path: str) -> bool:
-    has_work, _, _ = scan_transcript(transcript_path)
+    has_work, _, _, _ = scan_transcript(transcript_path)
     return has_work
 
 
@@ -304,17 +332,21 @@ def check_deferred_work(run_record_paths: list[str]) -> list[dict]:
 
 
 def check_dedup_gate(
-    touched_paths: list[str], run_record_paths: list[str]
+    touched_paths: list[str],
+    run_record_paths: list[str],
+    bash_commands: list[str] | None = None,
 ) -> list[dict]:
-    """Dedup-gate hits for the session's touched durable-artifact paths and
-    run-record path literals, via the `worktrail-check-durable-artifact-
-    capture-gate` CLI (Requirement: Downgrade-To-Suggestion On Dedup Hit and
-    Fail-Open And Headless-Excluded).
+    """Dedup-gate hits for the session's touched durable-artifact paths,
+    run-record path literals, and Bash command text, via the
+    `worktrail-check-durable-artifact-capture-gate` CLI (Requirement:
+    Downgrade-To-Suggestion On Dedup Hit, Merged Docs-Only Spec PR Detection
+    Is Transcript-Local, and Fail-Open And Headless-Excluded).
 
     Fails open to `[]` on every non-happy path -- missing binary, non-zero
     exit, timeout, or unparseable JSON -- the same failure boundary as
     `check_deferred_work`. Never raises.
     """
+    bash_commands = bash_commands or []
     if not touched_paths and not run_record_paths:
         return []
     binary = shutil.which(DEDUP_GATE_BINARY)
@@ -325,6 +357,8 @@ def check_dedup_gate(
         args.extend(["--touched-path", os.path.expanduser(path)])
     for path in run_record_paths:
         args.extend(["--run-record", os.path.expanduser(path)])
+    for command in bash_commands:
+        args.extend(["--bash-command", command])
     try:
         result = subprocess.run(
             args,
@@ -486,8 +520,8 @@ def main() -> int:
         transcript_path = data.get("transcript_path") or ""
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         sentinel = STATE_DIR / f"{session_id}.done"
-        has_work, run_record_paths, touched_durable_paths = scan_transcript(
-            transcript_path
+        has_work, run_record_paths, touched_durable_paths, bash_commands = (
+            scan_transcript(transcript_path)
         )
         if data.get("session_id"):
             # Guard before the ordinary sentinel is checked or written so an
@@ -509,7 +543,7 @@ def main() -> int:
         reason = INSTRUCTION
         if flagged:
             reason += build_deferred_work_block(flagged)
-        hits = check_dedup_gate(touched_durable_paths, run_record_paths)
+        hits = check_dedup_gate(touched_durable_paths, run_record_paths, bash_commands)
         if hits:
             reason += build_dedup_gate_block(hits)
         print(json.dumps({"decision": "block", "reason": reason}))
