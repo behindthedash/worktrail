@@ -1946,6 +1946,125 @@ class SingleBriefTriageCliTests(unittest.TestCase):
         _args, kwargs = mock_apply.call_args
         self.assertTrue(kwargs.get("confirm"))
 
+    def _apply_from_file(self, argv, work_queue_dir):
+        previous_queue_dir = os.environ.get("WORK_QUEUE_DIR")
+        os.environ["WORK_QUEUE_DIR"] = work_queue_dir
+        try:
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                rc = skill_dispatch.main(argv)
+        finally:
+            if previous_queue_dir is None:
+                os.environ.pop("WORK_QUEUE_DIR", None)
+            else:
+                os.environ["WORK_QUEUE_DIR"] = previous_queue_dir
+        return rc, stdout.getvalue()
+
+    def _keep_brief_fixture(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        queue = Path(tmp.name) / "queue"
+        queue.mkdir(parents=True)
+        brief = queue / "20260101-000000-example.md"
+        brief.write_text(
+            "---\nfocus: example brief\nstatus: queued\n---\n\nBody.\n",
+            encoding="utf-8",
+        )
+        verdict_json = json.dumps(
+            {
+                "brief_id": "20260101-000000-example",
+                "verdict": "keep",
+                "duplicate_of": None,
+                "evidence": "still relevant",
+            }
+        )
+        verdict_file = Path(tmp.name) / "verdict.json"
+        verdict_file.write_text(verdict_json, encoding="utf-8")
+        return tmp.name, brief, verdict_json, verdict_file
+
+    def test_apply_brief_triage_file_confirm_writes_keep_note_and_matches_inline(
+        self,
+    ):
+        """Confirm from file writes the `verdict: keep` note and yields the
+        same action-log entry the inline form does."""
+        queue_dir, brief, verdict_json, verdict_file = self._keep_brief_fixture()
+        original = brief.read_text(encoding="utf-8")
+        rc, out = self._apply_from_file(
+            ["--apply-brief-triage-file", str(verdict_file), "--confirm"],
+            queue_dir,
+        )
+        self.assertEqual(rc, 0)
+        file_entry = json.loads(out)
+        self.assertEqual(file_entry["status"], "executed")
+        self.assertIn("verdict: keep", brief.read_text(encoding="utf-8"))
+
+        brief.write_text(original, encoding="utf-8")
+        rc, out = self._apply_from_file(
+            ["--apply-brief-triage", verdict_json, "--confirm"], queue_dir
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(out), file_entry)
+
+    def test_apply_brief_triage_file_preview_leaves_brief_unchanged(self):
+        queue_dir, brief, _verdict_json, verdict_file = self._keep_brief_fixture()
+        original = brief.read_text(encoding="utf-8")
+        rc, out = self._apply_from_file(
+            ["--apply-brief-triage-file", str(verdict_file)], queue_dir
+        )
+        self.assertEqual(rc, 0)
+        self.assertNotEqual(json.loads(out)["status"], "executed")
+        self.assertEqual(brief.read_text(encoding="utf-8"), original)
+
+    def test_apply_brief_triage_file_missing_path_reports_error(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        missing = Path(tmp.name) / "nope.json"
+        stdout = StringIO()
+        with (
+            redirect_stdout(stdout),
+            patch.object(skill_dispatch, "apply_single_brief_verdict") as mock_apply,
+        ):
+            rc = skill_dispatch.main(
+                ["--apply-brief-triage-file", str(missing), "--confirm"]
+            )
+        self.assertEqual(rc, 1)
+        entry = json.loads(stdout.getvalue())
+        self.assertEqual(entry["status"], "error")
+        self.assertIn(str(missing), entry["error"])
+        mock_apply.assert_not_called()
+
+    def test_apply_brief_triage_file_null_matches_inline_null_error(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        null_file = Path(tmp.name) / "null.json"
+        null_file.write_text("null\n", encoding="utf-8")
+        file_out = StringIO()
+        with redirect_stdout(file_out):
+            rc_file = skill_dispatch.main(["--apply-brief-triage-file", str(null_file)])
+        inline_out = StringIO()
+        with redirect_stdout(inline_out):
+            rc_inline = skill_dispatch.main(["--apply-brief-triage", "null"])
+        self.assertEqual(rc_file, 1)
+        self.assertEqual(rc_inline, 1)
+        self.assertEqual(
+            json.loads(file_out.getvalue()), json.loads(inline_out.getvalue())
+        )
+        self.assertEqual(json.loads(file_out.getvalue())["status"], "error")
+
+    def test_apply_brief_triage_inline_and_file_together_is_usage_error(self):
+        stderr = StringIO()
+        with redirect_stderr(stderr), self.assertRaises(SystemExit) as ctx:
+            skill_dispatch.main(
+                [
+                    "--apply-brief-triage",
+                    "{}",
+                    "--apply-brief-triage-file",
+                    "/tmp/verdict.json",
+                ]
+            )
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertIn("not allowed with argument", stderr.getvalue())
+
     def test_evaluate_and_apply_brief_triage_do_not_require_skill_or_agent(self):
         stdout = StringIO()
         with (

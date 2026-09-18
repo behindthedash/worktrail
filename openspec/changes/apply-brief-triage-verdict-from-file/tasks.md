@@ -1,6 +1,6 @@
 ## 1. Verdict-from-file apply (`intake-triage`)
 
-- [ ] 1.1 In `src/worktrail/router/skill_dispatch.py`: add
+- [x] 1.1 In `src/worktrail/router/skill_dispatch.py`: add
       `--apply-brief-triage-file` (metavar `VERDICT_PATH`, default `None`) in an argparse
       mutually-exclusive group with `--apply-brief-triage`, and include it in the
       "no `--skill`/`--agent` required" and "no `--payload` required" conditions alongside
@@ -19,7 +19,7 @@
       argparse's usage error.
       files: src/worktrail/router/skill_dispatch.py, tests/router/test_skill_dispatch.py
 
-- [ ] 1.2 In `skills/worktrail-go/SKILL.md`, Phase 2 intake-brief triage gate: in step 1
+- [x] 1.2 In `skills/worktrail-go/SKILL.md`, Phase 2 intake-brief triage gate: in step 1
       replace the `VERDICT_JSON=$(...)` capture with a redirect of the evaluator's stdout to
       `VERDICT_FILE="${TMPDIR:-/tmp}/worktrail-triage-verdict-${BRIEF_ID}.json"` (set in the
       same block), followed by printing the exit code and the file so the exit-2 / exit-1
