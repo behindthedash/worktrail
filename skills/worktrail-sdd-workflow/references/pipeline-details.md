@@ -139,6 +139,17 @@ action). `$AUTO_MODE=true`: no ask — use the brief's `target-spec`/`$ARG_SPEC`
 still ambiguous → finish `blocked_product_decision` per
 `../../worktrail-go/references/subagent-prompts.md#auto-mode-ask-fallbacks`.
 
+0. **Neutral cwd** — set `NEUTRAL_CWD="$(dirname "$REPO")"`; if
+   `git -C "$NEUTRAL_CWD" rev-parse --is-inside-work-tree` succeeds, use
+   `NEUTRAL_CWD=$(mktemp -d)` instead. Then `cd "$NEUTRAL_CWD"`. No later step
+   may `cd "$REPO"`, `cd "$SPEC_ROOT"` or `cd` into any worktree — every step
+   addresses the repo by path. This is what keeps the host worktree write guard
+   from denying the `mktemp`/`tee`/`rm -f`/detach calls in
+   `../../worktrail-go/references/subagent-prompts.md#orchestrator`. Never use a
+   linked worktree as `SPEC_ROOT`: `<repo>-worktrees/`, `<repo>-integrate/` and
+   the checkbox dirs are derived from `SPEC_ROOT`'s name, so run state would land
+   beside the linked worktree, invisible to resume/dashboard, plus the
+   `expected 'main'` warning.
 1a. Run `../../worktrail-go/references/subagent-prompts.md#active-conflicts-scan`
     (`SPEC_ID`=the picked spec's id, `REPO=$REPO`). On a hit, stop per that
     scan's own hard-stop handling — do not proceed to step 1b
