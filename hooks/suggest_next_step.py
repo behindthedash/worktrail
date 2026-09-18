@@ -244,7 +244,9 @@ def bash_commands_from_entry(entry: dict) -> list[str]:
     return commands
 
 
-def scan_transcript(transcript_path: str) -> tuple[bool, list[str], list[str], list[str]]:
+def scan_transcript(
+    transcript_path: str,
+) -> tuple[bool, list[str], list[str], list[str]]:
     """One pass over the transcript: whether it shows substantive work, the
     unique run-record path literals (see `RUN_RECORD_PATH_RE`) it mentions,
     the unique touched durable-artifact paths (`docs/specs/**` /
@@ -518,8 +520,8 @@ def main() -> int:
         transcript_path = data.get("transcript_path") or ""
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         sentinel = STATE_DIR / f"{session_id}.done"
-        has_work, run_record_paths, touched_durable_paths, bash_commands = scan_transcript(
-            transcript_path
+        has_work, run_record_paths, touched_durable_paths, bash_commands = (
+            scan_transcript(transcript_path)
         )
         if data.get("session_id"):
             # Guard before the ordinary sentinel is checked or written so an
