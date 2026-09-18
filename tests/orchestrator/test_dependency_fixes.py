@@ -462,6 +462,51 @@ class DependencyStacking(unittest.TestCase):
         with self.assertRaises(live.WorktreeMissingDependencyFileError):
             live._require_dependency_files(wt2, by_id["TASK-002"], by_id)
 
+    def test_require_dependency_files_literal_bracket_path_passes(self):
+        """A declared file under a Next.js dynamic-route segment
+        (`.../[id]/hide/route.ts`) contains a literal `[`. `Path.glob()`
+        reads `[id]` as a character class (matching `i` or `d`), so it can
+        never find the literal `[id]` directory -- the literal path must be
+        checked first."""
+        declared = "src/app/api/admin/mail/messages/[id]/hide/route.ts"
+        by_id = {
+            "TASK-001": {"id": "TASK-001", "deps": [], "files": [declared]},
+            "TASK-002": {"id": "TASK-002", "deps": ["TASK-001"]},
+        }
+        wt1 = Path(self.tmp) / "wt1"
+        live.add_stacked_worktree(self.repo, self.spec, by_id["TASK-001"], by_id, wt1)
+        (wt1 / declared).parent.mkdir(parents=True)
+        (wt1 / declared).write_text("export {};\n")
+        _git(wt1, "add", "-A")
+        _git(wt1, "commit", "-q", "-m", "TASK-001 dynamic route")
+
+        wt2 = Path(self.tmp) / "wt2"
+        live.add_stacked_worktree(self.repo, self.spec, by_id["TASK-002"], by_id, wt2)
+        live._require_dependency_files(wt2, by_id["TASK-002"], by_id)  # must not raise
+
+    def test_declared_path_exists_literal_bracket_and_char_class_glob(self):
+        """Literal `[id]` path resolves via the literal check; a genuine
+        `[ab]` character-class glob still resolves via the glob fallback; a
+        missing bracket path is still reported missing."""
+        wt = Path(self.tmp) / "wt-brackets"
+        (wt / "app" / "[id]").mkdir(parents=True)
+        (wt / "app" / "[id]" / "route.ts").write_text("x\n")
+        (wt / "tests").mkdir()
+        (wt / "tests" / "test_a.py").write_text("x\n")
+
+        self.assertTrue(
+            live._dependency_file_declared_path_exists(wt, "app/[id]/route.ts")
+        )
+        self.assertTrue(
+            live._dependency_file_declared_path_exists(wt, "tests/test_[ab].py")
+        )
+        self.assertFalse(
+            live._dependency_file_declared_path_exists(wt, "app/[slug]/route.ts")
+        )
+        self.assertFalse(
+            live._dependency_file_declared_path_exists(wt, "tests/test_[bc].py")
+        )
+
     def test_require_dependency_files_fresh_run_no_head_sha_warns_for_completed_dep(
         self,
     ):

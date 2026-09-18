@@ -3869,14 +3869,19 @@ def _dependency_file_declared_path_exists(wt: Path, declared: str) -> bool:
     files), if the pattern matches at least one path. A literal
     `Path.exists()` check can never match a wildcard entry -- no file is
     literally named `**` -- so glob metacharacters route through
-    `Path.glob()` instead.
+    `Path.glob()` instead. The literal check runs first because a real path
+    can itself contain glob metacharacters (a Next.js dynamic-route segment
+    like `app/[id]/route.ts`), and `Path.glob()` would read `[id]` as a
+    character class that never matches the literal directory.
     """
+    if (wt / declared).exists():
+        return True
     if any(ch in declared for ch in "*?["):
         try:
             return any(wt.glob(declared))
         except ValueError:
             return False
-    return (wt / declared).exists()
+    return False
 
 
 def _require_dependency_files(wt: Path, task: dict, by_id: dict) -> list[dict]:
