@@ -166,6 +166,13 @@ class TestPrecheckE2EKindFilter(unittest.TestCase):
             tasks_dir = repo / spec_rel / "tasks"
             tasks_dir.mkdir(parents=True)
 
+            _make_task_file(
+                tasks_dir,
+                "TASK-000",
+                status="completed",
+                kind="impl",
+                files=["src/done.py"],
+            )
             _make_task_file(tasks_dir, "TASK-001", kind="e2e", files=["src/exists.py"])
             _make_task_file(
                 tasks_dir, "TASK-002", kind="cleanup", files=["src/exists.py"]
@@ -184,6 +191,13 @@ class TestPrecheckE2EKindFilter(unittest.TestCase):
             tasks_dir = repo / spec_rel / "tasks"
             tasks_dir.mkdir(parents=True)
 
+            _make_task_file(
+                tasks_dir,
+                "TASK-000",
+                status="completed",
+                kind="impl",
+                files=["src/done.py"],
+            )
             _make_task_file(
                 tasks_dir, "TASK-001", kind="cleanup", files=["src/exists.py"]
             )

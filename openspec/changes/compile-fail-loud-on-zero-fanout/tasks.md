@@ -1,6 +1,6 @@
 ## 1. Reject zero-fan-out plans (`compile-plan-shape-gate`)
 
-- [ ] 1.1 In `src/worktrail/conductor/parallelism.py`, in `shape_problems()`, replace the
+- [x] 1.1 In `src/worktrail/conductor/parallelism.py`, in `shape_problems()`, replace the
       `if not fanout: return _cleanup_verification_mismatches(merged)` early return: when no
       task in `merged` has a kind outside `TAIL_KINDS` (ignore `status` for this test, so a
       plan whose fan-out tasks are all `status: completed` is untouched), build a problem
@@ -20,7 +20,7 @@
       `main()` exit 1 with the problem line on stderr and no marker written.
       files: src/worktrail/conductor/parallelism.py, tests/conductor/test_parallelism.py, tests/conductor/test_compile.py
 
-- [ ] 1.2 In `skills/worktrail-go/references/subagent-prompts.md`, in the `#compile-gate`
+- [x] 1.2 In `skills/worktrail-go/references/subagent-prompts.md`, in the `#compile-gate`
       "Defects in the change" table, add a row `no fan-out task (PlanShapeError)` whose
       recovery is to add at least one implementation task with `files:` scope or retag the
       tail task that actually carries the implementation work -- never a bare retry.

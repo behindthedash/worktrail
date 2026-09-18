@@ -211,6 +211,7 @@ class ConcurrentFanout(unittest.TestCase):
             repo = _init_repo(
                 Path(tmp),
                 {
+                    "TASK-001": _fm("TASK-001", "src/task-001.txt"),
                     "TASK-E2E": _fm("TASK-E2E", "src/e2e.txt", kind="e2e"),
                     "TASK-CLEANUP": _fm(
                         "TASK-CLEANUP",
