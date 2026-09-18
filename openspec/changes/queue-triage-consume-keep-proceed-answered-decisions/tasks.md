@@ -1,6 +1,6 @@
 ## 1. Consume answered guidance and surface it to the evaluator (`queue-triage`)
 
-- [ ] 1.1 In `src/worktrail/workqueue/queue_triage.py`: add `consume_answered_guidance(path)`
+- [x] 1.1 In `src/worktrail/workqueue/queue_triage.py`: add `consume_answered_guidance(path)`
       next to `consume_repo_decision()` — returns `None` unless the brief's `awaiting-decision`
       is `answered`, the envelope loads, the question is not `REPO_ASSIGNMENT_QUESTION`, and
       the answer does not match `_REHOME_DIRECTIVE_RE`; otherwise append a
@@ -31,7 +31,7 @@
 
 ## 2. Single-brief gate honours linked decisions (`intake-triage`)
 
-- [ ] 2.1 [depends: 1.1] In `src/worktrail/router/skill_dispatch.py`, `evaluate_single_brief()`:
+- [x] 2.1 [depends: 1.1] In `src/worktrail/router/skill_dispatch.py`, `evaluate_single_brief()`:
       always call `consume_repo_decision()` (a resolved outcome sets `resolved_repo` even when
       `repo` was passed), then `consume_answered_guidance()` when it returned `None`, then
       `infer_repo()` only when still repo-less; if `has_unresolved_decision(path)` is still

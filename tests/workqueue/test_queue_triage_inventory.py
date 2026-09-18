@@ -341,5 +341,142 @@ class TestJsonSummaryAndReportEscalationCounts(QueueTriageTestBase):
         self.assertIn("queue-age: 1", report_text)
 
 
+class TestConsumeAnsweredGuidance(QueueTriageTestBase):
+    def _ask(self, question: str, brief: str = "a") -> str:
+        return decisions.ask(
+            question,
+            background="bg",
+            why="why",
+            context="ctx",
+            options=["Keep it", "Drop it"],
+            brief=brief,
+            queue_base=self.base,
+        )["id"]
+
+    def test_keep_under_repo_answer_is_consumed_noted_archived_and_grouped(self):
+        repo = self.base / "worktrail"
+        (repo / ".git").mkdir(parents=True)
+        path = self.write("a.md", repo=str(repo))
+        dec_id = self._ask("Keep this brief under worktrail or drop it?")
+        decisions.answer(
+            dec_id, "Keep it under\n  worktrail   and proceed.", queue_base=self.base
+        )
+
+        groups, inferred, unresolvable = qt.group_queue_by_repo(str(self.base))
+
+        self.assertEqual(inferred, [])
+        self.assertEqual(unresolvable, [])
+        self.assertEqual(groups, {str(repo): [path]})
+        body = path.read_text(encoding="utf-8")
+        self.assertIn("verdict: decision-answered", body)
+        self.assertIn(f"decision: {dec_id}", body)
+        self.assertIn("question: Keep this brief under worktrail or drop it?", body)
+        self.assertIn("answer: Keep it under worktrail and proceed.", body)
+        self.assertEqual(qt.triage_history(path)[-1].verdict, "decision-answered")
+        self.assertEqual(decisions.decision_status(dec_id, self.base), "resolved")
+        self.assertNotIn("awaiting-decision", qt.read_frontmatter(path))
+        self.assertFalse(qt.has_unresolved_decision(path))
+
+    def test_directive_less_yes_is_consumed_with_repo_and_group_unchanged(self):
+        repo = self.base / "worktrail"
+        (repo / ".git").mkdir(parents=True)
+        path = self.write("a.md", repo=str(repo))
+        dec_id = self._ask("Proceed as scoped?")
+        decisions.answer(dec_id, "Yes, keep it", queue_base=self.base)
+
+        outcome = qt.consume_answered_guidance(path)
+
+        self.assertEqual(
+            outcome,
+            {
+                "answered": True,
+                "path": path,
+                "decision_id": dec_id,
+                "question": "Proceed as scoped?",
+                "answer": "Yes, keep it",
+            },
+        )
+        self.assertEqual(qt.read_frontmatter(path)["repo"], str(repo))
+        self.assertEqual(decisions.decision_status(dec_id, self.base), "resolved")
+        groups, inferred, unresolvable = qt.group_queue_by_repo(str(self.base))
+        self.assertEqual((inferred, unresolvable), ([], []))
+        self.assertEqual(groups, {str(repo): [path]})
+
+    def test_decision_answered_note_does_not_count_as_recently_triaged(self):
+        path = self.write("a.md", repo="r")
+        dec_id = self._ask("Proceed?")
+        decisions.answer(dec_id, "Yes", queue_base=self.base)
+        self.assertIsNotNone(qt.consume_answered_guidance(path))
+
+        self.assertFalse(qt.is_recently_triaged(path, within_days=7))
+        self.assertEqual(qt._answered_guidance(path), ("Proceed?", "Yes"))
+
+    def test_prompt_carries_human_decision_line_and_template_no_reask_rule(self):
+        from worktrail.orchestrator.spawnlib import SpawnResult
+
+        repo_root = self.base / "repo"
+        repo_root.mkdir()
+        path = self.write("a.md", repo=str(repo_root), body="## Focus\n\nclaim\n")
+        dec_id = self._ask("Keep this brief?")
+        decisions.answer(dec_id, "Yes,  keep\nit.", queue_base=self.base)
+        self.assertIsNotNone(qt.consume_answered_guidance(path))
+
+        with mock.patch(
+            "worktrail.orchestrator.spawnlib.spawn_agent",
+            return_value=SpawnResult(text="", usage={}),
+        ) as spawn:
+            qt.evaluate_group(str(repo_root), [path], cwd=repo_root)
+
+        prompt = spawn.call_args.args[0]
+        self.assertIn("  Human decision: Q: Keep this brief? A: Yes, keep it.", prompt)
+        self.assertIn(
+            "never re-ask it via `needs-decision`", qt.EVALUATOR_PROMPT_TEMPLATE
+        )
+
+    def test_open_decision_is_still_held_with_no_note(self):
+        path = self.write("a.md", repo="r")
+        dec_id = self._ask("Proceed?")
+        before = path.read_text(encoding="utf-8")
+
+        self.assertIsNone(qt.consume_answered_guidance(path))
+
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+        self.assertTrue(qt.has_unresolved_decision(path))
+        self.assertEqual(decisions.decision_status(dec_id, self.base), "open")
+
+    def test_unresolvable_canonical_answer_is_reported_not_consumed_as_guidance(self):
+        path = self.write("a.md")
+        dec_id = self._ask(qt.REPO_ASSIGNMENT_QUESTION)
+        decisions.answer(dec_id, "no-such-repo-anywhere", queue_base=self.base)
+        before = path.read_text(encoding="utf-8")
+
+        self.assertIsNone(qt.consume_answered_guidance(path))
+        groups, inferred, unresolvable = qt.group_queue_by_repo(str(self.base))
+
+        self.assertEqual(inferred, [])
+        self.assertEqual(len(unresolvable), 1)
+        self.assertEqual(unresolvable[0]["decision_id"], dec_id)
+        self.assertEqual(groups, {qt.NO_REPO_KEY: [path]})
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+        self.assertEqual(decisions.decision_status(dec_id, self.base), "answered")
+
+    def test_unknown_repo_directive_is_left_untouched(self):
+        path = self.write("a.md", repo="r")
+        dec_id = self._ask("Where should this go?")
+        decisions.answer(
+            dec_id, "Re-home to the nonexistent repo", queue_base=self.base
+        )
+        before = path.read_text(encoding="utf-8")
+
+        self.assertIsNone(qt.consume_answered_guidance(path))
+        groups, inferred, unresolvable = qt.group_queue_by_repo(str(self.base))
+
+        self.assertEqual((inferred, unresolvable), ([], []))
+        self.assertEqual(groups, {"r": [path]})
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+        self.assertEqual(decisions.decision_status(dec_id, self.base), "answered")
+        self.assertTrue(qt.has_unresolved_decision(path))
+
+
 if __name__ == "__main__":
     unittest.main()

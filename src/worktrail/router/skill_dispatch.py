@@ -229,13 +229,25 @@ def evaluate_single_brief(
 ):
     """Evaluate exactly one intake brief via `queue_triage`'s per-repo evaluator.
 
-    When `repo` is falsy, runs `group_queue_by_repo()`'s D2/D8 pre-pass on
-    this one brief before evaluating: an answered repo-assignment decision is
-    consumed (`consume_repo_decision()`), and failing that,
-    `repo_inference.infer_repo()` is tried against the brief's focus text.
-    Either path that resolves a repo stamps it onto the brief
+    Runs `group_queue_by_repo()`'s D2/D8 pre-pass on this one brief before
+    evaluating, regardless of whether `repo` was passed: an answered
+    repo-assignment (or re-home) decision is consumed first
+    (`consume_repo_decision()`) and, when it resolves, its repo overrides the
+    passed `repo`; when it declined, an answered free-form decision is
+    consumed as guidance (`consume_answered_guidance()`) so the answer reaches
+    the evaluator prompt instead of being re-asked; only a brief still
+    repo-less after both is tried against `repo_inference.infer_repo()` on its
+    focus text. Either path that resolves a repo stamps it onto the brief
     (`_write_repo_inference()`) and uses it as this brief's evaluation group,
     exactly like a full `evaluate` run.
+
+    If `has_unresolved_decision()` is still true after the pre-pass (the
+    linked decision is `open`, or `answered` but unconsumable), raises
+    `queue_triage.PendingDecision` -- a brief genuinely waiting on a human
+    must not be evaluated. The pre-pass has already run by then, so a
+    repo-less blocked brief may have been stamped with an inferred `repo:`
+    (the same thing a scheduled `evaluate` run would do); the decision link
+    itself is never touched, and no evaluator is spawned.
 
     A brief that still has no repo after the pre-pass and is due for
     escalation (`escalation_due()`) is verdicted directly by the escalation
@@ -263,30 +275,38 @@ def evaluate_single_brief(
     """
     from ..workqueue.queue_triage import (
         NO_REPO_KEY,
+        PendingDecision,
         Verdict,
+        _awaiting_decision_info,
         _brief_focus,
         _worktrail_repo_root,
         _write_repo_inference,
         apply_wip_cap_preview,
+        consume_answered_guidance,
         consume_repo_decision,
         escalate,
         escalation_due,
         evaluate_briefs,
+        has_unresolved_decision,
         repo_inference,
     )
 
     path = Path(brief_path)
     resolved_repo = repo.strip() if isinstance(repo, str) and repo.strip() else None
+    decision_outcome = consume_repo_decision(path, repos_root)
+    if decision_outcome is not None:
+        if decision_outcome.get("resolved"):
+            resolved_repo = decision_outcome["repo"]
+    else:
+        consume_answered_guidance(path)
     if resolved_repo is None:
-        decision_outcome = consume_repo_decision(path, repos_root)
-        if decision_outcome is not None:
-            if decision_outcome.get("resolved"):
-                resolved_repo = decision_outcome["repo"]
-        else:
-            result = repo_inference.infer_repo(_brief_focus(path), repos_root)
-            if result.repo:
-                _write_repo_inference(path, result)
-                resolved_repo = result.repo
+        result = repo_inference.infer_repo(_brief_focus(path), repos_root)
+        if result.repo:
+            _write_repo_inference(path, result)
+            resolved_repo = result.repo
+    if has_unresolved_decision(path):
+        info = _awaiting_decision_info(path)
+        raise PendingDecision(info["awaiting_decision"], info["decision_status"])
 
     if resolved_repo is None and escalation_due(path, None):
         seed = Verdict(
@@ -1103,7 +1123,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(envelope))
         return 0
     if parsed.evaluate_brief_triage is not None:
-        from ..workqueue.queue_triage import EvaluatorUnavailable
+        from ..workqueue.queue_triage import EvaluatorUnavailable, PendingDecision
 
         try:
             verdict = evaluate_single_brief(
@@ -1112,6 +1132,14 @@ def main(argv: list[str] | None = None) -> int:
                 agent=parsed.triage_agent,
                 repos_root=parsed.triage_repos_root,
             )
+        except PendingDecision as exc:
+            # The brief still waits on a human -- no model may look at it yet.
+            print(json.dumps(None))
+            print(
+                f"blocked_pending_decision: {exc.decision_id} ({exc.status})",
+                file=sys.stderr,
+            )
+            return 2
         except EvaluatorUnavailable as exc:
             # No model evaluated the brief -- distinct from an exit-1 `null`
             # verdict, which means a model looked and said nothing usable.

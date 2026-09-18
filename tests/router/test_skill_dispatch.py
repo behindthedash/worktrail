@@ -1813,6 +1813,170 @@ class SingleBriefTriageTests(unittest.TestCase):
         self.assertEqual(captured["repos_root"], "/repos")
 
 
+class SingleBriefLinkedDecisionTests(unittest.TestCase):
+    """`evaluate_single_brief()` honours a brief's linked `awaiting-decision`
+    the same way a scheduled `evaluate` run does: an answered decision is
+    consumed before the evaluator spawn, an open one blocks the pickup."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name)
+        os.environ["WORK_QUEUE_DIR"] = str(self.base)
+        self.addCleanup(os.environ.pop, "WORK_QUEUE_DIR", None)
+        self.queue = self.base / "queue"
+        self.queue.mkdir()
+        self.repo = self.base / "repos" / "fixture-repo"
+        (self.repo / ".git").mkdir(parents=True)
+        self.brief = self.queue / "a.md"
+        self.brief.write_text(
+            f"---\nfocus: example brief\nstatus: queued\nrepo: {self.repo}\n"
+            "---\n\nBody.\n",
+            encoding="utf-8",
+        )
+
+    def _ask(self, question: str) -> str:
+        return decisions_mod.ask(
+            question,
+            background="bg",
+            why="why",
+            context="ctx",
+            options=["Keep it", "Drop it"],
+            brief="a",
+            queue_base=self.base,
+        )["id"]
+
+    def test_answered_keep_decision_is_consumed_before_the_spawn_with_answer_in_prompt(
+        self,
+    ):
+        from worktrail.orchestrator.spawnlib import SpawnResult
+        from worktrail.workqueue import queue_triage as qt
+
+        dec_id = self._ask("Keep this brief under fixture-repo or drop it?")
+        decisions_mod.answer(dec_id, "Keep it and  proceed.", queue_base=self.base)
+
+        with patch(
+            "worktrail.orchestrator.spawnlib.spawn_agent",
+            return_value=SpawnResult(text="", usage={}),
+        ) as spawn:
+            verdict = skill_dispatch.evaluate_single_brief(
+                self.brief, repo=str(self.repo), cwd=self.tmp.name
+            )
+
+        self.assertEqual(verdict.brief_id, "a")
+        spawn.assert_called_once()
+        prompt = spawn.call_args.args[0]
+        self.assertIn(
+            "  Human decision: Q: Keep this brief under fixture-repo or drop it? "
+            "A: Keep it and proceed.",
+            prompt,
+        )
+        self.assertEqual(decisions_mod.decision_status(dec_id, self.base), "resolved")
+        self.assertNotIn("awaiting-decision", qt.read_frontmatter(self.brief))
+        self.assertEqual(decisions_mod.open_decision_ids(self.base), [])
+        self.assertIn("verdict: decision-answered", self.brief.read_text())
+
+    def test_open_decision_raises_pending_decision_and_main_blocks_with_exit_2(self):
+        from worktrail.workqueue import queue_triage as qt
+
+        dec_id = self._ask("Proceed as scoped?")
+        before = self.brief.read_text(encoding="utf-8")
+
+        with (
+            patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn,
+            self.assertRaises(qt.PendingDecision) as ctx,
+        ):
+            skill_dispatch.evaluate_single_brief(
+                self.brief, repo=str(self.repo), cwd=self.tmp.name
+            )
+        spawn.assert_not_called()
+        self.assertEqual(ctx.exception.decision_id, dec_id)
+        self.assertEqual(ctx.exception.status, "open")
+        self.assertEqual(self.brief.read_text(encoding="utf-8"), before)
+
+        stdout, stderr = StringIO(), StringIO()
+        with (
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+            patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn,
+        ):
+            rc = skill_dispatch.main(
+                [
+                    "--evaluate-brief-triage",
+                    str(self.brief),
+                    "--triage-repo",
+                    str(self.repo),
+                ]
+            )
+        spawn.assert_not_called()
+        self.assertEqual(rc, 2)
+        self.assertIsNone(json.loads(stdout.getvalue()))
+        self.assertIn(f"blocked_pending_decision: {dec_id} (open)", stderr.getvalue())
+
+    def test_repo_less_brief_with_unconsumable_answer_is_inferred_then_blocked(self):
+        """`infer_repo()` is gated only on "still repo-less": a canonical
+        repo-assignment answer that names an unknown repo leaves the brief
+        repo-less and unresolved, so inference still runs (and stamps the
+        brief) before the pending decision blocks the pickup."""
+        from worktrail.workqueue import queue_triage as qt
+        from worktrail.workqueue.repo_inference import InferenceResult
+
+        self.brief.write_text(
+            "---\nfocus: example brief\nstatus: queued\n---\n\nBody.\n",
+            encoding="utf-8",
+        )
+        dec_id = self._ask(qt.REPO_ASSIGNMENT_QUESTION)
+        decisions_mod.answer(dec_id, "no-such-repo", queue_base=self.base)
+        inferred = InferenceResult(repo=str(self.repo), rule="focus-mentions-repo")
+
+        with (
+            patch(
+                "worktrail.workqueue.repo_inference.infer_repo", return_value=inferred
+            ) as infer,
+            patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn,
+            self.assertRaises(qt.PendingDecision) as ctx,
+        ):
+            skill_dispatch.evaluate_single_brief(
+                self.brief, repo=None, repos_root=str(self.base / "repos")
+            )
+
+        infer.assert_called_once()
+        spawn.assert_not_called()
+        self.assertEqual(ctx.exception.decision_id, dec_id)
+        self.assertEqual(ctx.exception.status, "answered")
+        fm = qt.read_frontmatter(self.brief)
+        self.assertEqual(fm["repo"], str(self.repo))
+        self.assertEqual(fm["awaiting-decision"], dec_id)
+
+    def test_answered_rehome_decision_overrides_the_passed_repo(self):
+        from worktrail.workqueue import queue_triage as qt
+
+        other = self.base / "repos" / "other-repo"
+        (other / ".git").mkdir(parents=True)
+        dec_id = self._ask("Where should this go?")
+        decisions_mod.answer(dec_id, "Re-home to other-repo", queue_base=self.base)
+        captured = {}
+
+        def fake_evaluate_briefs(group_repo, briefs, *, agent, cwd, repos_root=None):
+            captured["repo"] = group_repo
+            return []
+
+        with patch(
+            "worktrail.workqueue.queue_triage.evaluate_briefs",
+            side_effect=fake_evaluate_briefs,
+        ):
+            skill_dispatch.evaluate_single_brief(
+                self.brief,
+                repo=str(self.repo),
+                cwd=self.tmp.name,
+                repos_root=str(self.base / "repos"),
+            )
+
+        self.assertEqual(captured["repo"], str(other.resolve()))
+        self.assertEqual(qt.read_frontmatter(self.brief)["repo"], str(other.resolve()))
+        self.assertEqual(decisions_mod.decision_status(dec_id, self.base), "resolved")
+
+
 class SingleBriefTriageCliTests(unittest.TestCase):
     """`worktrail-skill-dispatch --evaluate-brief-triage`/`--apply-brief-triage`
     expose 1.3's single-brief triage boundary to `worktrail-go`'s bash
