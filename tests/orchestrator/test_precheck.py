@@ -253,7 +253,10 @@ class TestPrecheckKindFilter(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_root = Path(tmp)
             tasks = [
-                _make_task("TASK-001", status="pending", kind="e2e", files=["test.py"])
+                _make_task(
+                    "TASK-000", status="completed", kind="impl", files=["done.py"]
+                ),
+                _make_task("TASK-001", status="pending", kind="e2e", files=["test.py"]),
             ]
             _make_spec_dir(tmp_root, tasks, create_files={"test.py"})
 
@@ -271,8 +274,11 @@ class TestPrecheckKindFilter(unittest.TestCase):
             tmp_root = Path(tmp)
             tasks = [
                 _make_task(
+                    "TASK-000", status="completed", kind="impl", files=["done.py"]
+                ),
+                _make_task(
                     "TASK-001", status="pending", kind="cleanup", files=["cleanup.py"]
-                )
+                ),
             ]
             _make_spec_dir(tmp_root, tasks, create_files={"cleanup.py"})
 
@@ -289,7 +295,12 @@ class TestPrecheckKindFilter(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_root = Path(tmp)
             tasks = [
-                _make_task("TASK-001", status="pending", kind="docs", files=["docs.md"])
+                _make_task(
+                    "TASK-000", status="completed", kind="impl", files=["done.py"]
+                ),
+                _make_task(
+                    "TASK-001", status="pending", kind="docs", files=["docs.md"]
+                ),
             ]
             _make_spec_dir(tmp_root, tasks, create_files={"docs.md"})
 
