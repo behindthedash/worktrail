@@ -1,6 +1,6 @@
 ## 1. Bootstrap the triage worktree before landing
 
-- [ ] 1.1 In `src/worktrail/workqueue/queue_triage.py`, in `_worktree_pr_close`: after the
+- [x] 1.1 In `src/worktrail/workqueue/queue_triage.py`, in `_worktree_pr_close`: after the
       `git worktree add` success check and before `prepare(worktree_dir)` (inside the
       existing `try` so the `finally` cleanup applies), read
       `policy_mod.load_policy(repo_path).get("worktree_bootstrap_cmd")` (local import of
