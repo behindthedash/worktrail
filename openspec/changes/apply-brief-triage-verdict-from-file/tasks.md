@@ -38,7 +38,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [depends: 1.1, 1.2] [e2e] Run `PYTHONPATH=src pytest -q tests/router/test_skill_dispatch.py
+- [x] 2.1 [depends: 1.1, 1.2] [e2e] Run `PYTHONPATH=src pytest -q tests/router/test_skill_dispatch.py
       tests/router/test_skill_prose_enforcement_coverage.py tests/test_plugin_surface.py`,
       then `PYTHONPATH=src pytest -q` and
       `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`. Run
