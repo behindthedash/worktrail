@@ -1,6 +1,6 @@
 ## 1. Bounded unknown-owner TTL in `sweep-orphans`
 
-- [ ] 1.1 In `src/worktrail/router/run_record.py`: add an optional
+- [x] 1.1 In `src/worktrail/router/run_record.py`: add an optional
       `--unknown-owner-ttl-seconds` int argument (default `None`) to the `sweep-orphans`
       parser and thread it through `cmd_sweep_orphans` into `_sweep_orphans_repo_dir` as
       `unknown_owner_ttl_seconds: int | None`. In the sweep loop, after the

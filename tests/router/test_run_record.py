@@ -2584,6 +2584,8 @@ def _sweep_orphans(tmp, **over):
         argv += ["--repo", over["repo"]]
     if "ttl_seconds" in over:
         argv += ["--ttl-seconds", str(over["ttl_seconds"])]
+    if over.get("unknown_owner_ttl_seconds") is not None:
+        argv += ["--unknown-owner-ttl-seconds", str(over["unknown_owner_ttl_seconds"])]
     if "note" in over and over["note"] is not None:
         argv += ["--note", over["note"]]
     if over.get("dry_run"):
@@ -2696,6 +2698,104 @@ class TestSweepOrphans(unittest.TestCase):
         self.assertEqual(repo["skipped_live"], [])
         rec = _load(Path(res["path"]))
         self.assertEqual(rec["final_status"], "completed_and_merged")
+
+    # --- opt-in bounded unknown-owner TTL ---
+
+    def _unbound_past_ttl(self, request="unbound dispatch"):
+        res = _start(self.tmp, request=request)
+        self._backdate_updated_at(res["path"], seconds_ago=99999)
+        return res
+
+    def test_unknown_owner_past_ttl_without_work_product_is_closed(self):
+        res = self._unbound_past_ttl()
+
+        rc, out = _sweep_orphans(
+            self.tmp, status="failed_recoverable", unknown_owner_ttl_seconds=3600
+        )
+
+        self.assertEqual(rc, 0)
+        repo = out["repos"][0]
+        self.assertEqual(repo["closed"], [res["path"]])
+        self.assertEqual(repo["skipped_unknown_owner"], [])
+        rec = _load(Path(res["path"]))
+        self.assertEqual(rec["final_status"], "failed_recoverable")
+        self.assertIn("reconciliation=unknown_owner", rec["merge_result"])
+        self.assertIn("unknown_owner_ttl_seconds=3600", rec["merge_result"])
+        self.assertIn(res["run_id"], rec["merge_result"])
+
+    def test_unknown_owner_younger_than_ttl_stays_skipped(self):
+        res = _start(self.tmp, request="unbound dispatch")
+        self._backdate_updated_at(res["path"], seconds_ago=5000)
+
+        rc, out = _sweep_orphans(
+            self.tmp, ttl_seconds=1200, unknown_owner_ttl_seconds=99999
+        )
+
+        self.assertEqual(rc, 0)
+        repo = out["repos"][0]
+        self.assertEqual(repo["closed"], [])
+        self.assertEqual(repo["skipped_unknown_owner"], [res["path"]])
+        self.assertIsNone(_load(Path(res["path"]))["final_status"])
+
+    def _assert_past_ttl_stays_skipped(self, res):
+        rc, out = _sweep_orphans(self.tmp, unknown_owner_ttl_seconds=3600)
+        self.assertEqual(rc, 0)
+        repo = out["repos"][0]
+        self.assertEqual(repo["closed"], [])
+        self.assertEqual(repo["skipped_unknown_owner"], [res["path"]])
+        self.assertIsNone(_load(Path(res["path"]))["final_status"])
+
+    def test_unknown_owner_past_ttl_with_worktree_stays_skipped(self):
+        res = self._unbound_past_ttl()
+        main(["set", res["path"], "worktree", "/tmp/some-worktree"])
+        self._backdate_updated_at(res["path"], seconds_ago=99999)
+        self._assert_past_ttl_stays_skipped(res)
+
+    def test_unknown_owner_past_ttl_with_files_changed_stays_skipped(self):
+        res = self._unbound_past_ttl()
+        main(["append", res["path"], "files_changed", "src/x.py"])
+        self._backdate_updated_at(res["path"], seconds_ago=99999)
+        self._assert_past_ttl_stays_skipped(res)
+
+    def test_unknown_owner_past_ttl_with_pull_request_stays_skipped(self):
+        res = self._unbound_past_ttl()
+        main(["set", res["path"], "pull_request", "https://github.com/o/r/pull/1"])
+        self._backdate_updated_at(res["path"], seconds_ago=99999)
+        self._assert_past_ttl_stays_skipped(res)
+
+    def test_unknown_owner_without_updated_at_stays_skipped_even_with_flag(self):
+        legacy_path = Path(self.tmp) / "legacy-repo" / "go-legacy.yaml"
+        legacy_path.parent.mkdir(parents=True)
+        legacy_path.write_text(_legacy_record_text(), encoding="utf-8")
+
+        rc, out = _sweep_orphans(self.tmp, unknown_owner_ttl_seconds=1)
+
+        self.assertEqual(rc, 0)
+        repo = out["repos"][0]
+        self.assertEqual(repo["closed"], [])
+        self.assertEqual(repo["skipped_unknown_owner"], [str(legacy_path)])
+        self.assertIsNone(_load(legacy_path).get("final_status"))
+
+    def test_unknown_owner_past_ttl_without_flag_stays_skipped(self):
+        res = self._unbound_past_ttl()
+
+        rc, out = _sweep_orphans(self.tmp)
+
+        self.assertEqual(rc, 0)
+        repo = out["repos"][0]
+        self.assertEqual(repo["closed"], [])
+        self.assertEqual(repo["skipped_unknown_owner"], [res["path"]])
+        self.assertIsNone(_load(Path(res["path"]))["final_status"])
+
+    def test_unknown_owner_dry_run_lists_closed_without_writing(self):
+        res = self._unbound_past_ttl()
+
+        rc, out = _sweep_orphans(self.tmp, unknown_owner_ttl_seconds=3600, dry_run=True)
+
+        self.assertEqual(rc, 0)
+        repo = out["repos"][0]
+        self.assertEqual(repo["closed"], [res["path"]])
+        self.assertIsNone(_load(Path(res["path"]))["final_status"])
 
     def test_dry_run_reports_without_writing(self):
         res = _start(self.tmp, request="orphaned dispatch")
