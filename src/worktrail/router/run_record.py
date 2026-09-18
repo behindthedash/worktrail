@@ -101,7 +101,8 @@ finish PATH --status completed_pr_open [--pr URL] [--merge-result ...]
             non-terminal (no final_status yet) -- whichever keeps more.
             Omit --repo to prune every repo directory under --dir.
   sweep-orphans --status STATUS [--dir DIR] [--repo REPO]
-                [--ttl-seconds N] [--note "..."] [--dry-run]
+                [--ttl-seconds N] [--unknown-owner-ttl-seconds N]
+                [--note "..."] [--dry-run]
          -> bulk-close non-terminal run records abandoned mid-dispatch: a
             record with no `final_status` whose `liveness` (same check as the
             `liveness` subcommand below) classifies as `confirmed_orphan` --
@@ -116,8 +117,14 @@ finish PATH --status completed_pr_open [--pr URL] [--merge-result ...]
             skipped_active_process (regardless of heartbeat age); a stale
             record with no bound owner, a malformed binding, or an `unknown`
             owner probe -> skipped_unknown_owner (no affirmative dead-owner
-            evidence; left for Route E / operator review -- never closed
-            automatically). Unlike `reconcile` (which re-checks one record's
+            evidence; left for Route E / operator review). Such a record is
+            closed only under the opt-in bounded policy: with
+            --unknown-owner-ttl-seconds N, an unknown-owner record whose
+            heartbeat age exceeds N AND that carries no work product (no
+            `worktree`, empty `files_changed`, no `pull_request`) is closed
+            with a `reconciliation=unknown_owner` note naming the TTL; without
+            the flag, or with any work product, it stays skipped_unknown_owner.
+            Unlike `reconcile` (which re-checks one record's
             worktree/base_branch staleness), this is scoped to zero or more
             entire repo directories, matching `prune`'s --dir/--repo
             semantics. Prints one summary object per repo dir:
@@ -2262,7 +2269,12 @@ def cmd_prune(args: argparse.Namespace) -> int:
 
 
 def _sweep_orphans_repo_dir(
-    repo_dir: Path, status: str, ttl_seconds: int, note: str | None, dry_run: bool
+    repo_dir: Path,
+    status: str,
+    ttl_seconds: int,
+    note: str | None,
+    dry_run: bool,
+    unknown_owner_ttl_seconds: int | None = None,
 ) -> dict[str, Any]:
     closed: list[str] = []
     skipped_live: list[str] = []
@@ -2288,20 +2300,45 @@ def _sweep_orphans_repo_dir(
         if liveness["fresh"]:
             skipped_live.append(str(path))
             continue
-        if klass != "confirmed_orphan":
+        if klass == "unknown_owner":
+            # Opt-in bounded policy: an unbound record with no work product
+            # that has outlived --unknown-owner-ttl-seconds is closed; any
+            # work product (worktree / files_changed / pull_request) or a
+            # missing heartbeat keeps it retained for operator review.
+            age = liveness["age_seconds"]
+            if not (
+                unknown_owner_ttl_seconds is not None
+                and age is not None
+                and age > unknown_owner_ttl_seconds
+                and not record.get("worktree")
+                and not (record.get("files_changed") or [])
+                and not record.get("pull_request")
+            ):
+                skipped_unknown_owner.append(str(path))
+                continue
+            closed.append(str(path))
+            if dry_run:
+                continue
+            merge_result = note or (
+                f"auto-reconciled: orphan sweep closed run {record.get('run_id')} "
+                f"(reconciliation=unknown_owner, age_seconds={age}, "
+                f"unknown_owner_ttl_seconds={unknown_owner_ttl_seconds})"
+            )
+        elif klass != "confirmed_orphan":
             skipped_unknown_owner.append(str(path))
             continue
-        closed.append(str(path))
-        if dry_run:
-            continue
-        liveness_reason = liveness["reason"] or "stale_heartbeat"
-        owner = liveness["detached_owner"] or {}
-        merge_result = note or (
-            f"auto-reconciled: orphan sweep closed run {record.get('run_id')} "
-            f"(liveness reason={liveness_reason}, age_seconds={liveness['age_seconds']}, "
-            f"reconciliation={klass}, detached_owner={owner.get('name')} "
-            f"state={owner.get('state')} exit_code={owner.get('exit_code')})"
-        )
+        else:
+            closed.append(str(path))
+            if dry_run:
+                continue
+            liveness_reason = liveness["reason"] or "stale_heartbeat"
+            owner = liveness["detached_owner"] or {}
+            merge_result = note or (
+                f"auto-reconciled: orphan sweep closed run {record.get('run_id')} "
+                f"(liveness reason={liveness_reason}, age_seconds={liveness['age_seconds']}, "
+                f"reconciliation={klass}, detached_owner={owner.get('name')} "
+                f"state={owner.get('state')} exit_code={owner.get('exit_code')})"
+            )
         finish_args = argparse.Namespace(
             path=str(path),
             status=status,
@@ -2339,7 +2376,12 @@ def cmd_sweep_orphans(args: argparse.Namespace) -> int:
         repo_dirs = [d for d in sorted(base.iterdir()) if d.is_dir()]
     results = [
         _sweep_orphans_repo_dir(
-            repo_dir, args.status, args.ttl_seconds, args.note, args.dry_run
+            repo_dir,
+            args.status,
+            args.ttl_seconds,
+            args.note,
+            args.dry_run,
+            unknown_owner_ttl_seconds=args.unknown_owner_ttl_seconds,
         )
         for repo_dir in repo_dirs
         if repo_dir.is_dir()
@@ -2552,6 +2594,12 @@ def main(argv=None) -> int:
         type=int,
         default=_DEFAULT_LIVENESS_TTL_SECONDS,
         help="liveness heartbeat freshness window in seconds (default 1200)",
+    )
+    s.add_argument(
+        "--unknown-owner-ttl-seconds",
+        type=int,
+        default=None,
+        help="also close unknown-owner records (no bound detached owner) older than N seconds that carry no worktree, files_changed, or pull_request; omitted = never",
     )
     s.add_argument(
         "--note",
