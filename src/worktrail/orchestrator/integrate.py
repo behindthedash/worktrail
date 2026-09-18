@@ -298,6 +298,17 @@ def current_branch(repo) -> str:
     return live._git(Path(repo), "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
 
 
+def _rmdir_if_empty(path: Path) -> None:
+    """Remove `path` only if it is an empty directory; swallow every OSError
+    (non-empty, missing, permission). Used to drop a throwaway checkout's parent
+    (`<repo>-integrate/`, `<repo>-checkbox-check/`) once its last leaf is gone.
+    Never called on `<repo>-worktrees/`."""
+    try:
+        os.rmdir(path)
+    except OSError:
+        pass
+
+
 @contextlib.contextmanager
 def _integration_worktree(repo: Path, branch: str, start_ref: str, git_lock=None):
     """Build a group branch in a throwaway worktree, never moving `repo`'s HEAD.
@@ -367,7 +378,10 @@ def _integration_worktree(repo: Path, branch: str, start_ref: str, git_lock=None
     finally:
         with lock:
             _git(repo, "worktree", "remove", "--force", str(wt), check=False)
-        shutil.rmtree(wt, ignore_errors=True)  # belt-and-suspenders if remove no-op'd
+            shutil.rmtree(
+                wt, ignore_errors=True
+            )  # belt-and-suspenders if remove no-op'd
+            _rmdir_if_empty(wt.parent)
 
 
 def _strip_spec_folder_to_base(iw: Path, spec_id: str, base_ref: str) -> None:
@@ -848,7 +862,8 @@ def detect_checkbox_status_divergence(
     finally:
         with lock:
             _git(repo, "worktree", "remove", "--force", str(wt), check=False)
-        shutil.rmtree(wt, ignore_errors=True)
+            shutil.rmtree(wt, ignore_errors=True)
+            _rmdir_if_empty(wt.parent)
 
 
 def _record_checkbox_status_divergence(
@@ -1097,7 +1112,8 @@ def sync_checkbox_status(
     finally:
         with lock:
             _git(repo, "worktree", "remove", "--force", str(wt), check=False)
-        shutil.rmtree(wt, ignore_errors=True)
+            shutil.rmtree(wt, ignore_errors=True)
+            _rmdir_if_empty(wt.parent)
 
 
 def _record_unreconciled_tail_evidence(

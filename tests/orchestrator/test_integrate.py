@@ -1956,6 +1956,32 @@ class IntegrationWorktreeIsolation(unittest.TestCase):
                 _run(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip(), base
             )
 
+    def test_integrate_parent_dir_removed_when_empty(self):
+        """Throwaway checkout parent directories are removed when empty: after the
+        context exits, `<repo>-integrate/` itself is gone, not just the leaf."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, base = self._init_repo(tmp)
+            parent = repo.parent / f"{repo.name}-integrate"
+            with integrate._integration_worktree(repo, "run-1/base", base) as iw:
+                self.assertEqual(Path(iw).parent, parent)
+                self.assertTrue(parent.is_dir())
+            self.assertFalse(Path(iw).exists())
+            self.assertFalse(parent.exists(), "empty parent dir must be removed")
+
+    def test_integrate_parent_dir_kept_when_sibling_present(self):
+        """A sibling under `<repo>-integrate/` (another group's live checkout) keeps
+        both itself and the parent intact -- only an empty parent is removed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, base = self._init_repo(tmp)
+            parent = repo.parent / f"{repo.name}-integrate"
+            sibling = parent / "other-group-deadbeef"
+            sibling.mkdir(parents=True)
+            with integrate._integration_worktree(repo, "run-1/base", base) as iw:
+                self.assertTrue(Path(iw).exists())
+            self.assertFalse(Path(iw).exists())
+            self.assertTrue(sibling.is_dir(), "sibling checkout must survive")
+            self.assertTrue(parent.is_dir(), "non-empty parent must survive")
+
     def test_worktree_add_retries_once_after_transient_failure(self):
         """A first `git worktree add` failure (e.g. a stale registration the prune
         above it didn't catch) must not sink the group -- mirror
