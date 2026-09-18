@@ -4202,11 +4202,22 @@ class TestReportAndVerdictFileOutput(QueueTriageTestBase):
             ]
 
         out_dir = self.base / "out-run"
+        repos_root = self.base / "repos"
+        (repos_root / "repo-a").mkdir(parents=True)
+        (repos_root / "repo-b").mkdir(parents=True)
         with mock.patch(
             "worktrail.workqueue.queue_triage.evaluate_group",
             side_effect=fake_evaluate_group,
         ) as mock_eval:
-            exit_code = qt.main(["evaluate", "--out-dir", str(out_dir)])
+            exit_code = qt.main(
+                [
+                    "evaluate",
+                    "--out-dir",
+                    str(out_dir),
+                    "--repos-root",
+                    str(repos_root),
+                ]
+            )
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(
