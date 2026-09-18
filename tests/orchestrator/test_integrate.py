@@ -2570,10 +2570,6 @@ class EmptyDiffGuard(unittest.TestCase):
         )
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ForeignRepoTargetQuarantine(unittest.TestCase):
     """Empty-diff quarantine distinguishes foreign-repo targets, and reports
     unmanaged default-branch commits in the sibling repo (read-only)."""
@@ -2613,6 +2609,18 @@ class ForeignRepoTargetQuarantine(unittest.TestCase):
             _run(sib, "commit", "-q", "-m", f"unmanaged {i}")
         if branch != "main":
             _run(sib, "checkout", "-q", "-b", branch)
+            # Give the branch an upstream so `@{u}..HEAD` resolves: the
+            # exemption must come from the default-branch check, not from a
+            # git failure. Push only the pre-`ahead` base so HEAD stays ahead.
+            _run(
+                sib,
+                "push",
+                "-q",
+                "-u",
+                "origin",
+                f"{branch}~{ahead}:refs/heads/{branch}",
+            )
+            _run(sib, "branch", "-q", "--set-upstream-to", f"origin/{branch}", branch)
         return sib
 
     def _run_group(self, task):
@@ -2722,7 +2730,6 @@ class ForeignRepoTargetQuarantine(unittest.TestCase):
         self.assertEqual(_run(sib, "rev-parse", "HEAD").stdout, before)
 
     def test_helper_classifies_paths(self):
-        home = str(Path("~").expanduser())
         # Not a git repo: the path itself is named.
         loose = Path(self.tmp.name) / "loose"
         loose.mkdir()
@@ -2733,4 +2740,17 @@ class ForeignRepoTargetQuarantine(unittest.TestCase):
         self.assertEqual(
             [f["repo"] for f in foreign], [str((loose / "f.txt").resolve())]
         )
-        self.assertTrue(home)
+        # `~` expands under $HOME and resolves outside the repo.
+        home = Path(self.tmp.name) / "home"
+        home.mkdir()
+        with patch.dict(os.environ, {"HOME": str(home)}):
+            foreign = integrate.foreign_repo_targets(
+                self.repo, [self._task(["~/tilde/f.txt"])]
+            )
+        self.assertEqual(
+            [f["repo"] for f in foreign], [str((home / "tilde" / "f.txt").resolve())]
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
