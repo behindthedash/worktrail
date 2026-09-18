@@ -36,6 +36,7 @@ This suite must prove the orchestrator's side-effecting paths (git, `gh`, worker
 - **`e2e` tests reuse fixtures across modules via relative imports** rather than reinventing fixture builders — e.g. `test_check_spec_collision_e2e.py` imports `_git`/`_init_repo`/`_make_spec`/`_make_task` from `.test_check_spec_collision` and `QueueTestBase` from `..workqueue.test_work_queue`. Prefer importing an existing fixture builder over duplicating one when writing a new e2e test that spans two subsystems.
 - **Golden record/replay regression**: `python3 -m worktrail.orchestrator.orchestrate check` (see AGENTS.md Development section) is a separate check from `pytest` — run both before considering orchestrator changes verified.
 - **`tests/router/test_classifier_coverage_ratchet.py` runs in its own CI job, not in `Lint, Test & Build`.** That job (`Classifier Coverage Ratchet`) is a required check as of 2026-09-10, and the main pytest step passes `--ignore=tests/router/test_classifier_coverage_ratchet.py` so it does not run twice per PR — keep both sides in step if the ratchet's location changes.
+- **Bash blocks embedded in skill docs are executed, not just string-matched.** `tests/test_plugin_surface.py`'s `_first_bash_block_after(text, marker)` extracts the first ```` ```bash ```` block after a heading/anchor in a skill reference (e.g. `skills/worktrail-go/references/subagent-prompts.md` `#precheck-gate`, `#orchestrator`), and `_run_doc_bash(script, tmp_path, stubs, env)` runs it under `bash -c` with stub `worktrail-*` commands (name → script body) first on `PATH`, so assertions are on the argv/records the block actually produced. Use this when a doc's shell snippet carries branching logic (format detection, `note:` filtering) that a substring assertion cannot prove; the `worktrail-compile` stub prints canned `  note: ...` output via an env var.
 
 ## Critical files (purpose, not inventory)
 - `tests/conftest.py` — the mandatory isolation fixtures every test in the suite inherits (machine-wide config redirect plus session-wide tempfile containment); read it before writing any test that touches env-resolved paths or scratch dirs.
@@ -49,4 +50,4 @@ This suite must prove the orchestrator's side-effecting paths (git, `gh`, worker
 - A test that mocks `subprocess`/`gh` ad hoc instead of using `FakeRun`/`fake_gh.py` risks missing the exact argument-building bugs those fakes exist to catch — prefer the existing fake over a new mock.
 
 ---
-**Last Updated:** 2026-09-10
+**Last Updated:** 2026-09-18
