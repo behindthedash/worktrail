@@ -1,6 +1,6 @@
 ## 1. Consume the proceed-as-scoped answer (`queue-triage`)
 
-- [ ] 1.1 In `src/worktrail/workqueue/queue_triage.py`: in `consume_repo_decision()`, before
+- [x] 1.1 In `src/worktrail/workqueue/queue_triage.py`: in `consume_repo_decision()`, before
       reporting a canonical answer as unresolvable, compare it (casefolded, stripped, trailing
       `.` removed) against `_NEEDS_DECISION_OPTIONS[0]`; on a match stamp
       `repo-less: confirmed` via `_set_fm_fields()`, append a `## Triage <date>` note with
