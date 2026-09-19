@@ -69,7 +69,7 @@
 
 ## 4. Verification
 
-- [ ] 4.1 [depends: 1.1, 2.1, 3.1] [e2e] Run `PYTHONPATH=src pytest -q`, then
+- [x] 4.1 [depends: 1.1, 2.1, 3.1] [e2e] Run `PYTHONPATH=src pytest -q`, then
       `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`. Run
       `openspec validate intake-triage-evaluate-claim-guard --strict` and
       `worktrail-compile openspec/changes/intake-triage-evaluate-claim-guard`. Then verify
