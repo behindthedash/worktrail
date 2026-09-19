@@ -33,7 +33,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [depends: 1.1] [e2e] Run
+- [x] 2.1 [depends: 1.1] [e2e] Run
       `PYTHONPATH=src pytest -q tests/router/test_policy_drift_selfcheck.py`, then
       `PYTHONPATH=src pytest -q` and
       `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`. Run
