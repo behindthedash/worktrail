@@ -1,0 +1,129 @@
+name: 'CI: Secrets Scanning (gitleaks)'
+
+on:
+  workflow_dispatch: {}
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+
+env:
+  GITLEAKS_VERSION: '8.21.2'
+
+jobs:
+  # One-time/manual full-history scan. Not attached to any trigger that runs
+  # automatically per-push or per-PR -- invoke via workflow_dispatch (TASK-3.2
+  # runs this once to triage the repo's existing history before the diff scan
+  # below is treated as sufficient going forward).
+  gitleaks-full-history:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: gitleaks-full-history-${{ github.ref }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          clean: false
+
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          curl -sSL -o gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          tar -xzf gitleaks.tar.gz gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Scan full git history
+        run: |
+          set -euo pipefail
+          gitleaks detect \
+            --source . \
+            --report-format sarif \
+            --report-path gitleaks-full-history.sarif \
+            --redact \
+            --verbose 2>&1 | tee gitleaks-full-history.log
+
+      - name: Assert gitleaks signal integrity (full-history)
+        # Not continue-on-error: fails the job when the scan covered zero
+        # commits rather than silently reporting "no leaks found" identically
+        # to a genuine clean scan of real history. Same class of gap the
+        # Schemathesis gate had (see check_schemathesis_signal_integrity.py).
+        if: always()
+        run: |
+          python3 scripts/ci/check_gitleaks_signal_integrity.py \
+            --log gitleaks-full-history.log \
+            --min-commits 1
+
+      - name: Upload full-history report
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: gitleaks-full-history-report
+          path: gitleaks-full-history.sarif
+          if-no-files-found: ignore
+
+  # Per-PR diff scan: only scans the commits introduced by the PR, so it
+  # stays fast and runs on every push to a PR branch.
+  gitleaks-pr-diff:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: gitleaks-pr-diff-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          clean: false
+
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          curl -sSL -o gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          tar -xzf gitleaks.tar.gz gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Scan PR diff
+        run: |
+          set -euo pipefail
+          gitleaks detect \
+            --source . \
+            --log-opts="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}" \
+            --report-format sarif \
+            --report-path gitleaks-pr-diff.sarif \
+            --redact \
+            --verbose 2>&1 | tee gitleaks-pr-diff.log
+
+      - name: Assert gitleaks signal integrity (PR diff)
+        # Not continue-on-error: fails the job when the diff range covered
+        # zero commits (e.g. a degenerate base/head pairing) rather than
+        # silently reporting "no leaks found" identically to a genuine clean
+        # diff. Same class of gap the Schemathesis gate had (see
+        # check_schemathesis_signal_integrity.py).
+        if: always()
+        run: |
+          python3 scripts/ci/check_gitleaks_signal_integrity.py \
+            --log gitleaks-pr-diff.log \
+            --min-commits 1 \
+            --range "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+
+      - name: Upload PR diff report
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: gitleaks-pr-diff-report
+          path: gitleaks-pr-diff.sarif
+          if-no-files-found: ignore

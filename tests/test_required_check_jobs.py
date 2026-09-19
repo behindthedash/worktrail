@@ -19,6 +19,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 RULESET = REPO_ROOT / ".github" / "rulesets" / "protect-main.json"
 
+# A job-level `if:` that only excludes non-PR events (e.g. the workflow_dispatch
+# full-history scan sharing gitleaks.yml) never skips the job on the
+# pull_request events that report required checks, so it is not the #653 hazard.
+PR_ONLY_GATE = "github.event_name == 'pull_request'"
+
 
 def _required_contexts() -> list[str]:
     ruleset = json.loads(RULESET.read_text(encoding="utf-8"))
@@ -79,7 +84,7 @@ def test_no_required_check_job_is_job_level_if_skipped():
         if resolved is None:
             continue  # covered by the test above
         name, path, body = resolved
-        if "if" in body:
+        if "if" in body and body["if"] != PR_ONLY_GATE:
             offenders.append(
                 f"{path.name}:{name} (context {context!r}) if: {body['if']!r}"
             )

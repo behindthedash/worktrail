@@ -31,7 +31,8 @@
           { "context": "Lint, Test & Build (3.11)" },
           { "context": "Lint, Test & Build (3.14)" },
           { "context": "Release metadata check" },
-          { "context": "Scope check" }
+          { "context": "Scope check" },
+          { "context": "gitleaks-pr-diff" }
         ],
         "strict_required_status_checks_policy": false
       }
