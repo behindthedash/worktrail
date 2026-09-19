@@ -1,6 +1,6 @@
 ## 1. Ownership and empty-brief primitives (`queue_triage`)
 
-- [ ] 1.1 In `src/worktrail/workqueue/queue_triage.py`, add `class BriefOwned(Exception)`
+- [x] 1.1 In `src/worktrail/workqueue/queue_triage.py`, add `class BriefOwned(Exception)`
       (carries `brief_id`, `claimed_by`, `claimed_at`), `class BriefMissing(Exception)`,
       `class EmptyBrief(Exception)` (carries `brief_id`, `reason`), and
       `brief_claim_holder(brief_id) -> tuple[Path, str | None, str | None] | None` that
@@ -23,7 +23,7 @@
 
 ## 2. Guard the single-brief evaluate/apply gate (`skill_dispatch`)
 
-- [ ] 2.1 [depends: 1.1] In `src/worktrail/router/skill_dispatch.py`, at the top of
+- [x] 2.1 [depends: 1.1] In `src/worktrail/router/skill_dispatch.py`, at the top of
       `evaluate_single_brief()` derive `brief_id = Path(brief_path).stem`, call
       `brief_claim_holder()`: raise `BriefMissing` when it returns `None`, `BriefOwned` when
       the owner is set, and otherwise continue with the re-resolved path (design D2). Read

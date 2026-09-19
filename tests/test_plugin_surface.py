@@ -237,6 +237,29 @@ def test_go_dispatches_worktrail_executor_only():
     )
 
 
+def test_intake_triage_gate_names_claim_guard_blocks():
+    """The Phase 2 intake-brief triage gate must name all three single-brief
+    guard outcomes (`skill_dispatch` exit 2, spec
+    `intake-triage-evaluate-claim-guard`) next to `blocked_pending_decision`
+    as stops that never proceed to the apply step, and the `brief` mode row
+    must carry the `picked` short-circuit."""
+    text = (SKILLS_DIR / "worktrail-go" / "SKILL.md").read_text()
+    assert "blocked_pending_decision" in text
+    for line in (
+        "blocked_brief_owned: <id> owned by <claimed-by> (claimed-at <ts>)",
+        "blocked_brief_missing: <id>",
+        "blocked_empty_brief: <id> (<reason>)",
+    ):
+        assert line in text, f"worktrail-go/SKILL.md triage gate lost {line!r}"
+    assert "`brief_status: picked`" in text
+    assert "owned by <claimed-by>" in text
+    # The short-circuit must live in the Phase 2 gate itself, not only in the
+    # Phase 1 mode table.
+    gate = text.split("### Phase 2 — Intake", 1)[1].split("### Phase 3", 1)[0]
+    assert "`brief_status: picked`" in gate
+    assert "owned by <claimed-by>" in gate
+
+
 def test_handoff_dispatch_includes_explicit_executor_route():
     """The SDD executor's direct-invocation guard requires route:X even for handoffs."""
     go_skill = SKILLS_DIR / "worktrail-go" / "SKILL.md"
