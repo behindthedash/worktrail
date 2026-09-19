@@ -266,6 +266,10 @@ the same entry's `repo` field is the brief's own `repo:` frontmatter, hold it as
 `$BRIEF_REPO` — this is **not** `$ARG_REPO`, which is only set when the user typed a
 repo token in the invocation itself) before doing anything else:
 
+- **`brief_status: picked`** (the parse result resolved the id against `picked/`, not
+  `queue/`) — short-circuit before the `kind` lookup: the brief is already held by
+  another claimant. Print `owned by <claimed-by>` (from the parse result's `claimed_by`)
+  and stop — do not evaluate, claim, or dispatch it.
 - **`kind: execution`** (a `seeded-from:` brief) — unaffected; continue to the `claim`
   action below exactly as before.
 - **`kind: intake`** (a raw handoff or consolidated brief with no `seeded-from:`) — there

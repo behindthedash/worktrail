@@ -253,6 +253,11 @@ def test_intake_triage_gate_names_claim_guard_blocks():
         assert line in text, f"worktrail-go/SKILL.md triage gate lost {line!r}"
     assert "`brief_status: picked`" in text
     assert "owned by <claimed-by>" in text
+    # The short-circuit must live in the Phase 2 gate itself, not only in the
+    # Phase 1 mode table.
+    gate = text.split("### Phase 2 — Intake", 1)[1].split("### Phase 3", 1)[0]
+    assert "`brief_status: picked`" in gate
+    assert "owned by <claimed-by>" in gate
 
 
 def test_handoff_dispatch_includes_explicit_executor_route():
