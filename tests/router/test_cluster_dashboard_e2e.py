@@ -136,7 +136,9 @@ def _build_realistic_queue(queue_dir: Path) -> dict[str, str]:
         queue_dir,
         "20260703-081500-queue-dup-warning-absent.md",
         repo="repo-c",
-        focus="Queue dashboard shows duplicate briefs without any warning today",
+        focus=(
+            "Queue dashboard shows duplicate briefs without any warning today either"
+        ),
     )
 
     # (d) ordinary overlap pair (~0.4545, at/above OVERLAP_THRESHOLD == 0.45)
