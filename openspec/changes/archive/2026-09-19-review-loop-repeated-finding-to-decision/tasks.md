@@ -76,3 +76,10 @@
       spawn counts in the PR description. Finally run
       `openspec validate review-loop-repeated-finding-to-decision --strict` and
       `worktrail-compile openspec/changes/review-loop-repeated-finding-to-decision`.
+
+      **Waived (decision 20260918-224927-review-loop-repeated-finding-to, option 3).** The
+      automated checks in this task all passed on merged `main`. The real-run check did not
+      meet its acceptance: in 7 real fixture runs, 4 reached review round 2 (2 sonnet, 2 opus
+      reviewers) and none set `decision_required` or matched the notes fallback, so no early
+      escalation and no `decisions/open/` record. Accepted as a best-effort trigger; archived
+      with this box unchecked on purpose.
