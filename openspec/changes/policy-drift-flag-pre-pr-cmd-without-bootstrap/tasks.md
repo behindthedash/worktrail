@@ -1,6 +1,6 @@
 ## 1. Flag a dependency-needing pre_pr_cmd with no worktree bootstrap
 
-- [ ] 1.1 In `src/worktrail/router/policy_drift_selfcheck.py`: add a
+- [x] 1.1 In `src/worktrail/router/policy_drift_selfcheck.py`: add a
       `_NODE_DEP_RUNNER_RE` (matches `\b(?:npm|npx|yarn|pnpm|bun|vitest|jest|mocha)\b` or
       `playwright\s+test`, case-insensitive) and a `_SELF_INSTALL_RE` (matches
       `npm ci`, `npm install`, `npm i`, `yarn install`, `pnpm install`, `pnpm i`,
