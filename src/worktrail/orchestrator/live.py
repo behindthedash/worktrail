@@ -4095,6 +4095,132 @@ def _fire_notify(cmd: str, payload: dict) -> None:
         pass
 
 
+REVIEW_DECISION_SOURCE = "orchestrator-review-loop"
+REVIEW_DECISION_OPTIONS = (
+    "amend-ac: relax the acceptance criterion to admit the existing behaviour",
+    "keep-ac: keep the criterion literal and change the conflicting test/behaviour",
+)
+
+
+def _review_decision_helpers():
+    """Best-effort lazy import of the decision primitives (the way
+    `dispatch._decision_helpers` does). Returns the `workqueue.decisions`
+    module, or None when it cannot be imported -- filing is additive and must
+    never turn into an import error on the commit path."""
+    try:
+        from ..workqueue import decisions
+    except Exception:  # noqa: BLE001 - filing is best-effort, never fatal
+        return None
+    return decisions
+
+
+def _build_pending_decision(
+    *,
+    repo: Path | None,
+    spec_rel: str | None,
+    run_id: str | None,
+    task_id: str,
+    question: str,
+) -> dict | None:
+    """The `worktrail.pending-decision` envelope for a decision-required
+    escalation, or None (logged) when identity needs provenance the commit
+    path does not have."""
+    if repo is None or spec_rel is None:
+        print(
+            f"{_ts()} DECISION: {task_id} escalated (decision-required) but repo/"
+            f"spec_rel unavailable -- no pending_decision envelope built"
+        )
+        return None
+    decisions = _review_decision_helpers()
+    if decisions is None:
+        print(
+            f"{_ts()} DECISION: {task_id} escalated (decision-required) but "
+            f"decision primitives unavailable -- no pending_decision envelope built"
+        )
+        return None
+    subject = f"{spec_rel}/{task_id}"
+    try:
+        decision_id = decisions.decision_identity(
+            REVIEW_DECISION_SOURCE, str(repo), subject, question
+        )
+        return decisions.pending_decision_envelope(
+            decision_id=decision_id,
+            question=question,
+            options=list(REVIEW_DECISION_OPTIONS),
+            source=REVIEW_DECISION_SOURCE,
+            repo=str(repo),
+            subject=subject,
+            run_id=run_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"{_ts()} DECISION: {task_id} escalated (decision-required) but the "
+            f"envelope could not be built: {exc}"
+        )
+        return None
+
+
+def _file_review_decision(
+    envelope: dict | None,
+    *,
+    repo: Path | None,
+    spec_rel: str | None,
+    run_id: str | None,
+    task_id: str,
+    question: str,
+    rounds: int,
+) -> None:
+    """Best-effort `decisions.ask()` for a decision-required escalation. Any
+    failure (queue root missing/unwritable, primitives unavailable, an open
+    decision already held for the identity) is logged and swallowed: the
+    task's `escalated` status and the journal entry's envelope stand."""
+    if envelope is None:
+        return
+    decisions = _review_decision_helpers()
+    if decisions is None:
+        return
+    try:
+        background = (
+            f"Task {task_id} of {spec_rel} burned {rounds} review round(s); the "
+            f"round-{rounds} review still reported FAILED and named a planner/"
+            f"human decision rather than a code defect: {question}"
+        )
+        why = (
+            "The reviewer reports that an acceptance criterion contradicts "
+            "existing behaviour or an existing test, so another fix round cannot "
+            "converge without a human choosing which side wins."
+        )
+        context = (
+            f"Review rounds burned: {rounds} (the round-1 finding survived one fix "
+            f"round). Conflict named by the reviewer: {question}\n\n"
+            f"Resume recipe once decided: `worktrail-live clear-task --tasks "
+            f"{task_id}` on run {run_id or '<run>'} of {spec_rel} in {repo}, then "
+            f"resume the run."
+        )
+        result = decisions.ask(
+            question,
+            background=background,
+            why=why,
+            context=context,
+            options=list(envelope["options"]),
+            recommendation=question,
+            repo=str(repo),
+            decision_id=envelope["decision_id"],
+            source=REVIEW_DECISION_SOURCE,
+            subject=envelope["provenance"].get("subject"),
+            run_id=run_id,
+        )
+        print(
+            f"{_ts()} DECISION: {task_id} filed {result.get('id')} "
+            f"({result.get('status')}) at {result.get('path')}"
+        )
+    except Exception as exc:  # noqa: BLE001 - never fail the run on filing
+        print(
+            f"{_ts()} DECISION: {task_id} escalated (decision-required) but the "
+            f"decision record could not be filed: {exc}"
+        )
+
+
 def _apply_step_commit(
     *,
     tasks: list,
@@ -4110,6 +4236,9 @@ def _apply_step_commit(
     tools_used: list | None = None,
     skills_used: list | None = None,
     agent: str | None = None,
+    repo: Path | None = None,
+    spec_rel: str | None = None,
+    run_id: str | None = None,
 ) -> tuple:
     """Append the journal entry, persist, drop the heartbeat, apply the state
     transition. Caller must hold state_lock for the duration."""
@@ -4127,6 +4256,29 @@ def _apply_step_commit(
         new = "fixing"
         task["status"] = "fixing"
         task["retry_count"] = pre_retry
+    # A second FAILED review that names a planner/human decision (an AC that
+    # contradicts existing behaviour) cannot be fixed by another worker round:
+    # escalate now instead of burning round 3, and hand the human a
+    # pending-decision envelope. Round 1 still gets its fix round; the round-3
+    # breaker already returns "escalated" and is left alone.
+    pending_decision: dict | None = None
+    decision_text: str | None = None
+    if (
+        role == dispatch.ROLE_REVIEW
+        and new == "fixing"
+        and task.get("retry_count", 0) >= 2
+    ):
+        decision_text = dispatch.review_names_decision(rep)
+        if decision_text is not None:
+            new = "escalated"
+            task["status"] = "escalated"
+            pending_decision = _build_pending_decision(
+                repo=repo,
+                spec_rel=spec_rel,
+                run_id=run_id,
+                task_id=task["id"],
+                question=decision_text,
+            )
     report_fields = {k: rep.get(k) for k in orchestrate._REPORT_FIELDS}
     convergence_summary: list | None = None
     if new in ("escalated", "failed"):
@@ -4187,6 +4339,19 @@ def _apply_step_commit(
         entry["skills_used"] = skills_used
     if convergence_summary is not None:
         entry["convergence_summary"] = convergence_summary
+    if decision_text is not None:
+        entry["escalation_reason"] = "decision-required"
+        if pending_decision is not None:
+            entry["pending_decision"] = pending_decision
+        _file_review_decision(
+            pending_decision,
+            repo=repo,
+            spec_rel=spec_rel,
+            run_id=run_id,
+            task_id=task["id"],
+            question=decision_text,
+            rounds=len(convergence_summary or []),
+        )
     if task.get("_scope_added_files"):
         entry["scope_escalated"] = True
         entry["scope_escalated_files"] = list(task["_scope_added_files"])
@@ -4673,6 +4838,9 @@ def live_run_real(
                 tools_used=tools_used,
                 skills_used=skills_used,
                 agent=agent,
+                repo=repo,
+                spec_rel=spec_rel,
+                run_id=run_id,
             )
             _publish_actives()
             if notify_cmd:
