@@ -1858,9 +1858,20 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
         self.repo = self.base / "repo"
         self.repo.mkdir(parents=True, exist_ok=True)
         self.target_change = "widget-export-pipeline"
-        self.brief_path = self.write(
-            "a.md", repo=str(self.repo), body="## Focus\n\nfold this in\n"
+        # A realistic capture: the first sentence is the ask, the rest is the
+        # supporting detail. `_fold_task_instruction()` takes only the first.
+        self.focus = (
+            "Add a zero-execution guard to every test-executing CI job in the "
+            "qa-pipeline, so a required check can never report green having run "
+            "nothing. Verified this session on the Astryx closeout PRs, where the "
+            "changed-file selection was empty."
         )
+        self.focus_first_sentence = (
+            "Add a zero-execution guard to every test-executing CI job in the "
+            "qa-pipeline, so a required check can never report green having run "
+            "nothing."
+        )
+        self.brief_path = self.write("a.md", repo=str(self.repo), focus=self.focus)
         self.verdict = qt.Verdict(
             brief_id="a",
             verdict="fold-into-change",
@@ -2011,10 +2022,19 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
         proposal_text = (change_dir / "proposal.md").read_text(encoding="utf-8")
         self.assertIn("## Folded from a", proposal_text)
         self.assertIn(self.verdict.evidence, proposal_text)
+        self.assertIn(self.focus, proposal_text)
         tasks_text = (change_dir / "tasks.md").read_text(encoding="utf-8")
         self.assertIn("## 2. Folded from a", tasks_text)
-        self.assertIn("- [ ] 2.1", tasks_text)
-        self.assertIn(self.verdict.evidence, tasks_text)
+        # The checklist item states the work (the focus's first sentence), not
+        # the triage evidence, which argues why the fold belongs.
+        self.assertIn(f"- [ ] 2.1 {self.focus_first_sentence}", tasks_text)
+        self.assertNotIn(self.verdict.evidence, tasks_text)
+        # ...with one pointer to where the evidence is written in full.
+        self.assertIn(
+            "Triage evidence for this fold is in `proposal.md`'s "
+            "`## Folded from a` section.",
+            tasks_text,
+        )
 
     def test_land_request_carries_no_run_and_triage_request_summary(self):
         """The triage apply path lands with `run=None` (no run record of its
@@ -2060,11 +2080,22 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
         self.assertEqual(entry["landing"]["final_status"], "completed_pr_open")
         self.assertNotEqual(entry["landing"]["final_status"], "failed_recoverable")
 
-    def test_multiline_evidence_is_collapsed_in_the_tasks_checklist_line(self):
-        """A `- [ ] N.1` item is one line: embedded newlines in the evidence
-        would spill its tail out of the checklist item. The `proposal.md`
-        prose section keeps the evidence verbatim."""
+    def test_multiline_focus_is_collapsed_in_the_tasks_checklist_line(self):
+        """A `- [ ] N.1` item is one line: embedded newlines in the focus would
+        spill its tail out of the checklist item. The `proposal.md` prose
+        section keeps both the focus and the evidence verbatim."""
         pr_url = "https://github.com/acme/widgets/pull/42"
+        multiline_focus = (
+            "Collapse the serializer work\nand its docs\ninto one export path."
+        )
+        # Block-scalar style (`focus: |-`) -- what the handoff capture flow
+        # actually writes for a multi-line focus; the plain-scalar `_brief()`
+        # helper cannot express one.
+        indented = "\n".join(f"  {line}" for line in multiline_focus.splitlines())
+        (self.queue / "a.md").write_text(
+            f"---\nfocus: |-\n{indented}\nrepo: {self.repo}\nstatus: queued\n---\n",
+            encoding="utf-8",
+        )
         multiline = qt.Verdict(
             brief_id="a",
             verdict="fold-into-change",
@@ -2106,13 +2137,93 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
         )
         self.assertEqual(
             task_line,
-            "- [ ] 2.1 overlaps open tasks in widget-export-pipeline specifically "
-            "the serializer work and its docs",
+            "- [ ] 2.1 Collapse the serializer work and its docs into one export path.",
         )
 
-        # proposal.md keeps the evidence's original line breaks
+        # proposal.md keeps both texts' original line breaks
         proposal_text = (change_dir / "proposal.md").read_text(encoding="utf-8")
         self.assertIn(multiline.evidence, proposal_text)
+        self.assertIn(multiline_focus, proposal_text)
+
+    def test_brief_without_a_focus_falls_back_to_the_collapsed_evidence(self):
+        """A fold must never emit an empty task. With no `focus:` frontmatter
+        and no `## Focus` section there is nothing to state the work with, so
+        the evidence is used rather than nothing."""
+        (self.queue / "a.md").write_text(
+            f"---\nrepo: {self.repo}\nstatus: queued\n---\n\nbody with no focus\n",
+            encoding="utf-8",
+        )
+        run = self._dispatcher()
+        land_outcome = LandOutcome(
+            outcome="landed",
+            pr_url="https://github.com/acme/widgets/pull/42",
+            pr_number=42,
+            labels=["go:risk-low"],
+            run=None,
+            final_status="completed_pr_open",
+        )
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+            ),
+            mock.patch(
+                "worktrail.workqueue.queue_triage.land_pr", return_value=land_outcome
+            ),
+        ):
+            log = qt.apply_verdicts([self.verdict], confirm=True)
+
+        self.assertEqual(log[0]["status"], "executed", log[0])
+        change_dir = self.worktree_dir / "openspec" / "changes" / self.target_change
+        tasks_text = (change_dir / "tasks.md").read_text(encoding="utf-8")
+        self.assertIn(f"- [ ] 2.1 {self.verdict.evidence}", tasks_text)
+
+    def test_fold_task_instruction_takes_only_the_first_sentence(self):
+        self.assertEqual(
+            qt._fold_task_instruction(self.focus, "unused evidence"),
+            self.focus_first_sentence,
+        )
+
+    def test_fold_task_instruction_keeps_a_cited_path_or_version_intact(self):
+        """The sentence split requires whitespace after the terminator, so a
+        dotted path or version is never mistaken for a sentence end."""
+        self.assertEqual(
+            qt._fold_task_instruction(
+                "Fix qa-pipeline.yml:1709 so vitest v5.0.0 fails closed. Details follow.",
+                "",
+            ),
+            "Fix qa-pipeline.yml:1709 so vitest v5.0.0 fails closed.",
+        )
+
+    def test_fold_task_instruction_falls_back_when_focus_is_blank(self):
+        self.assertEqual(
+            qt._fold_task_instruction("   \n  ", "collapsed\nevidence"),
+            "collapsed evidence",
+        )
+
+    def test_fold_task_file_scope_covers_paths_named_only_in_the_focus(self):
+        """The checklist item is now stated from the focus, so a path the focus
+        names is in the task's scope even when the evidence cites none."""
+        worktree = self.base / "scope-probe"
+        src = worktree / "src" / "worktrail" / "workqueue"
+        src.mkdir(parents=True)
+        (src / "queue_triage.py").write_text("", encoding="utf-8")
+        tests_dir = worktree / "tests" / "workqueue"
+        tests_dir.mkdir(parents=True)
+        (tests_dir / "test_queue_triage.py").write_text("", encoding="utf-8")
+
+        scope = qt._fold_task_file_scope(
+            worktree,
+            "Fix src/worktrail/workqueue/queue_triage.py:3222 so the task reads as one",
+            "the evidence names no path at all",
+        )
+
+        self.assertEqual(
+            scope,
+            [
+                "src/worktrail/workqueue/queue_triage.py",
+                "tests/workqueue/test_queue_triage.py",
+            ],
+        )
 
     # 1.1: apply-time `target_quote` re-check -- `prepare()` verifies the quote
     # against the target change's live `proposal.md`/`tasks.md` and fails closed

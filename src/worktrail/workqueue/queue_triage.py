@@ -3188,7 +3188,36 @@ def _worktree_pr_close(
 _PATH_LINE_SUFFIX_RE = re.compile(r":\d+(?:-\d+)?$")
 
 
-def _fold_task_file_scope(worktree_dir: Path, evidence: str) -> list[str]:
+# Sentence boundary for `_fold_task_instruction()`: a `.`/`!`/`?` followed by
+# whitespace and an opening-capital word. The lookahead is what keeps a cited
+# path or version intact -- `qa-pipeline.yml:1709` and `v1.0` have no
+# whitespace after the dot, and an abbreviation like "e.g. a widget" is
+# followed by a lowercase word.
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z(`])")
+
+
+def _fold_task_instruction(focus: str, evidence: str) -> str:
+    """One-line body for the checklist item `_apply_fold_into_change()` appends.
+
+    The verdict `evidence` is written to argue why the fold belongs, not what to
+    do, so using it as the task body produced items that read as a case with the
+    action buried mid-paragraph (datalena PR #2975, task 12.1). The brief's
+    `focus` is the field written as a statement of the work, and its FIRST
+    sentence is the ask -- later sentences are the supporting detail that made
+    the evidence unreadable as an instruction.
+
+    Collapsed to a single line: a checklist item is one line, and a multi-line
+    body would spill its tail out of the `- [ ]` item and stop parsing as a task
+    at all. Falls back to the collapsed evidence when the brief carries no
+    readable focus, so a fold never emits an empty task.
+    """
+    collapsed = " ".join(focus.split())
+    if not collapsed:
+        return " ".join(evidence.split())
+    return _SENTENCE_SPLIT_RE.split(collapsed, maxsplit=1)[0]
+
+
+def _fold_task_file_scope(worktree_dir: Path, *texts: str) -> list[str]:
     """Explicit `files:` scope for the task `_apply_fold_into_change()` appends.
 
     `worktrail-compile` seeds a task's scope from an indented `files:` line
@@ -3202,9 +3231,16 @@ def _fold_task_file_scope(worktree_dir: Path, evidence: str) -> list[str]:
     that exists in the worktree, plus the first matching existing test file
     for each `src/` path -- the same glob `parallelism.py` uses. An empty
     result emits no `files:` line, leaving compile's inference as before.
+
+    Takes every text the appended task is built from -- the brief focus the
+    checklist item now states, and the verdict evidence -- because a path named
+    only in the focus is still in the task's scope.
     """
     files: list[str] = []
-    for probe in brief_probes.extract_probes(evidence).get("paths", []):
+    probes: list[str] = []
+    for text in texts:
+        probes.extend(brief_probes.extract_probes(text).get("paths", []))
+    for probe in probes:
         rel = _PATH_LINE_SUFFIX_RE.sub("", probe)
         if rel in files or not (worktree_dir / rel).is_file():
             continue
@@ -3225,8 +3261,10 @@ def _apply_fold_into_change(
     """`fold-into-change`: worktree + proposal/tasks edit + validate + landing via router.land_pr + close.
 
     Appends a `## Folded from <brief-id>` section to the target change's
-    `proposal.md` and a new unchecked `## N. Folded from <brief-id>` task
-    group to its `tasks.md` (`_next_task_group_number()`), then hands off to
+    `proposal.md` carrying the brief's focus and the triage evidence, and a new
+    unchecked `## N. Folded from <brief-id>` task group to its `tasks.md`
+    (`_next_task_group_number()`) whose checklist item states the work
+    (`_fold_task_instruction()`) rather than the evidence, then hands off to
     `_worktree_pr_close()` for the shared validate/landing via router.land_pr
     sequence.
     """
@@ -3255,6 +3293,8 @@ def _apply_fold_into_change(
             "path": None,
             "error": f"could not resolve repo '{repo}' to a checkout on disk",
         }
+    brief_path = _resolve_brief_path(v.brief_id)
+    focus = _brief_focus(brief_path) if brief_path is not None else ""
     branch = _planned_fold_propose_branch(v)
     base_branch = _repo_base_branch(repo_path)
     worktree_dir = _fold_propose_worktree_dir(repo_path, branch)
@@ -3287,22 +3327,33 @@ def _apply_fold_into_change(
             )
 
         try:
+            folded_section = f"\n\n## Folded from {v.brief_id}\n\n"
+            if focus.strip():
+                folded_section += f"{focus.strip()}\n\n"
+            folded_section += f"{v.evidence}\n"
             proposal_path.write_text(
-                proposal_text.rstrip("\n")
-                + f"\n\n## Folded from {v.brief_id}\n\n{v.evidence}\n",
+                proposal_text.rstrip("\n") + folded_section,
                 encoding="utf-8",
             )
             group_number = _next_task_group_number(tasks_text)
-            # A checklist item is one line: multi-line evidence would spill its
-            # tail out of the `- [ ]` item and stop parsing as a task at all.
-            task_evidence = " ".join(v.evidence.split())
-            task_block = f"- [ ] {group_number}.1 {task_evidence}\n"
-            file_scope = _fold_task_file_scope(worktree_dir, v.evidence)
+            task_block = (
+                f"- [ ] {group_number}.1 {_fold_task_instruction(focus, v.evidence)}\n"
+            )
+            file_scope = _fold_task_file_scope(worktree_dir, focus, v.evidence)
             if file_scope:
                 task_block += f"      files: {', '.join(file_scope)}\n"
+            # The triage evidence argues why the fold belongs; it stays out of
+            # the checklist item (which must read as an instruction) and out of
+            # this group's prose, with one pointer to where it is written in
+            # full so a tasks.md-only reader is never left hunting for it.
+            rationale = (
+                f"Triage evidence for this fold is in `proposal.md`'s "
+                f"`## Folded from {v.brief_id}` section.\n\n"
+            )
             tasks_path.write_text(
                 tasks_text.rstrip("\n")
                 + f"\n\n## {group_number}. Folded from {v.brief_id}\n\n"
+                + rationale
                 + task_block,
                 encoding="utf-8",
             )
