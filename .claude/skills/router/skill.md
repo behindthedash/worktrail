@@ -294,7 +294,7 @@ agents or writes task files — that is `orchestrator/`'s job.
   fewer than `MIN_FOCUS_TOKENS` (10) distinct tokens.** The overlap coefficient divides by the
   *smaller* token set, so a very short focus text is trivially a near-subset of any longer brief
   and clears `OVERLAP_THRESHOLD` on shared boilerplate alone: on
-  `tests/fixtures/classifier_corpus.json` the 5-token focus `canonical checkout drift: <repo>`
+  `tests/fixtures/classifier_corpus.json` (as it stood before the 2026-09-19 regeneration) the 5-token focus `canonical checkout drift: <repo>`
   scored 0.60 against five unrelated briefs, and 52 of the 112 pairs the threshold flagged
   involved an item that thin. `_focus_overlap()` is the guarded wrapper carrying the floor and is
   what `_signal_matches` and `_llm_gate_score` call, so a thin pair also never reaches the LLM
