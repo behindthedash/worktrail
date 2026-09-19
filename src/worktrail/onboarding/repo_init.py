@@ -228,6 +228,25 @@ def build_ruleset(
     }
 
 
+# Single source of truth for "which merge method does this branch allow".
+# `build_ruleset_for_branch()` writes it into the ruleset's
+# allowed_merge_methods and `build_automerge_workflow()` renders the matching
+# `gh pr merge --auto --<method>` arm, so the two can never disagree. They
+# used to: the workflow hard-coded "squash only when base.ref == 'dev'", while
+# the trunk model's protect-main.json is squash-only, so `--branch-model main`
+# rendered an auto-merge step that armed `--merge` against a branch that
+# forbids merge commits and could therefore never arm at all (brief
+# 20260918-213220 member 1; worked around by hand in aspens PR #18).
+SQUASH_ONLY_BRANCHES = ("dev", "main")
+
+
+def merge_method_for_branch(branch: str) -> str:
+    """The one merge method `branch`'s ruleset allows: squash for an
+    integration/trunk base, merge for a promotion base (stg/prd), where a
+    squash would discard the individual commits being promoted."""
+    return "squash" if branch in SQUASH_ONLY_BRANCHES else "merge"
+
+
 def build_ruleset_for_branch(
     branch: str,
     branch_model: str,
@@ -247,20 +266,28 @@ def build_ruleset_for_branch(
     checks = [extra_required_status_check] if extra_required_status_check else []
     if branch == "main":
         return build_ruleset(
-            "protect-main", "main", ["squash"], checks, linear_history=True
+            "protect-main",
+            "main",
+            [merge_method_for_branch("main")],
+            checks,
+            linear_history=True,
         )
     if branch == "dev":
         return build_ruleset(
             "protect-dev",
             "dev",
-            ["squash"],
+            [merge_method_for_branch("dev")],
             checks,
             linear_history=(branch_model == "3"),
         )
     if branch == "stg":
-        return build_ruleset("protect-stg", "stg", ["merge"], checks)
+        return build_ruleset(
+            "protect-stg", "stg", [merge_method_for_branch("stg")], checks
+        )
     if branch == "prd":
-        return build_ruleset("protect-prd", "prd", ["merge"], checks)
+        return build_ruleset(
+            "protect-prd", "prd", [merge_method_for_branch("prd")], checks
+        )
     raise ValueError(f"unknown branch {branch!r}")
 
 
@@ -397,6 +424,11 @@ jobs:
 """
 
 
+# Every branch the generated workflow arms explicitly, across all three branch
+# models (`branches_for_model()`). A base not listed here falls through to the
+# `*)` default (merge), which is what an unprotected/ad-hoc base gets today.
+_AUTOMERGE_ARM_BRANCHES = ("dev", "main", "stg", "prd")
+
 _AUTOMERGE_WORKFLOW = """\
 name: "CI: Auto-merge on open"
 on:
@@ -449,11 +481,13 @@ jobs:
       - name: Arm auto-merge
         if: steps.check-automerge.outputs.eligible == 'true'
         run: |
-          if [ "${{ github.event.pull_request.base.ref }}" = "dev" ]; then
-            gh pr merge --auto --squash "${{ github.event.pull_request.number }}" -R "${{ github.repository }}"
-          else
-            gh pr merge --auto --merge "${{ github.event.pull_request.number }}" -R "${{ github.repository }}"
-          fi
+          # Merge method per base branch, matching each branch's ruleset
+          # allowed_merge_methods (repo_init.merge_method_for_branch()).
+          # Arming a method the ruleset forbids never arms at all.
+          case "${{ github.event.pull_request.base.ref }}" in
+__ARM_CASES__
+            *) gh pr merge --auto --merge "${{ github.event.pull_request.number }}" -R "${{ github.repository }}" ;;
+          esac
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 """
@@ -466,12 +500,22 @@ def build_automerge_workflow() -> str:
     automerge_labels()). Matches the convention already used by
     datalena/GGB/worktrail's own .github/workflows/auto-merge.yml, but
     inlined here with no external ci/scripts/automerge_eligibility.sh
-    dependency, and picks squash vs merge the same way build_ruleset_for_branch
-    does (dev -> squash, everything else -> merge).
+    dependency.
+
+    The per-base merge method is rendered from `merge_method_for_branch()` --
+    the same function `build_ruleset_for_branch()` uses for each branch's
+    `allowed_merge_methods` -- so the workflow can never arm a method the
+    ruleset forbids. `test_arm_step_merge_method_matches_the_rulesets`
+    asserts that agreement for every branch in every model.
 
     Inert until something applies a go:risk-* label -- a repo not using
     worktrail-go's classifier for its PRs never has this fire."""
-    return _AUTOMERGE_WORKFLOW
+    arm_cases = "\n".join(
+        f"            {branch}) gh pr merge --auto --{merge_method_for_branch(branch)}"
+        ' "${{ github.event.pull_request.number }}" -R "${{ github.repository }}" ;;'
+        for branch in _AUTOMERGE_ARM_BRANCHES
+    )
+    return _AUTOMERGE_WORKFLOW.replace("__ARM_CASES__", arm_cases)
 
 
 # Colors/descriptions match the live label sets already in use on

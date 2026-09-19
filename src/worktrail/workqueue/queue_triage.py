@@ -52,6 +52,56 @@ _FOCUS_BODY_RE = re.compile(r"^##\s+Focus\s*$\r?\n(.+)$", re.MULTILINE)
 NO_REPO_KEY = "__none__"
 
 
+def _claim_or_reclaim_stale(brief_id: str, by: str) -> dict:
+    """`claim()`, retried once after releasing a provably-dead owner's claim.
+
+    An `already-claimed` result is only actionable if the caller can tell a
+    live concurrent run from a claim abandoned mid-apply. `claim_liveness()`
+    answers that from the pid/host the claim stamped, and only ever says
+    "dead" on positive evidence. On dead, this force-releases and re-claims
+    once; on anything else it returns the original result with a `detail`
+    the caller can surface verbatim instead of asserting a concurrent run
+    that may not exist (brief 20260918-180921).
+    """
+    res = claim(brief_id, by=by)
+    if res["status"] != "already-claimed":
+        return res
+    liveness = res.get("owner_liveness", "unknown")
+    if liveness != "dead":
+        res = dict(res)
+        res["detail"] = (
+            "brief is already actioned by a concurrent triage run"
+            if liveness == "live"
+            else (
+                "brief is already in picked/ and its owner's liveness cannot be "
+                "determined (no claimed-by-pid, or claimed on another host). If no "
+                f"run holds it, release it with: worktrail-work-queue release --by "
+                f"{by} {brief_id}"
+            )
+        )
+        return res
+    path = res.get("path")
+    released = release(brief_id, by=by, force=True)
+    if released["status"] != "released":
+        res = dict(res)
+        res["detail"] = (
+            f"brief's owner process is gone (stale claim at {path}) but releasing it "
+            f"failed: {released.get('error') or released['status']}"
+        )
+        return res
+    retry = claim(brief_id, by=by)
+    if retry["status"] == "claimed":
+        retry = dict(retry)
+        retry["reclaimed_stale"] = True
+        return retry
+    retry = dict(retry)
+    retry["detail"] = (
+        "reclaimed a stale claim but the follow-up claim did not succeed: "
+        f"{retry['status']}"
+    )
+    return retry
+
+
 class BriefOwned(Exception):
     """A brief sits in `picked/` under another claimant (design D4)."""
 
@@ -2114,15 +2164,15 @@ def _apply_close(v: Verdict) -> dict:
         "confirm": True,
         "note": v.evidence,
     }
-    claim_res = claim(v.brief_id, by="queue-triage")
+    claim_res = _claim_or_reclaim_stale(v.brief_id, by="queue-triage")
     if claim_res["status"] != "claimed":
-        detail = claim_res.get("error")
+        detail = claim_res.get("detail") or claim_res.get("error")
         return {
             **base,
             "status": "error",
             "path": claim_res.get("path"),
             "error": f"claim: {claim_res['status']}"
-            + (f" ({detail})" if detail else ""),
+            + (f" -- {detail}" if detail else ""),
         }
     done_res = done(
         v.brief_id, note=v.evidence, triaged=True, duplicate_of=v.duplicate_of
@@ -2875,17 +2925,15 @@ def _worktree_pr_close(
         "note": v.evidence,
     }
 
-    claim_res = claim(v.brief_id, by="queue-triage")
+    claim_res = _claim_or_reclaim_stale(v.brief_id, by="queue-triage")
     if claim_res["status"] != "claimed":
-        detail = claim_res.get("error")
+        detail = claim_res.get("detail") or claim_res.get("error")
         return {
             **result,
             "status": "error",
             "path": claim_res.get("path"),
             "error": (
-                f"claim: {claim_res['status']}"
-                + (f" ({detail})" if detail else "")
-                + " -- brief already actioned by a concurrent triage run"
+                f"claim: {claim_res['status']}" + (f" -- {detail}" if detail else "")
             ),
             "branch": branch,
         }

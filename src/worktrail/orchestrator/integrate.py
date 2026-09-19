@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING
 
 from ..addons import runner as addons_runner
 from ..router import land_pr
+from ..shared import git_merged
 from ..taskformats import resolve as taskformats
 from . import coordinator, dispatch, live, progress, worktree
 
@@ -104,6 +105,30 @@ def _resolve_pre_pr_gate(here: Path = _HERE) -> Path | None:
     if local.is_file():
         return local.resolve()
     return None
+
+
+def _deliverable_already_in_target(
+    repo: Path, spec_id: str, deliverable: list[str], target: str
+) -> bool:
+    """True when every deliverable task branch carries real commits whose
+    content `target` already has.
+
+    That is the "already landed, nothing left to ship" shape. It is
+    deliberately distinct from "the branch has no commits at all", which is a
+    delegate self-reporting completion without implementing anything -- the
+    case QUARANTINE_EMPTY_DIFF exists for. Content, not commit identity: the
+    tail PRs that land these tasks squash-merge, so ancestry and `git cherry`
+    both report the branch as unmerged (see `shared.git_merged`).
+    """
+    if not deliverable:
+        return False
+    for tid in deliverable:
+        branch = f"{spec_id}/{tid.lower()}"
+        if not git_merged.has_commits_beyond(repo, branch, target):
+            return False
+        if not git_merged.branch_content_in_base(repo, branch, target):
+            return False
+    return True
 
 
 def _extract_risk_from_labels(pr_labels: list[str]) -> str | None:
@@ -1661,6 +1686,28 @@ def integrate_one(
             # would otherwise mask a true no-op as a non-empty diff.
             empty_diff = _git(iw, "diff", "--quiet", target, check=False)
             if empty_diff.returncode == 0:
+                # ...unless every deliverable task's own branch DOES carry
+                # commits whose content is already in `target`. Then the work
+                # was delivered out-of-band (the tail phase opened per-task
+                # PRs and they merged) and there is simply nothing left for
+                # this group PR to ship. Quarantining that cascades
+                # `dependency_quarantined` onto every dependent group whose
+                # tasks passed review -- aspens run go-20260918-193109 lost
+                # feature-1/3/4 that way after tail PRs #19-#23 landed
+                # 1.1/2.1 (brief 20260918-213220 member 3). A delegate that
+                # self-reported "done" without implementing anything has no
+                # commits beyond `target` at all, which is what still
+                # quarantines below.
+                if _deliverable_already_in_target(repo, spec_id, deliverable, target):
+                    gb_delivered = gb
+                    print(
+                        f"  MERGED [{name:9}] -- empty diff vs {target}, but "
+                        f"{', '.join(deliverable)} already landed on it "
+                        "(delivered out-of-band)"
+                    )
+                    _do_journal(name, "", gb_delivered, "MERGED")
+                    group_branch[name] = gb_delivered
+                    return None
                 foreign = foreign_repo_targets(
                     repo, [t for t in tasks if t.get("id") in deliverable]
                 )

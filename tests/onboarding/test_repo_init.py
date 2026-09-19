@@ -211,8 +211,42 @@ class BuildAutomergeWorkflowTests(unittest.TestCase):
 
     def test_picks_squash_for_dev_merge_otherwise(self):
         text = repo_init.build_automerge_workflow()
-        self.assertIn('base.ref }}" = "dev"', text)
-        self.assertIn("--auto --squash", text)
+        self.assertIn("dev) gh pr merge --auto --squash", text)
+        self.assertIn("prd) gh pr merge --auto --merge", text)
+
+    def test_arm_step_merge_method_matches_the_rulesets(self):
+        """The generated workflow must never arm a merge method the branch's
+        own ruleset forbids -- arming one simply never arms at all.
+
+        Regression for brief 20260918-213220 member 1: `--branch-model main`
+        wrote a squash-only protect-main.json but rendered an arm step that
+        ran `gh pr merge --auto --merge` for every base except `dev`, so
+        auto-merge could never arm on a trunk repo (worked around by hand in
+        aspens PR #18).
+        """
+        text = repo_init.build_automerge_workflow()
+        for model in ("2", "3", "main"):
+            for branch in repo_init.branches_for_model(model):
+                rs = repo_init.build_ruleset_for_branch(branch, model)
+                pr_rule = next(r for r in rs["rules"] if r["type"] == "pull_request")
+                allowed = pr_rule["parameters"]["allowed_merge_methods"]
+                armed = repo_init.merge_method_for_branch(branch)
+                self.assertIn(
+                    armed,
+                    allowed,
+                    f"{model}/{branch}: workflow arms --{armed} but the ruleset "
+                    f"allows only {allowed}",
+                )
+                self.assertIn(
+                    f"{branch}) gh pr merge --auto --{armed}",
+                    text,
+                    f"{model}/{branch}: no arm case rendered for this base",
+                )
+
+    def test_main_model_arms_squash_not_merge(self):
+        text = repo_init.build_automerge_workflow()
+        self.assertIn("main) gh pr merge --auto --squash", text)
+        self.assertNotIn("main) gh pr merge --auto --merge", text)
         self.assertIn("--auto --merge", text)
 
 

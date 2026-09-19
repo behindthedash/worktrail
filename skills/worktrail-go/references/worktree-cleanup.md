@@ -59,12 +59,34 @@ Buckets:
 - **MERGED / GONE, clean** → stale, safe to prune.
 - **`QUARANTINE-MERGED` (from the sweep)** → stale, safe to prune, same as MERGED /
   GONE; carry the entry's `reason` forward into the step-3 table.
-- **UNMERGED but clean and the branch is fully contained in another merged branch** → likely an orchestrator task leaf; treat as prunable only if `git cherry` shows nothing unique. When in doubt, leave it and say so.
+- **UNMERGED but clean and the branch is fully contained in another merged branch** → likely an orchestrator task leaf; treat as prunable only if both checks below show nothing unique. When in doubt, leave it and say so.
 - **DIRTY or unpushed** → keep; list it but never auto-prune.
 
-`git cherry "origin/$BASE" "$BR"` with all lines `-` (or empty) means every commit is
-already upstream — the squash-merge-safe "is it merged" check (see memory
-`[[feedback_git_main_squash_divergence]]`).
+Classify against the **push remote**, not `origin`:
+
+```bash
+REMOTE=$(git -C "$REPO" config --get remote.pushDefault || true); REMOTE=${REMOTE:-origin}
+```
+
+On a fork layout (aspens: `origin=aspenkit/aspens` upstream,
+`remote.pushDefault=fork=behindthedash/aspens`) `origin/$BASE` is the UPSTREAM's base
+and never carries this fleet's merges, so every worktree reads UNMERGED — confirmed
+2026-09-18 while tearing down 15 aspens spec worktrees by hand. `sweep-stale-worktrees`
+now resolves this per repo itself; an explicit `--remote` still overrides it.
+
+Then use **both** checks, in this order:
+
+```bash
+git cherry "$REMOTE/$BASE" "$BR"          # all lines `-` (or empty) => merged
+git merge-tree --write-tree "$REMOTE/$BASE" "$BR"   # == $REMOTE/$BASE^{tree} => merged
+```
+
+`git cherry` compares patch-ids per commit, so it catches a branch replayed onto base
+but NOT a multi-commit branch squashed into a single base commit — the shape every
+worktrail tail PR lands in. The `merge-tree` check answers by content instead: merging
+the branch yields base's own tree iff the branch contributes nothing base does not
+already have. Neither is `git merge-base --is-ancestor`, which a squash-merged base
+defeats outright (see memory `[[feedback_git_main_squash_divergence]]`).
 
 ## 3. Present, confirm, prune
 
