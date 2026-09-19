@@ -2671,6 +2671,117 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
         self.assertEqual(fm["triaged-to"], pr_url)
 
 
+class TestLandingTeardown(TestApplyFoldIntoChange):
+    """Local-branch teardown after a merged landing: `_worktree_pr_close()`'s
+    cleanup deletes the local branch when the landing merged (`landed` +
+    `completed_and_merged`) or when no PR was ever created, and keeps both
+    worktree and branch on `code_defect`. Reuses the fold-into-change
+    fake-runner harness, which records every `git` command in `self.seen`.
+    """
+
+    def _land(self, run, land_outcome):
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+            ),
+            mock.patch(
+                "worktrail.workqueue.queue_triage.land_pr", return_value=land_outcome
+            ),
+        ):
+            return qt.apply_verdicts([self.verdict], confirm=True)[0]
+
+    def _removes(self):
+        return [c for c in self.seen if "worktree" in c and "remove" in c]
+
+    def _branch_deletes(self):
+        return [c for c in self.seen if "branch" in c and "-D" in c]
+
+    def test_merged_landing_removes_worktree_and_deletes_branch(self):
+        pr_url = "https://github.com/acme/widgets/pull/42"
+        run = self._dispatcher()
+        land_outcome = LandOutcome(
+            outcome="landed",
+            pr_url=pr_url,
+            pr_number=42,
+            labels=["go:risk-low"],
+            run=None,
+            final_status="completed_and_merged",
+            merge_result="merged (squash)",
+        )
+        entry = self._land(run, land_outcome)
+
+        self.assertEqual(entry["status"], "executed")
+        self.assertEqual(entry["landing"]["final_status"], "completed_and_merged")
+        self.assertEqual(len(self._removes()), 1)
+        deletes = self._branch_deletes()
+        self.assertEqual(len(deletes), 1, self.seen)
+        self.assertEqual(
+            deletes[0],
+            ["git", "-C", str(self.repo), "branch", "-D", self.branch],
+        )
+        self.assertLess(
+            self.seen.index(self._removes()[0]), self.seen.index(deletes[0])
+        )
+        self.assertFalse((self.queue / "a.md").exists())
+
+    def test_failed_branch_delete_still_returns_executed(self):
+        pr_url = "https://github.com/acme/widgets/pull/42"
+        inner = self._dispatcher()
+
+        def run(cmd, **kwargs):
+            res = inner(cmd, **kwargs)
+            if cmd[0] == "git" and "branch" in cmd and "-D" in cmd:
+                return self._completed(1, stderr="error: branch not found")
+            return res
+
+        land_outcome = LandOutcome(
+            outcome="landed",
+            pr_url=pr_url,
+            pr_number=42,
+            labels=["go:risk-low"],
+            run=None,
+            final_status="completed_and_merged",
+            merge_result="merged (squash)",
+        )
+        entry = self._land(run, land_outcome)
+
+        self.assertEqual(entry["status"], "executed")
+        self.assertIsNone(entry["error"])
+        self.assertEqual(entry["landing"]["final_status"], "completed_and_merged")
+        self.assertEqual(len(self._branch_deletes()), 1)
+        self.assertFalse((self.queue / "a.md").exists())
+
+    def test_code_defect_keeps_worktree_and_branch(self):
+        run = self._dispatcher()
+        land_outcome = LandOutcome(
+            outcome="code_defect",
+            pr_url="https://github.com/acme/widgets/pull/42",
+            pr_number=42,
+            labels=["go:risk-low"],
+            run=None,
+            final_status="failed_recoverable",
+            failing_checks=["CI: build"],
+        )
+        entry = self._land(run, land_outcome)
+
+        self.assertEqual(entry["status"], "executed")
+        self.assertEqual(self._removes(), [])
+        self.assertEqual(self._branch_deletes(), [])
+
+    def test_refused_without_pr_deletes_branch_and_releases_brief(self):
+        run = self._dispatcher()
+        land_outcome = LandOutcome(
+            outcome="refused", refused_step="push", detail="git push failed"
+        )
+        entry = self._land(run, land_outcome)
+
+        self.assertEqual(entry["status"], "error")
+        self.assertEqual(len(self._removes()), 1)
+        self.assertEqual(len(self._branch_deletes()), 1)
+        self.assertTrue((self.queue / "a.md").exists())
+        self.assertEqual(qt.read_frontmatter(self.queue / "a.md")["status"], "queued")
+
+
 class TestApplyProposeChange(QueueTriageTestBase):
     """3.2's `propose-change` apply action: fresh worktree off the target
     repo's base, `openspec new change`, an agent-authored proposal/design/

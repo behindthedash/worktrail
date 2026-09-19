@@ -1,6 +1,6 @@
 ## 1. Local-branch teardown after a merged landing (`queue_triage`)
 
-- [ ] 1.1 In `src/worktrail/workqueue/queue_triage.py`, in `_worktree_pr_close()`'s cleanup
+- [x] 1.1 In `src/worktrail/workqueue/queue_triage.py`, in `_worktree_pr_close()`'s cleanup
       `finally`, after the `git worktree remove --force` call, run
       `git -C <repo> branch -D <branch>` (`check=False`, `capture_output=True`, `timeout=60`,
       same shape as the existing no-PR deletion) when EITHER `pr_url` is empty (existing
