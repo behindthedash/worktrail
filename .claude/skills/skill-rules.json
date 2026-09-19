@@ -158,7 +158,8 @@
       "alwaysActivate": false,
       "filePatterns": [
         "tests/**/*.py",
-        "conftest.py"
+        "conftest.py",
+        "scripts/ci/test_*.py"
       ],
       "promptTriggers": {
         "keywords": [
@@ -174,7 +175,8 @@
           "conventions",
           "worktrail",
           "isolation",
-          "conftest"
+          "conftest",
+          "test_"
         ],
         "intentPatterns": [
           "(create|update|fix|add|modify|change|debug|refactor|implement|build).*enforcement coverage",
