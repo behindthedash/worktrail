@@ -71,18 +71,25 @@ def push_remote_name(repo: Path, runner: Runner = subprocess.run) -> str:
     return (result.stdout or "").strip() or "origin"
 
 
-def owner_repo_from_git(repo: Path, runner: Runner = subprocess.run) -> str | None:
-    """`owner/repo` parsed from the checkout's *push* remote, or None if
-    unresolvable.
+def owner_repo_from_git(
+    repo: Path, runner: Runner = subprocess.run, remote: str | None = None
+) -> str | None:
+    """`owner/repo` parsed from the remote the PR will be opened against, or
+    None if unresolvable.
 
-    Resolves the remote through `push_remote_name()` (`remote.pushDefault`,
-    else `origin`) rather than hard-coding `origin`. On a fork layout whose
-    `origin` is the read-only upstream -- the standard `remote.pushDefault`
-    shape -- reading `origin` answers questions about the *upstream* repo
-    while `land_pr` pushes the branch and opens the PR on the fork. That
-    mismatch is what put `go:no-automerge` on behindthedash/aspens PR #26
-    (2026-09-18): the gate read aspenkit/aspens's `allow_auto_merge=false`
-    and required checks for a PR that was never going to be opened there.
+    The remote is `remote` when given, else `push_remote_name()`
+    (`remote.pushDefault`, else `origin`) -- never a hard-coded `origin`. On a
+    fork layout whose `origin` is the read-only upstream, reading `origin`
+    answers questions about the *upstream* repo while `land_pr` pushes the
+    branch and opens the PR on the fork. That mismatch is what put
+    `go:no-automerge` on behindthedash/aspens PR #26 (2026-09-18): the gate
+    read aspenkit/aspens's `allow_auto_merge=false` and required checks for a
+    PR that was never going to be opened there.
+
+    A selected remote that does not exist returns None rather than silently
+    falling back to another one -- answering about a repository the caller did
+    not ask for is exactly the failure this exists to close, and the module's
+    posture is to refuse on an unresolvable signal, never to guess.
 
     Handles both the HTTPS form (`https://github.com/owner/repo.git`) and the
     SCP-like SSH form (`git@github.com:owner/repo.git`) -- the latter has no
@@ -91,24 +98,13 @@ def owner_repo_from_git(repo: Path, runner: Runner = subprocess.run) -> str | No
     fails to strip the host for SSH remotes; splitting on bare "github.com"
     and stripping both separators handles either form.
     """
-    remote = push_remote_name(repo, runner)
+    selected = remote or push_remote_name(repo, runner)
     result = runner(
-        ["git", "remote", "get-url", remote],
+        ["git", "remote", "get-url", selected],
         cwd=str(repo),
         capture_output=True,
         text=True,
     )
-    if result.returncode != 0 and remote != "origin":
-        # A configured `remote.pushDefault` naming a remote this checkout does
-        # not have is a misconfiguration, not a reason to answer about a
-        # different repository: fall back to `origin` so behavior matches the
-        # pre-pushDefault contract instead of returning None.
-        result = runner(
-            ["git", "remote", "get-url", "origin"],
-            cwd=str(repo),
-            capture_output=True,
-            text=True,
-        )
     if result.returncode != 0:
         return None
     url = result.stdout.strip().rstrip("/").removesuffix(".git")
@@ -186,6 +182,7 @@ def required_checks_gate(
     retries: int = 3,
     backoff_seconds: float = 2.0,
     sleep: Sleeper = time.sleep,
+    remote: str | None = None,
 ) -> tuple[bool, str]:
     """True only when `branch` has at least one required status check AND the
     repo allows auto-merge. Fails closed on every unresolvable signal.
@@ -198,11 +195,12 @@ def required_checks_gate(
     marker so callers can distinguish "we couldn't tell" from "we checked and
     it's unsafe."
     """
-    owner_repo = owner_repo_from_git(repo, runner)
+    selected_remote = remote or push_remote_name(repo, runner)
+    owner_repo = owner_repo_from_git(repo, runner, remote=selected_remote)
     if owner_repo is None:
         return False, (
-            "could not resolve a GitHub owner/repo from the git push remote "
-            "(remote.pushDefault, else origin)"
+            f"could not resolve a GitHub owner/repo from the git {selected_remote!r} "
+            "remote"
         )
 
     contexts = None

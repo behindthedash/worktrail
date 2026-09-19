@@ -113,20 +113,67 @@ class TestOwnerRepoFromGit(unittest.TestCase):
         runner = _ForkRunner({})
         self.assertEqual(owner_repo_from_git(Path("."), runner), "behindthedash/aspens")
 
-    def test_push_default_naming_a_missing_remote_falls_back_to_origin(self) -> None:
+    def test_push_default_naming_a_missing_remote_resolves_nothing(self) -> None:
+        """Never silently answer about a different repository: the module's
+        posture is to refuse on an unresolvable signal, not to guess."""
+
         class _BrokenRunner(_FakeRunner):
             def __call__(self, cmd: list[str], **kwargs: Any) -> _FakeResult:
                 self.calls.append(cmd)
                 if cmd[:3] == ["git", "config", "--get"]:
-                    return _FakeResult(0, "gone\n")
-                if cmd == ["git", "remote", "get-url", "gone"]:
+                    return _FakeResult(0, "fork\n")
+                if cmd == ["git", "remote", "get-url", "fork"]:
                     return _FakeResult(2, "")
-                if cmd == ["git", "remote", "get-url", "origin"]:
-                    return _FakeResult(0, "https://github.com/acme/widgets.git\n")
                 raise AssertionError(f"unscripted command: {cmd}")
 
         runner = _BrokenRunner({})
-        self.assertEqual(owner_repo_from_git(Path("."), runner), "acme/widgets")
+        self.assertIsNone(owner_repo_from_git(Path("."), runner))
+        ok, reason = required_checks_gate(
+            Path("."), "main", _BrokenRunner({}), sleep=_NO_SLEEP
+        )
+        self.assertFalse(ok)
+        self.assertIn("'fork'", reason)
+        self.assertFalse(is_preflight_query_error(reason))
+
+    def test_explicit_remote_bypasses_push_default(self) -> None:
+        class _ExplicitRunner(_FakeRunner):
+            def __call__(self, cmd: list[str], **kwargs: Any) -> _FakeResult:
+                self.calls.append(cmd)
+                if cmd[:3] == ["git", "config", "--get"]:
+                    raise AssertionError("pushDefault must not be consulted")
+                if cmd == ["git", "remote", "get-url", "upstream"]:
+                    return _FakeResult(0, "https://github.com/upstream/proj.git\n")
+                raise AssertionError(f"unscripted command: {cmd}")
+
+        runner = _ExplicitRunner({})
+        self.assertEqual(
+            owner_repo_from_git(Path("."), runner, remote="upstream"), "upstream/proj"
+        )
+
+    def test_fork_layout_gate_never_queries_the_upstream(self) -> None:
+        """The whole point: every `gh api` call must name the fork."""
+
+        class _ForkGateRunner(_FakeRunner):
+            def __call__(self, cmd: list[str], **kwargs: Any) -> _FakeResult:
+                self.calls.append(cmd)
+                if cmd[:3] == ["git", "config", "--get"]:
+                    return _FakeResult(0, "fork\n")
+                if cmd == ["git", "remote", "get-url", "fork"]:
+                    return _FakeResult(0, "git@github.com:me/proj.git\n")
+                if cmd[:2] == ["gh", "api"] and "/rules/branches/" in cmd[2]:
+                    return _rules_response(["ci"])
+                if cmd[:2] == ["gh", "api"]:
+                    return _repo_settings_response(True)
+                raise AssertionError(f"unscripted command: {cmd}")
+
+        runner = _ForkGateRunner({})
+        ok, _reason = required_checks_gate(Path("."), "main", runner, sleep=_NO_SLEEP)
+        self.assertTrue(ok)
+        gh_calls = [c for c in runner.calls if c[:2] == ["gh", "api"]]
+        self.assertTrue(gh_calls)
+        for call in gh_calls:
+            self.assertIn("me/proj", call[2])
+            self.assertNotIn("upstream/proj", call[2])
 
 
 class TestRequiredStatusCheckContexts(unittest.TestCase):

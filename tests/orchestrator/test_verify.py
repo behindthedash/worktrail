@@ -3124,6 +3124,24 @@ class TestPreflightRunner(unittest.TestCase):
             v.run.calls[-1], ["git", "-C", "/repo", "remote", "get-url", "origin"]
         )
 
+    def test_git_config_read_is_scoped_to_the_repo(self):
+        """The preflight resolves the PR's target remote with
+        `git config --get remote.pushDefault`. The verifier's runner executes
+        from its own neutral cwd, so an unpinned read answers for whatever
+        directory that happens to be -- and the gate silently falls back to
+        `origin`, which on a fork layout is the upstream."""
+        v = self._verifier()
+        v._preflight_runner(["git", "config", "--get", "remote.pushDefault"])
+        self.assertEqual(
+            v.run.calls[-1],
+            ["git", "-C", "/repo", "config", "--get", "remote.pushDefault"],
+        )
+
+    def test_an_already_scoped_git_command_is_not_double_scoped(self):
+        v = self._verifier()
+        v._preflight_runner(["git", "-C", "/repo", "status"])
+        self.assertEqual(v.run.calls[-1], ["git", "-C", "/repo", "status"])
+
 
 # `GoScriptsResolution` (topology-detection tests for the old, removed
 # `_find_go_scripts_dir()`) is intentionally not ported. That function existed
