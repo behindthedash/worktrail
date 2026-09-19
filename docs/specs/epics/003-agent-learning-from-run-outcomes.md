@@ -3,7 +3,7 @@
 **Status:** Proposed  
 **Owner:** Worktrail maintainers  
 **Origin:** Operator request, 2026-09-12: use Claude Code's agent `memory:` feature so agents self-learn across runs  
-**Release scope:** `.worktrail/policy.yaml` still sets `release_gate: v1.0` (fixes-only). Feature 1 guards a verified hazard; Features 2 and 3 are new capability and wait for v1.1 feature work to open.
+**Release scope:** the `release_gate: v1.0` fixes-only freeze was lifted on 2026-09-19 (its own condition -- v1.0 shipped -- had been met since well before 1.1.41). Features 2 and 3 were held for "v1.1 feature work to open"; that gate is gone, so they are schedulable on their own merits rather than on the freeze.
 
 ## Business objective
 
