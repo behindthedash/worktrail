@@ -132,6 +132,91 @@ class TestMergedIsReclaimable(SweepStaleWorktreesTestCase):
         self.assertTrue(entry["reclaimable"])
 
 
+class TestForkLayoutMergedDetection(SweepStaleWorktreesTestCase):
+    """Brief 20260918-213220 member 5: classifying against `origin/<base>` on
+    a fork layout (origin = read-only upstream, remote.pushDefault = fork)
+    makes every worktree look UNMERGED, and a MULTI-commit branch squashed
+    into one base commit defeats `git cherry` even on the right remote."""
+
+    def _add_fork_remote(self) -> Path:
+        fork = self.tmp / "fork.git"
+        fork.mkdir()
+        _git(fork, "init", "-q", "--bare", "-b", "main")
+        _git(self.canonical, "remote", "add", "fork", str(fork))
+        _git(self.canonical, "push", "-q", "fork", "main")
+        _git(self.canonical, "config", "remote.pushDefault", "fork")
+        return fork
+
+    def test_push_remote_name_prefers_push_default(self):
+        self.assertEqual(ssw.push_remote_name(self.canonical), "origin")
+        self._add_fork_remote()
+        self.assertEqual(ssw.push_remote_name(self.canonical), "fork")
+
+    def test_merge_landed_on_the_fork_only_still_reads_as_merged(self):
+        self._add_fork_remote()
+        wt = _add_worktree(self.canonical, "feature/forked")
+        (wt / "feature.txt").write_text("shipped\n", encoding="utf-8")
+        _git(wt, "add", ".")
+        _git(wt, "commit", "-q", "-m", "add feature")
+        _git(wt, "push", "-q", "fork", "feature/forked")
+
+        # The squash lands on the FORK's main. `origin` (the upstream) never
+        # sees it -- the exact shape that made all 15 aspens worktrees read
+        # UNMERGED.
+        (self.canonical / "feature.txt").write_text("shipped\n", encoding="utf-8")
+        _git(self.canonical, "add", ".")
+        _git(self.canonical, "commit", "-q", "-m", "add feature (squash)")
+        _git(self.canonical, "push", "-q", "fork", "main")
+        _git(self.canonical, "fetch", "-q", "fork")
+
+        row = ssw.sweep_repo(self.canonical, do_fetch=False)
+        self.assertEqual(row["remote"], "fork")
+        entry = next(w for w in row["worktrees"] if w["branch"] == "feature/forked")
+        self.assertEqual(entry["state"], "MERGED")
+        self.assertTrue(entry["reclaimable"])
+
+        # And an explicit --remote still wins, reproducing the old answer.
+        row_origin = ssw.sweep_repo(self.canonical, remote="origin", do_fetch=False)
+        entry_origin = next(
+            w for w in row_origin["worktrees"] if w["branch"] == "feature/forked"
+        )
+        self.assertNotEqual(entry_origin["state"], "MERGED")
+
+    def test_multi_commit_branch_squashed_into_one_base_commit_reads_merged(self):
+        """`git cherry` compares patch-ids per commit, so a 2-commit branch
+        collapsed into a single base commit has no match for either."""
+        wt = _add_worktree(self.canonical, "feature/multi")
+        (wt / "a.txt").write_text("one\n", encoding="utf-8")
+        _git(wt, "add", ".")
+        _git(wt, "commit", "-q", "-m", "part 1")
+        (wt / "b.txt").write_text("two\n", encoding="utf-8")
+        _git(wt, "add", ".")
+        _git(wt, "commit", "-q", "-m", "part 2")
+        _git(wt, "push", "-q", "origin", "feature/multi")
+
+        _git(self.canonical, "merge", "--squash", "feature/multi")
+        _git(self.canonical, "commit", "-q", "-m", "squash: feature/multi")
+        _git(self.canonical, "push", "-q", "origin", "main")
+        _git(self.canonical, "fetch", "-q", "origin")
+
+        cherry = subprocess.run(
+            ["git", "cherry", "origin/main", "feature/multi"],
+            cwd=str(self.canonical),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertTrue(
+            any(line.startswith("+") for line in cherry.stdout.splitlines()),
+            "precondition: git cherry must still report this branch unmerged",
+        )
+
+        row = ssw.sweep_repo(self.canonical, do_fetch=False)
+        entry = next(w for w in row["worktrees"] if w["branch"] == "feature/multi")
+        self.assertEqual(entry["state"], "MERGED")
+        self.assertTrue(entry["reclaimable"])
+
+
 class TestUnmergedIsKept(SweepStaleWorktreesTestCase):
     def test_pushed_unmerged_branch_is_kept(self):
         wt = _add_worktree(self.canonical, "feature/in-progress")

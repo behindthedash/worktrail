@@ -188,11 +188,23 @@ duplicate that without adding a real gate.
   own `AGENTS.md`, "Claude Code plugin surface" section) — running
   `openspec init --tools claude` per onboarded repo would generate a second,
   un-vetted copy that conflicts with it.
-- `.worktrail/policy.yaml` is seeded with header comments only,
-  no keys set — every key defaults to a safe, do-nothing value (see
-  `router/policy.py`'s `DEFAULTS`). Don't guess a repo's `pre_pr_cmd` or
-  `automerge` settings on its behalf; that's a follow-up decision for
-  whoever owns the repo, not this skill.
+- `.worktrail/policy.yaml` is seeded with header comments plus exactly one
+  key set: `automerge: {enabled: true, max_risk: medium}`, the fleet-wide
+  default (`~/rules/CLAUDE.repo.md` section 3). That one is a standard, not a
+  per-repo judgment — and leaving it commented out would make the
+  `worktrail-auto-merge.yml` this same run scaffolds inert. `medium` is a
+  ceiling: `router/policy.py` never treats `high`/`critical` as eligible
+  whatever the file says, and clamps an invalid `max_risk` to `low`. Every
+  other key still defaults to a safe, do-nothing value (see `router/policy.py`'s
+  `DEFAULTS`); don't guess a repo's `pre_pr_cmd` on its behalf, that's a
+  follow-up decision for whoever owns the repo.
+- `gitleaks.yml` is the one scaffolded workflow with no paths filter, and its
+  `gitleaks-pr-diff` job is wired into `required_status_checks` alongside
+  `openspec-validate`. Both are deliberate: a leaked secret must block merge,
+  and a required check that a docs-only diff skips never reports a status and
+  deadlocks the merge. Its companion full-history job is `workflow_dispatch`
+  only — run it once per repo to triage existing history, and allowlist a
+  confirmed-synthetic fixture by VALUE in `.gitleaks.toml`, never by path.
 - `worktrail-auto-merge.yml` is inert until something applies a
   `go:risk-low`/`go:risk-medium` label — a repo that never uses worktrail-go's
   classifier for its PRs never has it fire. But if `ci_jobs_discovered` came

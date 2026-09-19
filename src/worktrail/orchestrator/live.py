@@ -42,6 +42,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..router import invocation_context
+from ..shared import git_merged
 from ..taskformats import resolve as taskformats
 from . import agent_capacity, coordinator, dispatch, orchestrate, progress, spawnlib
 
@@ -151,6 +152,49 @@ def _default_post_merge_smoke_cmd(repo: Path) -> str | None:
     from ..router.policy import load_policy, resolve_post_merge_smoke_cmd
 
     return resolve_post_merge_smoke_cmd(load_policy(repo))
+
+
+def _default_remote(repo: Path) -> str:
+    """The remote a launch should push branches and open PRs against when
+    `--remote` was not passed: `git config remote.pushDefault`, else `origin`.
+
+    Same gap class as `_default_merge_method` below -- the flag was expected
+    from the *calling agent* (subagent-prompts.md's launch block), which never
+    passed it, so `full-real` fell back to the hard-coded `origin`. On a fork
+    layout whose `origin` is the read-only upstream (aspens:
+    origin=aspenkit/aspens, remote.pushDefault=fork=behindthedash/aspens) that
+    means the base refresh and every task worktree fork off the *upstream's*
+    main, which does not carry the spec's tasks/ commit: run go-20260918-190550
+    lost 6 tasks to WorktreeMissingTaskFileError within ~10s. `land_pr` and
+    `queue_triage` already resolve the push remote this way; this makes the
+    orchestrator agree with them. An explicit `--remote` always wins.
+    """
+    result = subprocess.run(
+        ["git", "-C", str(repo), "config", "--get", "remote.pushDefault"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return "origin"
+    return (result.stdout or "").strip() or "origin"
+
+
+def _default_bootstrap_cmd(repo: Path) -> str | None:
+    """Auto-resolve `--bootstrap-cmd` from policy's `worktree_bootstrap_cmd`
+    when it was not passed explicitly.
+
+    Same gap class as `_default_merge_method` below: subagent-prompts.md's
+    prose told the launching agent to pass `worktree_bootstrap_cmd` through,
+    and the documented launch block did not -- so a Node repo's task worktrees
+    were fanned out with no `node_modules` and the base group's smoke command
+    died on `vitest: not found` (aspens run go-20260918-190550). An explicit
+    `--bootstrap-cmd` always wins; a repo with the key unset is unaffected.
+    """
+    from ..router.policy import load_policy
+
+    value = load_policy(repo).get("worktree_bootstrap_cmd")
+    return str(value) if value else None
 
 
 def _default_merge_method(repo: Path, base: str) -> str | None:
@@ -1975,37 +2019,10 @@ def _live_base_ref(repo: Path, remote: str, base: str) -> str | None:
 
 
 def _branch_content_in_base(repo: Path, branch: str, base_ref: str) -> bool:
-    """True when `branch`'s changes are already present in `base_ref`, whether it
-    landed as a merge/rebase (plain ancestry) or as a SQUASH -- a squash-merge
-    produces a commit that is not a descendant of the task branch tip, so
-    `_is_ancestor` alone reports a merged dependency as unmerged (brief
-    20260901-175031). For that case, a three-way merge of `branch` into
-    `base_ref` (`git merge-tree --write-tree`) yields exactly `base_ref`'s own
-    tree iff the branch contributes nothing base doesn't already have.
-
-    A CONFLICTED merge-tree (exit 1) also counts as "in base" (brief
-    20260905-162859): when a group PR squash-merges with review fixups layered
-    on top of a task's own commits, the retained task branch's verbatim diff
-    never appears in base and a three-way merge conflicts on exactly those
-    hunks -- observed live on every retained shared-pr-landing-pipeline branch
-    (2.1/5.1/14.1/17.1). Such a branch can never be a stacking point either
-    way: a worktree forked from it fails the base carry with the same conflict
-    (`WorktreeMissingDependencyFileError` on every fan-out task). Treating it as
-    superseded lets the dependent fork from base, whose content is what the
-    dependency's group actually shipped. Only a merge-tree that FAILED to run
-    (exit >1, e.g. an unresolvable ref) stays "not in base"."""
-    if _is_ancestor(repo, branch, base_ref):
-        return True
-    merged = _git(repo, "merge-tree", "--write-tree", base_ref, branch, check=False)
-    if merged.returncode == 1:
-        return True
-    if merged.returncode != 0:
-        return False
-    base_tree = _git(
-        repo, "rev-parse", "--verify", f"{base_ref}^{{tree}}", check=False
-    ).stdout.strip()
-    merged_tree = (merged.stdout or "").strip().splitlines()
-    return bool(base_tree) and bool(merged_tree) and merged_tree[0] == base_tree
+    """Content-based "already in base" -- see
+    `shared.git_merged.branch_content_in_base`, which `integrate.py` and the
+    stale-worktree sweep share with this call site."""
+    return git_merged.branch_content_in_base(repo, branch, base_ref)
 
 
 def dependency_start_ref(
@@ -3845,6 +3862,100 @@ def _task_file_in_worktree(wt: Path, spec_rel: str, task_id: str) -> Path:
     return cand
 
 
+def _require_spec_at_fanout_refs(
+    repo: Path, spec_rel: str, remote: str, base: str
+) -> None:
+    """Fail fast, once, when the refs this run will fan out from do not carry
+    the spec folder at all.
+
+    `_require_task_file` is the per-worktree backstop: it fires after a
+    worktree has already been created, so a base ref that predates the spec
+    entirely costs one `WorktreeMissingTaskFileError` per task and quarantines
+    every group those tasks belonged to. aspens run go-20260918-190550 lost 6
+    tasks that way in ~10s, and the recovery was `clear-task` +
+    `--re-integrate` by hand. Checking the refs up front turns that into one
+    actionable message before any worktree exists.
+
+    `HEAD` (the `--repo` checkout's own tip) is every root task's fork point,
+    so a spec missing there is fatal. `<remote>/<base>` is the fork point only
+    for a task whose dependency branches were all pruned as already-in-base
+    (`dependency_start_ref`), so a spec missing there is a warning naming that
+    consequence -- a spec committed locally but not yet pushed is legitimate
+    and common.
+    """
+    spec_path = spec_rel.strip("/")
+    if _git(repo, "cat-file", "-e", f"HEAD:{spec_path}", check=False).returncode != 0:
+        raise WorktreeMissingTaskFileError(
+            f"spec folder {spec_path!r} is not present at HEAD in {repo} -- every "
+            "task worktree would be forked from a commit that predates it and fail "
+            "with a missing task file. Commit the spec (and its tasks) on this "
+            "checkout's branch, or point --repo at the checkout that has them, "
+            "before launching the run."
+        )
+    base_ref = f"{remote}/{base}"
+    if (
+        _git(repo, "rev-parse", "--verify", "-q", base_ref, check=False).returncode == 0
+        and _git(
+            repo, "cat-file", "-e", f"{base_ref}:{spec_path}", check=False
+        ).returncode
+        != 0
+    ):
+        print(
+            f"{_ts()} WARNING: {base_ref} does not carry {spec_path!r}. A task whose "
+            f"dependency branches are all already in base forks from {base_ref} "
+            "itself, and would start without its task file. Push the spec commit to "
+            f"{base_ref}, or confirm --remote/--base name the repository this run "
+            "should target (a fork layout needs remote.pushDefault or an explicit "
+            "--remote)."
+        )
+
+
+class OrphanedWorkersHoldWorktreesError(RuntimeError):
+    """Live agent workers from an earlier run still hold this spec's task
+    worktrees, so fanning out again would put two workers on one checkout."""
+
+
+def _refuse_relaunch_over_live_workers(
+    repo: Path, spec_id: str, tasks: list[dict]
+) -> None:
+    """Refuse a fan-out while another run's workers still hold the worktrees.
+
+    The RunLock is single-owner but process-scoped: it releases when the
+    orchestrator exits, including when the orchestrator is killed while its
+    workers keep running as orphans (run go-20260918-182950, 2026-09-18:
+    orchestrator rc=-15, workers reparented to init and committed afterwards).
+    A relaunch then re-dispatched tick 1 -- the journal had 0 entries -- into
+    worktrees a live worker was writing to. Brief 20260918-224345.
+
+    Refuse, not adopt: adopting a foreign worker means inheriting a process
+    whose prompt, role and budget this run never set, which is a design
+    question, not a guard. Refusing is the half that is unambiguously correct,
+    and it names the pids so the operator can wait or kill them.
+    """
+    from ..router import live_status
+    from . import worktree as _worktree_mod
+
+    base = _worktree_mod.default_worktree_base(repo)
+    candidates = [
+        _worktree_mod.worktree_path(base, spec_id, t["id"])
+        for t in tasks
+        if t.get("id")
+    ]
+    live = [wt for wt in candidates if wt.is_dir()]
+    if not live:
+        return
+    held = live_status.agent_workers_in_worktrees(live)
+    if not held:
+        return
+    detail = ", ".join(f"pid {h['pid']} in {Path(h['worktree']).name}" for h in held)
+    raise OrphanedWorkersHoldWorktreesError(
+        f"{len(held)} agent worker(s) from an earlier run still hold this spec's task "
+        f"worktrees ({detail}). Fanning out now would put a second worker on the same "
+        "checkout. Wait for them to finish (they commit to their own task branches), "
+        "or stop them, then re-run -- the run journal replays whatever they landed."
+    )
+
+
 def _require_task_file(wt: Path, spec_rel: str, task_id: str) -> None:
     """Fail loud at dispatch time if a freshly created task worktree is missing
     its own task file.
@@ -4972,19 +5083,40 @@ def live_run_real(
                 if _spawn_result.paused_s:
                     with state_lock:
                         _budget_pauses.append(_spawn_result.paused_s)
-            except subprocess.TimeoutExpired:
+            except subprocess.TimeoutExpired as timeout_exc:
                 limit = task.get("timeout") or getattr(spawn, "timeout", "?")
                 t1 = time.time()
-                with state_lock:
-                    entries.append(
-                        _journal_failure_entry(
-                            task,
-                            role,
-                            f"{task['id']}/{role} timed out after {limit}s",
-                            t0,
-                            t1,
-                        )
+                # A killed worker is still a spawn that happened: it burned
+                # tokens, and it may have committed real work before the wall
+                # clock caught it. Recording "failed, head_sha '', tests
+                # 'none'" and nothing else throws both away and leaves the
+                # end-of-run token table short by the whole spawn (observed
+                # on task 4.1, run go-20260918-181212: 52 turns / ~2.3M
+                # cache-read tokens, two suites green, all of it lost --
+                # brief 20260918-221038). None of this promotes the timeout
+                # to a success: the entry stays `failed`.
+                _partial = getattr(timeout_exc, "worktrail_partial", None)
+                _partial_usage = getattr(_partial, "usage", None)
+                _partial_tools = getattr(_partial, "tools_used", None)
+                _partial_head = _git(
+                    wt, "rev-parse", "HEAD", check=False
+                ).stdout.strip()
+                _committed = bool(_partial_head) and _partial_head != pre_sha
+                _reason = f"{task['id']}/{role} timed out after {limit}s"
+                if _committed:
+                    _reason += (
+                        f"; worker had committed {_partial_head[:8]} before the kill "
+                        "(partial work retained on the task branch)"
                     )
+                with state_lock:
+                    _entry = _journal_failure_entry(task, role, _reason, t0, t1)
+                    if _partial_usage:
+                        _entry["usage"] = _partial_usage
+                    if _partial_tools:
+                        _entry["tools_used"] = _partial_tools
+                    if _committed:
+                        _entry["partial_head_sha"] = _partial_head[:8]
+                    entries.append(_entry)
                     record()
                     actives.pop(task["id"], None)
                     _publish_actives()
@@ -4992,6 +5124,25 @@ def live_run_real(
                 print(
                     f"{_ts()}   !! {task['id']}/{role} TIMED OUT after {limit}s -- marking failed"
                 )
+                if _committed:
+                    print(
+                        f"{_ts()}      partial work kept: commit {_partial_head[:8]} "
+                        "on the task branch"
+                    )
+                if task.get("kind") in coordinator.TAIL_KINDS and not task.get(
+                    "timeout"
+                ):
+                    # A tail verification task runs the repo's whole suite, so
+                    # the run-wide worker default is routinely the wrong budget
+                    # for it -- and the per-task override that fixes it is easy
+                    # not to know about. Name it rather than guess a number.
+                    print(
+                        f"{_ts()}      {task['id']} is a `kind: {task['kind']}` "
+                        "verification task running on the run-wide worker timeout. "
+                        "Size its budget to the suite with a `timeout: <seconds>` "
+                        "field on the task itself; --timeout raises it for every "
+                        "worker in the run."
+                    )
                 break
             try:
                 rep = dispatch.parse_report_back(raw)
@@ -7026,6 +7177,21 @@ def _full_real_inner(
     # deleted the legacy serial path (full fan-out, then INTEGRATE, then
     # VERIFY); every full-real run now routes here after the --from-verify
     # branch above.
+    _require_spec_at_fanout_refs(repo, spec_rel, remote, base)
+    try:
+        _preflight_spec_id, _preflight_tasks = taskformats.load_spec(
+            str(repo / spec_rel)
+        )
+    except Exception as _spec_read_exc:  # noqa: BLE001
+        # A guard must never be the thing that fails a run for a reason of its
+        # own: `_pipeline_scheduler` loads the same spec immediately below and
+        # reports an unreadable one properly. Logged, not swallowed silently.
+        print(
+            f"{_ts()} NOTE: skipping the live-worker relaunch guard -- could not "
+            f"read {spec_rel}: {_spec_read_exc}"
+        )
+    else:
+        _refuse_relaunch_over_live_workers(repo, _preflight_spec_id, _preflight_tasks)
     run_id = read_or_create_run_id(Path(journal_path))
     return _pipeline_scheduler(
         re_integrate=re_integrate,
@@ -7311,8 +7477,11 @@ def main(argv=None) -> int:
     )
     fr.add_argument(
         "--remote",
-        default="origin",
-        help="Git remote to push branches and open PRs against",
+        default=None,
+        help="Git remote to push branches and open PRs against. Default: the "
+        "checkout's own `git config remote.pushDefault`, else origin -- so a fork "
+        "layout whose origin is the read-only upstream is honored without the "
+        "caller having to pass this.",
     )
     fr.add_argument("--base", default="dev", help="Base branch for PRs (default: dev)")
     fr.add_argument(
@@ -7488,8 +7657,9 @@ def main(argv=None) -> int:
         help="Shell command run in each freshly-created task worktree right after it is "
         "created, before a worker is spawned into it, to install local dependencies "
         "(e.g. 'npm ci' or 'cd app && npm ci'). Task worktrees branch off the base commit "
-        "and start without the base checkout's node_modules. Sourced from worktrail-go-policy.yaml's "
-        "worktree_bootstrap_cmd by the sdd-workflow conductor; omit to skip. Non-fatal: a "
+        "and start without the base checkout's node_modules. Default: the repo policy's "
+        "worktree_bootstrap_cmd, resolved here rather than relied on from the caller; "
+        "pass an empty string to force-skip. Non-fatal: a "
         "failed install is logged and the worker still self-installs.",
     )
     fr.add_argument(
@@ -7719,10 +7889,16 @@ def main(argv=None) -> int:
         merge_method = args.merge_method
         if merge_method is None:
             merge_method = _default_merge_method(Path(args.repo), args.base)
+        remote = args.remote
+        if remote is None:
+            remote = _default_remote(Path(args.repo))
+        bootstrap_cmd = args.bootstrap_cmd
+        if bootstrap_cmd is None:
+            bootstrap_cmd = _default_bootstrap_cmd(Path(args.repo))
         full_real(
             args.repo,
             args.spec,
-            args.remote,
+            remote,
             args.base,
             args.agent,
             args.model,
@@ -7743,7 +7919,7 @@ def main(argv=None) -> int:
             smoke_cmd=smoke_cmd,
             smoke_retries=smoke_retries,
             post_merge_smoke_cmd=post_merge_smoke_cmd,
-            bootstrap_cmd=args.bootstrap_cmd,
+            bootstrap_cmd=bootstrap_cmd,
             merge_method=merge_method,
             pr_labels=args.pr_labels,
             pr_pacing_wait=args.pr_pacing_wait,

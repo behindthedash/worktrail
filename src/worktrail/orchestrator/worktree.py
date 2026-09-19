@@ -32,7 +32,7 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -74,23 +74,41 @@ def worktree_path(base: Path, spec_id: str, task_id: str) -> Path:
 
 
 def has_task_worktrees(
-    repo_root: str | Path, spec_id: str, worktree_base: str | Path | None = None
+    repo_root: str | Path,
+    spec_id: str,
+    worktree_base: str | Path | None = None,
+    task_ids: Iterable[str] | None = None,
 ) -> bool:
     """Whether any per-task worktree already exists on disk for this spec.
 
-    A cheap directory-listing check against the `worktree_path` naming
-    convention, not a `git worktree list` call. Used as a guard before an
-    operation (a forced RunPlan recompile) that would silently change the
-    plan a live run's worktrees were already fanned out under -- see
-    `conductor/compile.py`'s `force` handling. The spec-level worktree
-    (`<spec_id>-spec`, where the compile itself runs) shares the prefix but is
-    not a task worktree, so it is excluded.
+    A cheap directory check against the `worktree_path` naming convention,
+    not a `git worktree list` call. Used as a guard before an operation (a
+    forced RunPlan recompile) that would silently change the plan a live
+    run's worktrees were already fanned out under -- see
+    `conductor/compile.py`'s `force` handling.
+
+    `task_ids`, when given, is the authoritative form: each candidate is the
+    exact `worktree_path(base, spec_id, task_id)` directory, so no other
+    spec's worktrees can ever be counted. Callers that know the spec's tasks
+    (the only production caller, `compile.py`, always does) must pass them.
+
+    Without `task_ids` this falls back to a bare `<spec_id>-` name prefix,
+    which cannot distinguish this spec's task worktrees from those of a spec
+    whose id merely *starts with* this one: with `001-foo` and `001-foo-bar`
+    side by side, `001-foo-bar-1.1` matches `001-foo-`'s prefix and a
+    `--force` recompile of `001-foo` is wrongly refused. The exact
+    `<spec_id>-spec` compile worktree is still excluded in both modes -- it
+    is where the compile itself runs, not a task worktree.
     """
     base = (
         Path(worktree_base) if worktree_base else default_worktree_base(Path(repo_root))
     )
     if not base.is_dir():
         return False
+    if task_ids is not None:
+        return any(
+            worktree_path(base, spec_id, task_id).is_dir() for task_id in task_ids
+        )
     prefix = f"{spec_id}-"
     spec_worktree = f"{spec_id}-spec"
     return any(

@@ -25,7 +25,9 @@ class _FakeRunner:
     tokens; the first key whose tokens fully prefix `cmd` wins."""
 
     def __init__(self, responses: dict[str, _FakeResult]) -> None:
-        self.responses = responses
+        # `owner_repo_from_git()` asks for `remote.pushDefault` first; default it
+        # to unset so only a fork-layout test has to script it.
+        self.responses = {"git config": _FakeResult(1, ""), **responses}
         self.calls: list[list[str]] = []
 
     def __call__(self, cmd: list[str], **kwargs: Any) -> _FakeResult:
@@ -400,6 +402,8 @@ class TestCheck(unittest.TestCase):
 
     def test_checked_false_when_gh_unavailable(self) -> None:
         def runner(cmd: list[str], **kwargs: Any) -> _FakeResult:
+            if cmd[:3] == ["git", "config", "--get"]:
+                return _FakeResult(1, "")  # remote.pushDefault unset
             if cmd[:2] == ["git", "remote"]:
                 return _FakeResult(0, "https://github.com/acme/widgets.git\n")
             raise FileNotFoundError("gh not found")
@@ -424,6 +428,8 @@ class TestCheck(unittest.TestCase):
 
     def test_addressed_thread_is_resolved_and_not_blocking(self) -> None:
         def runner(cmd: list[str], **kwargs: Any) -> _FakeResult:
+            if cmd[:3] == ["git", "config", "--get"]:
+                return _FakeResult(1, "")  # remote.pushDefault unset
             if cmd[:2] == ["git", "remote"]:
                 return _FakeResult(0, "https://github.com/acme/widgets.git\n")
             if (
@@ -448,6 +454,8 @@ class TestCheck(unittest.TestCase):
 
     def test_base_ref_plumbed_through_to_resolve_cross_pr_fix(self) -> None:
         def runner(cmd: list[str], **kwargs: Any) -> _FakeResult:
+            if cmd[:3] == ["git", "config", "--get"]:
+                return _FakeResult(1, "")  # remote.pushDefault unset
             if cmd[:2] == ["git", "remote"]:
                 return _FakeResult(0, "https://github.com/acme/widgets.git\n")
             if cmd[:2] == ["gh", "api"] and "reviewThreads" in " ".join(cmd):
@@ -473,6 +481,8 @@ class TestCheck(unittest.TestCase):
 
         def runner(cmd: list[str], **kwargs: Any) -> _FakeResult:
             calls.append(cmd)
+            if cmd[:3] == ["git", "config", "--get"]:
+                return _FakeResult(1, "")  # remote.pushDefault unset
             if cmd[:2] == ["git", "remote"]:
                 return _FakeResult(0, "https://github.com/acme/widgets.git\n")
             if cmd[:2] == ["gh", "api"] and "reviewThreads" in " ".join(cmd):
@@ -516,6 +526,8 @@ class TestCheck(unittest.TestCase):
 
     def test_unaddressed_thread_skips_label_when_already_present(self) -> None:
         def runner(cmd: list[str], **kwargs: Any) -> _FakeResult:
+            if cmd[:3] == ["git", "config", "--get"]:
+                return _FakeResult(1, "")  # remote.pushDefault unset
             if cmd[:2] == ["git", "remote"]:
                 return _FakeResult(0, "https://github.com/acme/widgets.git\n")
             if cmd[:2] == ["gh", "api"] and "reviewThreads" in " ".join(cmd):
@@ -536,6 +548,8 @@ class TestCheck(unittest.TestCase):
 
     def test_dry_run_blocking_never_applies_no_automerge_label(self) -> None:
         def runner(cmd: list[str], **kwargs: Any) -> _FakeResult:
+            if cmd[:3] == ["git", "config", "--get"]:
+                return _FakeResult(1, "")  # remote.pushDefault unset
             if cmd[:2] == ["git", "remote"]:
                 return _FakeResult(0, "https://github.com/acme/widgets.git\n")
             if cmd[:2] == ["gh", "api"] and "reviewThreads" in " ".join(cmd):
@@ -550,6 +564,8 @@ class TestCheck(unittest.TestCase):
 
     def test_dry_run_never_mutates(self) -> None:
         def runner(cmd: list[str], **kwargs: Any) -> _FakeResult:
+            if cmd[:3] == ["git", "config", "--get"]:
+                return _FakeResult(1, "")  # remote.pushDefault unset
             if cmd[:2] == ["git", "remote"]:
                 return _FakeResult(0, "https://github.com/acme/widgets.git\n")
             if cmd[:2] == ["gh", "api"] and "reviewThreads" in " ".join(cmd):
@@ -569,6 +585,8 @@ class TestCheck(unittest.TestCase):
 
         def runner(cmd: list[str], **kwargs: Any) -> _FakeResult:
             calls.append(cmd)
+            if cmd[:3] == ["git", "config", "--get"]:
+                return _FakeResult(1, "")  # remote.pushDefault unset
             if cmd[:2] == ["git", "remote"]:
                 return _FakeResult(0, "https://github.com/acme/widgets.git\n")
             if cmd[:2] == ["gh", "api"] and "reviewThreads" in " ".join(cmd):
@@ -608,6 +626,8 @@ class TestCheck(unittest.TestCase):
 
         def runner(cmd: list[str], **kwargs: Any) -> _FakeResult:
             calls.append(cmd)
+            if cmd[:3] == ["git", "config", "--get"]:
+                return _FakeResult(1, "")  # remote.pushDefault unset
             if cmd[:2] == ["git", "remote"]:
                 return _FakeResult(0, "https://github.com/acme/widgets.git\n")
             if cmd[:2] == ["gh", "api"] and "reviewThreads" in " ".join(cmd):
@@ -636,6 +656,8 @@ class TestCheck(unittest.TestCase):
 
     def test_explicit_owner_name_skips_git_remote_lookup(self) -> None:
         def runner(cmd: list[str], **kwargs: Any) -> _FakeResult:
+            if cmd[:3] == ["git", "config", "--get"]:
+                return _FakeResult(1, "")  # remote.pushDefault unset
             if cmd[:2] == ["git", "remote"]:
                 raise AssertionError(
                     "should not resolve owner/repo when both are given explicitly"

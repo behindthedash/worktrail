@@ -21,7 +21,10 @@ a short backoff, before giving up and returning the last output (so the caller's
 report-back parse still runs and can decide). A `TimeoutExpired` is propagated
 unchanged: a genuinely-stuck worker should not be silently re-run for another full
 timeout -- the caller marks the task failed (and the run journal makes a resume
-cheap). The retry count is overridable via $ORCH_SPAWN_RETRIES.
+cheap). It carries one added attribute, `worktrail_partial`: the `SpawnResult`
+parsed from whatever the killed worker had already emitted, so the caller can
+account for the tokens it burned and record what it got to instead of a bare
+"failed, no evidence". The retry count is overridable via $ORCH_SPAWN_RETRIES.
 
 Token + tool tracking
 ---------------------
@@ -238,6 +241,55 @@ def parse_session_limit_reset(
     if reset <= now:
         reset += datetime.timedelta(days=1)
     return reset
+
+
+def partial_usage_from_stream(raw: str) -> dict:
+    """Per-turn usage summed from `assistant` events, for a stream that has no
+    final `result` event.
+
+    `_parse_stream_json` deliberately reads usage only from the `result`
+    event -- the authoritative, non-double-counted total a completed spawn
+    emits. A worker killed at its wall clock never emits it, so its tokens
+    would otherwise be invisible even though the transcript records them per
+    turn (brief 20260918-221038: 52 turns / ~2.3M cache-read tokens on task
+    4.1 of run go-20260918-181212, none of it counted).
+
+    Used ONLY on the timeout path, where no `result` event exists, so it can
+    never double-count against a completed spawn's own total. `num_turns` is
+    the count of assistant events seen; no cost is reported, since cost is
+    only ever stated by the `result` event and estimating it would be a
+    guess.
+    """
+    fields = (
+        "input_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+        "output_tokens",
+    )
+    totals = dict.fromkeys(fields, 0)
+    turns = 0
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict) or event.get("type") != "assistant":
+            continue
+        turns += 1
+        turn_usage = (event.get("message") or {}).get("usage") or {}
+        if not isinstance(turn_usage, dict):
+            continue
+        for field in fields:
+            try:
+                totals[field] += int(turn_usage.get(field, 0) or 0)
+            except (TypeError, ValueError):
+                continue
+    if not turns:
+        return {}
+    return {**totals, "num_turns": turns, "partial": True}
 
 
 def _parse_stream_json(raw: str) -> tuple[str, dict, list[str], list[str], str]:
@@ -1139,6 +1191,42 @@ def spawn_agent(
         except OSError as exc:
             log(f"    WORKTRAIL_KEEP_TRANSCRIPTS write failed (non-fatal): {exc}")
 
+    def _partial_result_from_timeout(
+        exc: subprocess.TimeoutExpired, served: Cell, paused: float
+    ) -> SpawnResult:
+        """Parse whatever the killed worker had already written to stdout.
+
+        `subprocess.run` attaches the drained output to the exception, so the
+        stream-json events the worker emitted before the kill are still here:
+        the `result` event is normally the last one and may be missing, but
+        the per-turn `assistant` events carry the tool/skill record and any
+        interim usage. Best-effort by construction -- an unparseable or empty
+        partial yields an empty SpawnResult rather than raising over a
+        diagnostic.
+        """
+        raw = exc.stdout if isinstance(exc.stdout, str) else ""
+        try:
+            text, usage, tools_used, skills_used, sid = _parse_stream_json(raw)
+        except Exception:  # noqa: BLE001 -- never mask the timeout itself
+            text, usage, tools_used, skills_used, sid = "", {}, [], [], ""
+        if not usage:
+            # No final `result` event (the normal shape for a killed worker),
+            # so fall back to summing what the per-turn events recorded.
+            usage = partial_usage_from_stream(raw)
+        return SpawnResult(
+            text=text,
+            usage=usage,
+            tools_used=tools_used,
+            skills_used=skills_used,
+            paused_s=paused,
+            session_id=sid,
+            served_target=served.target,
+            served_model=served.model,
+            served_harness=served.harness,
+            exhausted=False,
+            failure_class="timeout",
+        )
+
     def finish(
         raw: str, *, exhausted: bool = False, failure_class: str = ""
     ) -> SpawnResult:
@@ -1198,6 +1286,23 @@ def spawn_agent(
                 timeout=timeout,
                 env=child_env,
             )
+        except subprocess.TimeoutExpired as timeout_exc:
+            # Propagated unchanged (see the module docstring) -- but not
+            # empty-handed. A worker killed at its wall clock has already
+            # burned its tokens and may have committed real work; discarding
+            # its partial stdout loses both. Observed 2026-09-18 on spec
+            # review-loop-repeated-finding-to-decision task 4.1: a 1800s
+            # implement worker made 52 turns / ~2.3M cache-read tokens and got
+            # through two suites, and the journal recorded status failed,
+            # head_sha '', tests 'none', with none of that usage counted
+            # (brief 20260918-221038). `partial` carries the same parsed
+            # SpawnResult a completed spawn returns, so the caller can record
+            # usage and evidence without treating the timeout as success.
+            timeout_exc.worktrail_partial = _partial_result_from_timeout(
+                timeout_exc, cell, paused_s_total
+            )
+            cleanup_output_file()
+            raise
         except BaseException:
             cleanup_output_file()
             raise

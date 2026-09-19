@@ -878,9 +878,15 @@ a role pinned to a different agent falls back to that agent's own default model.
   command on a non-zero exit before quarantining the group. A pass-after-retry is logged as
   `FLAKY` and recorded under the run journal's `smoke_flakes` map, so a repeated entry for the
   same suite is a signal to fix the flake, not to raise the count.
-- **Task-worktree dependency bootstrap (opt-in, from policy):** when
-  `worktree_bootstrap_cmd` is set in `docs/specs/worktrail-go-policy.yaml` (loaded in Phase 4), pass
-  it through as `--bootstrap-cmd "<command>"`. The orchestrator runs it in each fanned-out
+- **Task-worktree dependency bootstrap (auto-resolved from policy):** `worktrail-live
+  full-real` reads `worktree_bootstrap_cmd` from the repo policy itself when
+  `--bootstrap-cmd` is omitted (`live._default_bootstrap_cmd`, same code-level default as
+  `--smoke-cmd`), so there is no flag to remember here — the launch block above
+  deliberately does not pass one. Before that default existed this note told the *calling
+  agent* to pass it and the launch block never did: aspens run go-20260918-190550 fanned
+  out task worktrees with no `node_modules` and the base group's smoke died on
+  `vitest: not found`. Pass `--bootstrap-cmd "<command>"` only to override policy for one
+  run, or `--bootstrap-cmd ""` to force-skip. The orchestrator runs it in each fanned-out
   task worktree right after `git worktree add`, before spawning the worker — so
   implement/fix/review workers don't each rediscover and reinstall the base checkout's
   gitignored `node_modules` mid-task (task worktrees branch off the base commit and start
@@ -893,6 +899,17 @@ a role pinned to a different agent falls back to that agent's own default model.
   the sibling spec worktree's already-installed `node_modules` when its lockfile matches
   byte-for-byte, falling back to a real install otherwise, instead of paying the full install
   cost once per task worktree (`orchestrator/bootstrap_node_modules.py`).
+- **PR/push remote (auto-resolved from git):** `worktrail-live full-real` resolves
+  `--remote` from the checkout's own `git config remote.pushDefault` (else `origin`) when
+  the flag is omitted (`live._default_remote`) — the same knob `land_pr` and
+  `queue_triage` already honor. On a fork layout whose `origin` is the read-only upstream
+  (aspens: `origin=aspenkit/aspens`, `remote.pushDefault=fork=behindthedash/aspens`) the
+  old hard-coded `origin` default refreshed the base against the *upstream's* `main` and
+  forked every task worktree from a ref with no `tasks.md`: run go-20260918-190550 lost 6
+  tasks to `WorktreeMissingTaskFileError` in ~10s. Pass `--remote <name>` only to override
+  for one run. The run also preflights that the spec folder exists at its fan-out refs and
+  aborts with one actionable message if it does not, instead of quarantining a group per
+  affected task.
 - **Migration-group isolation (opt-in, from policy):** when `migration_path_patterns`
   is set in `docs/specs/worktrail-go-policy.yaml` (loaded in Phase 4), pass each pattern through
   as a repeated `--migration-pattern "<glob>"`. Any task whose declared files match one

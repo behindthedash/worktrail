@@ -51,6 +51,7 @@ import argparse
 import json
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +62,7 @@ from .dependabot_manifest_check_template import (
     DEPENDABOT_MANIFEST_CHECK_PY,
     DEPENDABOT_MANIFEST_CHECK_REQUIREMENTS_TXT,
 )
+from .gitleaks_template import CHECK_GITLEAKS_SIGNAL_INTEGRITY_PY
 from .rulesets_drift_guard_template import RULESETS_REQUIREMENTS_TXT, RULESETS_SYNC_PY
 
 OPENSPEC_PACKAGE = "@fission-ai/openspec@latest"
@@ -228,39 +230,72 @@ def build_ruleset(
     }
 
 
+# Single source of truth for "which merge method does this branch allow".
+# `build_ruleset_for_branch()` writes it into the ruleset's
+# allowed_merge_methods and `build_automerge_workflow()` renders the matching
+# `gh pr merge --auto --<method>` arm, so the two can never disagree. They
+# used to: the workflow hard-coded "squash only when base.ref == 'dev'", while
+# the trunk model's protect-main.json is squash-only, so `--branch-model main`
+# rendered an auto-merge step that armed `--merge` against a branch that
+# forbids merge commits and could therefore never arm at all (brief
+# 20260918-213220 member 1; worked around by hand in aspens PR #18).
+SQUASH_ONLY_BRANCHES = ("dev", "main")
+
+
+def merge_method_for_branch(branch: str) -> str:
+    """The one merge method `branch`'s ruleset allows: squash for an
+    integration/trunk base, merge for a promotion base (stg/prd), where a
+    squash would discard the individual commits being promoted."""
+    return "squash" if branch in SQUASH_ONLY_BRANCHES else "merge"
+
+
 def build_ruleset_for_branch(
     branch: str,
     branch_model: str,
-    extra_required_status_check: str | None = None,
+    extra_required_status_checks: Sequence[str] | str | None = None,
 ) -> dict[str, Any]:
     """branch_model "2" = dev/prd (GGB pattern); "3" = dev/stg/prd (datalena
     pattern, dev is squash + required_linear_history); "main" = trunk-only
     (a single protected `main`, squash + required_linear_history).
 
-    extra_required_status_check, when given, is the sole entry ever placed in
-    the generated ruleset's required_status_checks -- callers pass it only
-    when generating a *fresh* ruleset file in the same `propose` run that
-    also newly writes the openspec-validate workflow (see
-    OPENSPEC_VALIDATE_JOB_NAME). Nothing from `state["ci_jobs_discovered"]`
-    is ever passed in here; `propose` still deliberately never
-    auto-populates required_status_checks from CI discovery otherwise."""
-    checks = [extra_required_status_check] if extra_required_status_check else []
+    extra_required_status_checks, when given, are the only entries ever placed
+    in the generated ruleset's required_status_checks -- callers pass a job
+    name only when generating a *fresh* ruleset file in the same `propose` run
+    that also newly writes the workflow that job belongs to (see
+    REQUIRED_CHECK_JOB_NAMES). Nothing from `state["ci_jobs_discovered"]` is
+    ever passed in here; `propose` still deliberately never auto-populates
+    required_status_checks from CI discovery otherwise. A bare string is
+    accepted for the single-name callers that predate the sequence form."""
+    if extra_required_status_checks is None:
+        checks: list[str] = []
+    elif isinstance(extra_required_status_checks, str):
+        checks = [extra_required_status_checks]
+    else:
+        checks = [c for c in extra_required_status_checks if c]
     if branch == "main":
         return build_ruleset(
-            "protect-main", "main", ["squash"], checks, linear_history=True
+            "protect-main",
+            "main",
+            [merge_method_for_branch("main")],
+            checks,
+            linear_history=True,
         )
     if branch == "dev":
         return build_ruleset(
             "protect-dev",
             "dev",
-            ["squash"],
+            [merge_method_for_branch("dev")],
             checks,
             linear_history=(branch_model == "3"),
         )
     if branch == "stg":
-        return build_ruleset("protect-stg", "stg", ["merge"], checks)
+        return build_ruleset(
+            "protect-stg", "stg", [merge_method_for_branch("stg")], checks
+        )
     if branch == "prd":
-        return build_ruleset("protect-prd", "prd", ["merge"], checks)
+        return build_ruleset(
+            "protect-prd", "prd", [merge_method_for_branch("prd")], checks
+        )
     raise ValueError(f"unknown branch {branch!r}")
 
 
@@ -331,6 +366,172 @@ RULESETS_SYNC_SCRIPT_RELPATH = f"{RULESETS_SCRIPT_DIR_RELPATH}/rulesets_sync.py"
 RULESETS_REQUIREMENTS_RELPATH = f"{RULESETS_SCRIPT_DIR_RELPATH}/requirements.txt"
 
 # --------------------------------------------------------------------------
+# Gitleaks secrets scan
+# --------------------------------------------------------------------------
+
+GITLEAKS_WORKFLOW_RELPATH = ".github/workflows/gitleaks.yml"
+GITLEAKS_SCRIPT_RELPATH = "scripts/ci/check_gitleaks_signal_integrity.py"
+# The job display name, which is also the `required_status_checks` context --
+# defined once so `discover_ci_checks()` and the ruleset entry can never drift
+# (same reason OPENSPEC_VALIDATE_JOB_NAME exists).
+GITLEAKS_PR_DIFF_JOB_NAME = "gitleaks-pr-diff"
+GITLEAKS_VERSION = "8.21.2"
+
+
+def build_gitleaks_workflow(branches: list[str]) -> str:
+    """A "CI: Secrets Scanning (gitleaks)" workflow with two jobs.
+
+    `gitleaks-pr-diff` runs on every pull request targeting a protected
+    branch and scans only the commits that PR introduces. It deliberately
+    carries NO `paths`/`paths-ignore` filter and no change-detection gate:
+    a leaked secret must block merge, so this is a required status check,
+    and a required check that a docs-only diff skips never reports a status
+    at all and deadlocks the merge.
+
+    `gitleaks-full-history` is reachable only via `workflow_dispatch` -- a
+    one-time triage pass over a repo's existing history, never a per-PR cost
+    and never required.
+
+    Both jobs pipe the scan through the vendored
+    `check_gitleaks_signal_integrity.py`, not `continue-on-error`: gitleaks
+    reports "no leaks found" identically for a clean scan and for a scan whose
+    range covered zero commits, so without that step a degenerate range passes
+    exactly like a real clean run.
+
+    Mirrors the reference implementation in datalena's
+    `.github/workflows/gitleaks.yml`; cross-repo `workflow_call` reuse is
+    unavailable on this GitHub plan, so every repo carries its own copy."""
+    branches_yaml = "[" + ", ".join(branches) + "]"
+    return f"""\
+name: 'CI: Secrets Scanning (gitleaks)'
+
+on:
+  workflow_dispatch: {{}}
+  pull_request:
+    branches: {branches_yaml}
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+
+env:
+  GITLEAKS_VERSION: '{GITLEAKS_VERSION}'
+
+jobs:
+  # One-time/manual full-history scan. Not attached to any trigger that runs
+  # automatically per-push or per-PR -- invoke it once via workflow_dispatch to
+  # triage a repo's existing history.
+  gitleaks-full-history:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: gitleaks-full-history-${{{{ github.ref }}}}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          clean: false
+
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          curl -sSL -o gitleaks.tar.gz \\
+            "https://github.com/gitleaks/gitleaks/releases/download/v${{GITLEAKS_VERSION}}/gitleaks_${{GITLEAKS_VERSION}}_linux_x64.tar.gz"
+          tar -xzf gitleaks.tar.gz gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Scan full git history
+        run: |
+          set -euo pipefail
+          gitleaks detect \\
+            --source . \\
+            --report-format sarif \\
+            --report-path gitleaks-full-history.sarif \\
+            --redact \\
+            --verbose 2>&1 | tee gitleaks-full-history.log
+
+      - name: Assert gitleaks signal integrity (full-history)
+        # Not continue-on-error: fails the job when the scan covered zero
+        # commits rather than silently reporting "no leaks found" identically
+        # to a genuine clean scan of real history.
+        if: always()
+        run: |
+          python3 {GITLEAKS_SCRIPT_RELPATH} \\
+            --log gitleaks-full-history.log \\
+            --min-commits 1
+
+      - name: Upload full-history report
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: gitleaks-full-history-report
+          path: gitleaks-full-history.sarif
+          if-no-files-found: ignore
+
+  # Per-PR diff scan: only the commits the PR introduces, so it stays fast and
+  # runs on every push to a PR branch. No paths filter by design -- this is a
+  # required check, and a required check a docs-only diff skips never reports.
+  gitleaks-pr-diff:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: gitleaks-pr-diff-${{{{ github.event.pull_request.number }}}}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          clean: false
+
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          curl -sSL -o gitleaks.tar.gz \\
+            "https://github.com/gitleaks/gitleaks/releases/download/v${{GITLEAKS_VERSION}}/gitleaks_${{GITLEAKS_VERSION}}_linux_x64.tar.gz"
+          tar -xzf gitleaks.tar.gz gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Scan PR diff
+        run: |
+          set -euo pipefail
+          gitleaks detect \\
+            --source . \\
+            --log-opts="${{{{ github.event.pull_request.base.sha }}}}..${{{{ github.event.pull_request.head.sha }}}}" \\
+            --report-format sarif \\
+            --report-path gitleaks-pr-diff.sarif \\
+            --redact \\
+            --verbose 2>&1 | tee gitleaks-pr-diff.log
+
+      - name: Assert gitleaks signal integrity (PR diff)
+        # Not continue-on-error: fails the job when the diff range covered zero
+        # commits (e.g. a degenerate base/head pairing) rather than silently
+        # reporting "no leaks found" identically to a genuine clean diff.
+        if: always()
+        run: |
+          python3 {GITLEAKS_SCRIPT_RELPATH} \\
+            --log gitleaks-pr-diff.log \\
+            --min-commits 1 \\
+            --range "${{{{ github.event.pull_request.base.sha }}}}..${{{{ github.event.pull_request.head.sha }}}}"
+
+      - name: Upload PR diff report
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: gitleaks-pr-diff-report
+          path: gitleaks-pr-diff.sarif
+          if-no-files-found: ignore
+"""
+
+
+# --------------------------------------------------------------------------
 # Dependabot manifest check
 # --------------------------------------------------------------------------
 
@@ -397,6 +598,11 @@ jobs:
 """
 
 
+# Every branch the generated workflow arms explicitly, across all three branch
+# models (`branches_for_model()`). A base not listed here falls through to the
+# `*)` default (merge), which is what an unprotected/ad-hoc base gets today.
+_AUTOMERGE_ARM_BRANCHES = ("dev", "main", "stg", "prd")
+
 _AUTOMERGE_WORKFLOW = """\
 name: "CI: Auto-merge on open"
 on:
@@ -449,11 +655,13 @@ jobs:
       - name: Arm auto-merge
         if: steps.check-automerge.outputs.eligible == 'true'
         run: |
-          if [ "${{ github.event.pull_request.base.ref }}" = "dev" ]; then
-            gh pr merge --auto --squash "${{ github.event.pull_request.number }}" -R "${{ github.repository }}"
-          else
-            gh pr merge --auto --merge "${{ github.event.pull_request.number }}" -R "${{ github.repository }}"
-          fi
+          # Merge method per base branch, matching each branch's ruleset
+          # allowed_merge_methods (repo_init.merge_method_for_branch()).
+          # Arming a method the ruleset forbids never arms at all.
+          case "${{ github.event.pull_request.base.ref }}" in
+__ARM_CASES__
+            *) gh pr merge --auto --merge "${{ github.event.pull_request.number }}" -R "${{ github.repository }}" ;;
+          esac
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 """
@@ -466,12 +674,22 @@ def build_automerge_workflow() -> str:
     automerge_labels()). Matches the convention already used by
     datalena/GGB/worktrail's own .github/workflows/auto-merge.yml, but
     inlined here with no external ci/scripts/automerge_eligibility.sh
-    dependency, and picks squash vs merge the same way build_ruleset_for_branch
-    does (dev -> squash, everything else -> merge).
+    dependency.
+
+    The per-base merge method is rendered from `merge_method_for_branch()` --
+    the same function `build_ruleset_for_branch()` uses for each branch's
+    `allowed_merge_methods` -- so the workflow can never arm a method the
+    ruleset forbids. `test_arm_step_merge_method_matches_the_rulesets`
+    asserts that agreement for every branch in every model.
 
     Inert until something applies a go:risk-* label -- a repo not using
     worktrail-go's classifier for its PRs never has this fire."""
-    return _AUTOMERGE_WORKFLOW
+    arm_cases = "\n".join(
+        f"            {branch}) gh pr merge --auto --{merge_method_for_branch(branch)}"
+        ' "${{ github.event.pull_request.number }}" -R "${{ github.repository }}" ;;'
+        for branch in _AUTOMERGE_ARM_BRANCHES
+    )
+    return _AUTOMERGE_WORKFLOW.replace("__ARM_CASES__", arm_cases)
 
 
 # Colors/descriptions match the live label sets already in use on
@@ -640,6 +858,11 @@ OPENSPEC_VALIDATE_WORKFLOW_RELPATH = ".github/workflows/worktrail-openspec-valid
 # drifting apart.
 OPENSPEC_VALIDATE_JOB_NAME = "openspec-validate"
 
+# The ONLY job names `propose` may ever put in a ruleset's
+# required_status_checks, and only when it writes that job's workflow in the
+# same run. Everything `discover_ci_checks()` finds stays informational.
+REQUIRED_CHECK_JOB_NAMES = (OPENSPEC_VALIDATE_JOB_NAME, GITLEAKS_PR_DIFF_JOB_NAME)
+
 _OPENSPEC_VALIDATE_WORKFLOW = """\
 name: "CI: OpenSpec validate"
 on:
@@ -691,6 +914,14 @@ def default_policy_yaml(
     )
     if pre_commit_cmd:
         header += f'pre_commit_cmd: "{pre_commit_cmd}"\n'
+    # The fleet-wide default since devops PRs #510/#511 (~/rules/CLAUDE.repo.md
+    # section 3): green PRs rated low or medium merge without a human, `high`
+    # stays human-gated. Seeded rather than left to a hand-edit, because a
+    # commented-out default makes the auto-merge workflow this same run
+    # scaffolds inert. `medium` is a ceiling, not a suggestion -- policy.py
+    # never treats high/critical as eligible whatever this file says, and
+    # clamps an invalid max_risk to low.
+    header += "automerge:\n  enabled: true\n  max_risk: medium\n"
     if not enable_aspens:
         return header
     return header + "add_ons:\n  aspens: {}\n"
@@ -1074,6 +1305,8 @@ def detect_state(repo: Path) -> dict[str, Any]:
         "dependabot_manifest_check_requirements_exists": (
             repo / DEPENDABOT_CHECK_REQUIREMENTS_RELPATH
         ).is_file(),
+        "gitleaks_workflow_exists": (repo / GITLEAKS_WORKFLOW_RELPATH).is_file(),
+        "gitleaks_script_exists": (repo / GITLEAKS_SCRIPT_RELPATH).is_file(),
         "ci_jobs_discovered": discover_ci_checks(repo),
     }
 
@@ -1193,29 +1426,42 @@ def cmd_propose(args: argparse.Namespace) -> int:
 
     branches = branches_for_model(args.branch_model)
     rulesets_dir = repo / ".github" / "rulesets"
-    openspec_validate_newly_written = not state["openspec_validate_workflow_exists"]
-    required_check_configured = False
+    # A job name earns a required_status_checks entry only when THIS run
+    # writes the workflow it belongs to -- a workflow that was already there
+    # was either already required or deliberately left informational, and
+    # re-running `propose` must never grow the list either way.
+    newly_written_checks = [
+        name
+        for name, already_present in (
+            (
+                OPENSPEC_VALIDATE_JOB_NAME,
+                state["openspec_validate_workflow_exists"],
+            ),
+            (GITLEAKS_PR_DIFF_JOB_NAME, state["gitleaks_workflow_exists"]),
+        )
+        if not already_present
+    ]
+    required_check_configured = bool(newly_written_checks)
     for branch in branches:
         path = rulesets_dir / f"protect-{branch}.json"
         if path.is_file():
-            if openspec_validate_newly_written and patch_ruleset_required_check(
-                path, OPENSPEC_VALIDATE_JOB_NAME
-            ):
+            patched = [
+                name
+                for name in newly_written_checks
+                if patch_ruleset_required_check(path, name)
+            ]
+            if patched:
                 written.append(
                     f"{path.relative_to(repo)} (patched: added "
-                    f"{OPENSPEC_VALIDATE_JOB_NAME} to required_status_checks)"
+                    f"{', '.join(patched)} to required_status_checks)"
                 )
-                required_check_configured = True
             else:
                 skipped.append(str(path.relative_to(repo)))
             continue
         rulesets_dir.mkdir(parents=True, exist_ok=True)
-        extra_check = (
-            OPENSPEC_VALIDATE_JOB_NAME if openspec_validate_newly_written else None
+        ruleset = build_ruleset_for_branch(
+            branch, args.branch_model, newly_written_checks
         )
-        if extra_check:
-            required_check_configured = True
-        ruleset = build_ruleset_for_branch(branch, args.branch_model, extra_check)
         path.write_text(json.dumps(ruleset, indent=2) + "\n", encoding="utf-8")
         written.append(str(path.relative_to(repo)))
 
@@ -1352,6 +1598,24 @@ def cmd_propose(args: argparse.Namespace) -> int:
             build_openspec_validate_workflow(), encoding="utf-8"
         )
         written.append(str(openspec_validate_path.relative_to(repo)))
+
+    gitleaks_path = repo / GITLEAKS_WORKFLOW_RELPATH
+    if state["gitleaks_workflow_exists"]:
+        skipped.append(f"{GITLEAKS_WORKFLOW_RELPATH} (already exists)")
+    else:
+        gitleaks_path.parent.mkdir(parents=True, exist_ok=True)
+        gitleaks_path.write_text(build_gitleaks_workflow(branches), encoding="utf-8")
+        written.append(str(gitleaks_path.relative_to(repo)))
+
+    gitleaks_script_path = repo / GITLEAKS_SCRIPT_RELPATH
+    if state["gitleaks_script_exists"]:
+        skipped.append(f"{GITLEAKS_SCRIPT_RELPATH} (already exists)")
+    else:
+        gitleaks_script_path.parent.mkdir(parents=True, exist_ok=True)
+        gitleaks_script_path.write_text(
+            CHECK_GITLEAKS_SIGNAL_INTEGRITY_PY, encoding="utf-8"
+        )
+        written.append(str(gitleaks_script_path.relative_to(repo)))
 
     drift = compute_drift(repo, state, branches, args.branch_model)
 

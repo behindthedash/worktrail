@@ -165,6 +165,50 @@ class HasTaskWorktreesTests(unittest.TestCase):
         (base / "003-payments-task-001").write_text("not a directory")
         self.assertFalse(worktree.has_task_worktrees(self.repo, "003-payments"))
 
+    def test_prefix_match_counts_a_longer_spec_ids_worktrees(self):
+        """Repro for brief 20260918-095139: the bare `<spec_id>-` prefix.
+
+        `001-foo` and `001-foo-bar` can coexist, and `001-foo-bar`'s task
+        worktree `001-foo-bar-1.1` matches `001-foo-`'s prefix -- so a
+        `--force` recompile of `001-foo` is refused over worktrees that
+        belong to an entirely different spec. Documented here as the
+        fallback's known limit; the `task_ids` form below is the fix.
+        """
+        base = worktree.default_worktree_base(self.repo)
+        (base / "001-foo-bar-1.1").mkdir(parents=True)
+        self.assertTrue(worktree.has_task_worktrees(self.repo, "001-foo"))
+
+    def test_task_ids_ignore_another_spec_whose_id_shares_the_prefix(self):
+        base = worktree.default_worktree_base(self.repo)
+        (base / "001-foo-bar-1.1").mkdir(parents=True)
+        self.assertFalse(
+            worktree.has_task_worktrees(self.repo, "001-foo", task_ids=["1.1", "2.1"])
+        )
+
+    def test_task_ids_still_find_this_specs_own_worktree(self):
+        base = worktree.default_worktree_base(self.repo)
+        (base / "001-foo-bar-1.1").mkdir(parents=True)
+        (base / "001-foo-2.1").mkdir()
+        self.assertTrue(
+            worktree.has_task_worktrees(self.repo, "001-foo", task_ids=["1.1", "2.1"])
+        )
+
+    def test_task_ids_are_lowercased_like_worktree_path(self):
+        base = worktree.default_worktree_base(self.repo)
+        (base / "003-payments-task-001").mkdir(parents=True)
+        self.assertTrue(
+            worktree.has_task_worktrees(
+                self.repo, "003-payments", task_ids=["TASK-001"]
+            )
+        )
+
+    def test_task_ids_empty_means_no_active_worktrees(self):
+        base = worktree.default_worktree_base(self.repo)
+        (base / "003-payments-task-001").mkdir(parents=True)
+        self.assertFalse(
+            worktree.has_task_worktrees(self.repo, "003-payments", task_ids=[])
+        )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

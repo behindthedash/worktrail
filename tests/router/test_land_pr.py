@@ -1174,5 +1174,83 @@ class LandPrOrchestrationTests(unittest.TestCase):
         self.assertEqual(len(spy.finish_calls()), 1)
 
 
+class WatchCiMergedPrIsTerminalTests(unittest.TestCase):
+    """A MERGED PR ends the CI watch even while a check-run stays pending.
+
+    Regression for brief 20260918-230933: on sync PR #1272 auto-merge landed
+    the PR 22s after creation while its `auto-merge` check-run stayed
+    `pending` forever. `gh pr checks --watch --fail-fast` never returns on a
+    pending check, so `_watch_ci` re-issued the watch for the whole
+    `WATCH_REISSUE_MAX` budget (15+ min) before anything re-read the PR
+    state; run go-20260918-212932 had to be killed by hand.
+    """
+
+    @staticmethod
+    def _merged_runner(watch_calls: list[int]):
+        def runner(cmd, **kwargs):
+            if cmd[:3] == ["gh", "pr", "view"]:
+                return subprocess.CompletedProcess(
+                    cmd, 0, json.dumps({"state": "MERGED"}), ""
+                )
+            if cmd[:3] == ["gh", "pr", "checks"] and "--watch" in cmd:
+                watch_calls.append(1)
+                # A pending check never settles: a real `--watch` would block
+                # until `watch_timeout_s`, so returning non-zero here is the
+                # most generous stand-in -- the loop still must not re-issue.
+                return subprocess.CompletedProcess(cmd, 1, "", "")
+            if cmd[:3] == ["gh", "pr", "checks"]:
+                return subprocess.CompletedProcess(
+                    cmd,
+                    0,
+                    json.dumps([{"name": "auto-merge", "bucket": "pending"}]),
+                    "",
+                )
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        return runner
+
+    def test_merged_pr_settles_without_issuing_a_watch(self) -> None:
+        watch_calls: list[int] = []
+        result = land_pr._watch_ci(
+            Path("/repo"), 1272, 600, self._merged_runner(watch_calls)
+        )
+        self.assertTrue(result["settled"])
+        self.assertFalse(result["budget_exhausted"])
+        self.assertEqual(result["failing_checks"], [])
+        self.assertEqual(watch_calls, [], "a MERGED PR must not be watched at all")
+
+    def test_merge_landing_mid_watch_stops_the_reissue_loop(self) -> None:
+        """The common shape: checks are registered and pending, the first
+        watch re-issue times out, and the merge lands in between."""
+        state = {"merged": False}
+        watch_calls: list[int] = []
+
+        def runner(cmd, **kwargs):
+            if cmd[:3] == ["gh", "pr", "view"]:
+                payload = {"state": "MERGED" if state["merged"] else "OPEN"}
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            if cmd[:3] == ["gh", "pr", "checks"] and "--watch" in cmd:
+                watch_calls.append(1)
+                state["merged"] = True  # auto-merge landed it during the watch
+                return subprocess.CompletedProcess(cmd, 1, "", "")
+            if cmd[:3] == ["gh", "pr", "checks"]:
+                return subprocess.CompletedProcess(
+                    cmd,
+                    0,
+                    json.dumps([{"name": "auto-merge", "bucket": "pending"}]),
+                    "",
+                )
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        result = land_pr._watch_ci(Path("/repo"), 1272, 600, runner)
+        self.assertTrue(result["settled"])
+        self.assertFalse(result["budget_exhausted"])
+        self.assertEqual(
+            len(watch_calls),
+            1,
+            "the watch must not be re-issued once the PR reports MERGED",
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

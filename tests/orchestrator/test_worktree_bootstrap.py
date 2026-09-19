@@ -75,13 +75,18 @@ class BootstrapHelperTest(unittest.TestCase):
 
 class ThreadingContractTest(unittest.TestCase):
     def test_bootstrap_cmd_flag_is_wired(self) -> None:
-        # The `full-real` subparser must expose `--bootstrap-cmd` and the dispatch
-        # must thread `args.bootstrap_cmd` into `full_real` — otherwise the policy
-        # value the conductor passes is silently dropped.
+        # The `full-real` subparser must expose `--bootstrap-cmd` and the
+        # dispatch must thread the RESOLVED value (explicit flag, else the
+        # repo policy's `worktree_bootstrap_cmd` via `_default_bootstrap_cmd`)
+        # into `full_real` — otherwise the policy value is silently dropped.
+        # Behavioral coverage of the resolution itself lives in
+        # tests/orchestrator/test_fork_layout_launch_defaults.py.
         src = Path(live.__file__).read_text()
         self.assertIn('"--bootstrap-cmd"', src)
         self.assertIn('dest="bootstrap_cmd"', src)
-        self.assertIn("bootstrap_cmd=args.bootstrap_cmd", src)
+        self.assertIn("bootstrap_cmd = args.bootstrap_cmd", src)
+        self.assertIn("bootstrap_cmd = _default_bootstrap_cmd(", src)
+        self.assertIn("bootstrap_cmd=bootstrap_cmd,", src)
 
     def test_every_fanout_driver_accepts_bootstrap_cmd(self) -> None:
         for fn_name in (

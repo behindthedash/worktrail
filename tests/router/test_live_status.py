@@ -22,6 +22,70 @@ def _mkproc(
     os.utime(d, (mtime, mtime))
 
 
+def _mkproc_with_cwd(
+    proc_root: Path, pid: int, argv: list, cwd: Path, ppid: int = 1
+) -> None:
+    _mkproc(proc_root, pid, argv, ppid=ppid)
+    (proc_root / str(pid) / "cwd").symlink_to(cwd)
+
+
+class TestAgentWorkersInWorktrees(unittest.TestCase):
+    """Brief 20260918-224345: a detached orchestrator killed by SIGTERM leaves
+    its `claude -p` workers running as orphans, still holding the task
+    worktrees, while its RunLock releases on process exit."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.proc = self.root / "proc"
+        self.proc.mkdir()
+        self.wt = self.root / "wt" / "spec-1.1"
+        self.wt.mkdir(parents=True)
+
+    def test_no_worktrees_or_no_proc_returns_empty(self):
+        self.assertEqual(ls.agent_workers_in_worktrees([], self.proc), [])
+        self.assertEqual(
+            ls.agent_workers_in_worktrees([self.wt], self.root / "no-proc"), []
+        )
+
+    def test_finds_an_agent_worker_whose_cwd_is_the_worktree(self):
+        _mkproc_with_cwd(self.proc, 4242, ["claude", "-p", "prompt"], self.wt)
+        held = ls.agent_workers_in_worktrees([self.wt], self.proc)
+        self.assertEqual([h["pid"] for h in held], [4242])
+        self.assertEqual(held[0]["worktree"], str(self.wt.resolve()))
+
+    def test_finds_a_worker_in_a_subdirectory_of_the_worktree(self):
+        sub = self.wt / "app" / "src"
+        sub.mkdir(parents=True)
+        _mkproc_with_cwd(self.proc, 4243, ["codex", "exec"], sub)
+        self.assertEqual(
+            [h["pid"] for h in ls.agent_workers_in_worktrees([self.wt], self.proc)],
+            [4243],
+        )
+
+    def test_a_non_agent_process_in_the_worktree_never_blocks(self):
+        """An operator's own shell sitting in a worktree is not a worker."""
+        _mkproc_with_cwd(self.proc, 4244, ["/bin/bash"], self.wt)
+        self.assertEqual(ls.agent_workers_in_worktrees([self.wt], self.proc), [])
+
+    def test_an_agent_outside_the_worktree_is_ignored(self):
+        other = self.root / "elsewhere"
+        other.mkdir()
+        _mkproc_with_cwd(self.proc, 4245, ["claude", "-p"], other)
+        self.assertEqual(ls.agent_workers_in_worktrees([self.wt], self.proc), [])
+
+    def test_unreadable_cwd_is_skipped_not_raised(self):
+        _mkproc(self.proc, 4246, ["claude", "-p"])  # no cwd symlink at all
+        self.assertEqual(ls.agent_workers_in_worktrees([self.wt], self.proc), [])
+
+    def test_a_dangling_cwd_symlink_is_skipped(self):
+        _mkproc_with_cwd(
+            self.proc, 4247, ["claude", "-p"], self.root / "gone-directory"
+        )
+        self.assertEqual(ls.agent_workers_in_worktrees([self.wt], self.proc), [])
+
+
 class TestListProcs(unittest.TestCase):
     def test_non_proc_dir_returns_empty(self):
         with tempfile.TemporaryDirectory() as t:
