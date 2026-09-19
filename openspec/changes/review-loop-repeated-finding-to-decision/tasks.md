@@ -1,6 +1,6 @@
 ## 1. Reviewer contract and predicate (`dispatch`)
 
-- [ ] 1.1 In `src/worktrail/orchestrator/dispatch.py`, add
+- [x] 1.1 In `src/worktrail/orchestrator/dispatch.py`, add
       `review_names_decision(report) -> str | None` next to `transition`: return a non-empty
       `decision_required` string, else `notes` when it matches (case-insensitive)
       `planner/human decision`, `human decision`, or `planner decision`, else `None`. Extend
@@ -19,7 +19,7 @@
 
 ## 2. Early breaker and decision filing (`live`)
 
-- [ ] 2.1 [depends: 1.1] In `src/worktrail/orchestrator/live.py`, give `_apply_step_commit`
+- [x] 2.1 [depends: 1.1] In `src/worktrail/orchestrator/live.py`, give `_apply_step_commit`
       keyword-only `repo: Path | None = None`, `spec_rel: str | None = None`,
       `run_id: str | None = None`, and pass them from `live_run_real`'s `_commit_step`. After
       `dispatch.apply_report` (beside the Design D5 `_scope_pending` override): if
