@@ -197,12 +197,24 @@ def _git(repo: Path, runner: Runner, *args: str, timeout: int = 60):
         return subprocess.CompletedProcess(cmd, 1, stdout="", stderr=str(exc))
 
 
-def _gh(repo: Path, runner: Runner, *args: str, timeout: int = 30):
+def _gh(
+    repo: Path,
+    runner: Runner,
+    *args: str,
+    timeout: int = 30,
+    base_slug: str | None = None,
+):
     """`gh` subprocess call -- routed through `pr_labels._run_gh_cmd()` (the
     AC's own named reuse target) so every call site here, including the
     CI-watch loop, gets its transient-TLS retry rather than a second,
-    retry-less implementation of the same subprocess plumbing."""
-    cmd = ["gh", *args]
+    retry-less implementation of the same subprocess plumbing.
+
+    `base_slug` (from `_push_target()`), when set, is appended as `-R
+    <base_slug>`. A bare PR number or run id is resolved by `gh` against the
+    checkout's default remote (`origin`); on a `remote.pushDefault=fork`
+    checkout that is the upstream, whose same-numbered PR is a different,
+    possibly long-merged, PR."""
+    cmd = ["gh", *args, *(["-R", base_slug] if base_slug else [])]
     try:
         return pr_labels._run_gh_cmd(cmd, str(repo), runner, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -770,15 +782,21 @@ def _is_transient_check(name: str, log_excerpt: str) -> bool:
     return any(marker in log_excerpt for marker in _TRANSIENT_LOG_MARKERS)
 
 
-def _log_excerpt(repo: Path, runner: Runner, run_id: str) -> str:
-    result = _gh(repo, runner, "run", "view", run_id, "--log-failed")
+def _log_excerpt(
+    repo: Path, runner: Runner, run_id: str, base_slug: str | None = None
+) -> str:
+    result = _gh(
+        repo, runner, "run", "view", run_id, "--log-failed", base_slug=base_slug
+    )
     if result.returncode != 0:
         return ""
     lines = result.stdout.splitlines()
     return "\n".join(lines[-_LOG_EXCERPT_LINES:])
 
 
-def _checks_registered(repo: Path, pr_number: int, runner: Runner) -> bool | None:
+def _checks_registered(
+    repo: Path, pr_number: int, runner: Runner, base_slug: str | None = None
+) -> bool | None:
     """Whether at least one check exists for the PR yet.
 
     `True` if `gh pr checks` succeeds (something is reported, pending or
@@ -788,7 +806,16 @@ def _checks_registered(repo: Path, pr_number: int, runner: Runner) -> bool | Non
     response): not informative either way, so the caller should proceed to
     the normal watch loop rather than waiting on a signal that isn't coming.
     """
-    result = _gh(repo, runner, "pr", "checks", str(pr_number), "--json", "name")
+    result = _gh(
+        repo,
+        runner,
+        "pr",
+        "checks",
+        str(pr_number),
+        "--json",
+        "name",
+        base_slug=base_slug,
+    )
     if result.returncode == 0:
         return True
     if _NO_CHECKS_STDERR_MARKER in (result.stderr or "").lower():
@@ -802,6 +829,7 @@ def _watch_ci(
     watch_timeout_s: int,
     runner: Runner,
     heartbeat: Callable[[], None] | None = None,
+    base_slug: str | None = None,
 ) -> dict[str, Any]:
     """CI watch -- ci-watch-loop.md cases 1/2/3/5, implemented in code (see
     module docstring step 7 / design.md D7). Returns `{"settled": bool,
@@ -828,7 +856,7 @@ def _watch_ci(
     for _ in range(_NO_CHECKS_GRACE_ATTEMPTS):
         if heartbeat:
             heartbeat()
-        registered = _checks_registered(repo, pr_number, runner)
+        registered = _checks_registered(repo, pr_number, runner, base_slug)
         if registered is not False:
             break
         time.sleep(_NO_CHECKS_POLL_INTERVAL_S)
@@ -853,6 +881,7 @@ def _watch_ci(
             "--watch",
             "--fail-fast",
             timeout=watch_timeout_s,
+            base_slug=base_slug,
         )
         if watch.returncode == 0:
             return {
@@ -870,6 +899,7 @@ def _watch_ci(
             str(pr_number),
             "--json",
             "name,bucket,workflowRunId",
+            base_slug=base_slug,
         )
         if checks.returncode != 0:
             continue
@@ -885,7 +915,7 @@ def _watch_ci(
         real = []
         for row in failing:
             run_id = str(row.get("workflowRunId") or "")
-            excerpt = _log_excerpt(repo, runner, run_id) if run_id else ""
+            excerpt = _log_excerpt(repo, runner, run_id, base_slug) if run_id else ""
             if _is_transient_check(row.get("name", ""), excerpt):
                 transient.append(row)
             else:
@@ -903,7 +933,15 @@ def _watch_ci(
         for row in transient:
             run_id = str(row.get("workflowRunId") or "")
             if run_id and reruns < TRANSIENT_RERUN_MAX:
-                _gh(repo, runner, "run", "rerun", run_id, "--failed")
+                _gh(
+                    repo,
+                    runner,
+                    "run",
+                    "rerun",
+                    run_id,
+                    "--failed",
+                    base_slug=base_slug,
+                )
                 reruns += 1
 
     return {
@@ -914,10 +952,21 @@ def _watch_ci(
     }
 
 
-def _pr_is_merged(repo: Path, pr_number: int, runner: Runner) -> bool:
+def _pr_is_merged(
+    repo: Path, pr_number: int, runner: Runner, base_slug: str | None = None
+) -> bool:
     """Ceiling-exit re-check -- design.md D4. Returns True only when `gh pr
     view` succeeds, parses, and reports `state == "MERGED"`."""
-    result = _gh(repo, runner, "pr", "view", str(pr_number), "--json", "state")
+    result = _gh(
+        repo,
+        runner,
+        "pr",
+        "view",
+        str(pr_number),
+        "--json",
+        "state",
+        base_slug=base_slug,
+    )
     if result.returncode != 0:
         return False
     try:
@@ -927,7 +976,9 @@ def _pr_is_merged(repo: Path, pr_number: int, runner: Runner) -> bool:
     return data.get("state") == "MERGED"
 
 
-def _merge_state_guard(repo: Path, pr_number: int, runner: Runner) -> dict[str, Any]:
+def _merge_state_guard(
+    repo: Path, pr_number: int, runner: Runner, base_slug: str | None = None
+) -> dict[str, Any]:
     """Merge-state guard -- design.md D7. Returns the settled `gh pr view`
     JSON payload (possibly after up to `MERGE_STATE_RERUN_MAX` reruns of a
     CANCELLED/SUCCESS same-name check pair)."""
@@ -942,6 +993,7 @@ def _merge_state_guard(repo: Path, pr_number: int, runner: Runner) -> dict[str, 
             "--json",
             "state,mergedAt,autoMergeRequest,headRefOid,mergeStateStatus,"
             "statusCheckRollup",
+            base_slug=base_slug,
         )
         if status.returncode != 0:
             return {}
@@ -967,7 +1019,14 @@ def _merge_state_guard(repo: Path, pr_number: int, runner: Runner) -> dict[str, 
             if state == "CANCELLED" and "SUCCESS" in states:
                 database_id = entry.get("databaseId")
                 if database_id:
-                    _gh(repo, runner, "run", "rerun", str(database_id))
+                    _gh(
+                        repo,
+                        runner,
+                        "run",
+                        "rerun",
+                        str(database_id),
+                        base_slug=base_slug,
+                    )
                     pair_found = True
         if not pair_found:
             return data
@@ -975,14 +1034,23 @@ def _merge_state_guard(repo: Path, pr_number: int, runner: Runner) -> dict[str, 
 
 
 def _review_thread_gate(
-    repo: Path, pr_number: int, run_path: str | None, runner: Runner
+    repo: Path,
+    pr_number: int,
+    run_path: str | None,
+    runner: Runner,
+    base_slug: str | None = None,
 ) -> dict[str, Any]:
     """Review-thread gate -- design.md D7. Thin pass-through to
-    `check_review_threads.check`."""
+    `check_review_threads.check`. `check()` otherwise derives `owner/name`
+    from the `origin` remote, which on a fork checkout is the upstream, so
+    the push-target `base_slug` is split and passed explicitly."""
+    owner, name = base_slug.split("/", 1) if base_slug else (None, None)
     return check_review_threads.check(
         repo,
         pr_number,
         Path(run_path) if run_path else None,
+        owner=owner,
+        name=name,
         runner=runner,
     )
 
@@ -1476,6 +1544,7 @@ def land_pr(request: LandRequest) -> LandOutcome:
                 request.watch_timeout_s,
                 runner,
                 heartbeat=lambda: _ledger_heartbeat(pr_url),
+                base_slug=base_slug,
             )
         finally:
             _ledger_unwatch(pr_url)
@@ -1490,7 +1559,7 @@ def land_pr(request: LandRequest) -> LandOutcome:
     if (
         watch["budget_exhausted"]
         and pr_number
-        and _pr_is_merged(repo, pr_number, runner)
+        and _pr_is_merged(repo, pr_number, runner, base_slug)
     ):
         watch = {
             "settled": True,
@@ -1574,7 +1643,7 @@ def land_pr(request: LandRequest) -> LandOutcome:
             patch_iteration=next_iteration,
         )
 
-    status = _merge_state_guard(repo, pr_number, runner)
+    status = _merge_state_guard(repo, pr_number, runner, base_slug)
 
     if not status:
         # `_merge_state_guard()` returns `{}` when `gh pr view` failed or
@@ -1609,7 +1678,7 @@ def land_pr(request: LandRequest) -> LandOutcome:
     # review-thread gate before completion" is unconditional) -- checking
     # `state == "MERGED"` first would let a merged PR with unaddressed
     # review threads complete without ever calling this gate.
-    threads = _review_thread_gate(repo, pr_number, run_path, runner)
+    threads = _review_thread_gate(repo, pr_number, run_path, runner, base_slug)
     if threads.get("blocking"):
         return LandOutcome(
             outcome="review_threads_blocking",

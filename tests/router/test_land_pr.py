@@ -1119,7 +1119,9 @@ class LandPrOrchestrationTests(unittest.TestCase):
         request = _land_request()
         seen: list[object] = []
 
-        def fake_watch(repo, pr_number, timeout, runner, heartbeat=None):
+        def fake_watch(
+            repo, pr_number, timeout, runner, heartbeat=None, base_slug=None
+        ):
             heartbeat()
             entry = pr_ledger.load_ledger()["prs"]["https://github.com/o/r/pull/1"]
             seen.append(entry["watcher"])
