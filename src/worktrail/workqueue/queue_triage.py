@@ -51,6 +51,32 @@ _FOCUS_BODY_RE = re.compile(r"^##\s+Focus\s*$\r?\n(.+)$", re.MULTILINE)
 
 NO_REPO_KEY = "__none__"
 
+
+class BriefOwned(Exception):
+    """A brief sits in `picked/` under another claimant (design D4)."""
+
+    def __init__(self, brief_id: str, claimed_by: str | None, claimed_at: str | None):
+        self.brief_id = brief_id
+        self.claimed_by = claimed_by
+        self.claimed_at = claimed_at
+        super().__init__(
+            f"{brief_id} owned by {claimed_by or '?'} (claimed-at {claimed_at or '?'})"
+        )
+
+
+class BriefMissing(Exception):
+    """A brief id resolves in neither `queue/` nor `picked/`."""
+
+
+class EmptyBrief(Exception):
+    """A brief has no focus text to evaluate, or cannot be read (design D3)."""
+
+    def __init__(self, brief_id: str, reason: str):
+        self.brief_id = brief_id
+        self.reason = reason
+        super().__init__(f"{brief_id} ({reason})")
+
+
 # The `question` a repo-less brief's `needs-decision` verdict files (both the
 # evaluator prompt's own instruction, per D2/D8, and this module's own
 # escalation matrix, per D5) -- a fixed string so `consume_repo_decision()`
@@ -744,6 +770,54 @@ def _brief_focus(path: Path) -> str:
         return ""
     m = _FOCUS_BODY_RE.search(content)
     return m.group(1).strip() if m else ""
+
+
+def brief_focus_strict(path: Path) -> str:
+    """`_brief_focus()` that raises `EmptyBrief` instead of returning `''` (design D3).
+
+    Raises on an unreadable path (`OSError`) and on a brief with neither a
+    `focus:` frontmatter field nor a `## Focus` body section.
+    """
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise EmptyBrief(path.stem, f"unreadable: {exc}") from exc
+    fm, _ = split_frontmatter(content)
+    if fm.get("focus"):
+        return str(fm["focus"])
+    m = _FOCUS_BODY_RE.search(content)
+    focus = m.group(1).strip() if m else ""
+    if not focus:
+        raise EmptyBrief(path.stem, "no focus: frontmatter and no ## Focus section")
+    return focus
+
+
+def brief_claim_holder(brief_id: str) -> tuple[Path, str | None, str | None] | None:
+    """Resolve `brief_id` and report who holds it, if anyone.
+
+    Returns `None` when the id resolves in neither `queue/` nor `picked/`;
+    otherwise `(path, claimed_by, claimed_at)`, where both fields are `None`
+    for a `queue/` brief and the frontmatter `claimed-by`/`claimed-at` for a
+    `picked/` one. A `status: done` brief still in `picked/` reports as owned
+    too -- anything under `picked/` is somebody's, not the caller's.
+    """
+    path = _resolve_brief_path(brief_id)
+    if path is None:
+        return None
+    if path.parent != picked_dir():
+        return path, None, None
+    fm = read_frontmatter(path)
+    claimed_by = fm.get("claimed-by")
+    claimed_at = fm.get("claimed-at")
+    # PyYAML parses an unquoted ISO-8601 `claimed-at:` into a `datetime`;
+    # `.isoformat()` restores the stamp `claim()` wrote.
+    if hasattr(claimed_at, "isoformat"):
+        claimed_at = claimed_at.isoformat()
+    return (
+        path,
+        str(claimed_by) if claimed_by is not None else None,
+        str(claimed_at) if claimed_at is not None else None,
+    )
 
 
 def _brief_created(path: Path) -> str:
@@ -2000,6 +2074,24 @@ def _resolve_brief_path(identifier: str) -> Path | None:
     return None
 
 
+def _owned_error(brief_id: str, base: dict) -> dict | None:
+    """`status: error` entry naming the owner when `brief_id` sits in `picked/`
+    (design D4); `None` when the brief is unowned. Appending a triage note to a
+    brief another claimant holds would race their edits."""
+    holder = brief_claim_holder(brief_id)
+    if holder is None:
+        return None
+    path, claimed_by, claimed_at = holder
+    if path.parent != picked_dir():
+        return None
+    return {
+        **base,
+        "status": "error",
+        "path": str(path),
+        "error": f"brief owned by {claimed_by or '?'} (claimed-at {claimed_at or '?'})",
+    }
+
+
 def _apply_close(v: Verdict) -> dict:
     """`stale-close`/`duplicate-of`: `claim()` then `done(..., note=evidence)`.
 
@@ -2297,6 +2389,9 @@ def _apply_needs_update(
                 v, path, run_date, agent=agent, repos_root=repos_root
             )
         return _apply_needs_update_judgment(v, path)
+    owned = _owned_error(v.brief_id, base)
+    if owned is not None:
+        return owned
     try:
         content = path.read_text(encoding="utf-8")
         path.write_text(
@@ -2334,6 +2429,9 @@ def _apply_keep(v: Verdict, run_date: str) -> dict:
             "path": None,
             "error": "brief not found in queue/ or picked/",
         }
+    owned = _owned_error(v.brief_id, base)
+    if owned is not None:
+        return owned
     next_count = consecutive_keep_count(path) + 1
     try:
         content = path.read_text(encoding="utf-8")
