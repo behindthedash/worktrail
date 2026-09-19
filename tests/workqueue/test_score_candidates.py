@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from worktrail.router.cluster_detect import MIN_FOCUS_TOKENS
 from worktrail.workqueue import score_candidates as sc
 
 # ---------------------------------------------------------------------------
@@ -716,6 +717,97 @@ class TestBatchModeIdentifierOverlap(ScoreCandidatesTestBase):
         )
 
 
+class TestShortFocusFloor(unittest.TestCase):
+    """The overlap coefficient divides by the SMALLER token set, so a thin
+    focus text is a near-subset of any longer brief. Both scoring sites route
+    FOCUS text through cluster_detect's `_focus_overlap`, which abstains below
+    `MIN_FOCUS_TOKENS`; BODY text keeps the raw coefficient."""
+
+    REPO = "/home/user/projects/myapp"
+
+    # 5 tokens, the live example from the brief: it scored 0.60 against five
+    # unrelated briefs in tests/fixtures/classifier_corpus.json.
+    THIN_FOCUS = "canonical checkout drift for the-repo"
+    LONG_FOCUS = (
+        "canonical checkout drift detection never fires because the sweep reads "
+        "the working tree instead of the origin ref, so every repo reports clean"
+    )
+    UNRELATED_LONG = (
+        "the nightly release notes job appends a duplicate section when two "
+        "pull requests merge inside the same minute window on the base branch"
+    )
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.queue = self.base / "queue"
+        self.picked = self.base / "picked"
+        self.queue.mkdir()
+        self.picked.mkdir()
+        self.addCleanup(self._tmp.cleanup)
+
+    def _write(self, name: str, focus_text: str) -> Path:
+        p = self.queue / name
+        p.write_text(
+            f"---\nfocus: |-\n  {focus_text}\nrepo: {self.REPO}\nstatus: queued\n---\n",
+            encoding="utf-8",
+        )
+        return p
+
+    def test_thin_focus_is_a_near_subset_of_an_unrelated_long_brief(self):
+        """Premise check: without the floor this pair scores well above the
+        batch threshold on shared boilerplate alone."""
+        thin = sc._tokenize(self.THIN_FOCUS)
+        long = sc._tokenize(self.UNRELATED_LONG + " canonical checkout drift repo")
+        self.assertGreaterEqual(sc._overlap_coefficient(thin, long), 0.45)
+        self.assertLess(len(thin), MIN_FOCUS_TOKENS)
+
+    def test_thin_focus_never_batches_with_an_unrelated_brief(self):
+        primary = self._write("20260919-140000-thin.md", self.THIN_FOCUS)
+        self._write(
+            "20260919-140100-other.md",
+            self.UNRELATED_LONG + " canonical checkout drift repo",
+        )
+
+        result = sc.batch_candidates(primary, self.base)
+
+        self.assertEqual([c["id"] for c in result["batch"]], [])
+
+    def test_two_long_focus_texts_still_match_on_focus(self):
+        """The floor abstains on thin text; it must not suppress real matches."""
+        primary = self._write("20260919-140000-a.md", self.LONG_FOCUS)
+        self._write("20260919-140100-b.md", self.LONG_FOCUS)
+
+        result = sc.batch_candidates(primary, self.base)
+
+        self.assertIn("20260919-140100-b", [c["id"] for c in result["batch"]])
+
+    def test_thin_focus_still_reachable_by_a_structural_signal(self):
+        """Only the "these two read alike" signal abstains. A `related` link is
+        a structural signal and still batches a thin brief."""
+        primary = self.queue / "20260919-140000-thin.md"
+        primary.write_text(
+            f"---\nfocus: |-\n  {self.THIN_FOCUS}\nrepo: {self.REPO}\n"
+            "status: queued\nrelated:\n  - 20260919-140100-other\n---\n",
+            encoding="utf-8",
+        )
+        self._write("20260919-140100-other.md", self.UNRELATED_LONG)
+
+        result = sc.batch_candidates(primary, self.base)
+
+        entry = next(c for c in result["batch"] if c["id"] == "20260919-140100-other")
+        self.assertEqual(entry["reason"], "related-link")
+
+    def test_body_overlap_keeps_the_raw_coefficient(self):
+        """Body text is always long, so it is scored unfloored -- a thin-focus
+        brief whose BODY genuinely overlaps is still scored on that body."""
+        short_body = sc._tokenize("cron path")
+        long_body = sc._tokenize(
+            "the cron entry points at a path that no longer exists on this host"
+        )
+        self.assertGreater(sc._overlap_coefficient(short_body, long_body), 0.0)
+
+
 class TestReadBriefYamlParsing(unittest.TestCase):
     """Coverage for _read_brief's frontmatter parsing (delegated to the
     shared, PyYAML-backed worktrail.shared.brief_frontmatter parser since
@@ -830,7 +922,7 @@ class TestPrecheckDuplicate(ScoreCandidatesTestBase):
     REPO = "/home/user/projects/myapp"
 
     def test_finds_high_confidence_same_repo_match(self):
-        focus = "handoff capture dedup gap durable artifact overlap score candidates"
+        focus = "handoff capture dedup gap where the durable artifact overlap scorer returns no candidate for a brief identical to one already queued"
         self.write_queue(
             "20260830-090000-existing.md",
             focus=focus,
@@ -848,12 +940,16 @@ class TestPrecheckDuplicate(ScoreCandidatesTestBase):
             repo=self.REPO,
         )
         match = sc.precheck_duplicate(
-            "handoff capture dedup gap overlap scoring", "", self.REPO, self.base
+            "handoff capture dedup gap where the overlap scorer never ranks a genuine "
+            "duplicate above the minimum threshold",
+            "",
+            self.REPO,
+            self.base,
         )
         self.assertIsNone(match)
 
     def test_returns_none_for_cross_repo_match(self):
-        focus = "handoff capture dedup gap durable artifact overlap score candidates"
+        focus = "handoff capture dedup gap where the durable artifact overlap scorer returns no candidate for a brief identical to one already queued"
         self.write_queue(
             "20260830-090000-existing.md", focus=focus, repo="/home/user/projects/other"
         )
@@ -863,7 +959,7 @@ class TestPrecheckDuplicate(ScoreCandidatesTestBase):
     def test_returns_none_for_null_repo(self):
         """Matches score_candidates()'s own behavior: a null-repo new brief
         can never satisfy same_repo, so precheck never matches either."""
-        focus = "handoff capture dedup gap durable artifact overlap score candidates"
+        focus = "handoff capture dedup gap where the durable artifact overlap scorer returns no candidate for a brief identical to one already queued"
         self.write_queue("20260830-090000-existing.md", focus=focus, repo="null")
         match = sc.precheck_duplicate(focus, "", None, self.base)
         self.assertIsNone(match)
@@ -872,7 +968,7 @@ class TestPrecheckDuplicate(ScoreCandidatesTestBase):
         """precheck_duplicate() run before writing agrees with score_candidates()
         run after writing the identical content -- the refactor that shares
         _score_against_queue() between them must not change either's answer."""
-        focus = "handoff capture dedup gap durable artifact overlap score candidates"
+        focus = "handoff capture dedup gap where the durable artifact overlap scorer returns no candidate for a brief identical to one already queued"
         body = "\n## Discovery context\n\ncreate_handoff.py and work_queue.py\n"
         self.write_queue("20260830-090000-existing.md", focus=focus, repo=self.REPO)
 

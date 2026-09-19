@@ -15,6 +15,12 @@ triggers:
     - duplicate-of
     - repo_inference
     - infer_repo
+    - score_candidates
+    - batch_candidates
+    - precheck_duplicate
+    - _focus_overlap
+    - MIN_FOCUS_TOKENS
+    - BATCH_MIN
 ---
 
 You are working on **worktrail's work-queue handoff system**: the atomic claim/done/release
@@ -155,6 +161,27 @@ move-a-brief mechanism never diverges between callers.
   — instead of using it directly as `subprocess.run()`'s `cwd`, which previously raised
   `FileNotFoundError` and aborted the *entire* `evaluate` run, including every other group that
   would otherwise have evaluated fine.
+- **FOCUS text is scored through `cluster_detect._focus_overlap`; BODY text keeps the raw
+  coefficient.** The overlap coefficient divides by the SMALLER token set, so a thin focus text
+  is trivially a near-subset of any longer brief. Both of `score_candidates.py`'s scoring sites
+  (`_score_against_queue`, `batch_candidates`) compare focus through `router/cluster_detect.py`'s
+  `_focus_overlap`, which returns 0.0 when either side carries fewer than `MIN_FOCUS_TOKENS`
+  (10) distinct tokens; body keeps the local `_overlap_coefficient`, since a brief body is always
+  long enough for the denominator to mean something. The floor is imported rather than
+  re-derived: this module's effective focus threshold is LOWER than cluster_detect's — with
+  same-repo mandatory, `focus * 0.7 + 0.20 >= BATCH_MIN` means focus >= 0.357 against
+  cluster_detect's 0.45 — so a weaker floor here could never be justified, and one floor with
+  one rationale can't drift apart from a second. Only the "these two read alike" signal abstains:
+  a structural signal such as a `related` link still batches a thin brief.
+- **A durable-artifact label under two distinct tokens is skipped, not scored.**
+  `create_handoff._scan_durable_artifact_overlaps` otherwise keeps the raw coefficient —
+  `MIN_FOCUS_TOKENS` guards brief-to-brief comparisons, while this is a containment test ("what
+  share of the label's words does the focus mention") against a label that is short by nature.
+  A SINGLE-token label is the degenerate case: its coefficient can only be 1.0 or 0.0, so it is
+  a bare word match carrying no evidence of overlap, and it always sorts to the top of the
+  advisory list. Observed live 2026-09-19: the generic `docs/specs/` directories `epics` and
+  `research` each warned at score 1.00 against briefs that merely used the word. Two tokens is
+  the minimum at which the score can distinguish a partial match from a full one.
 
 ## Critical files
 - `workqueue/work_queue.py` — the single implementation every consumer shares; do not reimplement
@@ -169,7 +196,14 @@ move-a-brief mechanism never diverges between callers.
   resolves each group's `repo:` via `_resolve_repo_dir()` before using it as the evaluator `cwd`,
   skipping (not crashing on) a group whose repo doesn't resolve
 - `workqueue/create_handoff.py` (via `worktrail-handoff`) — brief creation entrypoint; delegates
-  repo inference to `repo_inference.infer_repo()` with a prefix-match fallback
+  repo inference to `repo_inference.infer_repo()` with a prefix-match fallback.
+  `_scan_durable_artifact_overlaps` is the capture-time advisory scan over spec slugs, OpenSpec
+  changes and open PRs; it shares `cluster_detect`'s tokenizer and `OVERLAP_THRESHOLD` so
+  capture-time warnings and consume-time cluster detection agree on what "overlapping" means,
+  and skips labels under two distinct tokens
+- `workqueue/score_candidates.py` — brief-to-brief scoring (`_score_against_queue`,
+  `batch_candidates`, `precheck_duplicate`); focus comparisons go through
+  `cluster_detect._focus_overlap`, body comparisons through the local raw `_overlap_coefficient`
 - `workqueue/repo_inference.py` — `InferenceResult(repo, rule, candidates)` + `infer_repo()`; the
   deterministic focus-text → repo resolver for briefs with no `repo:` frontmatter
 
@@ -189,6 +223,9 @@ move-a-brief mechanism never diverges between callers.
   `cmd_evaluate()` — always resolve it through `_resolve_repo_dir(repo, repos_root)` first and
   skip the group if it doesn't resolve, so one bad `repo:` value can't abort every other group's
   evaluation.
+- Never score brief-to-brief focus text with the raw `_overlap_coefficient`, and never re-derive
+  the token floor locally — import `_focus_overlap`/`MIN_FOCUS_TOKENS` from
+  `router/cluster_detect.py` so the two floors stay one calibrated constant.
 
 ---
-**Last Updated:** 2026-09-18
+**Last Updated:** 2026-09-19

@@ -145,16 +145,18 @@ def test_create_handoff_auto_links_high_confidence_candidate(tmp_path: Path):
     (queue / "20260101-000001-auth.md").write_text(
         "---\n"
         "id: 20260101-000001-auth\n"
-        "focus: Fix broken auth dashboard access\n"
+        "focus: Fix broken auth dashboard access where operators with a valid session still land on an empty permissions page after the redirect\n"
         "repo: /tmp/example\n"
         "status: queued\n"
         "---\n\n"
-        "## Focus\n\nFix broken auth dashboard access\n",
+        "## Focus\n\nFix broken auth dashboard access where operators with a valid session still land on an empty permissions page after the redirect\n",
         encoding="utf-8",
     )
 
     result = create_handoff(
-        "Fix broken auth dashboard access",
+        (
+            "Fix broken auth dashboard access where operators with a valid session still land on an empty permissions page after the redirect"
+        ),
         queue_base=tmp_path,
         repo="/tmp/example",
     )
@@ -553,6 +555,42 @@ def test_create_handoff_warns_on_spec_slug_overlap(tmp_path: Path):
     assert read_frontmatter(path)["repo"] == str(repo.resolve())
 
 
+def test_create_handoff_ignores_single_token_spec_slug_labels(tmp_path: Path):
+    """A one-word label's overlap coefficient can only be 1.0 or 0.0, so it is
+    a bare word match with no overlap evidence -- and it sorts to the top of
+    the advisory list. Observed live on 2026-09-19: the generic `docs/specs/`
+    directories `epics` and `research` each warned at score 1.00 against
+    briefs that merely used the word."""
+    repo = tmp_path / "repo"
+    (repo / "docs" / "specs" / "epics").mkdir(parents=True)
+    (repo / "docs" / "specs" / "research").mkdir(parents=True)
+
+    result = create_handoff(
+        "Decompose the epics backlog and fold the research spike findings back in",
+        queue_base=tmp_path / "queue-base",
+        repo=str(repo),
+    )
+
+    assert result["overlap_warnings"] == []
+    assert Path(result["path"]).is_file()
+
+
+def test_create_handoff_still_warns_on_two_token_spec_slug_label(tmp_path: Path):
+    """The floor is exactly one token: two is enough for the score to tell a
+    partial match from a full one, so a genuinely short slug still warns."""
+    repo = tmp_path / "repo"
+    (repo / "docs" / "specs" / "drain-digest").mkdir(parents=True)
+
+    result = create_handoff(
+        "The nightly drain digest never reaches the operator after a deploy",
+        queue_base=tmp_path / "queue-base",
+        repo=str(repo),
+    )
+
+    warnings = result["overlap_warnings"]
+    assert [w["label"] for w in warnings] == ["drain-digest"]
+
+
 def test_create_handoff_warns_on_open_pr_overlap_with_stubbed_gh(
     tmp_path: Path, monkeypatch
 ):
@@ -726,13 +764,17 @@ def test_cli_human_mode_reports_overlap_warning_to_stderr_without_blocking(
 def test_check_duplicate_finds_pre_write_match(tmp_path: Path):
     repo = "/tmp/example"
     created = create_handoff(
-        "Handoff capture dedup gap durable artifact overlap score candidates",
+        (
+            "Handoff capture dedup gap where the durable artifact overlap scorer returns no candidate for a brief identical to one already queued"
+        ),
         queue_base=tmp_path,
         repo=repo,
     )
 
     result = check_duplicate(
-        "Handoff capture dedup gap durable artifact overlap score candidates",
+        (
+            "Handoff capture dedup gap where the durable artifact overlap scorer returns no candidate for a brief identical to one already queued"
+        ),
         queue_base=tmp_path,
         repo=repo,
     )
