@@ -1594,7 +1594,14 @@ class SingleBriefTriageTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.brief = Path(self.tmp.name) / "20260101-000000-example.md"
+        # The single-brief gate re-resolves the brief by id against
+        # `$WORK_QUEUE_DIR/{queue,picked}` (design D2), so the fixture brief
+        # must live in a real `queue/`.
+        os.environ["WORK_QUEUE_DIR"] = self.tmp.name
+        self.addCleanup(os.environ.pop, "WORK_QUEUE_DIR", None)
+        queue = Path(self.tmp.name) / "queue"
+        queue.mkdir()
+        self.brief = queue / "20260101-000000-example.md"
         self.brief.write_text(
             "---\nfocus: example brief\nstatus: queued\n---\n\nBody.\n",
             encoding="utf-8",
@@ -2241,3 +2248,194 @@ class SingleBriefTriageCliTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SingleBriefClaimGuardTests(unittest.TestCase):
+    """`--evaluate-brief-triage` / `--apply-brief-triage[-file]` re-resolve the
+    brief by id and refuse one owned by another claimant, an unknown id, or a
+    brief with nothing to evaluate (designs D2/D3/D5) -- printing `null`, a
+    `blocked_*` line on stderr, and exiting 2 without spawning an evaluator or
+    touching the brief."""
+
+    BRIEF_ID = "20260101-000000-example"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name)
+        os.environ["WORK_QUEUE_DIR"] = str(self.base)
+        self.addCleanup(os.environ.pop, "WORK_QUEUE_DIR", None)
+        self.queue = self.base / "queue"
+        self.queue.mkdir()
+        self.picked = self.base / "picked"
+        self.picked.mkdir()
+        self.queue_path = self.queue / f"{self.BRIEF_ID}.md"
+        self.queue_path.write_text(
+            "---\nfocus: example brief\nstatus: queued\n---\n\nBody.\n",
+            encoding="utf-8",
+        )
+
+    def _move_to_picked(self) -> Path:
+        picked_path = self.picked / f"{self.BRIEF_ID}.md"
+        picked_path.write_text(
+            "---\nfocus: example brief\nstatus: picked\n"
+            "claimed-by: queue-triage\nclaimed-at: 2026-09-18T10:00:00\n"
+            "---\n\nBody.\n",
+            encoding="utf-8",
+        )
+        self.queue_path.unlink()
+        return picked_path
+
+    def _run(self, argv):
+        stdout, stderr = StringIO(), StringIO()
+        with (
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+            patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn,
+        ):
+            rc = skill_dispatch.main(argv)
+        return rc, stdout.getvalue(), stderr.getvalue(), spawn
+
+    def _verdict_file(self) -> Path:
+        path = self.base / "verdict.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "brief_id": self.BRIEF_ID,
+                    "verdict": "keep",
+                    "duplicate_of": None,
+                    "evidence": "still relevant",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    def test_evaluate_stale_queue_path_of_picked_brief_is_blocked_as_owned(self):
+        picked_path = self._move_to_picked()
+        before = picked_path.read_bytes()
+
+        rc, out, err, spawn = self._run(
+            ["--evaluate-brief-triage", str(self.queue_path)]
+        )
+
+        self.assertEqual(rc, 2)
+        self.assertIsNone(json.loads(out))
+        self.assertIn(
+            f"blocked_brief_owned: {self.BRIEF_ID} owned by queue-triage "
+            "(claimed-at 2026-09-18T10:00:00)",
+            err,
+        )
+        spawn.assert_not_called()
+        self.assertEqual(picked_path.read_bytes(), before)
+
+    def test_apply_keep_verdict_after_claim_is_blocked_with_no_note(self):
+        verdict_file = self._verdict_file()
+        picked_path = self._move_to_picked()
+        before = picked_path.read_bytes()
+
+        rc, out, err, spawn = self._run(
+            ["--apply-brief-triage-file", str(verdict_file), "--confirm"]
+        )
+
+        self.assertEqual(rc, 2)
+        self.assertIsNone(json.loads(out))
+        self.assertIn(
+            f"blocked_brief_owned: {self.BRIEF_ID} owned by queue-triage", err
+        )
+        spawn.assert_not_called()
+        self.assertEqual(picked_path.read_bytes(), before)
+        self.assertNotIn("verdict: keep", picked_path.read_text(encoding="utf-8"))
+
+    def test_apply_inline_keep_verdict_after_claim_is_blocked_too(self):
+        picked_path = self._move_to_picked()
+        payload = json.dumps(
+            {
+                "brief_id": self.BRIEF_ID,
+                "verdict": "keep",
+                "duplicate_of": None,
+                "evidence": "still relevant",
+            }
+        )
+
+        rc, out, err, _spawn = self._run(["--apply-brief-triage", payload, "--confirm"])
+
+        self.assertEqual(rc, 2)
+        self.assertIsNone(json.loads(out))
+        self.assertIn("blocked_brief_owned:", err)
+        self.assertNotIn("verdict: keep", picked_path.read_text(encoding="utf-8"))
+
+    def test_evaluate_unknown_id_is_blocked_as_missing(self):
+        rc, out, err, spawn = self._run(
+            ["--evaluate-brief-triage", str(self.queue / "20260101-000000-nope.md")]
+        )
+
+        self.assertEqual(rc, 2)
+        self.assertIsNone(json.loads(out))
+        self.assertIn("blocked_brief_missing: 20260101-000000-nope", err)
+        spawn.assert_not_called()
+
+    def test_apply_unknown_id_is_blocked_as_missing(self):
+        self.queue_path.unlink()
+        verdict_file = self._verdict_file()
+
+        rc, out, err, _spawn = self._run(
+            ["--apply-brief-triage-file", str(verdict_file), "--confirm"]
+        )
+
+        self.assertEqual(rc, 2)
+        self.assertIsNone(json.loads(out))
+        self.assertIn(f"blocked_brief_missing: {self.BRIEF_ID}", err)
+
+    def test_evaluate_brief_without_focus_is_blocked_as_empty(self):
+        self.queue_path.write_text(
+            "---\nstatus: queued\n---\n\nBody with no focus section.\n",
+            encoding="utf-8",
+        )
+
+        rc, out, err, spawn = self._run(
+            ["--evaluate-brief-triage", str(self.queue_path)]
+        )
+
+        self.assertEqual(rc, 2)
+        self.assertIsNone(json.loads(out))
+        self.assertIn(
+            f"blocked_empty_brief: {self.BRIEF_ID} "
+            "(no focus: frontmatter and no ## Focus section)",
+            err,
+        )
+        spawn.assert_not_called()
+
+    def test_unclaimed_queue_brief_still_evaluates(self):
+        from worktrail.workqueue.queue_triage import Verdict
+
+        verdict = Verdict(
+            brief_id=self.BRIEF_ID,
+            verdict="keep",
+            duplicate_of=None,
+            evidence="still relevant",
+        )
+        stdout, stderr = StringIO(), StringIO()
+        with (
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+            patch(
+                "worktrail.workqueue.queue_triage.evaluate_briefs",
+                return_value=[verdict],
+            ) as mock_evaluate_briefs,
+        ):
+            rc = skill_dispatch.main(
+                [
+                    "--evaluate-brief-triage",
+                    str(self.queue_path),
+                    "--triage-repo",
+                    str(self.base),
+                ]
+            )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(stdout.getvalue())["verdict"], "keep")
+        self.assertNotIn("blocked_", stderr.getvalue())
+        mock_evaluate_briefs.assert_called_once()
+        # The evaluator is handed the re-resolved on-disk path (design D2).
+        self.assertEqual(mock_evaluate_briefs.call_args.args[1], [self.queue_path])

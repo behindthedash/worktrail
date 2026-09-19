@@ -219,6 +219,26 @@ def brief_dispatch_mode(frontmatter: dict) -> str:
     return "claim" if brief_kind(frontmatter) == "execution" else "triage"
 
 
+def _guarded_brief_path(brief_id: str) -> Path:
+    """Resolve `brief_id` for an interactive single-brief pickup (design D2).
+
+    Raises `queue_triage.BriefMissing` when the id resolves in neither
+    `queue/` nor `picked/`, and `queue_triage.BriefOwned` when it sits in
+    `picked/` under another claimant -- an interactive pickup never evaluates
+    or applies against a brief somebody else holds. Otherwise returns the
+    re-resolved on-disk path.
+    """
+    from ..workqueue.queue_triage import BriefMissing, BriefOwned, brief_claim_holder
+
+    holder = brief_claim_holder(brief_id)
+    if holder is None:
+        raise BriefMissing(brief_id)
+    path, claimed_by, claimed_at = holder
+    if claimed_by is not None:
+        raise BriefOwned(brief_id, claimed_by, claimed_at)
+    return path
+
+
 def evaluate_single_brief(
     brief_path: str | Path,
     *,
@@ -278,10 +298,10 @@ def evaluate_single_brief(
         PendingDecision,
         Verdict,
         _awaiting_decision_info,
-        _brief_focus,
         _worktrail_repo_root,
         _write_repo_inference,
         apply_wip_cap_preview,
+        brief_focus_strict,
         consume_answered_guidance,
         consume_repo_decision,
         escalate,
@@ -291,7 +311,13 @@ def evaluate_single_brief(
         repo_inference,
     )
 
-    path = Path(brief_path)
+    # Design D2: the caller's `brief_path` may be stale (a `queue/` path for a
+    # brief another claimant has since moved to `picked/`), so the brief is
+    # re-resolved by id and the resolved path used from here on.
+    path = _guarded_brief_path(Path(brief_path).stem)
+    # Design D3: a brief with nothing to evaluate fails loud instead of
+    # handing the evaluator an empty focus.
+    focus = brief_focus_strict(path)
     resolved_repo = repo.strip() if isinstance(repo, str) and repo.strip() else None
     decision_outcome = consume_repo_decision(path, repos_root)
     if decision_outcome is not None:
@@ -300,7 +326,7 @@ def evaluate_single_brief(
     else:
         consume_answered_guidance(path)
     if resolved_repo is None:
-        result = repo_inference.infer_repo(_brief_focus(path), repos_root)
+        result = repo_inference.infer_repo(focus, repos_root)
         if result.repo:
             _write_repo_inference(path, result)
             resolved_repo = result.repo
@@ -359,6 +385,9 @@ def apply_single_brief_verdict(
     """
     from ..workqueue.queue_triage import apply_verdicts, resolve_duplicate_targets
 
+    # Same D2 ownership check as `evaluate_single_brief()`: a verdict produced
+    # before another claimant took the brief must not be applied over them.
+    _guarded_brief_path(verdict.brief_id)
     [resolved] = resolve_duplicate_targets([verdict])
     [entry] = apply_verdicts(
         [resolved], confirm=confirm, agent=agent, repos_root=repos_root
@@ -960,6 +989,21 @@ def _run_command_with_sigterm_forwarding(
         signal.signal(signal.SIGTERM, previous_sigterm_handler)
 
 
+def _brief_guard_line(exc: Exception) -> str:
+    """The `blocked_*` stderr line for a D5 single-brief guard exception."""
+    from ..workqueue.queue_triage import BriefMissing, BriefOwned, EmptyBrief
+
+    if isinstance(exc, BriefOwned):
+        return (
+            f"blocked_brief_owned: {exc.brief_id} owned by {exc.claimed_by or '?'} "
+            f"(claimed-at {exc.claimed_at or '?'})"
+        )
+    if isinstance(exc, BriefMissing):
+        return f"blocked_brief_missing: {exc.args[0] if exc.args else '?'}"
+    assert isinstance(exc, EmptyBrief)
+    return f"blocked_empty_brief: {exc.brief_id} ({exc.reason})"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--agent", choices=SUPPORTED_AGENTS)
@@ -1123,7 +1167,13 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(envelope))
         return 0
     if parsed.evaluate_brief_triage is not None:
-        from ..workqueue.queue_triage import EvaluatorUnavailable, PendingDecision
+        from ..workqueue.queue_triage import (
+            BriefMissing,
+            BriefOwned,
+            EmptyBrief,
+            EvaluatorUnavailable,
+            PendingDecision,
+        )
 
         try:
             verdict = evaluate_single_brief(
@@ -1132,6 +1182,12 @@ def main(argv: list[str] | None = None) -> int:
                 agent=parsed.triage_agent,
                 repos_root=parsed.triage_repos_root,
             )
+        except (BriefOwned, BriefMissing, EmptyBrief) as exc:
+            # Owned by another claimant, unknown id, or nothing to evaluate
+            # (design D5) -- no model looked at the brief.
+            print(json.dumps(None))
+            print(_brief_guard_line(exc), file=sys.stderr)
+            return 2
         except PendingDecision as exc:
             # The brief still waits on a human -- no model may look at it yet.
             print(json.dumps(None))
@@ -1156,7 +1212,12 @@ def main(argv: list[str] | None = None) -> int:
         parsed.apply_brief_triage is not None
         or parsed.apply_brief_triage_file is not None
     ):
-        from ..workqueue.queue_triage import Verdict
+        from ..workqueue.queue_triage import (
+            BriefMissing,
+            BriefOwned,
+            EmptyBrief,
+            Verdict,
+        )
 
         if parsed.apply_brief_triage_file is not None:
             verdict_path = parsed.apply_brief_triage_file
@@ -1202,12 +1263,17 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
         verdict = Verdict(**payload)
-        entry = apply_single_brief_verdict(
-            verdict,
-            confirm=parsed.confirm,
-            agent=parsed.triage_agent,
-            repos_root=parsed.triage_repos_root,
-        )
+        try:
+            entry = apply_single_brief_verdict(
+                verdict,
+                confirm=parsed.confirm,
+                agent=parsed.triage_agent,
+                repos_root=parsed.triage_repos_root,
+            )
+        except (BriefOwned, BriefMissing, EmptyBrief) as exc:
+            print(json.dumps(None))
+            print(_brief_guard_line(exc), file=sys.stderr)
+            return 2
         print(json.dumps(entry))
         return 1 if entry.get("status") == "error" else 0
     try:
