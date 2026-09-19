@@ -853,9 +853,18 @@ def _watch_ci(
     ledger watcher stays fresh across a watch longer than one heartbeat
     window (each `gh pr checks --watch` re-issue may run `watch_timeout_s`).
     """
+    settled_merged = {
+        "settled": True,
+        "failing_checks": [],
+        "log_excerpt": "",
+        "budget_exhausted": False,
+    }
+
     for _ in range(_NO_CHECKS_GRACE_ATTEMPTS):
         if heartbeat:
             heartbeat()
+        if _pr_is_merged(repo, pr_number, runner, base_slug):
+            return settled_merged
         registered = _checks_registered(repo, pr_number, runner, base_slug)
         if registered is not False:
             break
@@ -872,6 +881,19 @@ def _watch_ci(
     for _ in range(WATCH_REISSUE_MAX + 1):
         if heartbeat:
             heartbeat()
+        # A MERGED PR is terminal regardless of what its check-runs still
+        # report. Auto-merge can land a PR seconds after creation while a
+        # stale check-run stays `pending` forever, and `gh pr checks --watch
+        # --fail-fast` never returns on a pending check -- so without this
+        # the loop burns every re-issue of the watch budget (15+ min on the
+        # defaults) waiting on a merge that already happened. Observed on
+        # sync PR #1272 (behindthedash/worktrail, 2026-09-19): merged 22s
+        # after creation, `auto-merge` check-run pending indefinitely, run
+        # go-20260918-212932 killed by hand after 15 min. Re-checked on every
+        # re-poll, not just at entry, because the merge routinely lands
+        # *during* a watch.
+        if _pr_is_merged(repo, pr_number, runner, base_slug):
+            return settled_merged
         watch = _gh(
             repo,
             runner,

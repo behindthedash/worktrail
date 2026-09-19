@@ -50,8 +50,39 @@ Sleeper = Callable[[float], None]
 _QUERY_ERROR_MARKER = "gh api failed"
 
 
+def push_remote_name(repo: Path, runner: Runner = subprocess.run) -> str:
+    """The remote this checkout actually pushes to: `remote.pushDefault` when
+    configured, else `origin`.
+
+    Mirrors `router/land_pr.py`'s `_push_target()` and
+    `workqueue/queue_triage.py`'s `_push_target()`, which already honor this
+    knob. Kept here as the single resolution point for the *read* side (the
+    `gh api` queries below) so the gate never inspects a different repository
+    than the one `land_pr` pushes the branch and opens the PR against.
+    """
+    result = runner(
+        ["git", "config", "--get", "remote.pushDefault"],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return "origin"
+    return (result.stdout or "").strip() or "origin"
+
+
 def owner_repo_from_git(repo: Path, runner: Runner = subprocess.run) -> str | None:
-    """`owner/repo` parsed from the `origin` remote, or None if unresolvable.
+    """`owner/repo` parsed from the checkout's *push* remote, or None if
+    unresolvable.
+
+    Resolves the remote through `push_remote_name()` (`remote.pushDefault`,
+    else `origin`) rather than hard-coding `origin`. On a fork layout whose
+    `origin` is the read-only upstream -- the standard `remote.pushDefault`
+    shape -- reading `origin` answers questions about the *upstream* repo
+    while `land_pr` pushes the branch and opens the PR on the fork. That
+    mismatch is what put `go:no-automerge` on behindthedash/aspens PR #26
+    (2026-09-18): the gate read aspenkit/aspens's `allow_auto_merge=false`
+    and required checks for a PR that was never going to be opened there.
 
     Handles both the HTTPS form (`https://github.com/owner/repo.git`) and the
     SCP-like SSH form (`git@github.com:owner/repo.git`) -- the latter has no
@@ -60,12 +91,24 @@ def owner_repo_from_git(repo: Path, runner: Runner = subprocess.run) -> str | No
     fails to strip the host for SSH remotes; splitting on bare "github.com"
     and stripping both separators handles either form.
     """
+    remote = push_remote_name(repo, runner)
     result = runner(
-        ["git", "remote", "get-url", "origin"],
+        ["git", "remote", "get-url", remote],
         cwd=str(repo),
         capture_output=True,
         text=True,
     )
+    if result.returncode != 0 and remote != "origin":
+        # A configured `remote.pushDefault` naming a remote this checkout does
+        # not have is a misconfiguration, not a reason to answer about a
+        # different repository: fall back to `origin` so behavior matches the
+        # pre-pushDefault contract instead of returning None.
+        result = runner(
+            ["git", "remote", "get-url", "origin"],
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
+        )
     if result.returncode != 0:
         return None
     url = result.stdout.strip().rstrip("/").removesuffix(".git")
@@ -157,7 +200,10 @@ def required_checks_gate(
     """
     owner_repo = owner_repo_from_git(repo, runner)
     if owner_repo is None:
-        return False, "could not resolve a GitHub owner/repo from the git origin remote"
+        return False, (
+            "could not resolve a GitHub owner/repo from the git push remote "
+            "(remote.pushDefault, else origin)"
+        )
 
     contexts = None
     for attempt in range(retries):

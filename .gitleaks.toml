@@ -1,0 +1,31 @@
+# gitleaks configuration for worktrail.
+#
+# Extends gitleaks' built-in ruleset (never replaces it) and adds the single
+# narrowest allowlist this repo needs. Both the per-PR `gitleaks-pr-diff`
+# required check and the one-time `gitleaks-full-history` job in
+# .github/workflows/gitleaks.yml pick this file up automatically from the
+# `--source` directory.
+#
+# Allowlist discipline: allowlist a *value*, never a path. A `paths` entry in
+# gitleaks' global `[allowlist]` is OR'd with `regexes`, so adding one would
+# silently exempt every future secret in that file too -- exactly the blind
+# spot a required secrets check exists to close. Each entry below names the
+# literal synthetic string and the test that owns it.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Synthetic credential fixtures asserted on by the test suite"
+# `regexTarget` defaults to "secret", so each entry matches the captured secret
+# value itself (verified against gitleaks 8.21.2 -- the pinned GITLEAKS_VERSION
+# in .github/workflows/gitleaks.yml), not the whole matched line.
+regexes = [
+  # tests/router/test_run_record.py::test_refuses_to_record_credentials asserts
+  # `run_record append` REFUSES a credential-shaped value, so the fixture has to
+  # look like one. Flagged as generic-api-key (entropy 3.664498) by the one-time
+  # full-history scan (run 35425816852) in commits bf4a0fdd and 1d3e7b16.
+  # Confirmed synthetic: a 6-digit "key" that was never a real credential and is
+  # never sent anywhere -- nothing to rotate. Brief 20260918-230929.
+  '''^sk-live-123456$''',
+]

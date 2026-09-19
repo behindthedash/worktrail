@@ -245,6 +245,8 @@ def test_ensure_pr_risk_label_returns_none_and_warns_when_owner_repo_unresolvabl
     def fake_run(cmd, **kwargs):
         if cmd[:3] == ["gh", "pr", "view"]:
             return _FakeCompleted(0, json.dumps({"labels": []}))
+        if cmd[:3] == ["git", "config", "--get"]:
+            return _FakeCompleted(1, "")  # remote.pushDefault unset
         if cmd == ["git", "remote", "get-url", "origin"]:
             return _FakeCompleted(1, "")  # no origin remote to fall back to
         raise AssertionError(
@@ -313,6 +315,8 @@ def test_ensure_pr_risk_label_bare_number_with_nonexistent_repo_warns(
     def fake_run(cmd, **kwargs):
         if cmd[:3] == ["gh", "pr", "view"]:
             return _FakeCompleted(0, json.dumps({"labels": []}))
+        if cmd[:3] == ["git", "config", "--get"]:
+            return _FakeCompleted(1, "")  # remote.pushDefault unset
         if cmd == ["git", "remote", "get-url", "origin"]:
             return _FakeCompleted(128, "", "fatal: not a git repository")
         raise AssertionError(f"gh api must not run: {cmd}")
@@ -336,6 +340,8 @@ def test_ensure_pr_no_automerge_label_resolves_owner_repo_from_git_for_bare_pr_n
         calls.append(cmd)
         if cmd[:3] == ["gh", "pr", "view"]:
             return _FakeCompleted(0, json.dumps({"labels": []}))
+        if cmd[:3] == ["git", "config", "--get"]:
+            return _FakeCompleted(1, "")  # remote.pushDefault unset
         if cmd == ["git", "remote", "get-url", "origin"]:
             return _FakeCompleted(0, "https://github.com/acme/widgets.git\n")
         if cmd[:2] == ["gh", "api"]:

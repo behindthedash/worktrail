@@ -733,7 +733,14 @@ def compile_run_plan(
         if cached is not None and not allow_force_over_active_worktrees:
             from worktrail.orchestrator import worktree as _worktree
 
-            if _worktree.has_task_worktrees(repo, spec_id):
+            # Pass the spec's own task ids so the guard checks the exact
+            # `<spec_id>-<task_id>` worktree names instead of a bare
+            # `<spec_id>-` prefix -- a prefix match counts a *different*
+            # spec's worktrees whenever one spec id is a prefix of another
+            # (`001-foo` vs `001-foo-bar`) and wrongly refuses this --force.
+            if _worktree.has_task_worktrees(
+                repo, spec_id, task_ids=[t.get("id", "") for t in tasks]
+            ):
                 log(
                     f"run plan: --force refused ({fp[:12]}) -- task worktree(s) already "
                     f"exist for {spec_id} and were fanned out under the currently cached "
