@@ -276,6 +276,7 @@ def _result(raw: str, mode: str, reason: str, **fields: Any) -> dict[str, Any]:
         "brief_path": None,
         "brief_status": None,
         "brief_candidates": [],
+        "claimed_by": None,
         "decision_id": None,
         "picker_index": None,
         "free_text": None,
@@ -601,6 +602,7 @@ def _resolve_brief(
             free_text=raw if mode == "free_text" else None,
         )
 
+    from worktrail.workqueue.work_queue import _read_frontmatter
     from worktrail.workqueue.work_queue import resolve as _queue_resolve
 
     res = _queue_resolve(candidate, queue_folder)
@@ -619,6 +621,26 @@ def _resolve_brief(
             brief_status=status,
             brief_candidates=candidates,
         )
+
+    if status == "none":
+        # A claimed brief lives in picked/, not queue/. Only a clean miss is
+        # retried there -- an `ambiguous` queue/ result already names real
+        # candidates and must not be widened (design D6).
+        picked = _queue_resolve(candidate, queue_folder.parent / "picked")
+        if picked.get("status") == "match":
+            picked_path = picked["candidates"][0]
+            return _result(
+                raw,
+                "brief",
+                f"{reason} (claimed -- found in picked/)",
+                repo=repo,
+                canonical=canonical,
+                brief_id=candidate,
+                brief_path=picked_path,
+                brief_status="picked",
+                brief_candidates=picked["candidates"],
+                claimed_by=_read_frontmatter(Path(picked_path)).get("claimed-by"),
+            )
 
     if require_match:
         return _result(
