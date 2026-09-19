@@ -35,6 +35,10 @@ Signals (see `check_repo`):
     configuration, but one exists. Cosmetic drift.
   - stale-claim-no-ci: the policy's comments assert there are no CI workflows,
     but workflow files exist. Cosmetic drift.
+  - pre-pr-cmd-without-bootstrap: `pre_pr_cmd` invokes a Node dependency
+    runner (`npm`, `npx`, `vitest`, ...) but neither installs its own
+    dependencies nor has a `worktree_bootstrap_cmd` to do it. A fresh task
+    worktree has no `node_modules`, so the gate fails before it tests anything.
 
 Deliberate limits (precision is worth more than recall here — an advisory that
 cries wolf gets ignored, and then it may as well not exist):
@@ -49,6 +53,11 @@ cries wolf gets ignored, and then it may as well not exist):
     no shell command is not seen.
   - Only repos that have a `worktrail-go-policy.yaml` are considered; a repo with tests
     and no policy at all is a different (and larger) question.
+  - `pre-pr-cmd-without-bootstrap` only looks at Node runners. Python runners
+    (`pytest`, `tox`, ...) resolve imports from the editable install or
+    `PYTHONPATH`, which a fresh worktree shares with the canonical checkout, so
+    a missing bootstrap does not break them the way a missing `node_modules`
+    breaks `npm test`.
 
 Usage:
   policy_drift_selfcheck.py --repo /path/to/repo [--json]
@@ -114,6 +123,20 @@ _RUNNER_RE = re.compile(
     r"|tox"
     r"|nox"
     r")\b",
+    re.IGNORECASE,
+)
+
+# Node runners that need `node_modules` present. Unlike `_RUNNER_RE` this does
+# not require a test verb: `npm run lint` fails on a fresh worktree just as
+# `npm test` does.
+_NODE_DEP_RUNNER_RE = re.compile(
+    r"\b(?:npm|npx|yarn|pnpm|bun|vitest|jest|mocha)\b|playwright\s+test",
+    re.IGNORECASE,
+)
+
+# A pre_pr_cmd that installs its own dependencies needs no separate bootstrap.
+_SELF_INSTALL_RE = re.compile(
+    r"\b(?:npm\s+(?:ci|install|i)|yarn\s+install|pnpm\s+(?:install|i)|bun\s+install)\b",
     re.IGNORECASE,
 )
 
@@ -235,6 +258,19 @@ def _command_values(text: str) -> str:
     return "\n".join(vals)
 
 
+def _key_value(text: str, key: str) -> str | None:
+    """One top-level `key: value` line, unquoted; None if missing or null-ish."""
+    m = re.search(rf"^{key}:\s*(.+)$", text, re.MULTILINE)
+    if not m:
+        return None
+    val = m.group(1).strip()
+    if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
+        val = val[1:-1]
+    if val.strip() in ("", "null", "~"):
+        return None
+    return val
+
+
 def workflow_files(repo: Path) -> list[Path]:
     wf = repo / _WORKFLOWS_RELPATH
     if not wf.is_dir():
@@ -339,6 +375,26 @@ def check_repo(repo: Path) -> dict[str, Any]:
                     f"{len(tests)} git-tracked test file(s) run by no test runner in "
                     f"pre_pr_cmd/integrate_smoke_cmd and none in .github/workflows: "
                     f"{shown}{more}"
+                ),
+            }
+        )
+
+    pre_pr_cmd = _key_value(text, "pre_pr_cmd")
+    if (
+        pre_pr_cmd is not None
+        and pre_pr_cmd.strip() != "skip"
+        and _NODE_DEP_RUNNER_RE.search(pre_pr_cmd)
+        and not _SELF_INSTALL_RE.search(pre_pr_cmd)
+        and _key_value(text, "worktree_bootstrap_cmd") is None
+    ):
+        findings.append(
+            {
+                "signal": "pre-pr-cmd-without-bootstrap",
+                "detail": (
+                    f"pre_pr_cmd `{pre_pr_cmd}` needs installed dependencies but "
+                    f"neither installs them nor has a worktree_bootstrap_cmd; a fresh "
+                    f"task worktree has no node_modules. Set worktree_bootstrap_cmd "
+                    f"(e.g. `npm ci` or `worktrail-bootstrap-node-modules --app-dir .`)"
                 ),
             }
         )
