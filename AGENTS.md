@@ -109,7 +109,26 @@ unchanged.
 ./scripts/dev-install.sh   # pip install -e ".[dev]", refuses to run from a worktree
 pytest
 python3 -m worktrail.orchestrator.orchestrate check   # golden record/replay regression
+python3 scripts/ci/ruff_pinned.py check .             # NOT a bare `ruff` -- see below
+python3 scripts/ci/check_shebang_exec_bits.py
 ```
+
+**Lint through the two wrappers, never a bare `ruff`.** Both exist because a
+local PASS was not evidence about CI:
+
+- `scripts/ci/ruff_pinned.py` runs the exact `ruff` pinned in `pyproject.toml`
+  (via PATH when it already matches, else `uvx ruff@<pin>`), and refuses
+  otherwise. A global `ruff` installed once for every repo drifts from the pin
+  — it was 0.16.5 against a 0.16.7 pin on 2026-09-19 — and ruff's behavior
+  changes between patch releases.
+- `scripts/ci/check_shebang_exec_bits.py` enforces EXE001/EXE002 from git's
+  index modes, because **ruff does not enforce those two rules on Windows or
+  WSL** (its own rule docs say so) while GitHub's Linux runners do. PR #1279
+  passed lint locally and failed CI on both matrix legs over exactly this;
+  pinning the version does not help, since the rules are off by platform.
+
+`pytest` covers `tests/`, `hooks/` and `scripts/ci/` (see `testpaths`) — a
+`test_*.py` next to a CI script is collected by the same canonical run.
 
 Always install editable from the canonical checkout (`~/projects/worktrail`), never from a
 task worktree — `pip install -e` records this checkout's absolute path, and deleting a

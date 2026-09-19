@@ -117,4 +117,9 @@ where = ["src"]
 worktrail = [".fixtures/**/*", "learning/*.md"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "hooks"]
+# `scripts/ci` is here because its `test_*.py` files were otherwise collected
+# by nothing: `pytest -q` (the pre-PR gate AND CI's own step) walked only
+# `tests` and `hooks`, so scripts/ci/test_check_gitleaks_signal_integrity.py
+# had been green-by-omission since it landed. Adding the path makes every
+# committed test reachable from the one canonical entrypoint.
+testpaths = ["tests", "hooks", "scripts/ci"]
