@@ -2763,7 +2763,10 @@ def _worktree_pr_close(
     (`release()`) on `done()` failure. The local worktree is cleaned up
     in a `finally` except on `code_defect` or `review_threads_blocking` outcomes
     where it is left on disk for manual review, otherwise it is always
-    removed regardless of outcome.
+    removed regardless of outcome. The local branch is deleted too when no PR
+    was ever created, and when the landing merged (`landed` with
+    `final_status == "completed_and_merged"`) -- the merged commits live on
+    the base branch and the stale local branch would otherwise accumulate.
     """
     result = {
         "brief_id": v.brief_id,
@@ -2977,7 +2980,10 @@ def _worktree_pr_close(
                     text=True,
                     timeout=60,
                 )
-                if not pr_url:
+                if not pr_url or (
+                    outcome.outcome == "landed"
+                    and outcome.final_status == "completed_and_merged"
+                ):
                     subprocess.run(
                         ["git", "-C", str(repo_path), "branch", "-D", branch],
                         check=False,
