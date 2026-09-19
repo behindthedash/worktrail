@@ -11,7 +11,10 @@ types: duplicate-slug, same-target-spec, related-link, focus-overlap. A
 `blocked-by` relationship between a pair excludes it from every signal
 (including duplicate-slug, which is otherwise repo-independent);
 same-target-spec, related-link, and focus-overlap additionally require both
-briefs to share a non-null `repo`.
+briefs to share a non-null `repo`. focus-overlap additionally abstains when
+either brief carries fewer than `MIN_FOCUS_TOKENS` distinct tokens, since the
+overlap coefficient's smaller-set denominator makes a very short focus text a
+near-subset of everything.
 
 A fifth signal, `target-task-match`, connects a single brief to a synthetic
 task node (rather than to another brief) when the brief carries both `repo`
@@ -75,6 +78,27 @@ OVERLAP_THRESHOLD = 0.45
 # OVERLAP_THRESHOLD now form an ordinary edge and surface directly.)
 LLM_GATE_FLOOR = 0.35
 
+# Minimum distinct tokens either side of a brief-to-brief focus comparison must
+# carry before its overlap coefficient is trusted. The coefficient divides by
+# the SMALLER token set, so a very short focus text is trivially a near-subset
+# of any longer brief and clears OVERLAP_THRESHOLD on shared boilerplate alone:
+# on tests/fixtures/classifier_corpus.json the 5-token focus "canonical
+# checkout drift: <repo>" scored 0.60 against five unrelated briefs, and 52 of
+# the 112 pairs the threshold flagged involved an item this thin. Calibrated on
+# that corpus (112 flagged pairs before any floor): 8 keeps 94, 9 keeps 61, and
+# 10, 11 and 12 all keep the same 60. 10 is the smallest value on that plateau.
+# The single edge 9 keeps and 10 drops is itself a false positive ("Implement
+# World ID sign-in alongside existing Google OAuth" against a dashboard
+# heuristic bug, 0.56), so the thinnest briefs remain unreliable right up to
+# the plateau. Every pair that reads as genuinely related by inspection
+# survives: the two exact-duplicate pairs, the packaging-gate pair at 0.65, and
+# the admin-dashboard redesign pair at 0.62, whose thinner side carries 13
+# tokens. A brief below the floor is not excluded from clustering --
+# duplicate-slug, same-target-spec, related-link and blocked-by all still
+# connect it; only the "these two read alike" signal abstains, which is the
+# correct posture when there is too little text to read.
+MIN_FOCUS_TOKENS = 10
+
 
 def _slug(filename: str) -> str:
     """Strip the leading YYYYMMDD-HHMMSS- timestamp prefix, if present.
@@ -96,6 +120,20 @@ def _overlap_coefficient(a: set, b: set) -> float:
     if not a or not b:
         return 0.0
     return len(a & b) / min(len(a), len(b))
+
+
+def _focus_overlap(a: set, b: set) -> float:
+    """Overlap coefficient for a brief-to-brief focus comparison, or 0.0 when
+    either side carries fewer than `MIN_FOCUS_TOKENS` distinct tokens.
+
+    `_overlap_coefficient` stays the raw mathematical quantity; this wrapper
+    carries the evidence floor, so callers comparing two briefs' focus text get
+    the guarded value and callers measuring something else (a spec-slug label in
+    `create_handoff`, a task line in `_target_task_edges`) keep the raw one.
+    """
+    if min(len(a), len(b)) < MIN_FOCUS_TOKENS:
+        return 0.0
+    return _overlap_coefficient(a, b)
 
 
 def _normalize_repo(val: Any) -> str | None:
@@ -218,7 +256,7 @@ def _signal_matches(
     if related:
         matches.append(("related-link", None))
 
-    overlap = _overlap_coefficient(sig_a["focus_tokens"], sig_b["focus_tokens"])
+    overlap = _focus_overlap(sig_a["focus_tokens"], sig_b["focus_tokens"])
     if overlap >= OVERLAP_THRESHOLD:
         matches.append(("focus-overlap", overlap))
 
@@ -417,7 +455,7 @@ def _llm_gate_score(sig_a: dict[str, Any], sig_b: dict[str, Any]) -> float | Non
         return None
     if _is_blocked_by_pair(sig_a, sig_b):
         return None
-    overlap = _overlap_coefficient(sig_a["focus_tokens"], sig_b["focus_tokens"])
+    overlap = _focus_overlap(sig_a["focus_tokens"], sig_b["focus_tokens"])
     if LLM_GATE_FLOOR <= overlap < OVERLAP_THRESHOLD:
         return overlap
     return None

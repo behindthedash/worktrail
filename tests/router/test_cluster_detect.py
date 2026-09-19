@@ -20,11 +20,14 @@ from unittest import mock
 from worktrail.router import cluster_detect as _cluster_detect_mod
 from worktrail.router.cluster_detect import (
     LLM_GATE_FLOOR,
+    MIN_FOCUS_TOKENS,
     OVERLAP_THRESHOLD,
     _assemble_clusters,
     _connected_components,
     _Edge,
     _extract_signal,
+    _focus_overlap,
+    _llm_gate_score,
     _overlap_coefficient,
     _signal_matches,
     _slug,
@@ -155,6 +158,30 @@ class TokenizeOverlapTests(unittest.TestCase):
         self.assertEqual(_overlap_coefficient(set(), {"x"}), 0.0)
         self.assertEqual(_overlap_coefficient({"x"}, set()), 0.0)
 
+    def test_overlap_coefficient_keeps_raw_subset_value(self):
+        # The raw quantity is unchanged by the focus floor: other callers
+        # (create_handoff's spec-slug labels, _target_task_edges' task lines)
+        # legitimately compare against short text and still read this.
+        short = {"alpha", "beta", "gamma"}
+        long = {f"tok{i}" for i in range(30)} | short
+        self.assertEqual(_overlap_coefficient(short, long), 1.0)
+
+    def test_focus_overlap_abstains_when_either_side_is_too_thin(self):
+        # A short focus text is trivially a near-subset of any longer brief,
+        # so the coefficient reads 1.0 on shared boilerplate alone.
+        short = {"canonical", "checkout", "drift", "repo"}
+        self.assertLess(len(short), MIN_FOCUS_TOKENS)
+        long = {f"tok{i}" for i in range(30)} | short
+        self.assertEqual(_overlap_coefficient(short, long), 1.0)
+        self.assertEqual(_focus_overlap(short, long), 0.0)
+        self.assertEqual(_focus_overlap(long, short), 0.0)
+
+    def test_focus_overlap_equals_raw_coefficient_at_the_floor(self):
+        a = {f"tok{i}" for i in range(MIN_FOCUS_TOKENS)}
+        b = {f"tok{i}" for i in range(MIN_FOCUS_TOKENS)}
+        self.assertEqual(len(a), MIN_FOCUS_TOKENS)
+        self.assertEqual(_focus_overlap(a, b), _overlap_coefficient(a, b))
+
 
 class ExtractSignalTests(unittest.TestCase):
     def setUp(self):
@@ -271,11 +298,17 @@ class SignalMatchesTests(unittest.TestCase):
         self.assertIn("related-link", matches)
 
     def test_focus_overlap_at_or_above_threshold_matches(self):
+        # Fixtures carry >= MIN_FOCUS_TOKENS distinct tokens so this pins the
+        # threshold behavior, not the evidence floor (which has its own tests).
         a = self._sig(
-            "20260610-093000-alpha.md", repo="repo-a", focus="alpha beta gamma delta"
+            "20260610-093000-alpha.md",
+            repo="repo-a",
+            focus="alpha beta gamma delta epsilon zeta eta theta iota kappa",
         )
         b = self._sig(
-            "20260611-101500-beta.md", repo="repo-a", focus="alpha beta gamma epsilon"
+            "20260611-101500-beta.md",
+            repo="repo-a",
+            focus="alpha beta gamma delta epsilon zeta eta theta iota omicron",
         )
         score = _overlap_coefficient(a["focus_tokens"], b["focus_tokens"])
         self.assertGreaterEqual(score, OVERLAP_THRESHOLD)
@@ -287,14 +320,60 @@ class SignalMatchesTests(unittest.TestCase):
 
     def test_focus_overlap_below_threshold_no_match(self):
         a = self._sig(
-            "20260610-093000-alpha.md", repo="repo-a", focus="alpha beta gamma delta"
+            "20260610-093000-alpha.md",
+            repo="repo-a",
+            focus="alpha beta gamma delta epsilon zeta eta theta iota kappa",
         )
         b = self._sig(
-            "20260611-101500-beta.md", repo="repo-a", focus="alpha zeta eta theta"
+            "20260611-101500-beta.md",
+            repo="repo-a",
+            focus="alpha beta gamma delta rho sigma tau upsilon phi chi",
         )
         score = _overlap_coefficient(a["focus_tokens"], b["focus_tokens"])
         self.assertLess(score, OVERLAP_THRESHOLD)
         matches = dict(_signal_matches(a, b))
+        self.assertNotIn("focus-overlap", matches)
+
+    def test_thin_focus_brief_forms_no_focus_overlap_edge(self):
+        # Real shape from tests/fixtures/classifier_corpus.json: a 5-token
+        # brief scored 0.60 against five unrelated briefs purely because the
+        # coefficient divides by the smaller token set.
+        thin = self._sig(
+            "20260610-093000-canonical-checkout-drift.md",
+            repo="repo-a",
+            focus="canonical checkout drift repo-a",
+        )
+        other = self._sig(
+            "20260611-101500-pricing-page.md",
+            repo="repo-a",
+            focus=(
+                "publish a static pricing page for repo-a covering services and "
+                "platform tiers with no checkout or self-serve flow, replacing "
+                "the hand-maintained canonical spreadsheet"
+            ),
+        )
+        self.assertLess(len(thin["focus_tokens"]), MIN_FOCUS_TOKENS)
+        matches = dict(_signal_matches(thin, other))
+        self.assertNotIn("focus-overlap", matches)
+
+    def test_thin_focus_brief_still_clusters_on_structural_signals(self):
+        # The floor withholds only the "these two read alike" signal; a thin
+        # brief still joins a cluster through every structural signal.
+        a = self._sig(
+            "20260610-093000-canonical-checkout-drift.md",
+            repo="repo-a",
+            target_spec="018",
+            focus="canonical checkout drift repo-a",
+        )
+        b = self._sig(
+            "20260611-101500-canonical-checkout-drift.md",
+            repo="repo-a",
+            target_spec="018",
+            focus="canonical checkout drift repo-b",
+        )
+        matches = dict(_signal_matches(a, b))
+        self.assertIn("duplicate-slug", matches)
+        self.assertIn("same-target-spec", matches)
         self.assertNotIn("focus-overlap", matches)
 
     def test_blocked_by_excludes_every_signal_even_identical_slugs(self):
@@ -380,13 +459,13 @@ class SignalMatchesTests(unittest.TestCase):
             repo=None,
             target_spec="018",
             related=["20260611-101500-fix-auth-flow"],
-            focus="alpha beta gamma delta",
+            focus="alpha beta gamma delta epsilon zeta eta theta iota kappa",
         )
         b = self._sig(
             "20260611-101500-fix-auth-flow.md",
             repo=None,
             target_spec="018",
-            focus="alpha beta gamma delta",
+            focus="alpha beta gamma delta epsilon zeta eta theta iota kappa",
         )
         matches = dict(_signal_matches(a, b))
         self.assertIn("duplicate-slug", matches)
@@ -858,12 +937,23 @@ class RealPR93RegressionTests(unittest.TestCase):
     a focus-overlap coefficient of 0.44 — below `OVERLAP_THRESHOLD` (0.45,
     so `_signal_matches` itself draws no edge), but within the LLM gate
     band `[LLM_GATE_FLOOR, OVERLAP_THRESHOLD)`. Focus text below is
-    token-engineered (4 tokens shared out of a 9-token minimum set, 4/9 =
-    0.4444) to reproduce that exact real-world 0.44 overlap."""
+    token-engineered (8 tokens shared out of an 18-token minimum set, 8/18 =
+    0.4444) to reproduce that exact real-world 0.44 overlap. The ratio is
+    what PR #93 actually exhibited; the token counts are synthetic and were
+    scaled 2x from the original 4/9 so both sides clear `MIN_FOCUS_TOKENS`
+    — the real pair's briefs were ordinary prose, far longer than 9 tokens,
+    so a 9-token fixture would now be testing the evidence floor instead of
+    the gate band it exists to pin."""
 
-    _FOCUS_A = "contract sentinel route gate finish rollout downstream consumers cutoff"
+    _FOCUS_A = (
+        "contract sentinel route existence gate rollout coverage enforcement "
+        "finish downstream consumers cutoff migration checklist owners handoff "
+        "sequencing verification"
+    )
     _FOCUS_B = (
-        "contract sentinel route gate verify existence missing coverage endpoints"
+        "contract sentinel route existence gate rollout coverage enforcement "
+        "verify missing endpoints baseline audit inventory gaps reporting "
+        "dashboard remediation"
     )
 
     def setUp(self):
@@ -1023,10 +1113,14 @@ class NullRepoGateSignalMatchesTests(unittest.TestCase):
 
     def test_two_null_repo_briefs_match_via_focus_overlap(self):
         a = self._sig(
-            "20260701-090000-alpha.md", repo=None, focus="alpha beta gamma delta"
+            "20260701-090000-alpha.md",
+            repo=None,
+            focus="alpha beta gamma delta epsilon zeta eta theta iota kappa",
         )
         b = self._sig(
-            "20260701-091000-beta.md", repo=None, focus="alpha beta gamma epsilon"
+            "20260701-091000-beta.md",
+            repo=None,
+            focus="alpha beta gamma delta epsilon zeta eta theta iota omicron",
         )
         score = _overlap_coefficient(a["focus_tokens"], b["focus_tokens"])
         self.assertGreaterEqual(score, OVERLAP_THRESHOLD)
@@ -1035,10 +1129,14 @@ class NullRepoGateSignalMatchesTests(unittest.TestCase):
 
     def test_one_null_one_real_repo_focus_overlap_pair_still_excluded(self):
         a = self._sig(
-            "20260701-090000-alpha.md", repo=None, focus="alpha beta gamma delta"
+            "20260701-090000-alpha.md",
+            repo=None,
+            focus="alpha beta gamma delta epsilon zeta eta theta iota kappa",
         )
         b = self._sig(
-            "20260701-091000-beta.md", repo="repo-x", focus="alpha beta gamma epsilon"
+            "20260701-091000-beta.md",
+            repo="repo-x",
+            focus="alpha beta gamma delta epsilon zeta eta theta iota omicron",
         )
         score = _overlap_coefficient(a["focus_tokens"], b["focus_tokens"])
         self.assertGreaterEqual(score, OVERLAP_THRESHOLD)
@@ -1149,7 +1247,12 @@ class BlockScalarFocusProductionParserTests(unittest.TestCase):
         )
         b = self._write_block_scalar_brief(
             "20260813-091000-npm-audit-moderate.md",
-            ["mailbox service npm audit reports moderate severity issues pending"],
+            [
+                (
+                    "mailbox service npm audit reports moderate severity "
+                    "issues pending upgrade"
+                )
+            ],
         )
         sig_a = _extract_signal(a, real_parse)
         sig_b = _extract_signal(b, real_parse)
@@ -1178,18 +1281,48 @@ class LlmVerificationGateBandTests(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
+    def test_thin_pair_never_reaches_the_gate_band(self):
+        # Without the floor a thin brief lands in the band against almost
+        # anything, spending an LLM verification call on noise.
+        a = _write_brief(
+            self.dir,
+            "20260701-090000-thin.md",
+            repo=None,
+            focus="canonical checkout drift",
+        )
+        b = _write_brief(
+            self.dir,
+            "20260701-091000-long.md",
+            repo=None,
+            focus=(
+                "canonical checkout drift keeps recurring across the fleet so "
+                "add a recurring guard that detects it before an agent starts"
+            ),
+        )
+        sig_a = _extract_signal(a, _fake_parse_frontmatter)
+        sig_b = _extract_signal(b, _fake_parse_frontmatter)
+        assert sig_a is not None and sig_b is not None
+        self.assertLess(len(sig_a["focus_tokens"]), MIN_FOCUS_TOKENS)
+        raw = _overlap_coefficient(sig_a["focus_tokens"], sig_b["focus_tokens"])
+        self.assertGreaterEqual(raw, LLM_GATE_FLOOR)
+        self.assertIsNone(_llm_gate_score(sig_a, sig_b))
+
     def test_gate_band_candidate_triggers_mocked_verification_call(self):
         a = _write_brief(
             self.dir,
             "20260701-090000-alpha.md",
             repo=None,
-            focus="alpha beta gamma delta epsilon zeta eta theta",
+            focus=(
+                "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda omega"
+            ),
         )
         b = _write_brief(
             self.dir,
             "20260701-091000-beta.md",
             repo=None,
-            focus="alpha beta gamma iota kappa lambda omicron sigma",
+            focus=(
+                "alpha beta gamma delta epsilon omicron sigma tau upsilon phi chi psi"
+            ),
         )
         sig_a = _extract_signal(a, _fake_parse_frontmatter)
         sig_b = _extract_signal(b, _fake_parse_frontmatter)
