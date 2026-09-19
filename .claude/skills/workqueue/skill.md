@@ -21,6 +21,8 @@ triggers:
     - _focus_overlap
     - MIN_FOCUS_TOKENS
     - BATCH_MIN
+    - fold-into-change
+    - _fold_task_instruction
 ---
 
 You are working on **worktrail's work-queue handoff system**: the atomic claim/done/release
@@ -118,16 +120,31 @@ move-a-brief mechanism never diverges between callers.
   push or `gh pr create`, and the brief is released back to `queue/` per the claim-first guard
   above. Bounded by `_COMPILE_TIMEOUT_S` (900s) since an OpenSpec change may need one model
   inference pass.
-- **The fold-into-change task declares an explicit `files:` scope line derived from its
-  evidence.** `_fold_task_file_scope(worktree_dir, evidence)` takes every path probe from
-  `router.brief_probes.extract_probes()` (a `:120-140` line-number suffix stripped) that exists
-  as a file in the worktree, then for each `src/` path appends the first matching existing
-  `tests/**/test_<stem>*.py` — the same glob compile's scope check uses. `worktrail-compile`
-  seeds scope from an indented `files:` line when present and otherwise infers it, and its scope
-  check refuses a task touching a `src/` file with no `tests/` path when that test file already
-  exists; evidence cites source files but never their tests, so the inferred scope failed on
-  every fold into a change with existing tests (brief 20260903-145001). An empty result emits no
-  `files:` line, leaving compile's inference as before.
+- **The folded `tasks.md` checklist item states the work, not the case for it.**
+  `_fold_task_instruction(focus, evidence)` collapses the brief's `focus` to one line and returns
+  its FIRST sentence — the field the brief author wrote as a statement of the work — because the
+  verdict `evidence` is written to argue *why the fold belongs*, and using it as the task body
+  produced items that read as a case with the action buried mid-paragraph or absent (datalena PR
+  #2975, task 12.1). `_SENTENCE_SPLIT_RE` splits on a `.`/`!`/`?` followed by whitespace and an
+  opening capital, so a cited path (`qa-pipeline.yml:1709`) or version (`v1.0`) is never read as
+  a sentence end, and an abbreviation followed by a lowercase word does not split either. A brief
+  with no readable focus falls back to the collapsed evidence, so a fold never emits an empty
+  task. The evidence stays out of `tasks.md` entirely: the `## N. Folded from <brief-id>` group
+  carries a one-line pointer to `proposal.md`'s matching section, and `proposal.md`'s
+  `## Folded from <brief-id>` section carries the brief's focus **and** the evidence verbatim.
+- **The fold-into-change task declares an explicit `files:` scope line derived from the brief's
+  focus and the verdict evidence.** `_fold_task_file_scope(worktree_dir, *texts)` takes every path
+  probe from `router.brief_probes.extract_probes()` (a `:120-140` line-number suffix stripped)
+  across every text the appended task is built from — the focus the checklist item now states, and
+  the evidence — that exists as a file in the worktree, then for each `src/` path appends the first
+  matching existing `tests/**/test_<stem>*.py` — the same glob compile's scope check uses. Passing
+  the focus as well as the evidence is what keeps a path named *only* in the focus inside the
+  task's scope, now that the task is stated from the focus. `worktrail-compile` seeds scope from an
+  indented `files:` line when present and otherwise infers it, and its scope check refuses a task
+  touching a `src/` file with no `tests/` path when that test file already exists; evidence cites
+  source files but never their tests, so the inferred scope failed on every fold into a change with
+  existing tests (brief 20260903-145001). An empty result emits no `files:` line, leaving compile's
+  inference as before.
 - **Push goes to `git config remote.pushDefault` when set, else `origin`.** `_push_target()`
   returns the remote plus its GitHub `owner/repo` slug so `gh pr create -R <slug>` targets the
   fork's repo; with no `pushDefault` it pushes `origin` and lets `gh` infer the base repo as
@@ -190,7 +207,8 @@ move-a-brief mechanism never diverges between callers.
   `_check_fm_fields`; add new frontmatter mutations on top of those, not with fresh line-matching
 - `workqueue/queue_triage.py` — intake-triage verdict apply actions (stale-close, duplicate-of,
   fold-into-change, propose-change, keep); the only caller that closes briefs with `triaged=True`.
-  `_fold_task_file_scope` derives the folded task's `files:` scope from evidence paths.
+  `_fold_task_instruction` derives the folded task's checklist body from the brief's focus, and
+  `_fold_task_file_scope` derives its `files:` scope from paths named in the focus or the evidence.
   `_worktree_pr_close()` is the shared fold-into-change/propose-change pipeline and claims the
   brief before any git/worktree/`land_pr` work (see the claim-first guard above). `cmd_evaluate()`
   resolves each group's `repo:` via `_resolve_repo_dir()` before using it as the evaluator `cwd`,
@@ -219,6 +237,10 @@ move-a-brief mechanism never diverges between callers.
 - Never move the `claim()` call in `_worktree_pr_close()` later in the pipeline — it must stay
   first, before `git fetch`/worktree creation, so a concurrent triage run on the same brief is
   rejected before any duplicate work starts.
+- Never put the triage evidence back into the `- [ ] N.1` checklist item — it argues why the fold
+  belongs, not what to do. The item states the work from the brief's focus
+  (`_fold_task_instruction`), with one pointer to `proposal.md`'s `## Folded from <brief-id>`
+  section for the evidence.
 - Never use a group's raw `repo:` frontmatter string directly as a subprocess `cwd` in
   `cmd_evaluate()` — always resolve it through `_resolve_repo_dir(repo, repos_root)` first and
   skip the group if it doesn't resolve, so one bad `repo:` value can't abort every other group's
