@@ -255,7 +255,8 @@ def _scan_durable_artifact_overlaps(
     are compared with router/cluster_detect's tokenization and overlap
     coefficient at its OVERLAP_THRESHOLD -- imported, not duplicated, so the
     capture-time warning and consume-time cluster detection agree on what
-    "overlapping" means.
+    "overlapping" means. A label whose tokenization yields fewer than two
+    distinct tokens is skipped; see the inline note at the comparison.
 
     Returns hits best-first (score descending, label ascending on ties) as
     `{"kind": "spec-slug"|"openspec-change"|"open-pr", "label", "score"}`.
@@ -282,7 +283,22 @@ def _scan_durable_artifact_overlaps(
         candidates.append(("open-pr", title))
     hits: list[dict[str, Any]] = []
     for kind, label in candidates:
-        score = _overlap_coefficient(tokens, _tokenize(label))
+        label_tokens = _tokenize(label)
+        # A label is short by nature, so `cluster_detect`'s MIN_FOCUS_TOKENS
+        # floor (which guards BRIEF-to-BRIEF focus comparisons) does not apply
+        # here -- this is a containment test, "what share of the label's words
+        # does the focus mention", and the raw coefficient is the right
+        # quantity for it. A SINGLE-token label is the degenerate case: its
+        # coefficient can only be 1.0 or 0.0, so it is a bare word match
+        # carrying no evidence of overlap, and it always lands at the top of
+        # the advisory list. Observed while capturing briefs on 2026-09-19:
+        # the generic `docs/specs/` directories `epics` and `research` each
+        # warned at score 1.00 against briefs that merely used the word.
+        # Two tokens is the minimum at which the score can distinguish a
+        # partial match from a full one.
+        if len(label_tokens) < 2:
+            continue
+        score = _overlap_coefficient(tokens, label_tokens)
         if score >= OVERLAP_THRESHOLD:
             hits.append({"kind": kind, "label": label, "score": score})
     return sorted(hits, key=lambda hit: (-hit["score"], hit["label"]))

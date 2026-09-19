@@ -117,12 +117,18 @@ class TestPrimaryFlowA(E2ETestBase):
         # Create related candidates
         self.write(
             "20260604-100000-database-schema.md",
-            focus="Design schema for user accounts",
+            focus=(
+                "Design the database schema for user accounts, including the "
+                "account handler tables that the user service reads"
+            ),
             repo="db-repo",
         )
         self.write(
             "20260604-100001-api-endpoints.md",
-            focus="Implement API endpoints for user data",
+            focus=(
+                "Implement the API endpoints that serve user account data to the "
+                "downstream user service account handler"
+            ),
             repo="api-repo",
         )
 
@@ -130,7 +136,10 @@ class TestPrimaryFlowA(E2ETestBase):
         new_brief = self.queue / "20260604-100003-user-service.md"
         new_brief.write_text(
             _brief(
-                focus="Build user service and account handler",
+                focus=(
+                    "Build the user service and its account handler on top of the "
+                    "shared user account schema tables"
+                ),
                 repo="service-repo",
             ),
             encoding="utf-8",
@@ -168,7 +177,10 @@ class TestPrimaryFlowB(E2ETestBase):
         # Existing brief with unique tokens
         self.write(
             "20260604-100000-xenops-deployment.md",
-            focus="Deploy xenops infrastructure management",
+            focus=(
+                "Deploy the xenops infrastructure management stack onto the new "
+                "regional cluster and cut traffic over"
+            ),
             repo="xenops-repo",
         )
 
@@ -177,7 +189,10 @@ class TestPrimaryFlowB(E2ETestBase):
         new_brief = self.queue / "20260604-165000-unrelated-xyz.md"
         new_brief.write_text(
             _brief(
-                focus="API router XML tuning",
+                focus=(
+                    "Tune the router XML parser so malformed payloads surface a typed "
+                    "error instead of a generic failure"
+                ),
                 repo="xyz-repo",
             ),
             encoding="utf-8",
@@ -199,7 +214,10 @@ class TestPrimaryFlowC(E2ETestBase):
         # Existing brief with strong focus match
         self.write(
             "20260604-100000-auth-jwt.md",
-            focus="Implement JWT authentication handler",
+            focus=(
+                "Implement the JWT authentication handler that validates the "
+                "signed session token on every inbound request"
+            ),
             repo="auth-repo",
         )
 
@@ -207,7 +225,10 @@ class TestPrimaryFlowC(E2ETestBase):
         new_brief = self.queue / "20260604-165000-auth-middleware.md"
         new_brief.write_text(
             _brief(
-                focus="JWT middleware and authentication guard",
+                focus=(
+                    "Add JWT middleware and an authentication guard that validates the "
+                    "signed session token on every inbound request"
+                ),
                 repo="auth-repo",
             ),
             encoding="utf-8",

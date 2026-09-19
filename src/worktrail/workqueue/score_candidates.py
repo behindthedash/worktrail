@@ -29,6 +29,24 @@ with reason one of "related-link" | "same-target-spec" | "identifier-overlap" |
 that only cleared BATCH_MIN because of a shared identifier-shaped token (a
 filename, snake_case, or kebab-case name) -- see IDENTIFIER_BOOST below.
 
+Short-focus inflation: the overlap coefficient divides by the SMALLER token
+set, so a thin focus text is trivially a near-subset of any longer brief. Both
+scoring sites therefore compare FOCUS text through `router/cluster_detect.py`'s
+`_focus_overlap`, which returns 0.0 when either side carries fewer than
+`MIN_FOCUS_TOKENS` distinct tokens; BODY text keeps the raw coefficient, since
+a brief body is always long enough for the denominator to mean something. The
+floor is imported rather than re-derived: this module's effective focus
+threshold is LOWER than cluster_detect's, not higher, so a weaker floor here
+could never be justified. Measured on `tests/fixtures/classifier_corpus.json`
+(236 items, focus text only) at this module's own batch-mode threshold -- with
+same-repo mandatory, `focus * 0.7 + 0.20 >= BATCH_MIN` means focus >= 0.357 --
+594 pairs clear it and 324 of them involve an item of <=8 tokens, against
+cluster_detect's 51 of 112 at its 0.45. A floor of 9 removes every one of
+those 324 (594 -> 270 pairs kept); 10, 11 and 12 keep 261, 259 and 250, a
+monotone decline with no plateau to prefer one over another. So the number is
+a judgment call either way, and sharing cluster_detect's calibrated constant
+keeps one floor with one rationale instead of two that can drift apart.
+
 No import of work_queue.py.
 """
 
@@ -41,6 +59,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from ..router.cluster_detect import _focus_overlap
 from ..shared.brief_frontmatter import split_frontmatter
 
 # Scoring thresholds — conservative defaults per spec
@@ -95,7 +114,13 @@ def _tokenize(text: str) -> set:
 
 
 def _overlap_coefficient(a: set, b: set) -> float:
-    """Overlap coefficient: |A ∩ B| / min(|A|, |B|)."""
+    """Overlap coefficient: |A ∩ B| / min(|A|, |B|).
+
+    The raw quantity, used for BODY text only. Focus text goes through
+    `_focus_overlap` (imported from `router/cluster_detect.py`), which carries
+    the `MIN_FOCUS_TOKENS` evidence floor -- see the module docstring's
+    "Short-focus inflation" note for why the two comparisons differ.
+    """
     if not a or not b:
         return 0.0
     return len(a & b) / min(len(a), len(b))
@@ -209,7 +234,7 @@ def _score_against_queue(
             cand_focus_tokens = _tokenize(cand_focus)
             cand_body_tokens = _tokenize(cand_body or "")
 
-            focus_score = _overlap_coefficient(new_focus_tokens, cand_focus_tokens)
+            focus_score = _focus_overlap(new_focus_tokens, cand_focus_tokens)
             body_score = _overlap_coefficient(new_body_tokens, cand_body_tokens)
             base_score = focus_score * 0.7 + body_score * 0.3
 
@@ -356,7 +381,7 @@ def batch_candidates(brief_path: Path, base_dir: Path) -> dict[str, Any]:
 
         cand_focus = str(cand_fm.get("focus") or "")
         base_score = (
-            _overlap_coefficient(focus_tokens, _tokenize(cand_focus)) * 0.7
+            _focus_overlap(focus_tokens, _tokenize(cand_focus)) * 0.7
             + _overlap_coefficient(body_tokens, _tokenize(cand_body or "")) * 0.3
         )
         cand_ident_tokens = _identifier_tokens(cand_focus) | _identifier_tokens(
