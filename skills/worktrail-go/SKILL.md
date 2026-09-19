@@ -181,7 +181,7 @@ current grammar. Act on `mode`:
 | `auto` | Hold `$AUTO_MODE=true` for the rest of the dispatch (spec 017). `repo`, when set, scopes it. |
 | `route` | Explicit route override: hold `route` as `$ROUTE_OVERRIDE` and `spec` as `$ARG_SPEC`. Skip classification later (Phase 5) and dispatch directly. |
 | `intent` | v1 intent keyword in `intent` — maps to routes, skips classification later. `spec` carries the spec id when one was given. |
-| `brief` | Hold `brief_id` as `$BRIEF_ID` and `brief_path` as its resolved path. `brief_status: ambiguous` → show `brief_candidates` and ask which; `brief_status: none` → that id isn't in the queue, say so and re-list. |
+| `brief` | Hold `brief_id` as `$BRIEF_ID` and `brief_path` as its resolved path. `brief_status: ambiguous` → show `brief_candidates` and ask which; `brief_status: none` → that id isn't in the queue, say so and re-list; `brief_status: picked` → the brief is already held by another claimant: print `owned by <claimed-by>` (from the parse result's `claimed_by`) and stop — do not evaluate, claim, or dispatch it. |
 | `picker_index` | A Level-2 picker selection (Phase 1b); the choice is in `picker_index`. |
 | `free_text` | Unstructured request in `free_text`, classified later by `classify.py` (Phase 5). |
 
@@ -266,6 +266,10 @@ the same entry's `repo` field is the brief's own `repo:` frontmatter, hold it as
 `$BRIEF_REPO` — this is **not** `$ARG_REPO`, which is only set when the user typed a
 repo token in the invocation itself) before doing anything else:
 
+- **`brief_status: picked`** (the parse result resolved the id against `picked/`, not
+  `queue/`) — short-circuit before the `kind` lookup: the brief is already held by
+  another claimant. Print `owned by <claimed-by>` (from the parse result's `claimed_by`)
+  and stop — do not evaluate, claim, or dispatch it.
 - **`kind: execution`** (a `seeded-from:` brief) — unaffected; continue to the `claim`
   action below exactly as before.
 - **`kind: intake`** (a raw handoff or consolidated brief with no `seeded-from:`) — there
@@ -311,6 +315,21 @@ repo token in the invocation itself) before doing anything else:
        consume (an unknown repo). No model looked at it. Report the pending decision to
        the user, do **not** run the apply step below, and stop — answering (or
        correcting) that decision is the whole remedy.
+     - **Exit 2** with one of the following lines on stderr (`$VERDICT_FILE` prints
+       `null`) means the gate refused the brief before any model looked at it. Report
+       the line to the user, do **not** run the apply step below, and stop:
+       - `blocked_brief_owned: <id> owned by <claimed-by> (claimed-at <ts>)` — the
+         brief has since moved to `picked/` under another claimant (e.g. a scheduled
+         `queue-triage` run); `$BRIEF_PATH` was stale. It is theirs, not this
+         session's — leave it alone.
+       - `blocked_brief_missing: <id>` — the id resolves in neither `queue/` nor
+         `picked/`; it was closed or renamed since the dashboard listed it. Re-list.
+       - `blocked_empty_brief: <id> (<reason>)` — the brief has no `focus:` frontmatter
+         and no `## Focus` section (or cannot be read); there is nothing to evaluate,
+         so fix the brief rather than triaging it.
+       The apply step (`--apply-brief-triage[-file]`) runs the same ownership check and
+       exits 2 with the same `blocked_brief_owned` / `blocked_brief_missing` line if the
+       brief was claimed out from under a verdict file between the two steps.
      - **Exit 1** with `$VERDICT_FILE` printing `null` means a model did evaluate the
        brief but produced no identifiable verdict for this brief id at all — report that
        and stop rather than guessing one.
