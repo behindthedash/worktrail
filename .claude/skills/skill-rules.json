@@ -163,7 +163,8 @@
       "filePatterns": [
         "tests/**/*.py",
         "conftest.py",
-        "scripts/ci/test_*.py"
+        "scripts/ci/test_*.py",
+        "scripts/regenerate_classifier_corpus.py"
       ],
       "promptTriggers": {
         "keywords": [
@@ -174,13 +175,17 @@
           "hermetic",
           "enforcement coverage",
           "selfcheck",
+          "classifier_corpus",
+          "label_source",
+          "redaction",
           "tests",
           "testing",
           "conventions",
           "worktrail",
           "isolation",
           "conftest",
-          "test_"
+          "test_",
+          "regenerate_classifier_corpus"
         ],
         "intentPatterns": [
           "(create|update|fix|add|modify|change|debug|refactor|implement|build).*enforcement coverage",

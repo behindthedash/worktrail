@@ -85,7 +85,12 @@ LLM_GATE_FLOOR = 0.35
 # on tests/fixtures/classifier_corpus.json the 5-token focus "canonical
 # checkout drift: <repo>" scored 0.60 against five unrelated briefs, and 52 of
 # the 112 pairs the threshold flagged involved an item this thin. Calibrated on
-# that corpus (112 flagged pairs before any floor): 8 keeps 94, 9 keeps 61, and
+# that corpus AS IT STOOD BEFORE THE 2026-09-19 REGENERATION (236 items, mixed
+# outcome and recommended-route labels; the fixture is 103 outcome-labelled
+# items now). The floor is a property of the coefficient's denominator, not of
+# those particular briefs, so the calibration is dated rather than re-derived:
+# re-deriving it from a corpus 2.3x smaller would be weaker evidence, not
+# stronger. Counts below are from that 112-pair measurement: 8 keeps 94, 9 keeps 61, and
 # 10, 11 and 12 all keep the same 60. 10 is the smallest value on that plateau.
 # The single edge 9 keeps and 10 drops is itself a false positive ("Implement
 # World ID sign-in alongside existing Google OAuth" against a dashboard

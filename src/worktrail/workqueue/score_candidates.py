@@ -38,7 +38,11 @@ a brief body is always long enough for the denominator to mean something. The
 floor is imported rather than re-derived: this module's effective focus
 threshold is LOWER than cluster_detect's, not higher, so a weaker floor here
 could never be justified. Measured on `tests/fixtures/classifier_corpus.json`
-(236 items, focus text only) at this module's own batch-mode threshold -- with
+as it stood before the 2026-09-19 regeneration (236 items, focus text only,
+mixed outcome and recommended-route labels; the fixture is 103 outcome-labelled
+items now, and this calibration is dated rather than re-derived for the reason
+given in `cluster_detect.MIN_FOCUS_TOKENS`) at this module's own batch-mode
+threshold -- with
 same-repo mandatory, `focus * 0.7 + 0.20 >= BATCH_MIN` means focus >= 0.357 --
 594 pairs clear it and 324 of them involve an item of <=8 tokens, against
 cluster_detect's 51 of 112 at its 0.45. A floor of 9 removes every one of

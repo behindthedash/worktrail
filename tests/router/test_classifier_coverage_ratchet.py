@@ -21,6 +21,20 @@ recalibrated over a PR or two without blocking merges. Promote it by folding
 its job into ``required_status_checks`` in ``.github/rulesets/protect-main.json``
 once the threshold has settled.
 
+**What the number means.** Every fixture item is labelled with the route the
+brief was ACTUALLY run under -- the ``selected_route`` of a run record that
+consumed it (``label_source: "actual"``, enforced by
+``test_classifier_corpus_redaction.py``). Until 2026-09-19 the corpus also
+carried items labelled only by their own ``recommended-route`` frontmatter,
+which is a machine suggestion, not an outcome: scoring ``classify.py`` against
+it measured agreement with a guess, and the agreed count could not distinguish
+a routing regression from label noise. Those items are gone, so this number is
+now meaningful -- but only for outcome-labelled items, which is all the corpus
+contains and all it may ever contain. It is NOT an accuracy figure for the
+front door: the ``handoff_route`` hint is withheld (see
+``classifier_coverage``'s module docstring), so it measures the organic text
+signal alone.
+
 **Re-baselining.** A change that intentionally shifts routing behavior may
 lower the agreed count below ``BASELINE_AGREED``. Re-run this file's
 materialization against the current ``classify.py`` (or just run this test
@@ -28,6 +42,8 @@ and read the failure's actual count), confirm the new number by eye against
 ``tests/fixtures/classifier_corpus.json``'s sample of expected routes, and
 update ``BASELINE_AGREED`` with a short comment explaining what shifted and
 why the new number is still correct routing behavior, not a fresh regression.
+Regenerating the corpus itself (``scripts/regenerate_classifier_corpus.py``)
+moves both baselines; it is a deliberate, hand-run step.
 """
 
 from __future__ import annotations
@@ -43,15 +59,19 @@ FIXTURE_PATH = (
     Path(__file__).resolve().parent.parent / "fixtures" / "classifier_corpus.json"
 )
 
-# Pinned to tests/fixtures/classifier_corpus.json (236 items) as of
-# 2026-09-10 (added the incidental-filename-mention regression item, expected
-# route F -- classify() without a handoff-route hint organically picks C for
-# it, same "disagreed" bucket as the corpus's other hint-dependent items, so
-# agreed stays 68 while compared moves 235 -> 236).
+# Pinned to tests/fixtures/classifier_corpus.json (103 items) as of
+# 2026-09-19, when the corpus was regenerated from outcome labels only: 2246
+# briefs considered, 121 carrying a run record's selected_route, 103 kept after
+# per-route stratification (A 4, C 11, D 8, E 6, F 24, G 13, H 13, I 17, J 7 --
+# route B has no outcome-labelled brief at all and is absent). The previous
+# 68/236 was scored against a corpus where most labels were the brief's own
+# recommended-route frontmatter, so the drop to 22/103 is not a routing
+# regression: it is what the classifier scores against real outcomes once the
+# partly-tautological labels stop inflating it.
 # classify() is pure and regex-only, and the fixture and replay inputs below
 # are all fixed, so this is an exact reproducible count, not a tolerance band.
-BASELINE_AGREED = 68
-BASELINE_COMPARED = 236
+BASELINE_AGREED = 22
+BASELINE_COMPARED = 103
 
 
 def _materialize(items: list, queue_root: Path) -> None:
@@ -61,6 +81,11 @@ def _materialize(items: list, queue_root: Path) -> None:
     (``id``, ``created``, ``focus``, ``recommended-route``) -- the same
     pattern ``test_classifier_coverage.py``'s ``_write_brief`` helper uses --
     so ``audit_coverage()`` runs completely unmodified over fixture data.
+
+    ``recommended-route`` is the transport, not the provenance: with no run
+    records for fixture briefs it is the only field ``audit_coverage()`` will
+    read an expected route from, and the value written into it is the item's
+    outcome label (``label_source: "actual"``).
     """
     directory = queue_root / "queue"
     directory.mkdir(parents=True, exist_ok=True)
@@ -84,9 +109,9 @@ class ClassifierCoverageRatchetTest(unittest.TestCase):
         with TemporaryDirectory() as queue_dir, TemporaryDirectory() as runs_dir:
             _materialize(items, Path(queue_dir))
             # No run records for fixture briefs, so every comparison resolves
-            # its expected route from `recommended-route` frontmatter -- the
-            # same "recommended" path production falls back to when no run
-            # record has consumed a brief yet.
+            # its expected route from the `recommended-route` field written by
+            # `_materialize` above -- which carries the item's outcome label,
+            # not a frontmatter suggestion. See that helper's docstring.
             report = cc.audit_coverage(
                 queue_root=Path(queue_dir),
                 runs_root=Path(runs_dir),
