@@ -54,7 +54,7 @@
 
 ## 3. Operator docs
 
-- [ ] 3.1 [depends: 1.1] In `skills/worktrail-go/references/decision-queue.md`, under the
+- [x] 3.1 [depends: 1.1] In `skills/worktrail-go/references/decision-queue.md`, under the
       envelope section, list `orchestrator-review-loop` as a decision source alongside
       `check_spec_collision`: what fires it (round-2 repeated AC-vs-existing-behaviour
       finding), what the record cites, and the resume recipe (`worktrail-live clear-task`
