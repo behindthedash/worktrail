@@ -715,8 +715,8 @@ class ProposeTests(unittest.TestCase):
     def test_hand_authored_workflow_and_ruleset_missing_check_is_full_noop(self):
         # Task 5.3, "workflow already present, not newly written": unlike the
         # rerun-after-propose case above, this ruleset does NOT already
-        # contain the check, so this pins the openspec_validate_newly_written
-        # gate itself -- patch_ruleset_required_check's already-present
+        # contain the check, so this pins the newly-written-this-run gate
+        # itself -- patch_ruleset_required_check's already-present
         # short-circuit (task 3.2) cannot account for a no-op here.
         repo = _tmp_repo()
         workflow_path = repo / repo_init.OPENSPEC_VALIDATE_WORKFLOW_RELPATH
