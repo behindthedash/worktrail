@@ -6601,3 +6601,128 @@ class TestParseVerdictsDependencyFreshness(unittest.TestCase):
         self.assertEqual(out.verdict, "needs-decision")
         self.assertEqual(out.escalation, "keep-limit")
         self.assertEqual(out.dependency_freshness, self.FRESHNESS)
+
+
+class TestBriefClaimHolder(QueueTriageTestBase):
+    """1.1's `brief_claim_holder()`: reports the `picked/` owner, `None` owner
+    for a `queue/` brief, and `None` outright for an unknown id."""
+
+    def _write_picked(self, name: str, extra_fm: str) -> Path:
+        picked = self.base / "picked"
+        picked.mkdir(exist_ok=True)
+        p = picked / name
+        p.write_text(
+            f"---\nfocus: {name}\nstatus: picked\n{extra_fm}\n---\n\nbody\n",
+            encoding="utf-8",
+        )
+        return p
+
+    def test_picked_brief_reports_owner(self):
+        p = self._write_picked(
+            "20260101-120000-x.md",
+            "claimed-by: queue-triage\nclaimed-at: 2026-01-01T12:00:00+00:00",
+        )
+        self.assertEqual(
+            qt.brief_claim_holder("20260101-120000-x"),
+            (p, "queue-triage", "2026-01-01T12:00:00+00:00"),
+        )
+
+    def test_done_brief_in_picked_reports_owner(self):
+        p = self._write_picked(
+            "20260101-120000-y.md",
+            "claimed-by: other\nclaimed-at: 2026-01-01T12:00:00+00:00",
+        )
+        p.write_text(
+            p.read_text(encoding="utf-8").replace("status: picked", "status: done"),
+            encoding="utf-8",
+        )
+        holder = qt.brief_claim_holder("20260101-120000-y")
+        self.assertEqual(holder, (p, "other", "2026-01-01T12:00:00+00:00"))
+
+    def test_queue_brief_has_no_owner(self):
+        p = self.write("20260101-120000-q.md")
+        self.assertEqual(qt.brief_claim_holder("20260101-120000-q"), (p, None, None))
+
+    def test_unknown_id_is_none(self):
+        self.assertIsNone(qt.brief_claim_holder("20260101-120000-nope"))
+
+
+class TestBriefFocusStrict(QueueTriageTestBase):
+    """1.1's `brief_focus_strict()` raises `EmptyBrief` where `_brief_focus()`
+    still returns `''` (design D3)."""
+
+    def test_no_focus_anywhere_raises(self):
+        p = self.queue / "empty.md"
+        p.write_text("---\nstatus: queued\n---\n\nno focus here\n", encoding="utf-8")
+        with self.assertRaises(qt.EmptyBrief) as ctx:
+            qt.brief_focus_strict(p)
+        self.assertEqual(ctx.exception.brief_id, "empty")
+        self.assertIn("focus", ctx.exception.reason)
+        self.assertEqual(qt._brief_focus(p), "")
+
+    def test_unreadable_path_raises(self):
+        p = self.queue / "missing.md"
+        with self.assertRaises(qt.EmptyBrief) as ctx:
+            qt.brief_focus_strict(p)
+        self.assertEqual(ctx.exception.brief_id, "missing")
+        self.assertIn("unreadable", ctx.exception.reason)
+        self.assertEqual(qt._brief_focus(p), "")
+
+    def test_frontmatter_focus_returned(self):
+        p = self.write("has-focus.md", focus="do the thing")
+        self.assertEqual(qt.brief_focus_strict(p), "do the thing")
+
+    def test_body_focus_section_returned(self):
+        p = self.queue / "body.md"
+        p.write_text(
+            "---\nstatus: queued\n---\n\n## Focus\n\nfrom the body\n", encoding="utf-8"
+        )
+        self.assertEqual(qt.brief_focus_strict(p), "from the body")
+
+
+class TestApplyVerdictsRefusesOwnedBrief(QueueTriageTestBase):
+    """1.1 / design D4: the `keep`/`needs-update` note-append branches return
+    `status: error` naming the owner instead of writing to a `picked/` brief."""
+
+    def _claimed(self, name: str) -> Path:
+        picked = self.base / "picked"
+        picked.mkdir(exist_ok=True)
+        p = picked / name
+        p.write_text(
+            f"---\nfocus: {name}\nstatus: picked\nclaimed-by: queue-triage\n"
+            "claimed-at: 2026-01-01T12:00:00+00:00\n---\n\n## Focus\n\nsomething\n",
+            encoding="utf-8",
+        )
+        return p
+
+    def _verdict(self, verdict: str) -> qt.Verdict:
+        return qt.Verdict(
+            brief_id="owned",
+            verdict=verdict,
+            duplicate_of=None,
+            evidence="brief needs a refresh",
+            confidence="medium",
+        )
+
+    def test_needs_update_on_claimed_brief_errors_and_leaves_file(self):
+        p = self._claimed("owned.md")
+        before = p.read_text(encoding="utf-8")
+
+        log = qt.apply_verdicts([self._verdict("needs-update")], confirm=True)
+
+        self.assertEqual(len(log), 1)
+        self.assertEqual(log[0]["status"], "error")
+        self.assertIn("queue-triage", log[0]["error"])
+        self.assertEqual(log[0]["path"], str(p))
+        self.assertEqual(p.read_text(encoding="utf-8"), before)
+
+    def test_keep_on_claimed_brief_errors_and_leaves_file(self):
+        p = self._claimed("owned.md")
+        before = p.read_text(encoding="utf-8")
+
+        log = qt.apply_verdicts([self._verdict("keep")], confirm=True)
+
+        self.assertEqual(len(log), 1)
+        self.assertEqual(log[0]["status"], "error")
+        self.assertIn("queue-triage", log[0]["error"])
+        self.assertEqual(p.read_text(encoding="utf-8"), before)
