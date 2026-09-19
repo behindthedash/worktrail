@@ -263,6 +263,94 @@ def _reachable(start: str, target: str, deps: Mapping[str, Sequence[str]]) -> bo
     return False
 
 
+# A declared path is treated as "named in prose" only as a whole token: the
+# characters either side must not themselves be path characters, so
+# `scripts/run.py` never matches inside `scripts/run.py.bak` or
+# `tools/scripts/run.py`.
+_PATH_BOUNDARY = r"[^\w./\\-]"
+
+
+def _prose_names_path(prose: str, path: str) -> bool:
+    if not prose or not path:
+        return False
+    pattern = rf"(?:^|{_PATH_BOUNDARY})\.?/?{re.escape(path)}(?:$|{_PATH_BOUNDARY})"
+    return re.search(pattern, prose) is not None
+
+
+def produced_file_dep_edges(
+    tasks: Sequence[Mapping[str, Any]], repo: Path, prose_of: Any
+) -> tuple[dict[str, list[str]], list[str]]:
+    """`{consumer id: [producer ids]}` for files one task CREATES and another
+    task's prose names, plus warnings.
+
+    `import_dep_edges` above can only see imports already on disk, which is
+    exactly the gap this closes: a task writing tests for a script a sibling
+    task has not created yet has nothing to parse and no shared `files:` entry
+    for the collision check either, so the plan fans both out in parallel and
+    the consumer's worktree finds nothing. Observed on the devops change
+    render-fleet-health-monitor (run go-20260918-073805, 2026-09-18): compile
+    printed `source=seed` with 3.1 and 4.1 carrying `deps=-`; 3.1 failed with
+    the script "absent from this worktree", 3.2/5.1/5.2 blocked behind it, and
+    4.1 opened a PR whose CI failed on MANAGED_SCRIPTS entries with no file.
+    Brief 20260918-082155.
+
+    Deliberately narrow, because over-ordering costs real parallelism:
+      * the path must be declared in another task's `files:`,
+      * it must NOT exist under `repo` yet -- a file that already exists is a
+        modification, which import inference and the shared-`files:` collision
+        check already cover, and merely mentioning an existing path in prose
+        is not evidence of an ordering,
+      * the consumer must not declare that path itself (then the two tasks
+        collide on it and the planner groups them already).
+
+    `prose_of` maps a task to the text to scan. Additive and never fatal: an
+    edge that would close a cycle is dropped with a warning, matching
+    `import_dep_edges`.
+    """
+    repo = Path(repo)
+    owners: dict[str, list[str]] = {}
+    for t in tasks:
+        tid = str(t.get("id"))
+        for f in runplan._norm_str_list(t.get("files")):
+            owners.setdefault(Path(f).as_posix(), []).append(tid)
+
+    # Only paths nothing has created yet: those are the produce/consume ones.
+    pending = {
+        path: ids
+        for path, ids in owners.items()
+        if _under_repo(repo / path, repo) is not None and not (repo / path).exists()
+    }
+    if not pending:
+        return {}, []
+
+    deps: dict[str, list[str]] = {
+        str(t.get("id")): list(runplan._norm_str_list(t.get("deps"))) for t in tasks
+    }
+    edges: dict[str, list[str]] = {}
+    warnings: list[str] = []
+    for t in tasks:
+        if str(t.get("kind") or "") in TAIL_KINDS:
+            continue
+        tid = str(t.get("id"))
+        own_files = {Path(f).as_posix() for f in runplan._norm_str_list(t.get("files"))}
+        prose = prose_of(t)
+        for path, producers in pending.items():
+            if path in own_files or not _prose_names_path(prose, path):
+                continue
+            for producer in producers:
+                if producer == tid or producer in deps.get(tid, ()):
+                    continue
+                if _reachable(producer, tid, deps):
+                    warnings.append(
+                        f"{tid}: prose names {path}, which {producer} creates, but "
+                        f"{producer} already depends on {tid} -- edge skipped"
+                    )
+                    continue
+                deps.setdefault(tid, []).append(producer)
+                edges.setdefault(tid, []).append(producer)
+    return edges, warnings
+
+
 def import_dep_edges(
     tasks: Sequence[Mapping[str, Any]], repo: Path
 ) -> tuple[dict[str, list[str]], list[str]]:
