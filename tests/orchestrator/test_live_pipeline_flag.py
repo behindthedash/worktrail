@@ -98,6 +98,14 @@ class UnconditionalPipelineRouting(unittest.TestCase):
                 "worktrail.orchestrator.live.journal_path_for",
                 return_value="/tmp/fake-journal-pipeline-test.json",
             ),
+            # The fan-out preflight (`_refuse_relaunch_over_live_workers`)
+            # loads the spec to know which task worktrees to probe; this repo
+            # path is fake, so give it a real answer rather than letting the
+            # guard's own best-effort fallback silently skip it.
+            patch(
+                "worktrail.orchestrator.live.taskformats.load_spec",
+                return_value=("spec-id", [{"id": "1.1"}]),
+            ),
             patch(
                 "worktrail.orchestrator.live.read_or_create_run_id",
                 return_value="full-test",

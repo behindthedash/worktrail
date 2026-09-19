@@ -131,6 +131,61 @@ def find_live_runs(procs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return runs
 
 
+def _proc_cwd(pid_dir: Path) -> Path | None:
+    """Resolved working directory of a process, or None when unreadable.
+
+    `/proc/<pid>/cwd` is a symlink the kernel maintains; reading it for a
+    process owned by another user raises PermissionError, and a process that
+    exits between the listing and this read raises OSError. Both are "cannot
+    tell", never "not there".
+    """
+    try:
+        return (pid_dir / "cwd").resolve(strict=True)
+    except OSError:
+        return None
+
+
+def agent_workers_in_worktrees(
+    worktrees: list[Path], proc_root: Path = Path("/proc")
+) -> list[dict[str, Any]]:
+    """Live agent-CLI processes whose cwd is inside one of `worktrees`.
+
+    The orchestrator does not own its workers' lifetime: a
+    `worktrail-detach`-launched run that takes a SIGTERM leaves its `claude -p`
+    children running, reparented to init, still writing to the task worktrees
+    (observed 2026-09-18, run go-20260918-182950: the orchestrator exited
+    rc=-15 15 minutes in and tasks 1.1/3.1 went on to commit d36185f5 and
+    efbdcea2 afterwards). Its RunLock releases on process exit, so nothing
+    stopped an immediate relaunch from fanning a SECOND worker into a worktree
+    a live one still held -- brief 20260918-224345.
+
+    Filtered to the supported agent CLIs, so an operator's own shell sitting
+    in a worktree never blocks a relaunch. Best-effort by construction: a
+    machine with no `/proc`, or processes whose cwd cannot be read, yields
+    fewer rows, never an exception.
+    """
+    roots = [Path(w).resolve() for w in worktrees]
+    if not roots or not proc_root.is_dir():
+        return []
+    found: list[dict[str, Any]] = []
+    for entry in sorted(proc_root.iterdir(), key=lambda e: e.name):
+        if not entry.name.isdigit():
+            continue
+        argv = _read_cmdline(entry)
+        if not argv or Path(argv[0]).name not in _AGENT_BINARIES:
+            continue
+        cwd = _proc_cwd(entry)
+        if cwd is None:
+            continue
+        for root in roots:
+            if cwd == root or root in cwd.parents:
+                found.append(
+                    {"pid": int(entry.name), "argv": argv, "worktree": str(root)}
+                )
+                break
+    return found
+
+
 # --------------------------------------------------------------------------- #
 # Lock cross-reference (reuses dashboard.py's flock probe -- one definition,
 # not a second copy of the non-blocking-flock-then-release dance).
