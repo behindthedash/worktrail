@@ -138,3 +138,69 @@ than before; recheck after `2026-10-01` (two more weeks) and, if the gap
 persists, consider narrowing the brief's ask to just those two behaviors
 since the "does it fire at all" question this brief opened with is now
 answered yes.
+
+---
+
+## Investigation 2026-09-19 (queue sweep, closing)
+
+Re-checked every `~/.worktrail/triage/drain-*/verdict.json` on this machine,
+not just the window the prior notes covered.
+
+### Verified Observations
+
+- **The precondition fires, persists, and carries real statuses.** Per-run
+  counts of `Verdict.dependency_freshness` entries by status:
+
+  | run | stale | fresh | `[]` (no npm manifests) | field absent |
+  |---|---|---|---|---|
+  | drain-20260909T091702Z | — | — | — | 27 |
+  | drain-20260910T091702Z | — | — | — | 18 |
+  | drain-20260911T091701Z | 18 | 1 | 5 | — |
+  | drain-20260912T091702Z | 16 | — | 4 | — |
+  | drain-20260915T091701Z | 31 | — | 8 | — |
+  | drain-20260916T091701Z | 35 | 2 | 7 | — |
+  | drain-20260918T091704Z | 63 | 1 | 17 | — |
+  | drain-20260919T091703Z | 60 | 4 | 18 | — |
+
+  The two `field absent` runs predate PR #1132/#1134. Every run after it
+  carries the field, populated. **The brief's headline ask is discharged** —
+  six consecutive nightly runs, not the one the 2026-09-10 note had.
+- **The evaluator crash the 2026-09-17 note recorded is gone.** The
+  09-18 and 09-19 runs both produced full `verdict.json` output; the
+  `intake-triage error: [Errno 2] ... PosixPath('aspens')` cause was filed
+  and fixed separately.
+- **The npm-test-skip branch has never had an opportunity to fire.** Across
+  *every* `drain-*` run on this machine, zero `premise_check` entries carry a
+  needle beginning `npm test` — so `premise_check._stale_npm_roots`'s skip
+  path was never reachable, in any run, ever. Not a silent failure: the
+  branch is covered by
+  `tests/workqueue/test_premise_check.py::test_npm_test_skipped_when_root_stale_and_consumes_command_slot`
+  (skip when stale) and `::test_npm_test_runs_when_fresh_or_argument_omitted`
+  (run when fresh or unsupplied).
+- **No verdict has ever cited dependency staleness as its reason.** Searching
+  every run's `evidence`/`judgment_reason` for `node_modules`,
+  `package-lock`, `not fresh`, `dependency freshness`, `stale root` or
+  `half-installed` returns only incidental mentions inside otherwise-unrelated
+  evidence (a brief *about* dependabot config, a brief *about* stale
+  bookkeeping) — never the D3 keep-bias rule being applied.
+
+### Why this closes rather than re-queues
+
+Both residuals need a brief whose premise reproduction depends on running a
+stale npm root's own tooling. Nothing about the passage of time makes that
+more likely: over 8 nightly runs and several hundred verdicts it has happened
+zero times, and the repos that carry stale roots (`.fixtures/sample-spec`,
+the Tauri tree) are not where command-shaped briefs land. Releasing the brief
+again with a later date would ask the queue to wait on a coincidence, which
+is what the 2026-09-17 note already identified ("coincidence-gated ... not
+schedule-gated") without acting on it.
+
+The mechanism is confirmed working end to end; the two unexercised branches
+are unit-covered. If a future brief ever does present an `npm test` needle
+against a stale root, the skip will show up in that run's `premise_check`
+detail as `skipped: npm dependencies not fresh (...)` with no new
+instrumentation needed.
+
+### Recommended Next Route
+
+None. Close the brief as discharged.
