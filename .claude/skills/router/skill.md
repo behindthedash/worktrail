@@ -36,6 +36,7 @@ triggers:
     - smoke_flake_selfcheck
     - reconcile_pr_labels
     - load_run_index
+    - base_slug
 ---
 
 You are working on **worktrail's GO v2 front door**: loading repo policy, classifying free-text
@@ -239,6 +240,18 @@ agents or writes task files — that is `orchestrator/`'s job.
   return type so existing callers/mocks of `_push(repo, branch, remote, runner)` keep working. A
   timeout/`OSError` still returns `"push_ambiguous"` with nothing appended. Regression tests live
   in `tests/router/test_land_pr_push_refusal.py`, deliberately not in `test_land_pr.py`.
+- **Every post-PR-open `gh` call in `land_pr.py` is scoped to the push-target repo via `base_slug`,
+  never left to `gh`'s bare-number resolution.** `_gh(..., base_slug=)` appends `-R <base_slug>`
+  (the slug `_push_target()` returns) when set; `_watch_ci`, `_checks_registered`, `_log_excerpt`,
+  `_pr_is_merged`, `_merge_state_guard` (including its `gh run rerun`), and `_review_thread_gate`
+  all take and thread it. On a `remote.pushDefault=fork` checkout `origin` is the upstream, so a
+  bare PR number or run id resolved against the upstream's same-numbered — and often long-merged —
+  PR, and `land_pr()` reported `completed_and_merged` / `"merged externally"` while the fork PR
+  was still OPEN (live 2026-09-18, behindthedash/aspens PR #15 vs upstream `aspenkit/aspens` #15).
+  `_review_thread_gate` splits the slug into `owner`/`name` and passes them to
+  `check_review_threads.check`, which otherwise derives them from `origin`. With no
+  `pushDefault`, `base_slug` is `None` and calls are unchanged. Any new PR- or run-scoped `gh`
+  call added to `land_pr.py` must take `base_slug` too.
 - **`flip_and_archive`'s default (`task_ids=None`) targets *every* task id, not just the pending
   ones.** The whole point of this module is bookkeeping drift, and its purest case is a change whose
   `tasks.md` is already 100% `[x]` but was never archived. A pending-only default left both
@@ -293,9 +306,10 @@ agents or writes task files — that is `orchestrator/`'s job.
 - `router/land_pr.py` — `land_pr()`, `LandRequest`/`LandOutcome`; the shared
   commit/compile-marker/preflight/push/PR/CI-watch/merge-guard/review-thread-gate/finish pipeline
   every PR-opening call site should compose with instead of reimplementing a subset; `_push()`'s
-  explicit-refspec + `detail_out` contract lives here
+  explicit-refspec + `detail_out` contract lives here, as does `_gh()`'s `base_slug` (`-R <slug>`)
+  scoping of every post-PR-open call
 - `router/close_stale_openspec.py` — `flip_and_archive()` plus `main()`'s `land_pr` landing and
   outcome→exit-code mapping for the `worktrail-close-stale-openspec` console script
 
 ---
-**Last Updated:** 2026-09-12
+**Last Updated:** 2026-09-19
