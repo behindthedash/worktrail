@@ -11,6 +11,7 @@ import importlib
 import io
 import json
 import os
+import socket
 import subprocess
 import tempfile
 import unittest
@@ -78,6 +79,18 @@ def _consolidated_brief(focus: str, member_ids: list, status: str = "picked") ->
     lines.extend(f"- {m}" for m in member_ids)
     lines.append("")
     return "\n".join(lines)
+
+
+def _a_pid_that_is_gone() -> int:
+    """A pid that has certainly exited: spawn a trivial child and reap it.
+
+    Reaped children leave no entry for `os.kill(pid, 0)` to find, and pid
+    reuse would need the whole pid space to wrap within this test.
+    """
+    proc = subprocess.Popen(["true"])
+    pid = proc.pid
+    proc.wait()
+    return pid
 
 
 class QueueTestBase(unittest.TestCase):
@@ -414,6 +427,55 @@ class TestClaim(QueueTestBase):
         self.assertEqual(fm["status"], "picked")
         self.assertEqual(fm["claimed-by"], "agent-x")
         self.assertIn("claimed-at", fm)
+
+    def test_claim_stamps_the_owning_process(self):
+        """Even with an explicit constant `--by` label. Without the pid/host a
+        later `already-claimed` cannot tell a live run from an abandoned one
+        (brief 20260918-180921)."""
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth", by="queue-triage")
+        fm = q._read_frontmatter(self.picked / "20260531-141200-auth.md")
+        self.assertEqual(fm["claimed-by"], "queue-triage")
+        self.assertEqual(int(fm["claimed-by-pid"]), os.getpid())
+        self.assertEqual(fm["claimed-by-host"], socket.gethostname())
+
+    def test_claim_liveness_reports_live_for_this_process(self):
+        self.write("live.md", focus="x")
+        res = q.claim("live.md", by="queue-triage")
+        self.assertEqual(q.claim_liveness(Path(res["path"])), "live")
+        self.assertEqual(
+            q.claim("live.md", by="queue-triage")["owner_liveness"], "live"
+        )
+
+    def test_claim_liveness_reports_dead_for_a_gone_pid(self):
+        """The interrupted-apply shape: the claim survived, the process did
+        not."""
+        self.write("dead.md", focus="x")
+        res = q.claim("dead.md", by="queue-triage")
+        gone_pid = _a_pid_that_is_gone()
+        q._set_fm_fields(Path(res["path"]), {"claimed-by-pid": str(gone_pid)})
+        self.assertEqual(q.claim_liveness(Path(res["path"])), "dead")
+        self.assertEqual(
+            q.claim("dead.md", by="queue-triage")["owner_liveness"], "dead"
+        )
+
+    def test_claim_liveness_is_unknown_for_another_host(self):
+        """A pid number from another machine says nothing about a pid here, so
+        it must never read as dead."""
+        self.write("elsewhere.md", focus="x")
+        res = q.claim("elsewhere.md", by="queue-triage")
+        q._set_fm_fields(
+            Path(res["path"]),
+            {"claimed-by-host": "some-other-box", "claimed-by-pid": "424242"},
+        )
+        self.assertEqual(q.claim_liveness(Path(res["path"])), "unknown")
+
+    def test_claim_liveness_is_unknown_for_a_pre_stamp_brief(self):
+        """Briefs claimed before this stamp existed carry neither field."""
+        self.picked.mkdir(parents=True, exist_ok=True)
+        old = self.picked / "legacy.md"
+        old.write_text(_picked_brief("claimed long ago"), encoding="utf-8")
+        self.assertEqual(q.claim_liveness(old), "unknown")
 
     def test_claim_none_and_ambiguous(self):
         self.assertEqual(q.claim("missing")["status"], "none")

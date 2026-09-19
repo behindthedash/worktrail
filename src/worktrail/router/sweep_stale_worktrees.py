@@ -28,9 +28,15 @@ Classification mirrors `worktree-cleanup.md`'s buckets:
 - DIRTY (uncommitted changes) -> keep, report only.
 - Unpushed local commits (ahead of the branch's own remote-tracking ref) ->
   keep, report only.
-- "Merged" is judged by `git cherry <base>...<branch>`, never by
-  `git merge-base --is-ancestor` -- a squash-merged base makes the latter
-  unreliable (see memory `feedback_git_main_squash_divergence`).
+- "Merged" is judged against `<push remote>/<base>`, where the push remote is
+  `git config remote.pushDefault` (else `origin`) -- on a fork layout whose
+  `origin` is the read-only upstream, classifying against `origin/<base>`
+  makes every worktree look UNMERGED.
+- It is judged by `git cherry <base>...<branch>` OR, when that misses, by a
+  content-equality merge-tree check, never by `git merge-base --is-ancestor`
+  -- a squash-merged base makes ancestry unreliable (see memory
+  `feedback_git_main_squash_divergence`), and a MULTI-commit branch squashed
+  into one base commit defeats `git cherry`'s patch-ids too.
 - A branch whose remote-tracking ref is entirely absent is ambiguous --
   "never pushed" (real local-only work; must keep) and "pushed, then the
   remote branch and the local tracking ref were both pruned" (safe to
@@ -59,6 +65,8 @@ from pathlib import Path
 from typing import Any
 
 from worktrail.router import quarantine_selfcheck
+
+from ..shared import git_merged
 
 _REVIEWS_UNTRACKED_RE = re.compile(r"^\?\? .*openspec/changes/[^/]+/reviews/")
 
@@ -166,16 +174,45 @@ def has_unpushed_commits(
         return None
 
 
+def push_remote_name(repo: Path) -> str:
+    """The remote this checkout actually pushes to and opens PRs against:
+    `git config remote.pushDefault`, else `origin`.
+
+    On a fork layout (aspens: `origin=aspenkit/aspens` upstream,
+    `remote.pushDefault=fork=behindthedash/aspens`) `origin/<base>` is the
+    UPSTREAM's base, which never carries this fleet's merges -- so every
+    worktree classifies UNMERGED and the sweep reports nothing reclaimable.
+    Verified 2026-09-18 while tearing down 15 aspens spec worktrees by hand.
+    Same knob `land_pr`, `queue_triage` and `automerge_preflight` honor.
+    """
+    out = _run(["git", "-C", str(repo), "config", "--get", "remote.pushDefault"])
+    if out is None or out.returncode != 0:
+        return "origin"
+    return (out.stdout or "").strip() or "origin"
+
+
 def is_merged_into_base(
     repo: Path, base: str, branch: str, remote: str = "origin"
 ) -> bool:
-    """Squash-merge-safe "is it merged": every commit unique to `branch`
-    already exists on `<remote>/<base>` (`git cherry` with no `+` lines).
+    """Squash-merge-safe "is it merged", by patch equivalence OR by content.
+
+    `git cherry` (no `+` lines) catches a branch whose commits were each
+    replayed onto base. It does NOT catch a MULTI-commit branch squashed into
+    a single base commit -- no individual commit's patch-id survives that --
+    which is the shape every worktrail tail PR lands in. So a `git cherry`
+    miss falls through to the content check
+    (`shared.git_merged.branch_content_in_base`, a three-way merge that
+    yields base's own tree iff the branch contributes nothing new), the same
+    test the orchestrator uses to prune already-landed dependency branches.
     """
     out = _run(["git", "-C", str(repo), "cherry", f"{remote}/{base}", branch])
-    if out is None or out.returncode != 0:
-        return False
-    return not any(ln.startswith("+") for ln in out.stdout.splitlines())
+    if (
+        out is not None
+        and out.returncode == 0
+        and not any(ln.startswith("+") for ln in out.stdout.splitlines())
+    ):
+        return True
+    return git_merged.branch_content_in_base(repo, branch, f"{remote}/{base}")
 
 
 def remote_branch_gone(repo: Path, branch: str, remote: str = "origin") -> bool:
@@ -439,8 +476,14 @@ def classify_worktree(
 
 
 def sweep_repo(
-    repo: Path, remote: str = "origin", do_fetch: bool = True, fetch_timeout: int = 20
+    repo: Path,
+    remote: str | None = None,
+    do_fetch: bool = True,
+    fetch_timeout: int = 20,
 ) -> dict[str, Any]:
+    """`remote=None` (the default) resolves each repo's own push remote --
+    see `push_remote_name`. An explicit `--remote` still wins, and applies to
+    every repo in the sweep."""
     repo = Path(repo).resolve()
     if not (repo / ".git").exists():
         return {
@@ -449,6 +492,9 @@ def sweep_repo(
             "warning": "not a git repository",
             "worktrees": [],
         }
+
+    if remote is None:
+        remote = push_remote_name(repo)
 
     if do_fetch:
         _run(
@@ -477,6 +523,7 @@ def sweep_repo(
         "checked": True,
         "warning": None,
         "base_branch": base,
+        "remote": remote,
         "worktree_count": len(results),
         "reclaimable_count": len(reclaimable),
         "worktrees": results,
@@ -496,7 +543,7 @@ def discover_repos(parent: Path) -> list[Path]:
 
 
 def sweep(
-    repos: list[Path], remote: str = "origin", do_fetch: bool = True
+    repos: list[Path], remote: str | None = None, do_fetch: bool = True
 ) -> list[dict[str, Any]]:
     return [sweep_repo(r, remote=remote, do_fetch=do_fetch) for r in repos]
 
@@ -533,7 +580,12 @@ def main(argv=None) -> int:
         default=None,
         help="parent directory containing multiple repos to sweep (e.g. ~/projects)",
     )
-    p.add_argument("--remote", default="origin")
+    p.add_argument(
+        "--remote",
+        default=None,
+        help="remote to classify merged-ness against; default: each repo's own "
+        "`git config remote.pushDefault`, else origin",
+    )
     p.add_argument(
         "--no-fetch",
         action="store_true",

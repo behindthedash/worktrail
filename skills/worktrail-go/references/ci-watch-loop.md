@@ -116,6 +116,17 @@ only appropriate when the same subagent also owns the failure-classification
 loop below; otherwise end the subagent at PR-opened and let the dispatcher
 finish the tail.
 
+**Re-read the PR state before every `--watch` re-issue, not only after the budget is
+spent.** A MERGED PR is terminal no matter what its check-runs still report, and
+`gh pr checks --watch --fail-fast` never returns on a check that stays pending — so
+deferring the merged-check until the retry budget is exhausted burns the whole budget
+(15+ min on the defaults) on a merge that already happened. Observed on sync PR #1272
+(behindthedash/worktrail, 2026-09-19): auto-merge landed the PR 22s after creation, its
+`auto-merge` check-run stayed `pending` indefinitely, and run go-20260918-212932 had to
+be killed by hand. `land_pr.py`'s `_watch_ci` now calls `_pr_is_merged` at the top of
+every poll and every watch re-issue; an agent driving the loop by hand does the same
+`gh pr view "$PR_NUM" --json state` check on each pass.
+
 **Stuck check-run fallback (after the 3 exhausted `--watch` retries above).** A required
 check-run can report `status:in_progress`/`conclusion:null` indefinitely even after its
 underlying job has actually finished — observed during a GitHub status-page "major"

@@ -2549,6 +2549,51 @@ class EmptyDiffGuard(unittest.TestCase):
                 record["quarantine_reason"], integrate.QUARANTINE_EMPTY_DIFF
             )
 
+    def test_empty_diff_whose_tasks_already_landed_counts_as_delivered(self):
+        """An empty base diff whose deliverable tasks are already ON base is
+        delivered, not quarantined.
+
+        Regression for brief 20260918-213220 member 3: aspens run
+        go-20260918-193109 merged tasks 1.1/2.1 as tail PRs, then quarantined
+        the base group `empty_diff` and cascaded `dependency_quarantined` onto
+        feature-1/3/4 whose own tasks had passed review.
+        """
+        run = FakeRun(pr_view_responses={}, ls_remote_responses={})
+
+        def no_op_diff(*args, **kwargs):
+            cmd = (
+                list(args[1:])
+                if args and isinstance(args[0], (str, Path))
+                else (args[0] if args else [])
+            )
+            if cmd[:2] == ["diff", "--quiet"]:
+                run.calls.append(cmd)
+                return Proc(0, "", "")
+            return run(*args, **kwargs)
+
+        class _AlreadyLanded:
+            @staticmethod
+            def has_commits_beyond(repo, branch, base_ref):
+                return True
+
+            @staticmethod
+            def branch_content_in_base(repo, branch, base_ref):
+                return True
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            journal_path = str(Path(tmpdir) / "journal.json")
+            with patch.object(integrate, "git_merged", _AlreadyLanded):
+                self._run_group(no_op_diff, journal_path)
+
+            self.assertEqual(
+                run.find_calls("gh", "pr", "create"),
+                [],
+                "there is nothing left to ship, so still no PR",
+            )
+            record = json.loads(Path(journal_path).read_text())["groups"]["base"]
+            self.assertEqual(record["state"], "MERGED")
+            self.assertEqual(record.get("quarantine_reason", ""), "")
+
     def test_non_empty_diff_still_pushes_and_opens_pr(self):
         """REQUIREMENT: the guard must not false-positive on real work -- the
         default FakeRun response (a non-empty diff) proceeds normally."""
@@ -2775,6 +2820,86 @@ class ForeignRepoTargetQuarantine(unittest.TestCase):
             )
         self.assertEqual(
             [f["repo"] for f in foreign], [str((home / "tilde" / "f.txt").resolve())]
+        )
+
+
+class DeliverableAlreadyInTargetTests(unittest.TestCase):
+    """`_deliverable_already_in_target` against real git, not a mock: the
+    squash-merge shape is exactly what commit-identity checks get wrong."""
+
+    def _git(self, repo, *args):
+        return subprocess.run(
+            ["git", "-C", str(repo), *args],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.repo = Path(self._tmp.name) / "repo"
+        self.repo.mkdir()
+        subprocess.run(
+            ["git", "init", "-q", "-b", "main", str(self.repo)],
+            check=True,
+            capture_output=True,
+        )
+        self._git(self.repo, "config", "user.email", "t@example.com")
+        self._git(self.repo, "config", "user.name", "t")
+        (self.repo / "README.md").write_text("base\n")
+        self._git(self.repo, "add", "-A")
+        self._git(self.repo, "commit", "-q", "-m", "init")
+
+    def _task_branch_with_work(self, branch: str, filename: str, body: str):
+        self._git(self.repo, "checkout", "-q", "-b", branch)
+        (self.repo / filename).write_text(body)
+        self._git(self.repo, "add", "-A")
+        self._git(self.repo, "commit", "-q", "-m", f"work on {branch}")
+        self._git(self.repo, "checkout", "-q", "main")
+
+    def test_squash_merged_task_reads_as_already_in_target(self):
+        self._task_branch_with_work("spec-001/t001", "a.py", "print(1)\n")
+        # Squash-merge it the way a tail PR does: one new commit on main with
+        # the same content and no ancestry link to the task branch.
+        self._git(self.repo, "merge", "--squash", "spec-001/t001")
+        self._git(self.repo, "commit", "-q", "-m", "squash: t001")
+        self.assertTrue(
+            integrate._deliverable_already_in_target(
+                self.repo, "spec-001", ["T001"], "main"
+            )
+        )
+
+    def test_branch_with_no_commits_stays_a_true_no_op(self):
+        self._git(self.repo, "branch", "spec-001/t001", "main")
+        self.assertFalse(
+            integrate._deliverable_already_in_target(
+                self.repo, "spec-001", ["T001"], "main"
+            )
+        )
+
+    def test_unlanded_work_is_not_already_in_target(self):
+        self._task_branch_with_work("spec-001/t001", "a.py", "print(1)\n")
+        self.assertFalse(
+            integrate._deliverable_already_in_target(
+                self.repo, "spec-001", ["T001"], "main"
+            )
+        )
+
+    def test_one_unlanded_task_disqualifies_the_whole_group(self):
+        self._task_branch_with_work("spec-001/t001", "a.py", "print(1)\n")
+        self._task_branch_with_work("spec-001/t002", "b.py", "print(2)\n")
+        self._git(self.repo, "merge", "--squash", "spec-001/t001")
+        self._git(self.repo, "commit", "-q", "-m", "squash: t001")
+        self.assertFalse(
+            integrate._deliverable_already_in_target(
+                self.repo, "spec-001", ["T001", "T002"], "main"
+            )
+        )
+
+    def test_empty_deliverable_list_is_never_delivered(self):
+        self.assertFalse(
+            integrate._deliverable_already_in_target(self.repo, "spec-001", [], "main")
         )
 
 

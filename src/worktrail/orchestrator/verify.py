@@ -525,11 +525,19 @@ class Verifier:
     def _preflight_runner(self, cmd: list[str], **_: Any):
         """Adapt the injected verifier runner to automerge_preflight's API.
 
+        Every `git` call the preflight makes has to be pinned to `self.repo`
+        with `-C`: the verifier's runner executes from its own neutral cwd,
+        so an unpinned `git config`/`git remote` would answer for whatever
+        directory that happens to be. `git config --get remote.pushDefault`
+        (added when the preflight started resolving the PR's real target
+        remote) is one of those -- without the rewrite the gate silently falls
+        back to `origin` here and keeps reading the upstream on a fork layout.
+
         `gh api` has no `--repo`/`-R` flag; automerge_preflight's endpoints
         already embed `owner/repo` literally (e.g. `repos/{owner_repo}/...`),
         so no rewrite is needed for `gh api` calls.
         """
-        if cmd[:3] == ["git", "remote", "get-url"]:
+        if cmd[:1] == ["git"] and cmd[1:3] != ["-C", str(self.repo)]:
             cmd = ["git", "-C", str(self.repo), *cmd[1:]]
         return self.run(cmd)
 

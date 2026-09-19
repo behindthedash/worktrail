@@ -1,6 +1,6 @@
 ## 1. Resolve the PR target remote in the preflight helper
 
-- [ ] 1.1 In `src/worktrail/router/automerge_preflight.py`, give `owner_repo_from_git` a
+- [x] 1.1 In `src/worktrail/router/automerge_preflight.py`, give `owner_repo_from_git` a
       `remote: str | None = None` parameter. When `remote` is None, run
       `git config --get remote.pushDefault` (via `runner`, `cwd=repo`) and use its stripped
       stdout when the call succeeds and is non-empty, else `origin`. Then run
@@ -17,7 +17,7 @@
       the gate reason names `fork` with `is_preflight_query_error` False.
       files: src/worktrail/router/automerge_preflight.py, tests/router/test_automerge_preflight.py
 
-- [ ] 1.2 In `src/worktrail/orchestrator/verify.py`, change `_preflight_runner` so any
+- [x] 1.2 In `src/worktrail/orchestrator/verify.py`, change `_preflight_runner` so any
       command whose first token is `git` is rewritten to `["git", "-C", str(self.repo),
       *cmd[1:]]` (the current check only matches `git remote get-url`). Update the docstring.
       (Requirement: Orchestrator preflight adapter covers every git call.)
@@ -28,7 +28,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [depends: 1.1, 1.2] [e2e] Run `PYTHONPATH=src pytest -q
+- [x] 2.1 [depends: 1.1, 1.2] [e2e] Run `PYTHONPATH=src pytest -q
       tests/router/test_automerge_preflight.py tests/orchestrator/test_verify.py
       tests/router/test_check_review_threads.py tests/router/test_pr_labels.py`, then
       `PYTHONPATH=src pytest -q` and

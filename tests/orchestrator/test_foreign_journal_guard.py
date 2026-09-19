@@ -270,6 +270,10 @@ class FullRealInnerFreshDiscardsForeignJournalTest(unittest.TestCase):
 
             fake_git = MagicMock()
             fake_git.stdout = "dev"
+            # `_require_spec_at_fanout_refs` reads returncodes; a bare
+            # MagicMock's `.returncode` is a Mock (never == 0) and would read
+            # as "spec absent at HEAD".
+            fake_git.returncode = 0
 
             current_tasks = [{"id": "1.1", "status": "pending"}]
 

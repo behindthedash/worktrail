@@ -37,6 +37,11 @@ triggers:
     - reconcile_pr_labels
     - load_run_index
     - base_slug
+    - automerge_preflight
+    - required_checks_gate
+    - owner_repo_from_git
+    - push_remote_name
+    - remote.pushDefault
 ---
 
 You are working on **worktrail's GO v2 front door**: loading repo policy, classifying free-text
@@ -252,6 +257,20 @@ agents or writes task files — that is `orchestrator/`'s job.
   `check_review_threads.check`, which otherwise derives them from `origin`. With no
   `pushDefault`, `base_slug` is `None` and calls are unchanged. Any new PR- or run-scoped `gh`
   call added to `land_pr.py` must take `base_slug` too.
+- **`automerge_preflight` reads the remote the PR will actually be opened against, and refuses
+  rather than falling back to another one.** `required_checks_gate()` resolves the target remote
+  once via `push_remote_name()` (`remote.pushDefault`, else `origin`) and threads it into
+  `owner_repo_from_git(..., remote=)`; both also accept an explicit `remote` override. A selected
+  remote that does not exist returns `None` — the old fallback to `origin` answered about a
+  *different repository*, which on a fork layout is the read-only upstream (behindthedash/aspens
+  PR #26, 2026-09-18: the gate read `aspenkit/aspens`'s `allow_auto_merge=false` and put
+  `go:no-automerge` on a PR that was never going to be opened there). The refusal reason names
+  the remote it tried, and `is_preflight_query_error()` stays False for it — an unresolvable
+  remote is a confirmed state, not a transient read failure. The orchestrator's adapter
+  (`verify.Verifier._preflight_runner`) rewrites **every** `git` call to `git -C <repo> ...`, not
+  just `git remote get-url`: the verifier's runner executes from its own neutral cwd, so an
+  unpinned `git config --get remote.pushDefault` read would answer for that directory and
+  silently re-select `origin`.
 - **`flip_and_archive`'s default (`task_ids=None`) targets *every* task id, not just the pending
   ones.** The whole point of this module is bookkeeping drift, and its purest case is a change whose
   `tasks.md` is already 100% `[x]` but was never archived. A pending-only default left both
@@ -308,6 +327,10 @@ agents or writes task files — that is `orchestrator/`'s job.
   every PR-opening call site should compose with instead of reimplementing a subset; `_push()`'s
   explicit-refspec + `detail_out` contract lives here, as does `_gh()`'s `base_slug` (`-R <slug>`)
   scoping of every post-PR-open call
+- `router/automerge_preflight.py` — `required_checks_gate()`, `owner_repo_from_git()`,
+  `push_remote_name()`, `is_preflight_query_error()`; the live GitHub-side half of the automerge
+  gate and the single resolution point for the *read* side's target remote, so the gate can never
+  inspect a different repository than `land_pr` pushes the branch and opens the PR against
 - `router/close_stale_openspec.py` — `flip_and_archive()` plus `main()`'s `land_pr` landing and
   outcome→exit-code mapping for the `worktrail-close-stale-openspec` console script
 

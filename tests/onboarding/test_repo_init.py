@@ -9,7 +9,7 @@ from unittest import mock
 
 import yaml
 
-from worktrail.onboarding import repo_init
+from worktrail.onboarding import gitleaks_template, repo_init
 
 
 def _tmp_repo() -> Path:
@@ -195,6 +195,123 @@ class BuildRulesetTests(unittest.TestCase):
         self.assertIn("required_linear_history", types)
 
 
+class BuildGitleaksWorkflowTests(unittest.TestCase):
+    """A leaked secret must block merge, so `gitleaks-pr-diff` is a REQUIRED
+    check -- which constrains its shape: a required check that a docs-only
+    diff skips never reports a status and deadlocks the merge."""
+
+    def setUp(self):
+        self.text = repo_init.build_gitleaks_workflow(["dev", "prd"])
+        self.doc = yaml.safe_load(self.text)
+
+    def test_is_valid_yaml_with_both_jobs(self):
+        self.assertEqual(self.doc["name"], "CI: Secrets Scanning (gitleaks)")
+        self.assertEqual(
+            sorted(self.doc["jobs"]), ["gitleaks-full-history", "gitleaks-pr-diff"]
+        )
+
+    def test_the_job_name_is_the_required_check_context(self):
+        self.assertIn(repo_init.GITLEAKS_PR_DIFF_JOB_NAME, self.doc["jobs"])
+        self.assertIn(
+            repo_init.GITLEAKS_PR_DIFF_JOB_NAME, repo_init.REQUIRED_CHECK_JOB_NAMES
+        )
+
+    def test_pr_job_has_no_paths_filter_and_no_change_gate(self):
+        # PyYAML's SafeLoader resolves the bare `on:` GHA trigger key to True.
+        pull_request = self.doc[True]["pull_request"]
+        self.assertNotIn("paths", pull_request)
+        self.assertNotIn("paths-ignore", pull_request)
+        self.assertNotIn("needs", self.doc["jobs"]["gitleaks-pr-diff"])
+
+    def test_pr_job_targets_the_repos_own_branch_model(self):
+        self.assertEqual(self.doc[True]["pull_request"]["branches"], ["dev", "prd"])
+        main_only = yaml.safe_load(repo_init.build_gitleaks_workflow(["main"]))
+        self.assertEqual(main_only[True]["pull_request"]["branches"], ["main"])
+
+    def test_full_history_job_is_workflow_dispatch_only(self):
+        self.assertIn("workflow_dispatch", self.doc[True])
+        self.assertEqual(
+            self.doc["jobs"]["gitleaks-full-history"]["if"],
+            "github.event_name == 'workflow_dispatch'",
+        )
+        self.assertEqual(
+            self.doc["jobs"]["gitleaks-pr-diff"]["if"],
+            "github.event_name == 'pull_request'",
+        )
+
+    def test_pr_job_scans_only_the_prs_own_commits_with_full_depth(self):
+        steps = self.doc["jobs"]["gitleaks-pr-diff"]["steps"]
+        checkout = next(
+            s for s in steps if str(s.get("uses", "")).startswith("actions/checkout")
+        )
+        self.assertEqual(checkout["with"]["fetch-depth"], 0)
+        scan = next(s for s in steps if s.get("name") == "Scan PR diff")
+        self.assertIn("--log-opts=", scan["run"])
+        self.assertIn("pull_request.base.sha", scan["run"])
+        self.assertIn("pull_request.head.sha", scan["run"])
+
+    def test_signal_integrity_step_is_not_continue_on_error(self):
+        """gitleaks reports "no leaks found" identically for a clean scan and
+        for a scan that covered zero commits."""
+        for job in ("gitleaks-pr-diff", "gitleaks-full-history"):
+            step = next(
+                s
+                for s in self.doc["jobs"][job]["steps"]
+                if str(s.get("name", "")).startswith("Assert gitleaks signal integrity")
+            )
+            self.assertNotIn("continue-on-error", step)
+            self.assertIn(repo_init.GITLEAKS_SCRIPT_RELPATH, step["run"])
+            self.assertIn("--min-commits 1", step["run"])
+
+    def test_vendored_script_matches_the_source_of_truth(self):
+        """There is no automated sync from this repo's own copy, so the only
+        thing keeping the two from drifting is this assertion."""
+        source = (
+            Path(repo_init.__file__).resolve().parents[3]
+            / repo_init.GITLEAKS_SCRIPT_RELPATH
+        )
+        self.assertTrue(source.is_file(), f"source of truth missing at {source}")
+        self.assertEqual(
+            gitleaks_template.CHECK_GITLEAKS_SIGNAL_INTEGRITY_PY, source.read_text()
+        )
+
+
+class DefaultPolicySeedTests(unittest.TestCase):
+    """A commented-out default leaves the auto-merge workflow this same run
+    scaffolds inert (~/rules/CLAUDE.repo.md section 3)."""
+
+    def test_seeds_the_fleet_automerge_default(self):
+        policy = yaml.safe_load(repo_init.default_policy_yaml("some-repo"))
+        self.assertEqual(policy["automerge"], {"enabled": True, "max_risk": "medium"})
+
+    def test_seed_composes_with_the_other_optional_keys(self):
+        policy = yaml.safe_load(
+            repo_init.default_policy_yaml(
+                "some-repo", enable_aspens=True, pre_commit_cmd="ruff format ."
+            )
+        )
+        self.assertEqual(policy["automerge"], {"enabled": True, "max_risk": "medium"})
+        self.assertEqual(policy["add_ons"], {"aspens": {}})
+        self.assertEqual(policy["pre_commit_cmd"], "ruff format .")
+
+    def test_the_seeded_value_is_what_policy_resolves(self):
+        """Seeding a value policy.py would reject or clamp would be worse than
+        seeding nothing: run it through the real loader and gate."""
+        from worktrail.router import policy as policy_mod
+
+        repo = Path(tempfile.mkdtemp(prefix="policy-seed-"))
+        (repo / ".worktrail").mkdir()
+        (repo / ".worktrail" / "policy.yaml").write_text(
+            repo_init.default_policy_yaml("some-repo"), encoding="utf-8"
+        )
+        loaded = policy_mod.load_policy(repo)
+        self.assertEqual(loaded["automerge"]["max_risk"], "medium")
+        ok, _reason = policy_mod.automerge_eligible(loaded, "medium", [], "dev")
+        self.assertTrue(ok)
+        blocked, _reason = policy_mod.automerge_eligible(loaded, "high", [], "dev")
+        self.assertFalse(blocked)
+
+
 class BuildAutomergeWorkflowTests(unittest.TestCase):
     def test_is_valid_yaml_with_expected_shape(self):
         doc = yaml.safe_load(repo_init.build_automerge_workflow())
@@ -211,8 +328,42 @@ class BuildAutomergeWorkflowTests(unittest.TestCase):
 
     def test_picks_squash_for_dev_merge_otherwise(self):
         text = repo_init.build_automerge_workflow()
-        self.assertIn('base.ref }}" = "dev"', text)
-        self.assertIn("--auto --squash", text)
+        self.assertIn("dev) gh pr merge --auto --squash", text)
+        self.assertIn("prd) gh pr merge --auto --merge", text)
+
+    def test_arm_step_merge_method_matches_the_rulesets(self):
+        """The generated workflow must never arm a merge method the branch's
+        own ruleset forbids -- arming one simply never arms at all.
+
+        Regression for brief 20260918-213220 member 1: `--branch-model main`
+        wrote a squash-only protect-main.json but rendered an arm step that
+        ran `gh pr merge --auto --merge` for every base except `dev`, so
+        auto-merge could never arm on a trunk repo (worked around by hand in
+        aspens PR #18).
+        """
+        text = repo_init.build_automerge_workflow()
+        for model in ("2", "3", "main"):
+            for branch in repo_init.branches_for_model(model):
+                rs = repo_init.build_ruleset_for_branch(branch, model)
+                pr_rule = next(r for r in rs["rules"] if r["type"] == "pull_request")
+                allowed = pr_rule["parameters"]["allowed_merge_methods"]
+                armed = repo_init.merge_method_for_branch(branch)
+                self.assertIn(
+                    armed,
+                    allowed,
+                    f"{model}/{branch}: workflow arms --{armed} but the ruleset "
+                    f"allows only {allowed}",
+                )
+                self.assertIn(
+                    f"{branch}) gh pr merge --auto --{armed}",
+                    text,
+                    f"{model}/{branch}: no arm case rendered for this base",
+                )
+
+    def test_main_model_arms_squash_not_merge(self):
+        text = repo_init.build_automerge_workflow()
+        self.assertIn("main) gh pr merge --auto --squash", text)
+        self.assertNotIn("main) gh pr merge --auto --merge", text)
         self.assertIn("--auto --merge", text)
 
 
@@ -520,7 +671,10 @@ class ProposeTests(unittest.TestCase):
             )
             self.assertEqual(
                 rsc_rule["parameters"]["required_status_checks"],
-                [{"context": repo_init.OPENSPEC_VALIDATE_JOB_NAME}],
+                [
+                    {"context": repo_init.OPENSPEC_VALIDATE_JOB_NAME},
+                    {"context": repo_init.GITLEAKS_PR_DIFF_JOB_NAME},
+                ],
             )
 
     def test_rerun_after_workflow_written_is_noop_on_workflow_and_required_checks(self):
@@ -561,14 +715,17 @@ class ProposeTests(unittest.TestCase):
     def test_hand_authored_workflow_and_ruleset_missing_check_is_full_noop(self):
         # Task 5.3, "workflow already present, not newly written": unlike the
         # rerun-after-propose case above, this ruleset does NOT already
-        # contain the check, so this pins the openspec_validate_newly_written
-        # gate itself -- patch_ruleset_required_check's already-present
+        # contain the check, so this pins the newly-written-this-run gate
+        # itself -- patch_ruleset_required_check's already-present
         # short-circuit (task 3.2) cannot account for a no-op here.
         repo = _tmp_repo()
         workflow_path = repo / repo_init.OPENSPEC_VALIDATE_WORKFLOW_RELPATH
         workflow_path.parent.mkdir(parents=True)
         hand_authored_workflow = "# hand-authored, not the generated workflow\n"
         workflow_path.write_text(hand_authored_workflow)
+        # Every gate workflow has to be present for this to be a full no-op:
+        # a gate this run DOES write legitimately earns its ruleset entry.
+        (repo / repo_init.GITLEAKS_WORKFLOW_RELPATH).write_text(hand_authored_workflow)
 
         rulesets_dir = repo / ".github" / "rulesets"
         rulesets_dir.mkdir(parents=True)
@@ -596,6 +753,63 @@ class ProposeTests(unittest.TestCase):
         )
         self.assertEqual(
             (rulesets_dir / "protect-prd.json").read_text(), prd_ruleset_before
+        )
+
+    def test_only_the_newly_written_gate_workflow_is_required(self):
+        """Spec scenario "Only one workflow is new": `gitleaks.yml` is already
+        there, `worktrail-openspec-validate.yml` is written this run, so only
+        the latter's job name is added."""
+        repo = _tmp_repo()
+        (repo / ".github" / "workflows").mkdir(parents=True)
+        (repo / repo_init.GITLEAKS_WORKFLOW_RELPATH).write_text("# hand-authored\n")
+
+        rc, _result = self._run_propose(repo)
+
+        self.assertEqual(rc, 0)
+        for branch_file in ("protect-dev.json", "protect-prd.json"):
+            ruleset = json.loads(
+                (repo / ".github" / "rulesets" / branch_file).read_text()
+            )
+            rsc_rule = next(
+                r for r in ruleset["rules"] if r["type"] == "required_status_checks"
+            )
+            self.assertEqual(
+                rsc_rule["parameters"]["required_status_checks"],
+                [{"context": repo_init.OPENSPEC_VALIDATE_JOB_NAME}],
+            )
+
+    def test_fresh_repo_writes_the_gitleaks_workflow_and_vendored_script(self):
+        repo = _tmp_repo()
+        rc, result = self._run_propose(repo)
+        self.assertEqual(rc, 0)
+        self.assertIn(repo_init.GITLEAKS_WORKFLOW_RELPATH, result["written"])
+        self.assertIn(repo_init.GITLEAKS_SCRIPT_RELPATH, result["written"])
+        self.assertEqual(
+            (repo / repo_init.GITLEAKS_WORKFLOW_RELPATH).read_text(),
+            repo_init.build_gitleaks_workflow(["dev", "prd"]),
+        )
+        self.assertEqual(
+            (repo / repo_init.GITLEAKS_SCRIPT_RELPATH).read_text(),
+            gitleaks_template.CHECK_GITLEAKS_SIGNAL_INTEGRITY_PY,
+        )
+
+    def test_existing_gitleaks_workflow_and_script_are_skipped(self):
+        repo = _tmp_repo()
+        (repo / ".github" / "workflows").mkdir(parents=True)
+        (repo / repo_init.GITLEAKS_WORKFLOW_RELPATH).write_text("# mine\n")
+        (repo / "scripts" / "ci").mkdir(parents=True)
+        (repo / repo_init.GITLEAKS_SCRIPT_RELPATH).write_text("# mine\n")
+
+        rc, result = self._run_propose(repo)
+
+        self.assertEqual(rc, 0)
+        self.assertNotIn(repo_init.GITLEAKS_WORKFLOW_RELPATH, result["written"])
+        self.assertNotIn(repo_init.GITLEAKS_SCRIPT_RELPATH, result["written"])
+        self.assertEqual(
+            (repo / repo_init.GITLEAKS_WORKFLOW_RELPATH).read_text(), "# mine\n"
+        )
+        self.assertEqual(
+            (repo / repo_init.GITLEAKS_SCRIPT_RELPATH).read_text(), "# mine\n"
         )
 
     def test_already_onboarded_repo_patches_existing_rulesets_without_altering_other_rules(
@@ -675,7 +889,10 @@ class ProposeTests(unittest.TestCase):
         )
         self.assertEqual(
             dev_rsc["parameters"]["required_status_checks"],
-            [{"context": repo_init.OPENSPEC_VALIDATE_JOB_NAME}],
+            [
+                {"context": repo_init.OPENSPEC_VALIDATE_JOB_NAME},
+                {"context": repo_init.GITLEAKS_PR_DIFF_JOB_NAME},
+            ],
         )
 
         # protect-prd.json had a pre-existing "Lint, Test & Build" check:
@@ -692,6 +909,7 @@ class ProposeTests(unittest.TestCase):
             [
                 {"context": "Lint, Test & Build"},
                 {"context": repo_init.OPENSPEC_VALIDATE_JOB_NAME},
+                {"context": repo_init.GITLEAKS_PR_DIFF_JOB_NAME},
             ],
         )
 
@@ -725,7 +943,10 @@ class ProposeTests(unittest.TestCase):
             )
             self.assertEqual(
                 rsc_rule["parameters"]["required_status_checks"],
-                [{"context": repo_init.OPENSPEC_VALIDATE_JOB_NAME}],
+                [
+                    {"context": repo_init.OPENSPEC_VALIDATE_JOB_NAME},
+                    {"context": repo_init.GITLEAKS_PR_DIFF_JOB_NAME},
+                ],
             )
 
     def test_unrelated_discovered_ci_job_is_not_patched_into_existing_ruleset(self):
@@ -759,7 +980,10 @@ class ProposeTests(unittest.TestCase):
         )
         self.assertEqual(
             rsc_rule["parameters"]["required_status_checks"],
-            [{"context": repo_init.OPENSPEC_VALIDATE_JOB_NAME}],
+            [
+                {"context": repo_init.OPENSPEC_VALIDATE_JOB_NAME},
+                {"context": repo_init.GITLEAKS_PR_DIFF_JOB_NAME},
+            ],
         )
 
     def test_preexisting_ruleset_already_containing_check_is_byte_for_byte_unchanged(
@@ -774,7 +998,10 @@ class ProposeTests(unittest.TestCase):
         rulesets_dir = repo / ".github" / "rulesets"
         rulesets_dir.mkdir(parents=True)
         dev_ruleset = repo_init.build_ruleset(
-            "protect-dev", "dev", ["squash"], [repo_init.OPENSPEC_VALIDATE_JOB_NAME]
+            "protect-dev",
+            "dev",
+            ["squash"],
+            list(repo_init.REQUIRED_CHECK_JOB_NAMES),
         )
         dev_path = rulesets_dir / "protect-dev.json"
         dev_text_before = json.dumps(dev_ruleset, indent=2) + "\n"

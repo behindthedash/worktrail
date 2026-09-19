@@ -78,6 +78,9 @@ class UnconditionalPipelineRouting(unittest.TestCase):
     def _patches(self):
         fake_git = MagicMock()
         fake_git.stdout = "dev"
+        # `_require_spec_at_fanout_refs` reads returncodes; a bare MagicMock's
+        # `.returncode` is a Mock (never == 0) and would read as "spec absent".
+        fake_git.returncode = 0
         fake_integrate = types.ModuleType("integrate")
         fake_verify = types.ModuleType("verify")
         fake_sched_result = {
@@ -94,6 +97,14 @@ class UnconditionalPipelineRouting(unittest.TestCase):
             patch(
                 "worktrail.orchestrator.live.journal_path_for",
                 return_value="/tmp/fake-journal-pipeline-test.json",
+            ),
+            # The fan-out preflight (`_refuse_relaunch_over_live_workers`)
+            # loads the spec to know which task worktrees to probe; this repo
+            # path is fake, so give it a real answer rather than letting the
+            # guard's own best-effort fallback silently skip it.
+            patch(
+                "worktrail.orchestrator.live.taskformats.load_spec",
+                return_value=("spec-id", [{"id": "1.1"}]),
             ),
             patch(
                 "worktrail.orchestrator.live.read_or_create_run_id",

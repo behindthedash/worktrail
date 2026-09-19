@@ -1159,6 +1159,50 @@ def _same_owner(existing_path: Path, by: str | None) -> bool | None:
     return claimed_by is not None and claimed_by == by
 
 
+def claim_liveness(path: Path) -> str:
+    """Whether the process that claimed `path` is still running.
+
+    Returns "live", "dead", or "unknown". Only ever "dead" on POSITIVE
+    evidence: the brief carries a `claimed-by-pid`, its `claimed-by-host`
+    matches this host (a pid from another machine says nothing about a pid
+    here), and no such process exists. Anything else -- a brief claimed
+    before this stamp existed, a claim from another host, an unreadable
+    frontmatter -- is "unknown", never "dead".
+
+    Fixing what `already-claimed` could report: an apply interrupted right
+    after its claim left brief 20260918-154644 in picked/ with no live
+    process, no PR and a scaffold-only worktree, and every retry answered
+    "brief already actioned by a concurrent triage run" though no concurrent
+    run existed (brief 20260918-180921). Recovery was three manual commands.
+    """
+    try:
+        fm = _read_frontmatter(path)
+    except (OSError, ValueError):
+        return "unknown"
+    pid_raw = fm.get("claimed-by-pid")
+    host = fm.get("claimed-by-host")
+    if pid_raw is None or host is None:
+        return "unknown"
+    if str(host) != socket.gethostname():
+        return "unknown"
+    try:
+        pid = int(str(pid_raw))
+    except ValueError:
+        return "unknown"
+    if pid <= 0:
+        return "unknown"
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return "dead"
+    except PermissionError:
+        # The pid exists and belongs to another user -- alive, just not ours.
+        return "live"
+    except OSError:
+        return "unknown"
+    return "live"
+
+
 def _ownership_block(path: Path, by: str | None, force: bool) -> dict[str, Any] | None:
     """Guard for done()/release(): refuse to mutate a brief stamped `claimed-by`
     a different identity than `by`, unless `force` overrides.
@@ -1224,6 +1268,7 @@ def claim(identifier: str, by: str | None = None) -> dict[str, Any]:
                     "error": None,
                     "warnings": [],
                     "same_owner": _same_owner(picked_path, by),
+                    "owner_liveness": claim_liveness(picked_path),
                 }
         return {
             "status": res["status"],
@@ -1246,6 +1291,7 @@ def claim(identifier: str, by: str | None = None) -> dict[str, Any]:
                 "error": None,
                 "warnings": [],
                 "same_owner": _same_owner(dst, by),
+                "owner_liveness": claim_liveness(dst),
             }
         os.rename(src, dst)  # atomic within one filesystem
     except FileNotFoundError:  # another agent won the race
@@ -1256,6 +1302,7 @@ def claim(identifier: str, by: str | None = None) -> dict[str, Any]:
             "error": None,
             "warnings": [],
             "same_owner": False,
+            "owner_liveness": "live",  # another agent won the rename just now
         }
     except OSError as exc:
         return {
@@ -1285,6 +1332,13 @@ def claim(identifier: str, by: str | None = None) -> dict[str, Any]:
                 "status": "picked",
                 "claimed-at": _now_iso(),
                 "claimed-by": by or _agent_label(),
+                # Stamped even when `by` is an explicit constant label (e.g.
+                # queue-triage's), because that label carries no liveness
+                # information at all: without these a caller that hits
+                # `already-claimed` cannot tell a live concurrent run from a
+                # claim an interrupted run abandoned. See `claim_liveness`.
+                "claimed-by-host": socket.gethostname(),
+                "claimed-by-pid": str(os.getpid()),
             },
         )
     except OSError as exc:  # claim already holds; stamping is best-effort

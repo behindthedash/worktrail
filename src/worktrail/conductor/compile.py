@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import Any
 
 from worktrail.conductor import parallelism, req_coverage, runplan
-from worktrail.conductor.import_deps import import_dep_edges
+from worktrail.conductor.import_deps import import_dep_edges, produced_file_dep_edges
 from worktrail.conductor.runplan import (
     COMPILE_MARKER_NAME,
     SOURCE_BASELINE,
@@ -264,15 +264,22 @@ def _plan_from_tasks(
 ) -> tuple[RunPlan, list[str]]:
     """The plan implied by the artifact alone, plus any inference warnings.
 
-    `repo` enables import inference (`import_dep_edges`); without it only the
-    authored and prose edges are unioned, which is what a caller with no repo
-    on hand (a unit test, a pre-resolution probe) gets.
+    `repo` enables the two on-disk inferences (`import_dep_edges` for imports
+    that already resolve, `produced_file_dep_edges` for a file one task
+    creates and another names in prose); without it only the authored and
+    prose-id edges are unioned, which is what a caller with no repo on hand
+    (a unit test, a pre-resolution probe) gets.
     """
     prose_deps, _ = prose_dep_edges(tasks)
     import_deps: dict[str, list[str]] = {}
+    produced_deps: dict[str, list[str]] = {}
     warnings: list[str] = []
     if repo is not None:
         import_deps, warnings = import_dep_edges(tasks, Path(repo))
+        produced_deps, produced_warnings = produced_file_dep_edges(
+            tasks, Path(repo), _task_prose
+        )
+        warnings = [*warnings, *produced_warnings]
     return RunPlan(
         spec_id=spec_id,
         fingerprint=fp,
@@ -285,6 +292,7 @@ def _plan_from_tasks(
                     runplan._norm_str_list(t.get("deps")),
                     prose_deps.get(str(t["id"]), ()),
                     import_deps.get(str(t["id"]), ()),
+                    produced_deps.get(str(t["id"]), ()),
                 ),
                 kind=str(t.get("kind") or ""),
                 complexity=str(t.get("complexity") or ""),
@@ -485,16 +493,22 @@ def _validate(
     so an authored "depends on 2.1" has to survive it exactly as it survives
     the seed path -- a model that never saw the sentence as a constraint would
     otherwise silently drop the edge. `repo` does the same for the edges implied
-    by a Python import between two tasks' declared files, which the model cannot
-    be relied on to see either.
+    by a Python import between two tasks' declared files, and for the edges
+    implied by one task's prose naming a file another task has yet to create,
+    neither of which the model can be relied on to see either.
     """
     valid_purposes = set(purpose_tiers or {})
     prose_deps, problems = prose_dep_edges(tasks or [])
     warnings: list[str] = []
     import_deps: dict[str, list[str]] = {}
+    produced_deps: dict[str, list[str]] = {}
     if repo is not None:
         import_deps, import_warnings = import_dep_edges(tasks or [], Path(repo))
         warnings.extend(import_warnings)
+        produced_deps, produced_warnings = produced_file_dep_edges(
+            tasks or [], Path(repo), _task_prose
+        )
+        warnings.extend(produced_warnings)
     rows = payload.get("tasks")
     if not isinstance(rows, list):
         return None, ["payload has no `tasks` list"], warnings
@@ -543,6 +557,7 @@ def _validate(
                 ],
                 prose_deps.get(tid, ()),
                 import_deps.get(tid, ()),
+                produced_deps.get(tid, ()),
             ),
             complexity=str(row.get("complexity") or ""),
             review=str(row.get("review") or ""),
@@ -733,7 +748,14 @@ def compile_run_plan(
         if cached is not None and not allow_force_over_active_worktrees:
             from worktrail.orchestrator import worktree as _worktree
 
-            if _worktree.has_task_worktrees(repo, spec_id):
+            # Pass the spec's own task ids so the guard checks the exact
+            # `<spec_id>-<task_id>` worktree names instead of a bare
+            # `<spec_id>-` prefix -- a prefix match counts a *different*
+            # spec's worktrees whenever one spec id is a prefix of another
+            # (`001-foo` vs `001-foo-bar`) and wrongly refuses this --force.
+            if _worktree.has_task_worktrees(
+                repo, spec_id, task_ids=[t.get("id", "") for t in tasks]
+            ):
                 log(
                     f"run plan: --force refused ({fp[:12]}) -- task worktree(s) already "
                     f"exist for {spec_id} and were fanned out under the currently cached "
