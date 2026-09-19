@@ -215,6 +215,8 @@
           "_focus_overlap",
           "MIN_FOCUS_TOKENS",
           "BATCH_MIN",
+          "fold-into-change",
+          "_fold_task_instruction",
           "workqueue",
           "handoff-brief",
           "queue",
