@@ -46,6 +46,16 @@ a record exists, any host can reload its envelope with
 `worktrail-skill-dispatch --present-decision <id>` and resume through the
 exact id (`#decision-audit`, below).
 
+### Decision sources
+
+Two producers emit this envelope today. Both share the identity rule above, so
+re-firing on unchanged facts converges on one record.
+
+| `provenance.source` | What fires it | What the record cites | How the loop resumes |
+|---|---|---|---|
+| `check_spec_collision` | A pre-run guard finds an existing spec that plausibly owns the requested capability (`spec-collision-check.md`). | `subject` = the spec id; the question names the colliding spec and the two scope readings. | The blocked brief unblocks on answer and the next drain pass re-runs the route from the block site (`#resume-from-decision`). |
+| `orchestrator-review-loop` | The parallel orchestrator's review loop: a **round-2** review report re-raises a **Still Present** conflict between the task's acceptance criteria and existing behaviour (an existing test or documented contract) and names it as a planner/human decision (`decision_required`). Instead of burning further fix rounds, the task is escalated early with `escalation_reason: decision-required` on its journal entry, and non-dependent tasks keep running. | `subject` = `<spec folder>/<task id>`; `run_id` = the live run; the question is the reviewer's text citing the AC and the conflicting test/behaviour, with the reviewer's text carried as the record's recommendation and the resume recipe carried in its context. | After answering, clear the escalated task and resume the same run — the answer is applied by the human editing the AC or the conflicting test before re-dispatch, not by the worker re-litigating it:<br>`worktrail-live clear-task --repo <repo> --spec <spec folder> --tasks <task id>`<br>then re-run `worktrail-live live-run-real` against the same `--out` journal (a resume, not `--fresh`), so only the cleared task and its dependents re-dispatch. |
+
 ## Filing guardrails — what qualifies {#decision-filing-guardrails}
 
 A decision record is for questions **only a human can answer**, that can be answered
