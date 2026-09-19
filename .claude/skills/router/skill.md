@@ -42,6 +42,10 @@ triggers:
     - owner_repo_from_git
     - push_remote_name
     - remote.pushDefault
+    - cluster_detect
+    - focus-overlap
+    - MIN_FOCUS_TOKENS
+    - OVERLAP_THRESHOLD
 ---
 
 You are working on **worktrail's GO v2 front door**: loading repo policy, classifying free-text
@@ -286,6 +290,19 @@ agents or writes task files — that is `orchestrator/`'s job.
   exits 1 without ever calling `land_pr`. The `worktrail-go` close-stale row is one integrated
   invocation now (`worktrail-close-stale-openspec ... --base "$BASE" --run "$RUN" --json`), not a
   separate `worktrail-land-pr` step. Confirming a task is truly shipped remains the agent's call.
+- **`cluster_detect.py`'s brief-to-brief focus-overlap signal abstains when either side carries
+  fewer than `MIN_FOCUS_TOKENS` (10) distinct tokens.** The overlap coefficient divides by the
+  *smaller* token set, so a very short focus text is trivially a near-subset of any longer brief
+  and clears `OVERLAP_THRESHOLD` on shared boilerplate alone: on
+  `tests/fixtures/classifier_corpus.json` the 5-token focus `canonical checkout drift: <repo>`
+  scored 0.60 against five unrelated briefs, and 52 of the 112 pairs the threshold flagged
+  involved an item that thin. `_focus_overlap()` is the guarded wrapper carrying the floor and is
+  what `_signal_matches` and `_llm_gate_score` call, so a thin pair also never reaches the LLM
+  verification band and spends a call on noise; `_overlap_coefficient()` stays the raw
+  mathematical quantity for callers measuring something other than two briefs' focus text
+  (`create_handoff`'s spec-slug labels, `_target_task_edges`' task lines). A brief below the floor
+  is **not** excluded from clustering — `duplicate-slug`, `same-target-spec`, `related-link` and
+  `blocked-by` all still connect it; only the "these two read alike" signal abstains.
 
 ## Critical files
 - `router/parse_invocation.py` — the `worktrail-go` Phase 1 grammar (`parse`, `FORMS`, `ALIASES`,
@@ -333,6 +350,10 @@ agents or writes task files — that is `orchestrator/`'s job.
   inspect a different repository than `land_pr` pushes the branch and opens the PR against
 - `router/close_stale_openspec.py` — `flip_and_archive()` plus `main()`'s `land_pr` landing and
   outcome→exit-code mapping for the `worktrail-close-stale-openspec` console script
+- `router/cluster_detect.py` — the brief-clustering signals (`_signal_matches`, `_llm_gate_score`)
+  that `workqueue/create_handoff.py` consumes; `_focus_overlap()` is the guarded focus comparison
+  carrying `MIN_FOCUS_TOKENS`, while `_overlap_coefficient()` stays the raw coefficient every
+  non-focus caller keeps reading
 
 ---
 **Last Updated:** 2026-09-19
