@@ -1,6 +1,6 @@
 ## 1. Null-safe scope-review append (`run-record`)
 
-- [ ] 1.1 In `src/worktrail/router/run_record.py`, in the `scope-review` handler, replace
+- [x] 1.1 In `src/worktrail/router/run_record.py`, in the `scope-review` handler, replace
       `record.setdefault("scope_review", []).append(...)` with the module's existing
       null-tolerant idiom: read `record.get("scope_review") or []`, append the
       `"<status> | <item> | <detail>"` entry, and assign the list back to
