@@ -21,13 +21,13 @@ _LINT_ONLY = '"([ -d node_modules ] || npm ci) && npm run lint && npm run build"
 _PYTEST = '"PYTHONPATH=src pytest -q"'
 
 
-def _policy(pre_pr_cmd: str, comments: str = "") -> str:
+def _policy(pre_pr_cmd: str, comments: str = "", extra: str = "") -> str:
     head = (
         f"# go conductor policy.\n{comments}"
         if comments
         else "# go conductor policy.\n"
     )
-    return f"{head}pre_pr_cmd: {pre_pr_cmd}\nbase_branch: main\n"
+    return f"{head}pre_pr_cmd: {pre_pr_cmd}\nbase_branch: main\n{extra}"
 
 
 def _repo(root: Path, name: str, policy_text=None, files=None, workflows=None) -> Path:
@@ -232,6 +232,69 @@ class TestStaleClaims(unittest.TestCase):
             files=["tests/test_a.py"],
         )
         self.assertNotIn("stale-claim-no-tests", _signals(repo))
+
+
+class TestPrePrCmdWithoutBootstrap(unittest.TestCase):
+    SIGNAL = "pre-pr-cmd-without-bootstrap"
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_npm_test_with_no_bootstrap_fires(self):
+        repo = _repo(self.tmp, "aspens-like", _policy('"npm test"'))
+        findings = {f["signal"]: f["detail"] for f in check_repo(repo)["findings"]}
+        self.assertIn(self.SIGNAL, findings)
+        self.assertIn("npm test", findings[self.SIGNAL])
+        self.assertIn("worktree_bootstrap_cmd", findings[self.SIGNAL])
+
+    def test_npm_test_with_bootstrap_does_not_fire(self):
+        repo = _repo(
+            self.tmp,
+            "bootstrapped",
+            _policy('"npm test"', extra='worktree_bootstrap_cmd: "npm ci"\n'),
+        )
+        self.assertNotIn(self.SIGNAL, _signals(repo))
+
+    def test_self_installing_pre_pr_cmd_does_not_fire(self):
+        repo = _repo(
+            self.tmp,
+            "self-install",
+            _policy('"([ -d node_modules ] || npm ci) && npm test"'),
+        )
+        self.assertNotIn(self.SIGNAL, _signals(repo))
+
+    def test_python_runner_does_not_fire(self):
+        repo = _repo(self.tmp, "py", _policy(_PYTEST))
+        self.assertNotIn(self.SIGNAL, _signals(repo))
+
+    def test_npx_vitest_with_null_bootstrap_fires(self):
+        repo = _repo(
+            self.tmp,
+            "null-bootstrap",
+            _policy('"npx vitest run"', extra="worktree_bootstrap_cmd: null\n"),
+        )
+        self.assertIn(self.SIGNAL, _signals(repo))
+
+    def test_skip_does_not_fire(self):
+        repo = _repo(self.tmp, "skipped", _policy("skip"))
+        self.assertNotIn(self.SIGNAL, _signals(repo))
+
+    def test_cli_exits_one_for_npm_test_without_bootstrap(self):
+        repo = _repo(self.tmp, "aspens-like", _policy('"npm test"'))
+        self.assertEqual(main(["--repo", str(repo)]), 1)
+
+    def test_existing_fixtures_keep_their_prior_signal_sets(self):
+        lint_only = _repo(
+            self.tmp, "lint-only", _policy(_LINT_ONLY), files=["tests/test_a.py"]
+        )
+        self.assertEqual(_signals(lint_only), {"orphaned-tests"})
+        pytest_repo = _repo(
+            self.tmp, "pytest", _policy(_PYTEST), files=["tests/test_a.py"]
+        )
+        self.assertEqual(_signals(pytest_repo), set())
 
 
 class TestSweepAndCli(unittest.TestCase):

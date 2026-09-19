@@ -1971,14 +1971,20 @@ class ReposScan(unittest.TestCase):
         # Needs real git repos: the detector's file source is `git ls-files`.
         with tempfile.TemporaryDirectory() as tmp:
             parent = Path(tmp)
-            for name, cmd in (("repo-a", "npm run lint"), ("repo-b", "pytest -q")):
+            # repo-a's Node runner declares a worktree bootstrap so the
+            # `pre-pr-cmd-without-bootstrap` signal stays silent and this test
+            # keeps isolating `orphaned-tests`.
+            for name, cmd, bootstrap in (
+                ("repo-a", "npm run lint", 'worktree_bootstrap_cmd: "npm ci"\n'),
+                ("repo-b", "pytest -q", ""),
+            ):
                 repo = parent / name
                 repo.mkdir(parents=True)
                 subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
                 worktrail_dir = repo / ".worktrail"
                 worktrail_dir.mkdir(parents=True)
                 (worktrail_dir / "policy.yaml").write_text(
-                    f'# go conductor policy for {name}.\npre_pr_cmd: "{cmd}"\n'
+                    f'# go conductor policy for {name}.\npre_pr_cmd: "{cmd}"\n{bootstrap}'
                 )
                 (repo / "tests").mkdir()
                 (repo / "tests" / "test_thing.py").write_text("# test\n")
