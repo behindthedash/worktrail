@@ -446,6 +446,59 @@ def test_unresolvable_bare_token_falls_through_to_free_text(queue: Path):
     assert r["free_text"] == "refactor"
 
 
+@pytest.fixture()
+def picked(queue: Path) -> Path:
+    """A picked/ folder beside `queue`, holding one claimed brief."""
+    folder = queue.parent / "picked"
+    folder.mkdir()
+    (folder / "20260901-120000-claimed-thing.md").write_text(
+        "---\nid: 20260901-120000\nstatus: picked\nclaimed-by: queue-triage\n---\n\nfocus\n",
+        encoding="utf-8",
+    )
+    return folder
+
+
+def test_bare_prefix_matching_only_picked_resolves_as_picked(queue: Path, picked: Path):
+    r = parse("20260901-120000", queue_folder=queue)
+    assert r["mode"] == "brief"
+    assert r["brief_status"] == "picked"
+    assert r["brief_path"] == str(picked / "20260901-120000-claimed-thing.md")
+    assert r["claimed_by"] == "queue-triage"
+
+
+def test_token_matching_neither_folder_is_still_free_text(queue: Path, picked: Path):
+    r = parse("refactor", queue_folder=queue)
+    assert r["mode"] == "free_text"
+    assert r["brief_status"] == "none"
+    assert r["claimed_by"] is None
+    assert r["reason"] == "bare or prefix brief id did not resolve (none) -- free text"
+
+
+def test_ambiguous_queue_match_is_not_retried_against_picked(
+    queue: Path, picked: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A prefix shared by two queue/ briefs is ambiguous; picked/ must not be
+    consulted to break the tie (D6)."""
+    from worktrail.workqueue import work_queue
+
+    (queue / "20260823-083299-second-same-minute.md").write_text(
+        "---\nid: 20260823-083299\nstatus: queued\n---\n\nfocus\n", encoding="utf-8"
+    )
+
+    real = work_queue.resolve
+    seen: list[Path] = []
+
+    def spy(identifier: str, folder: Path):
+        seen.append(folder)
+        return real(identifier, folder)
+
+    monkeypatch.setattr(work_queue, "resolve", spy)
+    r = parse("20260823-0832", queue_folder=queue)
+    assert r["mode"] == "free_text"
+    assert r["brief_status"] == "ambiguous"
+    assert seen == [queue]
+
+
 def test_no_queue_folder_reports_the_candidate_without_guessing():
     r = parse("20260823-083210")
     assert r["brief_status"] is None
@@ -502,6 +555,7 @@ def test_every_result_carries_the_full_key_set():
         "brief_path",
         "brief_status",
         "brief_candidates",
+        "claimed_by",
         "decision_id",
         "picker_index",
         "free_text",
