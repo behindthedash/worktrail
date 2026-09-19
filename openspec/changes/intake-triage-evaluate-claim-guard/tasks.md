@@ -54,7 +54,7 @@
 
 ## 3. Bare brief id resolves against picked/ (`parse_invocation`)
 
-- [ ] 3.1 In `src/worktrail/router/parse_invocation.py`, in `_resolve_brief()`, when
+- [x] 3.1 In `src/worktrail/router/parse_invocation.py`, in `_resolve_brief()`, when
       `work_queue.resolve()` against `queue_folder` returns `none`, retry against
       `queue_folder.parent / "picked"`; on a match return `mode: brief` with
       `brief_status: "picked"`, `brief_path`, and `claimed_by` read from the picked brief's
