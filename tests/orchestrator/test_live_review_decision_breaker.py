@@ -334,3 +334,70 @@ class TestDecisionRecordFiling(_Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBreakerCallersAndD5(_Base):
+    def test_every_apply_step_commit_caller_threads_decision_context(self):
+        """Both schedulers (`live_run_real` and `_pipeline_scheduler`) must pass
+        repo/spec_rel/run_id, or the breaker escalates without an envelope on
+        the production full-real path."""
+        import ast
+        import inspect
+
+        tree = ast.parse(inspect.getsource(live))
+        calls = [
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id == "_apply_step_commit"
+        ]
+        self.assertEqual(
+            len(calls), 2, "expected exactly two _apply_step_commit callers"
+        )
+        for call in calls:
+            kws = {k.arg for k in call.keywords}
+            self.assertTrue(
+                {"repo", "spec_rel", "run_id"} <= kws,
+                f"line {call.lineno}: missing { ({'repo', 'spec_rel', 'run_id'} - kws) }",
+            )
+
+    def test_scope_pending_refund_suppresses_decision_breaker(self):
+        """Design D5: a pending scope escalation is forced back to `fixing` with
+        its strike refunded; the decision breaker must not override that."""
+        task = {"id": "TASK-001", "status": "reviewing", "retry_count": 2}
+        task["_scope_pending"] = True
+        rep = {
+            "task": "TASK-001",
+            "step": "review",
+            "status": "success",
+            "review_status": "FAILED",
+            "critical_issues": 1,
+            "major_issues": 0,
+            "notes": "conflict",
+            "decision_required": DECISION_TEXT,
+            "missing_context": ["tests/test_other.py"],
+        }
+        entries: list = []
+        _old, new = live._apply_step_commit(
+            tasks=[task],
+            entries=entries,
+            actives={},
+            record_fn=lambda: None,
+            task=task,
+            role="review",
+            rep=rep,
+            t0=0.0,
+            t1=1.0,
+            repo=self.repo,
+            spec_rel=SPEC_REL,
+            run_id="d5",
+        )
+        self.assertEqual(new, "fixing")
+        self.assertEqual(task["status"], "fixing")
+        self.assertEqual(task["retry_count"], 2)
+        entry = entries[-1]
+        self.assertNotIn("escalation_reason", entry)
+        self.assertNotIn("pending_decision", entry)
+        self.assertIsNone(entry["report"].get("terminal_status"))
+        self.assertEqual(self._open_records(), [])

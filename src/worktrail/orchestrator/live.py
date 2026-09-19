@@ -4263,9 +4263,13 @@ def _apply_step_commit(
     # breaker already returns "escalated" and is left alone.
     pending_decision: dict | None = None
     decision_text: str | None = None
+    # A D5 scope refund wins over this breaker: the refund forces "fixing" so the
+    # widened dispatch runs, and the refunded retry_count would otherwise satisfy
+    # the >= 2 check and undo it.
     if (
         role == dispatch.ROLE_REVIEW
         and new == "fixing"
+        and not scope_pending
         and task.get("retry_count", 0) >= 2
     ):
         decision_text = dispatch.review_names_decision(rep)
@@ -6216,6 +6220,9 @@ def _pipeline_scheduler(
                 tools_used=tools_used,
                 skills_used=skills_used,
                 agent=agent,
+                repo=repo,
+                spec_rel=spec_rel,
+                run_id=run_id,
             )
 
     def _commit_skip_review(
