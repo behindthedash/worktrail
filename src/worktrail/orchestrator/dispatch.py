@@ -550,6 +550,10 @@ def _round_awareness_clause(task: dict[str, Any]) -> str:
         f"{task.get('review_notes')} "
         f"For each of those, state in this review whether it is now Resolved or "
         f"Still Present before listing anything new. "
+        f"Set `decision_required` in your report-back ONLY when a Still Present "
+        f"finding is a conflict between the task's AC and existing behaviour that "
+        f"a planner/human must resolve (a fix worker cannot satisfy both); its text "
+        f"must cite the AC and the conflicting test/behaviour. Otherwise leave it null. "
     )
 
 
@@ -775,6 +779,12 @@ def build_worker_prompt(
             f'  {{"task": "{tid}", "step": "{role}", "status": "success|failed",',
             '   "head_sha": "<sha>", "files_touched": [...], "tests": "passed|failed|none",',
             '   "review_status": "PASSED|FAILED|null", "critical_issues": 0, "major_issues": 0,',
+            *(
+                # Round >= 2 only: the round-1 review prompt stays byte-identical.
+                ['   "decision_required": "<text>|null",']
+                if role == ROLE_REVIEW and round_awareness
+                else []
+            ),
             '   "context_quality": "sufficient|too_much|insufficient",',
             '   "missing_context": [],',
             '   "notes": "<one line>"}',
@@ -1163,6 +1173,27 @@ def parse_report_back(text: str) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # Transition (the review/fix loop, at the state level)
 # --------------------------------------------------------------------------- #
+_DECISION_PHRASES = ("planner/human decision", "human decision", "planner decision")
+
+
+def review_names_decision(report: dict[str, Any]) -> str | None:
+    """The planner/human decision a review report names, or None.
+
+    A non-empty structured `decision_required` field wins; otherwise `notes`
+    is returned when it contains one of the decision phrases
+    (case-insensitive). Ordinary notes yield None.
+    """
+    dr = report.get("decision_required")
+    if isinstance(dr, str) and dr.strip():
+        return dr.strip()
+    notes = report.get("notes")
+    if isinstance(notes, str) and notes.strip():
+        lowered = notes.lower()
+        if any(phrase in lowered for phrase in _DECISION_PHRASES):
+            return notes.strip()
+    return None
+
+
 def transition(
     role: str,
     report: dict[str, Any],
