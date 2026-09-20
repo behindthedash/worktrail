@@ -1,7 +1,10 @@
 # agent-capacity-reset-parsing Specification
 
 ## Purpose
-TBD - created by archiving change claude-capacity-reset-parsing. Update Purpose after archive.
+Parses a Claude capacity notice into an explicit reset timestamp, resolving a date-less reset to its
+next occurrence in the stated zone, and turns it into a provider-derived capacity gate. Prevents the
+fleet from either burning retries against an exhausted account or waiting far longer than the real
+reset.
 ## Requirements
 ### Requirement: A Claude cap notice yields an explicit reset timestamp
 The capacity layer's explicit-reset parser SHALL extract a reset instant from Claude's own

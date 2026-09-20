@@ -1,7 +1,9 @@
 # integration-smoke-retry-policy Specification
 
 ## Purpose
-TBD - created by archiving change smoke-gate-flaky-retry-policy. Update Purpose after archive.
+Adds `integrate_smoke_retries` as a policy key that the orchestrator honors when the integrated smoke
+gate exits non-zero, recording a pass-after-retry as flake evidence. Prevents a known-flaky smoke
+command from failing an otherwise good integration while still leaving the flake visible.
 ## Requirements
 ### Requirement: integrate_smoke_retries is a policy key
 

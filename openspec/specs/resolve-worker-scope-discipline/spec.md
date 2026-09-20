@@ -1,7 +1,9 @@
 # resolve-worker-scope-discipline Specification
 
 ## Purpose
-TBD - created by archiving change resolve-worker-respect-base-deletions. Update Purpose after archive.
+Forbids the resolve worker from resurrecting files the base branch deleted, tracks a confirmed
+forbidden-path violation per group, and surfaces it as its own outcome. Prevents a conflict
+resolution from silently merging back code that was intentionally removed.
 ## Requirements
 ### Requirement: Resolve-worker prompt forbids resurrecting base deletions
 The `ROLE_RESOLVE` conflict-resolution instructions built by `build_group_prompt()` SHALL

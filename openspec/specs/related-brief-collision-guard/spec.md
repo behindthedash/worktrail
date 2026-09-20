@@ -1,7 +1,10 @@
 # related-brief-collision-guard Specification
 
 ## Purpose
-TBD - created by archiving change related-brief-collision-guard. Update Purpose after archive.
+Extracts a brief's related briefs, determines which are actively claimed — enriching best-effort from
+local run records — and surfaces the findings to the operator without ever auto-applying them, failing
+open. Prevents two operators from claiming interlocking briefs at the same time, while never blocking
+a route on the guard itself.
 ## Requirements
 ### Requirement: Related-Brief Extraction
 

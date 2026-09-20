@@ -1,7 +1,9 @@
 # policy-drift-selfcheck Specification
 
 ## Purpose
-TBD - created by archiving change policy-drift-flag-pre-pr-cmd-without-bootstrap. Update Purpose after archive.
+Flags a repo whose `pre_pr_cmd` invokes a Node package-managed runner while `worktree_bootstrap_cmd`
+is unset. Prevents every task worktree from failing its pre-PR gate on missing dependencies that were
+only ever installed in the canonical checkout.
 ## Requirements
 ### Requirement: Dependency-needing pre_pr_cmd without a worktree bootstrap is flagged
 

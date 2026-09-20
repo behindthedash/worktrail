@@ -1,7 +1,9 @@
 # repo-init-main-only-branch-model Specification
 
 ## Purpose
-TBD - created by archiving change repo-init-main-only-branch-model. Update Purpose after archive.
+Makes a main-only branch model a first-class repo-init choice, with apply never migrating branches on
+a repo that already uses it. Prevents onboarding from forcing a develop/main split onto a repo that
+does not want one.
 ## Requirements
 ### Requirement: Main-only branch model is a supported repo-init choice
 

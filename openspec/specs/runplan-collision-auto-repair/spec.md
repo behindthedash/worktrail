@@ -1,7 +1,9 @@
 # runplan-collision-auto-repair Specification
 
 ## Purpose
-TBD - created by archiving change runplan-collision-auto-repair. Update Purpose after archive.
+Repairs same-file collisions in a compiled RunPlan by adding deterministic ordering edges, never
+introducing a cycle, and records each repair in the run notes. Prevents two tasks that write the same
+file from being scheduled onto the frontier concurrently.
 ## Requirements
 ### Requirement: Deterministic same-file ordering repair
 When `runplan.apply_to_tasks()` merges a compiled `RunPlan` onto a task list and the

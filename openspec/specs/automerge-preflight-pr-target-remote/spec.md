@@ -1,7 +1,10 @@
 # automerge-preflight-pr-target-remote Specification
 
 ## Purpose
-TBD - created by archiving change automerge-preflight-resolve-pr-target-remote. Update Purpose after archive.
+Makes the auto-merge preflight resolve the remote the PR actually targets rather than assuming
+`origin`, with the orchestrator adapter covering every git call it makes. Prevents a fork or
+multi-remote checkout from preflighting against the wrong repository and reporting a meaningless
+verdict.
 ## Requirements
 ### Requirement: Preflight resolves the PR target remote
 `owner_repo_from_git` SHALL derive `owner/repo` from the remote the PR will be opened against:

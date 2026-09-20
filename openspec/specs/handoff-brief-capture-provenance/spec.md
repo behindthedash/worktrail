@@ -1,7 +1,9 @@
 # handoff-brief-capture-provenance Specification
 
 ## Purpose
-TBD - created by archiving change handoff-brief-capture-provenance. Update Purpose after archive.
+Stamps every newly minted handoff brief with a validated capture source, accepted by the CLI and
+supplied by in-repo minting callers, while leaving pre-existing sourceless briefs valid. Prevents a
+queue of briefs whose origin can no longer be reconstructed during triage.
 ## Requirements
 ### Requirement: Minted Briefs Carry A Validated Capture Source
 

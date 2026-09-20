@@ -1,7 +1,10 @@
 # model-tier-routing Specification
 
 ## Purpose
-TBD - created by archiving change model-tier-routing. Update Purpose after archive.
+Defines the single machine-wide routing file that maps roles to complexity tiers and tiers to ordered
+execution targets, with per-agent reasoning effort, capacity/auth/retirement gates, and deterministic
+migration of legacy keys. Prevents provider/model intent from scattering across environment variables
+and hardcoded defaults, and keeps a retired or gated model from being launched at all.
 ## Requirements
 ### Requirement: Agent-entry schema supports an optional reasoning-effort field
 A `routing.tiers`/`routing.roles`/`routing.fallback` agent-entry (validated by

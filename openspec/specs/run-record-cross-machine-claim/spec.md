@@ -1,7 +1,9 @@
 # run-record-cross-machine-claim Specification
 
 ## Purpose
-TBD - created by archiving change run-record-cross-machine-claim. Update Purpose after archive.
+Adds an opt-in remote claim on a run record's `spec_id`, with cross-machine conflict detection,
+TTL-bounded reclaim of stale claims, and release on finish. Prevents two machines from running the
+same specification at once, and a crashed machine from holding a claim forever.
 ## Requirements
 ### Requirement: Opt-in remote claim on `spec_id`
 `worktrail-run-record claim RUN --specification SPEC --remote` SHALL, after

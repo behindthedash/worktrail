@@ -1,7 +1,10 @@
 # active-conflicts-staleness-reconciliation Specification
 
 ## Purpose
-TBD - created by archiving change active-conflicts-staleness-reconciliation. Update Purpose after archive.
+Partitions the non-terminal run records an active-conflicts scan finds into live and stale, so a
+record whose worktree is gone and whose files already landed on the base branch is closed with an
+auditable reason instead of blocking. Keeps an abandoned run from permanently hard-stopping every
+later run that touches the same files.
 ## Requirements
 ### Requirement: Non-terminal run records are partitioned into live and stale
 `_active_conflicts()` SHALL classify each non-terminal run record matching the

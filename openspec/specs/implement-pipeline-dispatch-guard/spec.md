@@ -1,7 +1,8 @@
 # implement-pipeline-dispatch-guard Specification
 
 ## Purpose
-TBD - created by archiving change implement-pipeline-active-conflicts-guard. Update Purpose after archive.
+Runs the shared active-conflicts scan before the implement pipeline launches an orchestrator. Prevents
+two runs from being dispatched onto the same files at once and colliding mid-flight.
 ## Requirements
 ### Requirement: Active-conflicts scan before implement-pipeline orchestrator launch
 

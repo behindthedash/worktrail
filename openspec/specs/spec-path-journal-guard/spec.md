@@ -1,7 +1,9 @@
 # spec-path-journal-guard Specification
 
 ## Purpose
-TBD - created by archiving change spec-path-task-crosscheck. Update Purpose after archive.
+Blocks a resume when the run journal's entries belong to a different spec path, and gives the operator
+an explicit way to discard a foreign journal. Prevents a resume from replaying another
+specification's task state into the current run.
 ## Requirements
 ### Requirement: Foreign journal entries block a resume
 When `full_real` resumes an existing run journal for a `--spec` path, the

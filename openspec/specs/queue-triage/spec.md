@@ -1,7 +1,10 @@
 # queue-triage Specification
 
 ## Purpose
-TBD - created by archiving change queue-triager-automation. Update Purpose after archive.
+Produces a repo-grouped inventory of queued briefs with an evidence-required verdict for each, and an
+apply step that never closes a brief without an approved verdict, bootstraps fold/propose worktrees
+before landing, and tears their branches down after merge. Prevents a bulk queue cleanup from closing
+live work on a guess.
 ## Requirements
 ### Requirement: Repo-grouped inventory with dedup skip
 The `evaluate` step SHALL inventory every brief in `$WORK_QUEUE_DIR/queue/`. Before grouping,

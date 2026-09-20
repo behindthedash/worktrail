@@ -1,7 +1,9 @@
 # quarantine-visibility Specification
 
 ## Purpose
-TBD - created by archiving change quarantined-group-visibility. Update Purpose after archive.
+Detects quarantined orchestrator groups from run journals, sweeps them across repos like the sibling
+self-checks, and surfaces the findings on the dashboard. Prevents a quarantined group from sitting
+unnoticed inside a journal file nobody opens.
 ## Requirements
 ### Requirement: Detect quarantined orchestrator groups from run journals
 The system SHALL provide a `check_repo(repo: Path) -> Dict[str, Any]` function

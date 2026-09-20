@@ -1,7 +1,9 @@
 # orchestrator-foreign-repo-commit-detection Specification
 
 ## Purpose
-TBD - created by archiving change orchestrator-foreign-repo-commit-detection. Update Purpose after archive.
+Distinguishes foreign-repo targets during empty-diff quarantine and reports unmanaged commits made
+directly on a foreign repo's default branch. Prevents a worker's stray commit outside the managed
+repo from disappearing without a trace.
 ## Requirements
 ### Requirement: Empty-diff quarantine distinguishes foreign-repo targets
 When a group's merged deliverable branches produce no diff against the group's target, the
