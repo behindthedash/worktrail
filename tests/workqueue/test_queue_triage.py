@@ -6948,3 +6948,220 @@ class TestApplyVerdictsRefusesOwnedBrief(QueueTriageTestBase):
         self.assertEqual(log[0]["status"], "error")
         self.assertIn("queue-triage", log[0]["error"])
         self.assertEqual(p.read_text(encoding="utf-8"), before)
+
+
+class TestApplyWorkDirectlyRewrite(QueueTriageTestBase):
+    """1.1: an accepted `work-directly` verdict may correct one claim in the
+    brief's focus text and always records its evidence in the brief body; a
+    span covering the whole focus downgrades the verdict to `keep` instead.
+    """
+
+    FOCUS = "the CLI reads config from settings.json at startup"
+    SPAN = "config from settings.json"
+    EVIDENCE = "reproduces via pytest tests/cli_test.py -k config"
+
+    def _verdict(self, *, span: str | None = None, corrected: str | None = None):
+        return qt.Verdict(
+            brief_id="b",
+            verdict="work-directly",
+            duplicate_of=None,
+            evidence=self.EVIDENCE,
+            confidence="high",
+            refuted_span=span,
+            corrected_span=corrected,
+        )
+
+    def _run_date(self) -> str:
+        return datetime.date.today().isoformat()  # noqa: DTZ011
+
+    def _assert_stamped(self, path: Path) -> None:
+        fm = qt.read_frontmatter(path)
+        self.assertEqual(fm["seeded-from"], f"triage:{self._run_date()}:direct")
+        self.assertEqual(fm["recommended-route"], "F")
+
+    # -- rewrite ----------------------------------------------------------
+
+    def test_span_with_replacement_rewrites_focus_and_still_stamps(self):
+        path = self.write("b.md", focus=self.FOCUS)
+
+        [entry] = qt.apply_verdicts(
+            [self._verdict(span=self.SPAN, corrected="config from config.yaml")],
+            confirm=True,
+        )
+
+        self.assertEqual(entry["action"], "stamp-frontmatter")
+        self.assertEqual(entry["status"], "executed")
+        self.assertIsNone(entry["error"])
+        self.assertEqual(
+            entry["rewrite"],
+            {"removed": self.SPAN, "replacement": "config from config.yaml"},
+        )
+        self.assertEqual(
+            qt.read_frontmatter(path)["focus"],
+            "the CLI reads config from config.yaml at startup",
+        )
+        self._assert_stamped(path)
+
+    def test_span_without_replacement_drops_it_and_preserves_surrounding_text(self):
+        path = self.write("b.md", focus=self.FOCUS)
+
+        [entry] = qt.apply_verdicts([self._verdict(span=self.SPAN)], confirm=True)
+
+        self.assertEqual(entry["status"], "executed")
+        self.assertEqual(entry["rewrite"], {"removed": self.SPAN, "replacement": ""})
+        focus = qt.read_frontmatter(path)["focus"]
+        self.assertNotIn(self.SPAN, focus)
+        self.assertIn("the CLI reads", focus)
+        self.assertIn("at startup", focus)
+        self._assert_stamped(path)
+
+    def test_stale_span_leaves_focus_unchanged_but_still_stamps_and_notes(self):
+        path = self.write("b.md", focus=self.FOCUS)
+
+        [entry] = qt.apply_verdicts(
+            [self._verdict(span="config from some-other-file.json")], confirm=True
+        )
+
+        self.assertEqual(entry["status"], "executed")
+        self.assertNotIn("rewrite", entry)
+        self.assertEqual(qt.read_frontmatter(path)["focus"], self.FOCUS)
+        self._assert_stamped(path)
+        self.assertIn(f"## Triage {self._run_date()}", path.read_text(encoding="utf-8"))
+
+    # -- body note --------------------------------------------------------
+
+    def test_spanless_accepted_verdict_appends_triage_evidence_note(self):
+        path = self.write("b.md", focus=self.FOCUS, body="## Focus\n\nsome brief\n")
+
+        [entry] = qt.apply_verdicts([self._verdict()], confirm=True)
+
+        self.assertEqual(entry["status"], "executed")
+        content = path.read_text(encoding="utf-8")
+        self.assertIn(f"## Triage {self._run_date()}", content)
+        self.assertIn(self.EVIDENCE, content)
+        self.assertNotIn("Rewrote focus", content)
+        self._assert_stamped(path)
+
+    def test_appended_note_names_the_rewrite_when_there_was_one(self):
+        path = self.write("b.md", focus=self.FOCUS)
+
+        qt.apply_verdicts(
+            [self._verdict(span=self.SPAN, corrected="config from config.yaml")],
+            confirm=True,
+        )
+
+        content = path.read_text(encoding="utf-8")
+        self.assertIn(
+            f"Rewrote focus: replaced {self.SPAN!r} with 'config from config.yaml'.",
+            content,
+        )
+        self.assertIn(self.EVIDENCE, content)
+
+    # -- whole-focus refutation -------------------------------------------
+
+    def test_whole_focus_span_downgrades_to_keep_without_touching_the_brief(self):
+        path = self.write("b.md", focus=self.FOCUS)
+        before = path.read_text(encoding="utf-8")
+
+        [entry] = qt.apply_verdicts([self._verdict(span=self.FOCUS)], confirm=True)
+
+        self.assertEqual(entry["action"], "noop")
+        self.assertEqual(entry["status"], "downgraded-to-keep")
+        self.assertIsNone(entry["path"])
+        self.assertIsNone(entry["error"])
+        self.assertIn("entire", entry["note"])
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+
+    def test_unaccepted_verdict_with_a_span_writes_nothing(self):
+        path = self.write("b.md", focus=self.FOCUS)
+        before = path.read_text(encoding="utf-8")
+        v = qt.Verdict(
+            brief_id="b",
+            verdict="work-directly",
+            duplicate_of=None,
+            evidence="this brief describes a real, actionable problem",
+            confidence="high",
+            refuted_span=self.SPAN,
+            corrected_span="config from config.yaml",
+        )
+
+        [entry] = qt.apply_verdicts([v], confirm=True)
+
+        self.assertEqual(entry["status"], "downgraded-to-keep")
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+
+    # -- preview ----------------------------------------------------------
+
+    def test_preview_plans_the_rewrite_without_writing(self):
+        path = self.write("b.md", focus=self.FOCUS)
+        before = path.read_text(encoding="utf-8")
+
+        [entry] = qt.apply_verdicts(
+            [self._verdict(span=self.SPAN, corrected="config from config.yaml")],
+            confirm=False,
+        )
+
+        self.assertEqual(entry["action"], "stamp-frontmatter")
+        self.assertEqual(entry["status"], "planned")
+        self.assertEqual(
+            entry["planned_stamp"],
+            {
+                "seeded-from": f"triage:{self._run_date()}:direct",
+                "recommended-route": "F",
+            },
+        )
+        self.assertEqual(
+            entry["planned_rewrite"],
+            {"removed": self.SPAN, "replacement": "config from config.yaml"},
+        )
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+
+    def test_preview_plans_the_whole_focus_downgrade_without_writing(self):
+        path = self.write("b.md", focus=self.FOCUS)
+        before = path.read_text(encoding="utf-8")
+
+        [entry] = qt.apply_verdicts([self._verdict(span=self.FOCUS)], confirm=False)
+
+        self.assertEqual(entry["action"], "noop")
+        self.assertEqual(entry["status"], "planned-downgrade-to-keep")
+        self.assertIn("entire", entry["note"])
+        self.assertNotIn("planned_rewrite", entry)
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+
+    def test_preview_of_spanless_verdict_keeps_the_plain_stamp_entry(self):
+        self.write("b.md", focus=self.FOCUS)
+
+        [entry] = qt.apply_verdicts([self._verdict()], confirm=False)
+
+        self.assertEqual(entry["status"], "planned")
+        self.assertNotIn("planned_rewrite", entry)
+
+    def test_preview_of_unresolvable_brief_keeps_the_plain_stamp_entry(self):
+        [entry] = qt.apply_verdicts(
+            [self._verdict(span=self.SPAN, corrected="x")], confirm=False
+        )
+
+        self.assertEqual(entry["status"], "planned")
+        self.assertNotIn("planned_rewrite", entry)
+
+
+class TestPromptAllowsWorkDirectlyCorrection(unittest.TestCase):
+    """1.1: `refuted_span` is no longer scoped to `needs-update` alone."""
+
+    def test_prompt_no_longer_scopes_refuted_span_to_needs_update(self):
+        self.assertNotIn(
+            "refutes, for a mechanical needs-update only>",
+            qt.EVALUATOR_PROMPT_TEMPLATE,
+        )
+        self.assertIn(
+            "refutes, for a mechanical needs-update or a correcting work-directly>",
+            qt.EVALUATOR_PROMPT_TEMPLATE,
+        )
+        self.assertIn(
+            "A `work-directly` verdict may also carry a `refuted_span`",
+            qt.EVALUATOR_PROMPT_TEMPLATE,
+        )
+        self.assertIn(
+            "`judgment_reason` stays `needs-update`-only",
+            qt.EVALUATOR_PROMPT_TEMPLATE,
+        )
