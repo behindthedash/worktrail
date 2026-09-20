@@ -7,7 +7,9 @@ change/spec).
 Extracts a Cluster Signal (repo, target-spec, target-task, related-ID list,
 blocked-by-ID list, descriptive slug, focus-text tokens) from each queued
 brief and computes pairwise Signal Matches between briefs across four signal
-types: duplicate-slug, same-target-spec, related-link, focus-overlap. A
+types: duplicate-slug, same-target-spec, related-link, focus-overlap (or
+focus-judgment, when a caller-injected relatedness judgment decided the pair
+instead of the lexical threshold). A
 `blocked-by` relationship between a pair excludes it from every signal
 (including duplicate-slug, which is otherwise repo-independent);
 same-target-spec, related-link, and focus-overlap additionally require both
@@ -49,6 +51,13 @@ verdict, so the rest of the module's fail-open posture is unaffected.
 loader-backed `_parse_fm`) rather than reimplemented here, so this module
 contains no frontmatter-parsing logic and no cross-skill import into
 `handoff/scripts/`.
+
+`judge_pairs_fn` and `log_judged_fn` are injected the same way and for the same
+reason: this module owns *which* pairs are worth judging and *what a verdict
+does to an edge*, while the client that talks to a third party and the writer
+that appends to the telemetry log stay outside it. That keeps the
+no-writes/no-network property its own guard test enforces, and it means every
+existing caller that injects neither gets exactly the prior behaviour.
 """
 
 from __future__ import annotations
@@ -269,6 +278,130 @@ def _signal_matches(
 
 
 _Edge = tuple[str, str, list[tuple[str, float | None]]]
+
+# Match name a pair carries when an injected relatedness judgment, rather than
+# the lexical threshold, decided it. Distinct from `focus-overlap` so a reader
+# (and the cluster telemetry log) can tell which rule produced an edge.
+JUDGED_MATCH = "focus-judgment"
+
+# Lexical overlap a pair must clear to be OFFERED to the judgment. Far below
+# `OVERLAP_THRESHOLD` on purpose: measured 2026-09-19, three pairs describing
+# identical work in different vocabulary scored 0.00-0.12, so a prefilter set
+# anywhere near the edge threshold would reproduce exactly the blindness the
+# judgment exists to fix. Not zero, because a pair sharing no token at all is
+# not a candidate a reader would consider, and the budget is better spent
+# elsewhere.
+JUDGMENT_PREFILTER_FLOOR = 0.05
+
+# Most pairs judged in one scan. Pair count grows quadratically with queue size
+# -- 68 queued briefs is 2278 pairs before repo scoping -- and a dashboard
+# render may not fan out without a bound. Candidates are ranked by lexical
+# overlap descending, so the budget goes to the strongest first and everything
+# past the cap keeps the lexical decision.
+MAX_JUDGED_PAIRS = 40
+
+
+def _judgment_candidates(
+    signals: list[dict[str, Any]], edges: list[_Edge]
+) -> list[tuple[int, float]]:
+    """`(index into edges, lexical overlap)` for the pairs worth judging, best first.
+
+    A candidate must be a pair the lexical stage would itself consider: both
+    briefs same-repo -- already the precondition for every `_signal_matches`
+    result, so a cross-repo pair is never offered and the repo-scoping rule is
+    unchanged here -- and both carrying at least `MIN_FOCUS_TOKENS` of focus
+    text, because a brief too thin for the coefficient to read is one the
+    judgment cannot read either.
+    """
+    by_stem = {sig["stem"]: sig for sig in signals}
+    scored: list[tuple[int, float]] = []
+    for index, (stem_a, stem_b, _matches) in enumerate(edges):
+        sig_a, sig_b = by_stem.get(stem_a), by_stem.get(stem_b)
+        if sig_a is None or sig_b is None:
+            continue  # a synthetic task node, not a brief pair
+        if sig_a["repo"] != sig_b["repo"]:
+            continue
+        tokens_a, tokens_b = sig_a["focus_tokens"], sig_b["focus_tokens"]
+        if min(len(tokens_a), len(tokens_b)) < MIN_FOCUS_TOKENS:
+            continue
+        overlap = _overlap_coefficient(tokens_a, tokens_b)
+        if overlap < JUDGMENT_PREFILTER_FLOOR:
+            continue
+        scored.append((index, overlap))
+    scored.sort(key=lambda item: (-item[1], edges[item[0]][0], edges[item[0]][1]))
+    return scored[:MAX_JUDGED_PAIRS]
+
+
+def _apply_relatedness_judgment(
+    signals: list[dict[str, Any]],
+    edges: list[_Edge],
+    *,
+    judge_pairs_fn: Callable[
+        [list[tuple[str, str]]], list[tuple[bool, float, float] | None]
+    ]
+    | None,
+    log_judged_fn: Callable[[list[dict[str, Any]]], None] | None = None,
+) -> list[_Edge]:
+    """Let an injected judgment decide the focus signal for capped many pairs.
+
+    For each judged pair the lexical `focus-overlap` match is replaced by the
+    verdict: a `JUDGED_MATCH` match when the pair belongs together, and nothing
+    at all when it does not -- which is how a high-overlap-but-unrelated pair
+    loses its edge (7 of the 14 highest-overlap corpus pairs read as unrelated
+    on inspection). Structural matches (duplicate-slug, same-target-spec,
+    related-link) are never touched: they are facts about the briefs, not a
+    reading of their text.
+
+    Injecting no `judge_pairs_fn` (the default for every existing caller)
+    leaves every edge exactly as the lexical stage produced it.
+
+    The whole candidate batch is handed over in ONE call, already capped and
+    ordered, so the injected side owns how hard the backend is driven and this
+    module holds no thread pool and no client. Verdicts come back positionally
+    aligned, and the FIRST unavailable one ends the pass: a backend that just
+    failed is not going to answer the rest, and applying a later verdict past a
+    gap would make the surfaced clusters depend on which round trip failed.
+    """
+    if judge_pairs_fn is None:
+        return edges
+
+    by_stem = {sig["stem"]: sig for sig in signals}
+    candidates = _judgment_candidates(signals, edges)
+    if not candidates:
+        return edges
+    verdicts = judge_pairs_fn(
+        [
+            (
+                by_stem[edges[index][0]]["focus_text"],
+                by_stem[edges[index][1]]["focus_text"],
+            )
+            for index, _overlap in candidates
+        ]
+    )
+
+    updated = list(edges)
+    judged_records: list[dict[str, Any]] = []
+    for (index, overlap), verdict in zip(candidates, verdicts):
+        stem_a, stem_b, matches = updated[index]
+        if verdict is None:
+            break
+        edge, same_work, should_cluster = verdict
+        kept = [m for m in matches if m[0] != "focus-overlap"]
+        if edge:
+            kept.append((JUDGED_MATCH, max(same_work, should_cluster)))
+        updated[index] = (stem_a, stem_b, kept)
+        judged_records.append(
+            {
+                "members": sorted((stem_a, stem_b)),
+                "overlap": round(overlap, 4),
+                "same_work": same_work,
+                "should_cluster": should_cluster,
+                "edge": edge,
+            }
+        )
+    if judged_records and log_judged_fn is not None:
+        log_judged_fn(judged_records)
+    return updated
 
 
 def _target_task_edges(
@@ -607,6 +740,11 @@ def _compute_clusters_inner(
     repo_root: Path | None,
     agent_cli: str | None,
     task_candidates_fn: Callable[[str, str], list[dict[str, Any]]] | None,
+    judge_pairs_fn: Callable[
+        [list[tuple[str, str]]], list[tuple[bool, float, float] | None]
+    ]
+    | None,
+    log_judged_fn: Callable[[list[dict[str, Any]]], None] | None,
 ) -> list[dict[str, Any]]:
     """Unguarded body of `compute_clusters` (see there for the public
     contract). Split out so the broad exception handler wraps the whole
@@ -627,6 +765,9 @@ def _compute_clusters_inner(
             sig_a, sig_b = signals[i], signals[j]
             matches = _signal_matches(sig_a, sig_b)
             edges.append((sig_a["stem"], sig_b["stem"], matches))
+    edges = _apply_relatedness_judgment(
+        signals, edges, judge_pairs_fn=judge_pairs_fn, log_judged_fn=log_judged_fn
+    )
     edges.extend(_target_task_edges(signals, task_candidates_fn))
 
     return _assemble_clusters(
@@ -641,6 +782,11 @@ def compute_clusters(
     repo_root: Path | None = None,
     agent_cli: str | None = None,
     task_candidates_fn: Callable[[str, str], list[dict[str, Any]]] | None = None,
+    judge_pairs_fn: Callable[
+        [list[tuple[str, str]]], list[tuple[bool, float, float] | None]
+    ]
+    | None = None,
+    log_judged_fn: Callable[[list[dict[str, Any]]], None] | None = None,
 ) -> list[dict[str, Any]]:
     """Public entry point: scan `queue_dir` for queued briefs, extract Cluster
     Signals (skipping any brief whose frontmatter can't be read or parsed),
@@ -671,6 +817,17 @@ def compute_clusters(
     focus text against open, unchecked tasks in its `target-spec` change.
     Omitting it (the default) computes no task edges, preserving prior
     behavior exactly. See `_target_task_edges` for the matching rule.
+
+    `judge_pairs_fn` is optional and, when supplied, decides the focus signal
+    for up to `MAX_JUDGED_PAIRS` candidate pairs instead of the lexical
+    threshold: a `[(focus_a, focus_b), ...] -> [(edge, same_work,
+    should_cluster) | None, ...]` callable returning one positionally-aligned
+    verdict per pair, where `None` means "unavailable" and keeps that pair's
+    lexical decision. Handing the whole batch over at once is what lets the
+    caller run the round trips concurrently without this module owning a
+    thread pool. `log_judged_fn` is the matching sink for the per-pair
+    record. Omitting them (the default) preserves prior behavior exactly. See
+    `_apply_relatedness_judgment`.
     """
     try:
         return _compute_clusters_inner(
@@ -679,6 +836,8 @@ def compute_clusters(
             repo_root=repo_root,
             agent_cli=agent_cli,
             task_candidates_fn=task_candidates_fn,
+            judge_pairs_fn=judge_pairs_fn,
+            log_judged_fn=log_judged_fn,
         )
     except Exception:  # noqa: BLE001 — degrade, never crash the dashboard render
         return []

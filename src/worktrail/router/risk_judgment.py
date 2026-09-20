@@ -38,22 +38,15 @@ path is never entered, so the offline behaviour is exactly today's.
 
 from __future__ import annotations
 
-import json
-import os
-import urllib.error
-import urllib.request
 from collections.abc import Callable
 from typing import Any
 
-API_URL = "https://api.typesafe.ai/v1/systemone"
-MODEL = "jev-latest"
-API_KEY_ENV = "TYPESAFE_API_KEY"
+from . import typesafe
 
-# Seconds for one request. The measured cost is ~930 tokens and ~0.55s per
-# item; this is a ceiling for a slow response, not an expected duration. It is
-# deliberately short: a risk tier that arrives after the operator has given up
-# is worth less than the keyword fallback that arrives immediately.
-TIMEOUT_S = 20
+# The transport, credential, timeout and "what counts as unavailable" rule live
+# in `typesafe.py`, shared with `relatedness_judgment.py`. Re-exported so this
+# module's own readers and tests keep one import.
+API_KEY_ENV = typesafe.API_KEY_ENV
 
 # Noul value at or above which a red line is treated as crossed. From the
 # evaluation harness; on the probe set every true red line scored >= 0.9 and
@@ -163,32 +156,12 @@ QUESTIONS: dict[str, Any] = {
 
 def is_configured() -> bool:
     """True when an API key is present. No network call, no key value read."""
-    return bool(os.environ.get(API_KEY_ENV, "").strip())
-
-
-def _post(payload: dict[str, Any]) -> dict[str, Any]:
-    """One POST to the System One endpoint. Raises on any failure."""
-    request = urllib.request.Request(
-        API_URL,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {os.environ[API_KEY_ENV].strip()}",
-            "Content-Type": "application/json",
-        },
-    )
-    with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
-        return json.loads(response.read())
+    return typesafe.is_configured()
 
 
 def ask(text: str) -> dict[str, Any]:
-    """Ask every question about ``text`` in one request. Raises on any failure.
-
-    One request, not five: the questions share the same state, and the measured
-    cost of the whole set is ~930 tokens.
-    """
-    return _post(
-        {"state": {"proposed_change": text}, "model": MODEL, "questions": QUESTIONS}
-    )
+    """Ask every question about ``text`` in one request. Raises on any failure."""
+    return typesafe.post({"proposed_change": text}, QUESTIONS)
 
 
 def _tier_from_score(score: float) -> str:
@@ -240,14 +213,7 @@ def parse_answers(response: dict[str, Any]) -> tuple[float, dict[str, float]]:
     blast = answers.get("blast_radius")
     if not isinstance(blast, dict) or not isinstance(blast.get("score"), (int, float)):
         raise ValueError("response has no numeric blast_radius score")  # noqa: TRY004
-    nouls: dict[str, float] = {}
-    for key in _NOUL_KEYS:
-        answer = answers.get(key)
-        if not isinstance(answer, dict) or not isinstance(
-            answer.get("noul"), (int, float)
-        ):
-            raise ValueError(f"response has no numeric noul for {key}")  # noqa: TRY004
-        nouls[key] = float(answer["noul"])
+    nouls = {key: typesafe.noul(answers, key) for key in _NOUL_KEYS}
     return float(blast["score"]), nouls
 
 
@@ -267,13 +233,6 @@ def judge_risk(
         asker = ask
     try:
         score, nouls = parse_answers(asker(text))
-    except (
-        urllib.error.URLError,
-        OSError,
-        ValueError,
-        TypeError,
-        KeyError,
-        json.JSONDecodeError,
-    ):
+    except typesafe.JUDGMENT_ERRORS:
         return None
     return compose_tier(score, nouls)

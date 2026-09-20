@@ -287,6 +287,16 @@ class ClusterDashboardE2E(unittest.TestCase):
         # reads back real historical outcome counts, which is both a test-isolation
         # leak and a source of cross-run nondeterminism these e2e tests assert against.
         env["GO_CLUSTER_LOG"] = str(self.tmp_path / "cluster-log.jsonl")
+        # Isolate the relatedness judgment the same way. dashboard.py injects
+        # it into compute_clusters whenever a credential is present, so a shell
+        # that happens to export one turns these subprocess assertions into
+        # live, paid, nondeterministic calls -- which is exactly what happened
+        # while the judgment was being built: the cluster assertions below and
+        # test_json_clusters_deterministic_across_two_runs all failed because a
+        # real verdict replaced the lexical `focus-overlap` signal they pin.
+        # These tests are about the lexical rule; the judgment has its own
+        # offline suite in test_relatedness_judgment.py.
+        env.pop("TYPESAFE_API_KEY", None)
         return env
 
     def _list_queue_json(self, env: dict[str, str]) -> str:

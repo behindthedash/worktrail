@@ -115,7 +115,10 @@ from ..shared.homedir import env_setting, worktrail_home
 
 # cluster_detect is a sibling module (spec 018).
 # cluster_telemetry is a sibling module (spec 018 change: cluster-precision-telemetry).
-from . import cluster_detect, cluster_telemetry
+# relatedness_judgment holds the third-party client cluster_detect may not
+# import itself (its guard test rejects any network module in that file), so
+# this call site injects it -- same pattern as `_parse_fm`.
+from . import cluster_detect, cluster_telemetry, relatedness_judgment
 
 # audit_postmerge is a sibling module (spec post-merge-reconciliation-audit):
 # its dashboard_snapshot() is a pure state-file read (no `gh` calls), reused
@@ -3857,6 +3860,21 @@ def main(argv=None) -> int:
                     _dashboard_task_candidates,
                     repos_root=args.repos or str(Path.home() / "projects"),
                 ),
+                # Lexical overlap and shared work are different things in both
+                # directions: paraphrased pairs score 0.00-0.12 and are
+                # invisible to the threshold, while 7 of the 14 highest-overlap
+                # corpus pairs read as unrelated. The judgment decides a capped
+                # number of candidate pairs; injected here rather than imported
+                # by cluster_detect, which may hold no client of its own.
+                # `is_configured()` is a local env check, so with no credential
+                # nothing is injected and the lexical threshold is the whole
+                # rule, exactly as before.
+                judge_pairs_fn=(
+                    relatedness_judgment.judge_pairs
+                    if relatedness_judgment.is_configured()
+                    else None
+                ),
+                log_judged_fn=cluster_telemetry.log_judged_pairs,
             )
             if cluster_detect
             else []
