@@ -46,6 +46,14 @@ triggers:
     - focus-overlap
     - MIN_FOCUS_TOKENS
     - OVERLAP_THRESHOLD
+    - risk_judgment
+    - judge_risk
+    - compose_tier
+    - parse_answers
+    - blast_radius
+    - red line
+    - TYPESAFE_API_KEY
+    - risk_judgment_enabled
 ---
 
 You are working on **worktrail's GO v2 front door**: loading repo policy, classifying free-text
@@ -88,6 +96,37 @@ agents or writes task files — that is `orchestrator/`'s job.
   **not** the diff-blindness the `RISK_SIGNALS` table comment deliberately fails loud on.
   Underscore-joined identifiers (`require_auth`) were already excluded (`_` is a word character);
   `auth-related` still matches, because the guard looks only at what *precedes* the word.
+- **`classify_risk()` has two backends over one `RISK_ORDER` mapping, and the keyword table is
+  both the default and the fallback.** `classify_risk(text, *, judgment=False)` keeps its shape;
+  `_classify_risk_by_keyword()` is the extracted `RISK_SIGNALS` body, and
+  `risk_judgment.judge_risk()` is the second backend — one request asking for a 4-level
+  blast-radius score plus four red-line nouls (`irreversible_data_loss`,
+  `weakens_access_control`, `moves_money`, `disables_a_safeguard`), never for a tier, a label, or
+  a merge decision. The service observes; the pure, offline `compose_tier()` decides: the score
+  sets the baseline tier (rounded and clamped onto `_TIERS`), a hard red line at or above
+  `RED_LINE` (0.70) forces `critical`, the safeguard red line forces `high`, and a red line is a
+  **floor** — it can only raise a baseline, never lower one, because a change can read "ordinary"
+  on blast radius and still destroy data. Labels keep the `<tier>:<label>` shape
+  (`medium:blast-radius`, `critical:moves-money`), so a judged tier is readable as such with no
+  second field. Why it exists: the keyword table tiers on word presence alone, and measured
+  2026-09-19 on `tests/fixtures/risk_probes.json` it got 8/24 exact tiers and 10/24 auto-merge
+  gate decisions — rating prod data deletion, an auth fail-open, refund re-submission and
+  "make a required check non-blocking" *mergeable*, and seven trivial doc/test changes
+  *critical* — against the judgment's 20/24 and 24/24 with zero of either error.
+- **The judgment fails safe into the keyword table, always.** `judge_risk()` returns `None` — the
+  "use the keyword table" signal — on a missing `TYPESAFE_API_KEY`, an HTTP or transport error, a
+  timeout (`TIMEOUT_S`, deliberately short: a tier that arrives after the operator gave up is
+  worth less than the immediate fallback), an unparseable body, or an answer set missing a field.
+  `parse_answers()` raises `ValueError` on any shape it does not recognise rather than reading a
+  missing noul as zero, so a changed or truncated response can never compose a falsely-low tier.
+  The fallback errs toward over-gating, which is the safe direction. CI needs no key and no
+  network: with the key unset the judgment path is never entered and behaviour is exactly the
+  pre-judgment one.
+- **`classify()` stays pure by default: `risk_judgment_enabled` defaults to `False`.** Only
+  `main()` turns it on, with `--no-risk-judgment` to opt out — the same confinement
+  `cited_pr_states`' live `gh` lookup already has — so `classifier_coverage`'s replay and every
+  test stay deterministic, free and offline. Enabling it changes only the `risk`/`risk_signals`
+  output; route selection, its confidence, and its reason never consult it.
 - **A J score built entirely from `_MENTION_ONLY_J_LABELS` (`routing-logic`, `classify-py`)
   alongside a strong CI/config signal (`_CI_CONFIG_RE`: `.github/workflows`, `.github/rulesets`,
   `required status check`, `branch protection`) is damped to zero** — that shape means the
@@ -310,8 +349,16 @@ agents or writes task files — that is `orchestrator/`'s job.
   is supplied, and delegates repo names to the caller (`--repos`) and brief-id resolution to
   `work_queue.resolve()` so nothing here becomes a second implementation
 - `router/classify.py` — `classify_risk()` and the `RISK_SIGNALS` table (the `authz` pattern's
-  `(?<![-@])` compound-token guard lives here); also `classify()`'s J-damping guard
-  (`_MENTION_ONLY_J_LABELS`, `_CI_CONFIG_RE`, `_CITED_AS_EXAMPLE_RE`)
+  `(?<![-@])` compound-token guard lives here, now inside the extracted
+  `_classify_risk_by_keyword()`); also `classify()`'s J-damping guard
+  (`_MENTION_ONLY_J_LABELS`, `_CI_CONFIG_RE`, `_CITED_AS_EXAMPLE_RE`) and the default-off
+  `risk_judgment_enabled` flag that `main()` is the only caller to enable
+- `router/risk_judgment.py` — the second `classify_risk` backend: `QUESTIONS` (one blast-radius
+  score plus the four red-line nouls), `is_configured()`, `ask()`'s single request,
+  `parse_answers()`'s strict shape check, the pure `compose_tier()` mapping onto
+  `classify.RISK_ORDER`, and `judge_risk()`'s `None`-on-any-failure contract (its `asker`
+  parameter is the injection seam tests use instead of a network fake); the tier policy lives in
+  `compose_tier()`, never in the service's answer
 - `router/policy.py` — `load_policy()`; the single source of truth for a repo's resolved GO policy
 - `router/run_record.py` — `finish()`'s ten-state enforcement and its two code-enforced gates;
   `cmd_scope_review` write-time reason validation and `OUT_OF_SCOPE_REASON_PREFIXES`;
@@ -356,4 +403,4 @@ agents or writes task files — that is `orchestrator/`'s job.
   non-focus caller keeps reading
 
 ---
-**Last Updated:** 2026-09-19
+**Last Updated:** 2026-09-20
