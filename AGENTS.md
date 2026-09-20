@@ -170,7 +170,9 @@ and `.codex-plugin/plugin.json`'s version must match it.
 ## Skills
 
 - `.claude/skills/base/skill.md` — Base repo skill; load whenever working in this repo.
+- `.claude/skills/detach/skill.md` — worktrail-detach — supervised out-of-harness launch with log/pid/exit sentinel so long-running runs survive the Claude Code background-task reaper
 - `.claude/skills/drain/skill.md` — Unattended queue-draining loop — fresh-context one-shot spawning and stop conditions for src/worktrail/drain
+- `.claude/skills/onboarding/skill.md` — worktrail-repo-init scaffolding — write-if-absent files, the agent-facing PR labels doc, and AGENTS.md pointer handling for src/worktrail/onboarding
 - `.claude/skills/router/skill.md` — GO v2 front door internals — policy resolution, run records, resume dashboard, and PR label correction for src/worktrail/router
 - `.claude/skills/tests/skill.md` — Testing conventions for worktrail — hermetic isolation, AST-based enforcement-coverage tests, and cross-module fixture reuse
 - `.claude/skills/workqueue/skill.md` — Handoff-brief queue lifecycle — atomic claim/done/release and write verification for src/worktrail/workqueue

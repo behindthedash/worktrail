@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -63,6 +64,13 @@ from .dependabot_manifest_check_template import (
     DEPENDABOT_MANIFEST_CHECK_REQUIREMENTS_TXT,
 )
 from .gitleaks_template import CHECK_GITLEAKS_SIGNAL_INTEGRITY_PY
+from .pull_requests_doc_template import (
+    AGENTS_MD_PR_SECTION,
+    MERGE_METHODS_MARKER,
+    PROMOTION_SECTION,
+    PROMOTION_SECTION_MARKER,
+    PULL_REQUESTS_DOC_TEMPLATE,
+)
 from .rulesets_drift_guard_template import RULESETS_REQUIREMENTS_TXT, RULESETS_SYNC_PY
 
 OPENSPEC_PACKAGE = "@fission-ai/openspec@latest"
@@ -750,6 +758,64 @@ def ensure_automerge_labels(gh_repo: str) -> dict[str, str]:
     return result
 
 
+# --------------------------------------------------------------------------
+# PR labels doc (agent-facing instructions for the go:risk-* labels)
+# --------------------------------------------------------------------------
+
+PULL_REQUESTS_DOC_RELPATH = "docs/engineering/pull-requests.md"
+
+# A tool-managed AGENTS.md block opener, e.g. `<!-- aspens:start -->`. The
+# doctrine keeps these at the end of the file, so the PR section goes before the
+# first one rather than after it.
+_TOOL_BLOCK_START_RE = re.compile(r"^<!--\s*\S+:start\s*-->\s*$", re.MULTILINE)
+
+
+def build_pull_requests_doc(branches: list[str]) -> str:
+    """The agent-facing `docs/engineering/pull-requests.md`, rendered for one
+    branch model. The per-branch merge method comes from
+    `merge_method_for_branch()` -- the same function the rulesets and the
+    auto-merge workflow use -- and the promotion-PR rule appears only when the
+    model has a branch other than `dev`/`main` to promote into."""
+    merge_methods = "\n".join(
+        f"- `{branch}`: {merge_method_for_branch(branch)}" for branch in branches
+    )
+    promoted = [b for b in branches if b not in SQUASH_ONLY_BRANCHES]
+    promotion = (
+        PROMOTION_SECTION.replace(
+            "__PROMOTED__", " and ".join(f"`{b}`" for b in promoted)
+        )
+        if promoted
+        else ""
+    )
+    return PULL_REQUESTS_DOC_TEMPLATE.replace(
+        PROMOTION_SECTION_MARKER, promotion
+    ).replace(MERGE_METHODS_MARKER, merge_methods)
+
+
+def ensure_agents_md_pr_pointer(repo: Path) -> tuple[bool, str | None]:
+    """Add a "Pull requests" section pointing at the PR labels doc to
+    AGENTS.md, before the first tool-managed block (or at the end when there is
+    none). A no-op when AGENTS.md already mentions the doc path, so a re-run or
+    a hand-written pointer is never duplicated. Returns (changed, warning)."""
+    agents_md = repo / "AGENTS.md"
+    if not agents_md.is_file():
+        return False, (
+            f"AGENTS.md not found -- {PULL_REQUESTS_DOC_RELPATH} was not linked "
+            "from it; add a pointer by hand"
+        )
+    text = agents_md.read_text(encoding="utf-8")
+    if PULL_REQUESTS_DOC_RELPATH in text:
+        return False, None
+    match = _TOOL_BLOCK_START_RE.search(text)
+    if match:
+        head, tail = text[: match.start()], text[match.start() :]
+        text = head + AGENTS_MD_PR_SECTION + "\n" + tail
+    else:
+        text = text.rstrip("\n") + "\n\n" + AGENTS_MD_PR_SECTION
+    agents_md.write_text(text, encoding="utf-8")
+    return True, None
+
+
 def build_rulesets_drift_guard_workflow(branches: list[str]) -> str:
     """A "CI: Rulesets Drift Guard" workflow targeting the repo's actual
     branch model: `--check`s committed `.github/rulesets/*.json` against
@@ -1305,6 +1371,12 @@ def detect_state(repo: Path) -> dict[str, Any]:
         "dependabot_manifest_check_requirements_exists": (
             repo / DEPENDABOT_CHECK_REQUIREMENTS_RELPATH
         ).is_file(),
+        "pull_requests_doc_exists": (repo / PULL_REQUESTS_DOC_RELPATH).is_file(),
+        "agents_md_links_pull_requests_doc": (
+            (repo / "AGENTS.md").is_file()
+            and PULL_REQUESTS_DOC_RELPATH
+            in (repo / "AGENTS.md").read_text(encoding="utf-8")
+        ),
         "gitleaks_workflow_exists": (repo / GITLEAKS_WORKFLOW_RELPATH).is_file(),
         "gitleaks_script_exists": (repo / GITLEAKS_SCRIPT_RELPATH).is_file(),
         "ci_jobs_discovered": discover_ci_checks(repo),
@@ -1588,6 +1660,22 @@ def cmd_propose(args: argparse.Namespace) -> int:
                 "PR with nothing else to gate it. Add required checks to "
                 ".github/rulesets/*.json before applying risk labels to real PRs."
             )
+
+    pr_doc_path = repo / PULL_REQUESTS_DOC_RELPATH
+    if state["pull_requests_doc_exists"]:
+        skipped.append(f"{PULL_REQUESTS_DOC_RELPATH} (already exists)")
+    else:
+        pr_doc_path.parent.mkdir(parents=True, exist_ok=True)
+        pr_doc_path.write_text(build_pull_requests_doc(branches), encoding="utf-8")
+        written.append(str(pr_doc_path.relative_to(repo)))
+
+    changed, warn = ensure_agents_md_pr_pointer(repo)
+    if warn:
+        warnings.append(warn)
+    elif changed:
+        written.append(f"AGENTS.md (linked {PULL_REQUESTS_DOC_RELPATH})")
+    else:
+        skipped.append(f"AGENTS.md (already links {PULL_REQUESTS_DOC_RELPATH})")
 
     openspec_validate_path = repo / OPENSPEC_VALIDATE_WORKFLOW_RELPATH
     if state["openspec_validate_workflow_exists"]:

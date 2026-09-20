@@ -86,6 +86,38 @@
         "intentPatterns": []
       }
     },
+    "onboarding": {
+      "type": "domain",
+      "enforcement": "suggest",
+      "priority": "high",
+      "scope": "all",
+      "alwaysActivate": false,
+      "filePatterns": [
+        "src/worktrail/onboarding/**",
+        "skills/worktrail-repo-init/**",
+        "tests/onboarding/**"
+      ],
+      "promptTriggers": {
+        "keywords": [
+          "repo-init",
+          "repo_init",
+          "propose",
+          "scaffold",
+          "pull-requests.md",
+          "go:risk",
+          "onboarding",
+          "worktrail-repo-init",
+          "scaffolding",
+          "write-if-absent",
+          "files",
+          "agent-facing",
+          "worktrail",
+          "skills",
+          "tests"
+        ],
+        "intentPatterns": []
+      }
+    },
     "router": {
       "type": "domain",
       "enforcement": "suggest",
