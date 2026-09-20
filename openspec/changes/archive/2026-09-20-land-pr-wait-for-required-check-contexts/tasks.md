@@ -1,6 +1,6 @@
 ## 1. Gate the CI watch on required-context coverage
 
-- [ ] 1.1 In `src/worktrail/router/land_pr.py`: give `_checks_registered` a
+- [x] 1.1 In `src/worktrail/router/land_pr.py`: give `_checks_registered` a
       `required_contexts: list[str] | None = None` parameter -- keep today's behaviour when it
       is `None` or empty, otherwise parse `gh pr checks --json name` stdout and return `True`
       only when every required context appears among the reported names (a reported set missing
@@ -25,7 +25,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [depends: 1.1] [e2e] Run `PYTHONPATH=src pytest -q tests/router`, then
+- [x] 2.1 [depends: 1.1] [e2e] Run `PYTHONPATH=src pytest -q tests/router`, then
       `PYTHONPATH=src pytest -q` and
       `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`. Run
       `openspec validate land-pr-wait-for-required-check-contexts --strict` and
