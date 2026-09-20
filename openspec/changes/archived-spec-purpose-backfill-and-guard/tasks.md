@@ -1,6 +1,6 @@
 ## 1. Purpose check
 
-- [ ] 1.1 Add `src/worktrail/router/check_spec_purpose.py` with
+- [x] 1.1 Add `src/worktrail/router/check_spec_purpose.py` with
       `check_changed_specs(repo: Path, changed_paths: list[str]) -> list[str]` and a `main()`.
       Select only paths matching `openspec/specs/<capability>/spec.md` (ignore
       `openspec/changes/**` delta specs and `docs/specs/**`); for each, read the `## Purpose`
@@ -18,7 +18,7 @@
       scoped to the diff, never the whole tree.)
       files: src/worktrail/router/check_spec_purpose.py, tests/router/test_check_spec_purpose.py
 
-- [ ] 1.2 [depends: 1.1] Wire the check into `src/worktrail/router/pre_pr_gate.py`: import
+- [x] 1.2 [depends: 1.1] Wire the check into `src/worktrail/router/pre_pr_gate.py`: import
       `check_changed_specs as check_spec_purpose_failures`, add
       `SPEC_PURPOSE_DRIFT_EXIT = 6` beside the other exit constants, and run it in
       `run_drift_checks` after the req/AC coverage block, printing
