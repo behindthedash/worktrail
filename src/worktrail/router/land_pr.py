@@ -83,6 +83,7 @@ from typing import Any
 from worktrail.conductor import compile as conductor_compile
 
 from . import (
+    automerge_preflight,
     check_compile_markers,
     check_review_threads,
     pr_labels,
@@ -795,16 +796,29 @@ def _log_excerpt(
 
 
 def _checks_registered(
-    repo: Path, pr_number: int, runner: Runner, base_slug: str | None = None
+    repo: Path,
+    pr_number: int,
+    runner: Runner,
+    base_slug: str | None = None,
+    required_contexts: list[str] | None = None,
 ) -> bool | None:
-    """Whether at least one check exists for the PR yet.
+    """Whether the checks the watch must observe exist for the PR yet.
 
-    `True` if `gh pr checks` succeeds (something is reported, pending or
-    not). `False` only when `gh` explicitly reports none (the specific
-    "no checks reported" message) -- a real, informative negative. `None`
-    when the query failed for some OTHER reason (network/auth/malformed
-    response): not informative either way, so the caller should proceed to
-    the normal watch loop rather than waiting on a signal that isn't coming.
+    Without `required_contexts` (None or empty -- the branch has no required
+    contexts configured, or they could not be resolved): `True` if `gh pr
+    checks` succeeds (something is reported, pending or not). `False` only
+    when `gh` explicitly reports none (the specific "no checks reported"
+    message) -- a real, informative negative. `None` when the query failed
+    for some OTHER reason (network/auth/malformed response): not informative
+    either way, so the caller should proceed to the normal watch loop rather
+    than waiting on a signal that isn't coming.
+
+    With `required_contexts`, "registered" means every one of those contexts
+    is among the reported check names. A reported set that is missing any of
+    them is the same informative negative as "no checks reported": the checks
+    that actually gate the merge have not shown up yet, so settling on what
+    *is* reported would pass a PR whose required CI was never observed. An
+    unparseable response is still `None`.
     """
     result = _gh(
         repo,
@@ -817,7 +831,16 @@ def _checks_registered(
         base_slug=base_slug,
     )
     if result.returncode == 0:
-        return True
+        if not required_contexts:
+            return True
+        try:
+            rows = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(rows, list):
+            return None
+        reported = {str(r.get("name", "")) for r in rows if isinstance(r, dict)}
+        return all(context in reported for context in required_contexts)
     if _NO_CHECKS_STDERR_MARKER in (result.stderr or "").lower():
         return False
     return None
@@ -830,6 +853,7 @@ def _watch_ci(
     runner: Runner,
     heartbeat: Callable[[], None] | None = None,
     base_slug: str | None = None,
+    required_contexts: list[str] | None = None,
 ) -> dict[str, Any]:
     """CI watch -- ci-watch-loop.md cases 1/2/3/5, implemented in code (see
     module docstring step 7 / design.md D7). Returns `{"settled": bool,
@@ -865,7 +889,9 @@ def _watch_ci(
             heartbeat()
         if _pr_is_merged(repo, pr_number, runner, base_slug):
             return settled_merged
-        registered = _checks_registered(repo, pr_number, runner, base_slug)
+        registered = _checks_registered(
+            repo, pr_number, runner, base_slug, required_contexts
+        )
         if registered is not False:
             break
         time.sleep(_NO_CHECKS_POLL_INTERVAL_S)
@@ -906,12 +932,23 @@ def _watch_ci(
             base_slug=base_slug,
         )
         if watch.returncode == 0:
-            return {
-                "settled": True,
-                "failing_checks": [],
-                "log_excerpt": "",
-                "budget_exhausted": False,
-            }
+            # A clean watch exit only settles once the required contexts are
+            # actually present. `gh pr checks --watch` exits 0 over whatever
+            # subset is registered at the time, so a required context that has
+            # not been created yet would otherwise read as a pass.
+            if (
+                _checks_registered(
+                    repo, pr_number, runner, base_slug, required_contexts
+                )
+                is not False
+            ):
+                return {
+                    "settled": True,
+                    "failing_checks": [],
+                    "log_excerpt": "",
+                    "budget_exhausted": False,
+                }
+            continue
 
         checks = _gh(
             repo,
@@ -1557,6 +1594,14 @@ def land_pr(request: LandRequest) -> LandOutcome:
             detail="run_record set pull_request failed",
         )
 
+    required_contexts = (
+        automerge_preflight.required_status_check_contexts(
+            base_slug, request.base_branch, runner
+        )
+        if base_slug
+        else None
+    )
+
     if pr_number:
         _ledger_heartbeat(pr_url)
         try:
@@ -1567,6 +1612,7 @@ def land_pr(request: LandRequest) -> LandOutcome:
                 runner,
                 heartbeat=lambda: _ledger_heartbeat(pr_url),
                 base_slug=base_slug,
+                required_contexts=required_contexts,
             )
         finally:
             _ledger_unwatch(pr_url)
