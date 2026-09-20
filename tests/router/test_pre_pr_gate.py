@@ -18,12 +18,14 @@ from worktrail.router.pre_pr_gate import (
     DOD_VERIFICATION_DRIFT_EXIT,
     REQ_AC_COVERAGE_DRIFT_EXIT,
     SCOPE_COMPLETENESS_EXIT,
+    SPEC_PURPOSE_DRIFT_EXIT,
     SPEC_SYNC_DRIFT_EXIT,
     UNCONFIGURED_EXIT,
     is_docs_only,
     is_promotion_pr,
     main,
     resolve_cmd,
+    run_drift_checks,
     scope_review_failures,
     spec_sync_drift,
 )
@@ -1010,7 +1012,7 @@ class TestOrphanedTestsWarning(unittest.TestCase):
 
 
 class TestChecksOnly(unittest.TestCase):
-    """`--checks-only` runs just the four deterministic drift checks and
+    """`--checks-only` runs just the five deterministic drift checks and
     returns their combined exit code directly, without ever reaching
     `pre_pr_cmd`/`integrate_smoke_cmd` or the unconfigured default-deny
     (design D2)."""
@@ -1101,6 +1103,65 @@ class TestChecksOnly(unittest.TestCase):
         repo = self._init_repo("base_branch: main\n")
         self.assertNotEqual(main(["--repo", repo, "--checks-only"]), UNCONFIGURED_EXIT)
         self.assertEqual(main(["--repo", repo, "--checks-only"]), 0)
+
+
+class TestSpecPurposeGate(unittest.TestCase):
+    """`run_drift_checks` fails with its own exit code when a capability spec
+    changed in the diff still carries the archive placeholder Purpose."""
+
+    _PLACEHOLDER_SPEC = (
+        "# fixture-capability Specification\n\n"
+        "## Purpose\n"
+        "TBD - created by archiving change add-fixture. "
+        "Update Purpose after archive.\n\n"
+        "## Requirements\n\n"
+        "### Requirement: The system SHALL do the thing\n\n"
+        "#### Scenario: it does the thing\n\n"
+        "- **WHEN** asked\n"
+        "- **THEN** it does\n"
+    )
+
+    _REAL_SPEC = _PLACEHOLDER_SPEC.replace(
+        "TBD - created by archiving change add-fixture. Update Purpose after archive.",
+        "Does the thing on request, so callers never have to do it by hand.",
+    )
+
+    def _git(self, repo: str, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git", *args], cwd=repo, capture_output=True, text=True, check=True
+        )
+
+    def _repo_with_spec(self, spec_text: str) -> str:
+        d = tempfile.mkdtemp(prefix="prepr-purpose-")
+        self._git(d, "init", "-q", "-b", "main")
+        self._git(d, "config", "user.email", "test@example.com")
+        self._git(d, "config", "user.name", "Test")
+        (Path(d) / ".worktrail").mkdir(parents=True)
+        (Path(d) / ".worktrail" / "policy.yaml").write_text(
+            "base_branch: main\n", encoding="utf-8"
+        )
+        self._git(d, "add", ".")
+        self._git(d, "commit", "-q", "-m", "base")
+        self._git(d, "checkout", "-q", "-b", "feature")
+        spec = Path(d) / "openspec" / "specs" / "fixture-capability" / "spec.md"
+        spec.parent.mkdir(parents=True)
+        spec.write_text(spec_text, encoding="utf-8")
+        self._git(d, "add", ".")
+        self._git(d, "commit", "-q", "-m", "add spec")
+        return d
+
+    def test_changed_placeholder_spec_returns_its_own_exit_code(self) -> None:
+        repo = self._repo_with_spec(self._PLACEHOLDER_SPEC)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc = run_drift_checks(Path(repo), {"base_branch": "main"})
+        self.assertEqual(rc, SPEC_PURPOSE_DRIFT_EXIT)
+        self.assertIn("capability spec(s) with no Purpose", err.getvalue())
+        self.assertIn("worktrail-check-spec-purpose", err.getvalue())
+
+    def test_changed_spec_with_real_purpose_passes(self) -> None:
+        repo = self._repo_with_spec(self._REAL_SPEC)
+        self.assertEqual(run_drift_checks(Path(repo), {"base_branch": "main"}), 0)
 
 
 if __name__ == "__main__":

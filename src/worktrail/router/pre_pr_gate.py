@@ -66,6 +66,13 @@ base ref cannot be resolved, this check skips itself rather than failing or
 falling back to repo-wide enforcement. OpenSpec-format changes are
 untouched: `check_req_coverage.py` only matches `docs/specs/<id>/` paths.
 
+Immediately after that, the gate runs the capability-spec Purpose check
+(`check_spec_purpose.py`) against `openspec/specs/<capability>/spec.md` files
+**changed in this diff only**, same scoping rationale as the two checks above:
+capability specs that merged before this guard existed may still carry
+`openspec archive`'s `TBD - created by archiving change ...` placeholder and
+must not fail every future PR. See check_spec_purpose.py's module docstring.
+
 Exit codes:
   0   command passed, the repo opted out explicitly (`pre_pr_cmd: skip`), or
       the diff was docs-only per `docs_only_paths`
@@ -76,6 +83,7 @@ Exit codes:
   3   clarification-integrity drift detected in changed docs/specs/ files
   4   DoD-verification drift detected in changed, completed task file(s)
   5   req/AC coverage drift: a newly-declared identifier has no task coverage
+  6   Purpose drift: a changed capability spec states no real Purpose
   N   the gate command's own non-zero exit code
 
 Before running the command, the gate also prints a non-blocking `WARNING` when
@@ -107,8 +115,9 @@ only after — the pre-print survives shell-output truncation that can occur
 when the test suite exceeds the calling agent's default bash timeout. The
 line is reprinted after a PASS for terminal readers.
 
-`--checks-only` runs just the four deterministic drift checks above (spec
-sync, clarification integrity, DoD verification, req/AC coverage) and
+`--checks-only` runs just the five deterministic drift checks above (spec
+sync, clarification integrity, DoD verification, req/AC coverage, capability
+spec Purpose) and
 returns their combined exit code directly, without reaching any of the
 later gate stages (design D2): it skips `pre_pr_cmd`/`integrate_smoke_cmd`
 entirely (there is no test command to run in this mode), the
@@ -144,6 +153,9 @@ from .check_req_coverage import (
 from .check_req_coverage import (
     check_changed_specs as check_req_coverage_failures,
 )
+from .check_spec_purpose import (
+    check_changed_specs as check_spec_purpose_failures,
+)
 from .check_spec_sync import check_spec
 from .policy import (
     POLICY_RELPATH,
@@ -164,6 +176,7 @@ SCOPE_COMPLETENESS_EXIT = 1
 CLARIFICATION_INTEGRITY_DRIFT_EXIT = 3
 DOD_VERIFICATION_DRIFT_EXIT = 4
 REQ_AC_COVERAGE_DRIFT_EXIT = 5
+SPEC_PURPOSE_DRIFT_EXIT = 6
 CANDIDATE_BASE_REFS = ("origin/main", "origin/master", "main", "master")
 
 
@@ -455,7 +468,7 @@ def _warn_orphaned_tests(repo: Path) -> None:
 
 
 def run_drift_checks(repo: Path, policy: dict[str, Any]) -> int:
-    """Run the four deterministic drift checks in order, stderr-reporting each
+    """Run the five deterministic drift checks in order, stderr-reporting each
     failure exactly as `main()` does inline. Returns the matching
     `*_DRIFT_EXIT` constant on the first failure, 0 when all pass."""
     drift = spec_sync_drift(repo)
@@ -526,6 +539,23 @@ def run_drift_checks(repo: Path, policy: dict[str, Any]) -> int:
                 file=sys.stderr,
             )
             return REQ_AC_COVERAGE_DRIFT_EXIT
+
+    purpose_failures = check_spec_purpose_failures(
+        repo, changed_paths(repo, policy) or []
+    )
+    if purpose_failures:
+        print(
+            "PRE-PR GATE: FAIL — capability spec(s) with no Purpose:",
+            file=sys.stderr,
+        )
+        for failure in purpose_failures:
+            print(f"  - {failure}", file=sys.stderr)
+        print(
+            "  Run worktrail-check-spec-purpose and replace the placeholder "
+            "`## Purpose` with what the capability does and the failure it prevents.",
+            file=sys.stderr,
+        )
+        return SPEC_PURPOSE_DRIFT_EXIT
 
     return 0
 
