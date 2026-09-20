@@ -1,7 +1,11 @@
 # land-pr-required-context-coverage Specification
 
 ## Purpose
-TBD - created by archiving change land-pr-wait-for-required-check-contexts. Update Purpose after archive.
+Keep the landing pipeline's CI watch from settling on checks it was never meant to trust. A PR
+whose fast third-party statuses (for example Vercel) register before the required GitHub Actions
+contexts would otherwise end the no-checks grace period, be watched to a clean exit, and be
+reported as a settled pass before any required check had even been created, so merge handling
+proceeded on CI it never observed.
 ## Requirements
 ### Requirement: CI watch settles only on required-context coverage
 The landing pipeline SHALL resolve the base branch's ruleset-required status check contexts
