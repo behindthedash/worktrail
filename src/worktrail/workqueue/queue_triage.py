@@ -294,6 +294,15 @@ CONFIRMED entry from a brief's mechanical premise check above counts as \
 reproduction evidence on its own — cite it directly rather than re-running \
 the same check yourself.
 
+A `work-directly` verdict may also carry a `refuted_span`: one claim in the \
+brief's own focus text your evidence refutes, copied *verbatim* from the focus \
+text as shown above, optionally with a `corrected_span` giving the text that \
+should replace it (omit it to simply drop the claim). Use this to correct a \
+single wrong claim while still seeding the brief as directly actionable - a \
+span covering the whole focus text is not a correction, and will downgrade the \
+verdict to `keep` instead. `judgment_reason` stays `needs-update`-only: never \
+set it on a `work-directly` verdict.
+
 Step 2c — needs-update requires a mechanical-vs-judgment classification:
 When your verdict is `needs-update`, say which kind of update it needs. If the \
 correction is mechanical — a specific, quotable claim the brief makes that your \
@@ -326,8 +335,9 @@ verbatim from that candidate change's own proposal.md/tasks.md, for \
 fold-into-change only>", "target_repo": "<repo, for propose-change \
 only>", "proposed_change_name": "<kebab-case id, for propose-change only>", \
 "question": "<for needs-decision only>", "refuted_span": "<verbatim span of \
-the brief's focus text your evidence refutes, for a mechanical needs-update \
-only>", "corrected_span": "<optional replacement for refuted_span>", \
+the brief's focus text your evidence refutes, for a mechanical needs-update or \
+a correcting work-directly>", "corrected_span": "<optional replacement for \
+refuted_span, for a mechanical needs-update or a correcting work-directly>", \
 "judgment_reason": "<what a human must decide, for a judgment needs-update \
 only>", "evidence": "<cited PR/commit/file/\
 test, or why inconclusive for a fail-open keep>", "confidence": \
@@ -1681,14 +1691,17 @@ class Verdict:
     parse time and `_apply_fold_into_change()` re-checks against the live
     files before writing any fold edit. `None` for every other verdict type.
 
-    `refuted_span`/`corrected_span`/`judgment_reason` are `needs-update`'s
-    mechanical-vs-judgment split: `refuted_span` is the span of the brief's own
-    focus text the evaluator refuted (quoted verbatim), optionally with the
-    `corrected_span` that should replace it, when the correction is mechanical;
-    `judgment_reason` is set instead when resolving the brief needs a genuine
-    human call. All three stay `None` for every other verdict type, and for a
-    `needs-update` verdict the evaluator left evidence-only -- validity still
-    requires only non-empty `evidence`, unaffected by these fields.
+    `refuted_span`/`corrected_span`/`judgment_reason` carry the evaluator's
+    corrections. `refuted_span` is the span of the brief's own focus text the
+    evaluator refuted (quoted verbatim), optionally with the `corrected_span`
+    that should replace it; both are set by a mechanical `needs-update` and by
+    a `work-directly` verdict correcting one claim while still seeding the
+    brief. `judgment_reason` is `needs-update`-only -- it is the other half of
+    that verdict's mechanical-vs-judgment split, set instead of `refuted_span`
+    when resolving the brief needs a genuine human call. All three stay `None`
+    for every other verdict type, and for a verdict the evaluator left
+    evidence-only -- validity still requires only non-empty `evidence`,
+    unaffected by these fields.
     """
 
     brief_id: str
@@ -2220,6 +2233,18 @@ def _needs_update_rewritten_focus(v: Verdict, focus: str) -> str:
     return focus.replace(v.refuted_span or "", v.corrected_span or "", 1)
 
 
+def _focus_rewrite_summary(v: Verdict) -> str:
+    """The `## Triage` body line describing a focus rewrite.
+
+    Shared by `_apply_needs_update_mechanical()` and `_apply_work_directly()`
+    so both spell the same rewrite the same way in the brief's body.
+    """
+    replacement = v.corrected_span or ""
+    if replacement:
+        return f"Rewrote focus: replaced {v.refuted_span!r} with {replacement!r}."
+    return f"Rewrote focus: removed {v.refuted_span!r}."
+
+
 def _needs_update_empty_focus_question(v: Verdict) -> str:
     """The question an all-of-the-focus refutation files a decision under.
 
@@ -2318,7 +2343,6 @@ def _apply_needs_update_mechanical(
         "note": v.evidence,
         "rewrite": {"removed": v.refuted_span, "replacement": v.corrected_span or ""},
     }
-    replacement = v.corrected_span or ""
     new_focus = _needs_update_rewritten_focus(v, _brief_focus(path))
     if not new_focus.strip():
         return _apply_needs_update_judgment(
@@ -2326,10 +2350,7 @@ def _apply_needs_update_mechanical(
             path,
         )
 
-    if replacement:
-        summary = f"Rewrote focus: replaced {v.refuted_span!r} with {replacement!r}."
-    else:
-        summary = f"Rewrote focus: removed {v.refuted_span!r}."
+    summary = _focus_rewrite_summary(v)
     try:
         _set_fm_fields(path, {"focus": new_focus})
         content = path.read_text(encoding="utf-8")
@@ -2507,6 +2528,22 @@ def _work_directly_downgrade_note(v: Verdict) -> str:
     )
 
 
+def _work_directly_whole_focus_note(v: Verdict) -> str:
+    """Downgrade-to-`keep` note for an accepted `work-directly` verdict whose
+    `refuted_span` covers the brief's *entire* focus text.
+
+    Refuting all of it is not a correction to seed the brief around -- there
+    would be no focus text left to work on -- so the brief is left untouched
+    and unseeded. Shared by `_apply_work_directly()` and `_preview_verdict()`
+    so the preview quotes the same note the apply would record.
+    """
+    return (
+        f"queue-triage refuted {v.refuted_span!r}, which is this brief's entire "
+        f"focus text -- nothing would be left to work on directly, so the brief "
+        f"is left unseeded"
+    )
+
+
 def _apply_work_directly(v: Verdict, run_date: str) -> dict:
     """`work-directly`: stamp `seeded-from`/`recommended-route` in place, or downgrade to `keep`.
 
@@ -2520,6 +2557,16 @@ def _apply_work_directly(v: Verdict, run_date: str) -> dict:
     frontmatter is stamped `seeded-from: triage:<run_date>:direct` and
     `recommended-route: F` and the brief is left in `queue/` -- unlike
     `stale-close`, `work-directly` never claims or closes it.
+
+    An accepted verdict may additionally carry a `refuted_span` correcting one
+    claim in the brief's focus text. When that span is still mechanically
+    rewritable against the brief's live focus
+    (`_needs_update_is_mechanical()`), the rewritten focus is written
+    alongside the stamp and reported as `rewrite`; when the rewrite would
+    leave no focus text at all, there is nothing to work on directly, so this
+    downgrades to `keep` with `_work_directly_whole_focus_note()` and writes
+    nothing. Every accepted case appends a `## Triage <run_date>` section
+    recording the rewrite (when there was one) and the verdict's evidence.
     """
     base = {
         "brief_id": v.brief_id,
@@ -2547,13 +2594,33 @@ def _apply_work_directly(v: Verdict, run_date: str) -> dict:
             "path": None,
             "error": "brief not found in queue/ or picked/",
         }
+    fields = {
+        "seeded-from": f"triage:{run_date}:direct",
+        "recommended-route": "F",
+    }
+    rewrite = None
+    if _needs_update_is_mechanical(v, _brief_focus(path)):
+        new_focus = _needs_update_rewritten_focus(v, _brief_focus(path))
+        if not new_focus.strip():
+            return {
+                **base,
+                "action": "noop",
+                "status": "downgraded-to-keep",
+                "path": None,
+                "error": None,
+                "note": _work_directly_whole_focus_note(v),
+            }
+        fields["focus"] = new_focus
+        rewrite = {"removed": v.refuted_span, "replacement": v.corrected_span or ""}
+
+    summary = f"{_focus_rewrite_summary(v)}\n\n" if rewrite else ""
     try:
-        _set_fm_fields(
-            path,
-            {
-                "seeded-from": f"triage:{run_date}:direct",
-                "recommended-route": "F",
-            },
+        _set_fm_fields(path, fields)
+        content = path.read_text(encoding="utf-8")
+        path.write_text(
+            content.rstrip("\n")
+            + f"\n\n## Triage {run_date}\n\n{summary}{v.evidence}\n",
+            encoding="utf-8",
         )
     except (OSError, ValueError) as exc:
         return {
@@ -2563,13 +2630,16 @@ def _apply_work_directly(v: Verdict, run_date: str) -> dict:
             "path": str(path),
             "error": str(exc),
         }
-    return {
+    entry = {
         **base,
         "action": "stamp-frontmatter",
         "status": "executed",
         "path": str(path),
         "error": None,
     }
+    if rewrite:
+        entry["rewrite"] = rewrite
+    return entry
 
 
 # Per design D8: filed via `decisions.ask()`, which builds the versioned
@@ -3539,7 +3609,9 @@ def _preview_verdict(
 
     Never claims, closes, stamps, or files anything -- every field here is
     derived purely from `v` (plus `run_date` for the two frontmatter-
-    stamping verdict types, mirroring `_apply_work_directly`'s own stamp) so
+    stamping verdict types, and the brief's live focus text for a
+    `work-directly`/`needs-update` correction, mirroring
+    `_apply_work_directly`'s own stamp) so
     a caller can preview a run's effects before committing to it, per spec's
     "Apply step never closes a brief without an approved verdict"
     requirement. `fold-into-change`/`propose-change` preview their planned
@@ -3550,7 +3622,12 @@ def _preview_verdict(
     `planned_stamp: {"repo": ...}`. `work-directly`
     previews its planned
     frontmatter stamp (or the same downgrade-to-keep `_apply_work_directly`
-    would make); `needs-decision` previews the `awaiting-decision` stamp and
+    would make), adding `planned_rewrite` when the verdict also carries a
+    `refuted_span` still mechanically rewritable against the brief's live
+    focus, or previewing the whole-focus `planned-downgrade-to-keep` instead
+    when that rewrite would empty the focus -- a verdict with no usable span,
+    and a brief that no longer resolves, keep the plain stamp entry;
+    `needs-decision` previews the `awaiting-decision` stamp and
     the full `pending_decision_envelope()` `decisions.ask()` would file. A
     `needs-update` carrying `refuted_span`/`judgment_reason` previews whichever
     of `_apply_needs_update()`'s branches it would take -- the planned focus
@@ -3602,7 +3679,7 @@ def _preview_verdict(
                     "downgraded to keep", "will be downgraded to keep"
                 ),
             }
-        return {
+        entry = {
             **base,
             "action": "stamp-frontmatter",
             "status": "planned",
@@ -3612,6 +3689,21 @@ def _preview_verdict(
                 "recommended-route": "F",
             },
         }
+        path = _resolve_brief_path(v.brief_id)
+        if path is None or not _needs_update_is_mechanical(v, _brief_focus(path)):
+            return entry
+        if not _needs_update_rewritten_focus(v, _brief_focus(path)).strip():
+            return {
+                **base,
+                "action": "noop",
+                "status": "planned-downgrade-to-keep",
+                "note": _work_directly_whole_focus_note(v),
+            }
+        entry["planned_rewrite"] = {
+            "removed": v.refuted_span,
+            "replacement": v.corrected_span or "",
+        }
+        return entry
 
     if v.verdict == "needs-decision":
         question = (v.question or "").strip()
