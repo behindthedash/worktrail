@@ -185,6 +185,26 @@ class TestYamlSubset(unittest.TestCase):
         parsed = parse_policy_yaml("base_branch: dev  # the integration base\n")
         self.assertEqual(parsed["base_branch"], "dev")
 
+    def test_inline_flow_sequences_parse_to_lists(self):
+        parsed = parse_policy_yaml(
+            "protected_paths: []\n"
+            "require_human_routes: [G, H]  # routes needing a human\n"
+            "docs_only_paths: ['docs/**', \"README.md\"]\n"
+            "automerge:\n"
+            "  target_branches: []\n"
+            "  extra: [dev, main]\n"
+        )
+        self.assertEqual(parsed["protected_paths"], [])
+        self.assertEqual(parsed["require_human_routes"], ["G", "H"])
+        self.assertEqual(parsed["docs_only_paths"], ["docs/**", "README.md"])
+        self.assertEqual(parsed["automerge"]["target_branches"], [])
+        self.assertEqual(parsed["automerge"]["extra"], ["dev", "main"])
+
+    def test_bracketed_text_that_is_not_a_flow_sequence_stays_a_string(self):
+        parsed = parse_policy_yaml('auth_testing: "[not a list]"\nnote: [unclosed\n')
+        self.assertEqual(parsed["auth_testing"], "[not a list]")
+        self.assertEqual(parsed["note"], "[unclosed")
+
 
 class TestValidation(unittest.TestCase):
     def test_invalid_max_risk_clamped_to_low(self):
@@ -392,6 +412,40 @@ class TestAutomergeEligibility(unittest.TestCase):
         ok, why = automerge_eligible(pol, "low", [], "dev")
         self.assertFalse(ok)
         self.assertIn("disabled", why)
+
+    def _pol_with_targets(self, value):
+        return load_policy(
+            _repo_with(
+                "automerge:\n  enabled: true\n  max_risk: medium\n"
+                f"  target_branches: {value}\n"
+            )
+        )
+
+    def test_empty_inline_target_branches_means_base_branch_only(self):
+        # `target_branches: []` is the documented spelling of the default
+        # ("empty = base branch only"); it used to load as the string '[]' and
+        # reject every PR with "target branch main not in []".
+        pol = self._pol_with_targets("[]")
+        self.assertEqual(pol["automerge"]["target_branches"], [])
+        ok, why = automerge_eligible(pol, "medium", [], "main")
+        self.assertTrue(ok, why)
+
+    def test_inline_target_branches_list_filters_by_branch(self):
+        pol = self._pol_with_targets("[main]")
+        ok, why = automerge_eligible(pol, "medium", [], "main")
+        self.assertTrue(ok, why)
+        ok, why = automerge_eligible(pol, "medium", [], "dev")
+        self.assertFalse(ok)
+        self.assertIn("not in", why)
+
+    def test_scalar_target_branches_is_treated_as_single_branch(self):
+        # A hand-edited `target_branches: main` must not fall through to a
+        # substring test on the string ('main' in 'main' passes, 'ma' would too).
+        pol = self._pol_with_targets("main")
+        ok, why = automerge_eligible(pol, "medium", [], "main")
+        self.assertTrue(ok, why)
+        ok, _ = automerge_eligible(pol, "medium", [], "ma")
+        self.assertFalse(ok)
 
     def test_external_automerge_detected_changes_reason(self):
         repo = _repo_with_workflow(

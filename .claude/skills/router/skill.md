@@ -69,6 +69,9 @@ triggers:
     - MAX_JUDGED_PAIRS
     - cluster_telemetry
     - log_judged_pairs
+    - target_branches
+    - inline flow sequence
+    - parse_policy_yaml
 ---
 
 You are working on **worktrail's GO v2 front door**: loading repo policy, classifying free-text
@@ -218,12 +221,23 @@ agents or writes task files — that is `orchestrator/`'s job.
   flat, stdlib-only, one-nesting-level subset. `routing:` and `add_ons:` are re-parsed with real
   `yaml.safe_load` (`_resolve_routing`, `_resolve_add_ons`) because both need arbitrary nesting
   the flat parser would flatten into siblings of the wrong key. Adding a new deeply-nested policy
-  key means adding a matching `_resolve_*` real-YAML path, not extending the flat parser.
+  key means adding a matching `_resolve_*` real-YAML path, not extending the flat parser. The one
+  narrow exception inside the flat parser is `_parse_scalar`: a value that starts with `[` and ends
+  with `]` is handed to `yaml.safe_load` so an inline flow sequence (`[]`, `[main, dev]`) loads as
+  a real list; anything that is not a valid flow sequence (an unclosed `[`, a quoted `"[not a
+  list]"`, a YAML error) stays a plain string. Before this, a documented `target_branches: []`
+  loaded as the truthy string `'[]'`.
 - **Policy resolution fails closed.** A malformed `add_ons`/`routing`/`automerge` shape falls back
   to the safe default (`{}` / `None` / disabled) with a warning appended to `meta["warnings"]`,
   never widens autonomy. `automerge.max_risk`, `agent_cli`, `fallback_agent_cli`, `agent_model`,
   `max_workers`, `pr_pacing_wait_s`, and `max_parallel_workers` are all validated/clamped the same
   way in `load_policy`.
+- **`automerge.target_branches` empty means "base branch only", and a scalar is one branch, not a
+  substring.** `automerge_eligible()` treats `target_branches: []` (and unset) as no filter; a
+  non-empty list rejects any PR whose target branch is not in it (`target branch <b> not in
+  [...]`). A hand-edited scalar `target_branches: main` is coerced to `["main"]` before the check,
+  because a bare string would otherwise fall through to a substring test (`'ma' in 'main'`). Both
+  the `[]` spelling and the scalar case are pinned in `tests/router/test_policy.py`.
 - **`max_parallel_workers` (default 6, minimum 1) is a ceiling, not a width.** It only applies when
   neither `--max-workers` nor policy `max_workers` is set: `live._resolve_max_workers` then runs
   `min(plan width, max_parallel_workers)` workers instead of a fixed 3 (a width-7 plan ran as three
@@ -435,7 +449,9 @@ agents or writes task files — that is `orchestrator/`'s job.
   `JUDGMENT_THRESHOLD`, `judge_pair()`'s `None`-on-any-failure contract (same injectable `asker`
   seam), and `judge_pairs()`'s order-preserving concurrent batch (`MAX_CONCURRENCY`); the edge
   rule lives in `should_edge()`, never in the service's answer
-- `router/policy.py` — `load_policy()`; the single source of truth for a repo's resolved GO policy
+- `router/policy.py` — `load_policy()`; the single source of truth for a repo's resolved GO policy;
+  also `parse_policy_yaml`/`_parse_scalar` (the flat parser and its inline-flow-sequence handling)
+  and `automerge_eligible()` (including the `target_branches` scalar coercion)
 - `router/run_record.py` — `finish()`'s ten-state enforcement and its two code-enforced gates;
   `cmd_scope_review` write-time reason validation and `OUT_OF_SCOPE_REASON_PREFIXES`;
   `cmd_capacity_gate`'s `_iso_retry_after` timestamp validation; `_load_lenient()`, the
