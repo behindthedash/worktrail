@@ -2,7 +2,10 @@
 # run-scoped-plan-pinning Specification
 
 ## Purpose
-TBD - created by archiving change run-scoped-plan-pinning. Update Purpose after archive.
+Pins the RunPlan a run first compiled and reuses it for the rest of the run, failing the run when the
+pin is unresolvable or mismatched rather than silently recompiling, with the drift warning retained as
+defense in depth. Prevents a mid-run spec edit from changing the plan under tasks that are already
+executing.
 ## Requirements
 ### Requirement: A run reuses its pinned RunPlan instead of recompiling
 When `apply_run_plan()` is called and the run journal for that `(repo, spec)` pair already

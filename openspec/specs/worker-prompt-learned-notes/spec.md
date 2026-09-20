@@ -1,7 +1,10 @@
 # worker-prompt-learned-notes Specification
 
 ## Purpose
-TBD - created by archiving change worker-prompt-learned-notes. Update Purpose after archive.
+Loads learned notes from the retro memory contract and renders them in worker prompts for every role
+and harness, snapshotted once per run for opted-in repos and recorded in the run journal — leaving
+prompts byte-identical when no notes exist. Prevents each run from rediscovering lessons a previous
+run already paid for.
 ## Requirements
 ### Requirement: Learned Notes Are Loaded From The Retro Memory Contract
 

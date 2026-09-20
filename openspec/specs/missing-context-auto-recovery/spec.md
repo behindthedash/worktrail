@@ -1,7 +1,9 @@
 # missing-context-auto-recovery Specification
 
 ## Purpose
-TBD - created by archiving change quarantine-missing-context-auto-recovery. Update Purpose after archive.
+Detects a failed worker report naming a sibling file that has since merged, re-dispatches it from a
+fresh worktree without a human, and journals the recovery as an auditable intervention. Prevents an
+unattended run from stalling on context that already exists on the base branch.
 ## Requirements
 ### Requirement: A failed report naming a merged sibling file triggers auto-recovery
 

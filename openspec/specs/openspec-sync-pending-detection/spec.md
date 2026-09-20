@@ -1,7 +1,9 @@
 # openspec-sync-pending-detection Specification
 
 ## Purpose
-TBD - created by archiving change openspec-sync-pending-remediation. Update Purpose after archive.
+Adds a deterministic, read-only OpenSpec delta reconciliation stage that reports pending
+synchronization, with verification taking precedence over it. Prevents a change from being treated as
+done while its spec deltas are still unmerged into the capability specs.
 ## Requirements
 ### Requirement: OpenSpec delta reconciliation stage
 

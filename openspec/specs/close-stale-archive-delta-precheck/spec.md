@@ -1,7 +1,9 @@
 # close-stale-archive-delta-precheck Specification
 
 ## Purpose
-TBD - created by archiving change close-stale-archive-delta-precheck. Update Purpose after archive.
+Runs a delta pre-check before close-stale mutates a worktree, refusing when an archived sibling's
+spec deltas have drifted unless the operator explicitly allows it. Prevents a close-stale sweep from
+silently discarding spec changes that were never reconciled into the capability specs.
 ## Requirements
 ### Requirement: Close-stale runs a delta pre-check before mutating the worktree
 

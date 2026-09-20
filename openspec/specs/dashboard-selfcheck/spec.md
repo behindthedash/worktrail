@@ -1,7 +1,10 @@
 # dashboard-selfcheck Specification
 
 ## Purpose
-TBD - created by archiving change dashboard-selfcheck. Update Purpose after archive.
+Flags spec directories where two or more candidate spec docs are tied with no naming-convention
+signal — exactly the case where the dashboard's `find_spec_file()` returns `None` — and sweeps them
+across repos from a CLI like its sibling self-checks. Prevents a silently unreadable spec directory
+from looking merely empty.
 ## Requirements
 ### Requirement: Detect tied-ambiguity spec directories
 The system SHALL provide a `check_repo(repo: Path) -> Dict[str, Any]` function

@@ -1,7 +1,9 @@
 # run-record-scope-review Specification
 
 ## Purpose
-TBD - created by archiving change run-record-null-list-field-guard. Update Purpose after archive.
+Makes `worktrail-run-record scope-review` treat a null `scope_review` value the same as a missing key,
+appending to an empty list and preserving existing entries in order. Prevents a scope-review append
+from crashing on a record that was written with an explicit null.
 ## Requirements
 ### Requirement: Scope-review append tolerates a null list field
 `worktrail-run-record scope-review` SHALL treat a run record whose `scope_review` key is

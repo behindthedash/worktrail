@@ -1,7 +1,9 @@
 # repo-init-policy-seed Specification
 
 ## Purpose
-TBD - created by archiving change repo-init-scaffold-gitleaks-and-automerge-policy. Update Purpose after archive.
+Seeds a scaffolded `.worktrail/policy.yaml` with the fleet's auto-merge default (`enabled: true`,
+`max_risk: medium`) instead of commented-out placeholders. Prevents a newly onboarded repo from
+shipping an auto-merge workflow that is silently inert.
 ## Requirements
 ### Requirement: Seed the fleet's auto-merge default into a scaffolded policy
 `default_policy_yaml()` SHALL emit an `automerge` block with `enabled: true` and

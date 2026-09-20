@@ -1,7 +1,9 @@
 # worker-agent-memory-isolation Specification
 
 ## Purpose
-TBD - created by archiving change worker-agent-memory-isolation. Update Purpose after archive.
+Makes worker spawns self-ignore agent memory inside linked worktrees, idempotently and fail-open,
+leaving canonical checkouts and non-git directories untouched. Prevents one task worker's memory
+writes from leaking into another worker's context.
 ## Requirements
 ### Requirement: Worker Spawns Self-Ignore Agent Memory In Linked Worktrees
 

@@ -1,7 +1,10 @@
 # quarantine-reconciliation Specification
 
 ## Purpose
-TBD - created by archiving change quarantine-reconciliation. Update Purpose after archive.
+Recomputes a quarantined group's file membership from the cached RunPlan and reconciles it against
+base-branch file presence and a merged PR's changed files, retaining a record for auto-resolved
+findings. Prevents a group from staying quarantined after the work it was quarantined over has
+already landed.
 ## Requirements
 ### Requirement: Recompute group→file membership from the cached RunPlan
 For a QUARANTINED finding, the system SHALL locate that spec's cached RunPlan

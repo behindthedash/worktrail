@@ -1,7 +1,9 @@
 # journal-resume-staleness-warning Specification
 
 ## Purpose
-TBD - created by archiving change journal-resume-staleness-warning. Update Purpose after archive.
+Warns, when a run journal is resumed with quarantined groups, how far `base` has advanced since each
+group's task branches were forked, and recommends a `--fresh` re-run. Prevents a resume from
+resurrecting branches whose base is too old to integrate cleanly.
 ## Requirements
 ### Requirement: Warn on resume of a journal with stale quarantined groups
 

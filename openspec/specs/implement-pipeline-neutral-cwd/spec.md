@@ -1,7 +1,9 @@
 # implement-pipeline-neutral-cwd Specification
 
 ## Purpose
-TBD - created by archiving change implement-pipeline-spec-root-neutral-cwd. Update Purpose after archive.
+Moves the implement pipeline's shell to a directory outside every git work tree before the precheck
+gate, keeping `SPEC_ROOT` pointed at the canonical checkout. Prevents the machine-wide worktree write
+guard from denying the pipeline's own launch commands.
 ## Requirements
 ### Requirement: Implement pipeline runs from a neutral shell cwd
 The `implement` pipeline SHALL, before `#precheck-gate`, move the shell to a neutral directory

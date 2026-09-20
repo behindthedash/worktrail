@@ -1,7 +1,10 @@
 # task-purpose-classification Specification
 
 ## Purpose
-TBD - created by archiving change task-purpose-classification. Update Purpose after archive.
+Adds an optional `purpose` field to the task schema, inferred by `compile.py` from the repo's
+configured vocabulary and mapped through `routing.purpose_tiers` so `agent_for()` resolves a tier by
+purpose before complexity — with an agent-aware tier key tried first. Prevents routing from judging a
+task only by size, while leaving behavior byte-identical for repos that configure nothing new.
 ## Requirements
 ### Requirement: Task schema supports an optional purpose field
 A task definition (devkit `TASK-*.md` frontmatter, validated by

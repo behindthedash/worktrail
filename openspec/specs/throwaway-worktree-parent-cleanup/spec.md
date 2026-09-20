@@ -1,7 +1,10 @@
 # throwaway-worktree-parent-cleanup Specification
 
 ## Purpose
-TBD - created by archiving change implement-pipeline-spec-root-neutral-cwd. Update Purpose after archive.
+Removes the parent directory a throwaway checkout created (`<repo>-integrate/`,
+`<repo>-checkbox-check/`, `<repo>-checkbox-sync/`) when — and only when — it is empty after teardown,
+under the same registry lock, never touching `<repo>-worktrees/`. Prevents empty scaffolding
+directories from accumulating beside every repo.
 ## Requirements
 ### Requirement: Throwaway checkout parent directories are removed when empty
 When `_integration_worktree`, `detect_checkbox_status_divergence` or `sync_checkbox_status`

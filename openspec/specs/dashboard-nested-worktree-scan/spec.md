@@ -1,7 +1,9 @@
 # dashboard-nested-worktree-scan Specification
 
 ## Purpose
-TBD - created by archiving change dashboard-scan-nested-task-worktrees. Update Purpose after archive.
+Makes the dashboard's worktree scan descend into nested task worktrees and report their names relative
+to the worktrees directory. Prevents in-flight orchestrator work from being invisible on the
+dashboard just because it lives one level deeper than a top-level worktree.
 ## Requirements
 ### Requirement: Worktree scan includes nested task worktrees
 

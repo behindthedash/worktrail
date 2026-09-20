@@ -1,7 +1,10 @@
 # pr-risk-tiering Specification
 
 ## Purpose
-TBD - created by archiving change risk-tier-from-judgment. Update Purpose after archive.
+Backs PR risk tiering with a judgment about the change over one shared mapping, keeping the keyword
+table as the fail-safe fallback and leaving route classification pure and deterministic by default.
+Prevents a low-risk change from being gated — or a high-risk one auto-merged — because of which words
+happened to appear in its title.
 ## Requirements
 ### Requirement: Risk tier has a keyword backend and a judgment backend over one mapping
 The system SHALL expose one risk-tier function whose result is always a tier

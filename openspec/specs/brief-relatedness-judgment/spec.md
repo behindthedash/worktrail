@@ -1,7 +1,9 @@
 # brief-relatedness-judgment Specification
 
 ## Purpose
-TBD - created by archiving change brief-relatedness-judgment. Update Purpose after archive.
+Decides whether two handoff briefs are related by reading the pair, with the lexical overlap score
+demoted to a bounded prefilter and the judgment failing safe back to it. Prevents shared vocabulary
+from being mistaken for shared work — and a judgment-service outage from blocking the queue.
 ## Requirements
 ### Requirement: Relatedness is decided by reading the pair, not by counting shared words
 The system SHALL be able to decide whether two queued briefs belong in one

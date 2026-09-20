@@ -1,7 +1,10 @@
 # spec-overlap-detection Specification
 
 ## Purpose
-TBD - created by archiving change overlap-check-openspec-format-support. Update Purpose after archive.
+Extends overlap detection to OpenSpec-shaped roots — change and capability feature summaries, entry
+stage, and per-task candidate enumeration — behind the same format-agnostic output shape as the
+devkit-shaped scan. Prevents an overlapping proposal from going unnoticed just because the repo uses
+OpenSpec.
 ## Requirements
 ### Requirement: Devkit-Shaped Root Scanning Is Unchanged
 The system SHALL scan a devkit-shaped root (a directory whose immediate

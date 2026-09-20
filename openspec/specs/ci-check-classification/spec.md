@@ -1,7 +1,10 @@
 # ci-check-classification Specification
 
 ## Purpose
-TBD - created by archiving change verify-ignore-cancelled-superseded-ci-runs. Update Purpose after archive.
+Provides one pure `classify_checks()` over a PR's `statusCheckRollup` that returns pending state and
+failing check names from the rollup alone, treating a superseded CANCELLED run as not a failure.
+Prevents `verify.py` and the post-merge reconciliation sweep from disagreeing about whether the same
+PR is green.
 ## Requirements
 ### Requirement: Pure classification of a PR's statusCheckRollup
 `classify_checks()` SHALL classify a `gh pr view --json statusCheckRollup` rollup into

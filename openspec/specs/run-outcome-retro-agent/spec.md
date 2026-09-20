@@ -1,7 +1,9 @@
 # run-outcome-retro-agent Specification
 
 ## Purpose
-TBD - created by archiving change run-outcome-retro-agent. Update Purpose after archive.
+Runs an opt-in, per-repo retrospective agent over a bounded deterministic outcome digest, outside any
+repository, one writer at a time, and checks its memory contract — without ever changing the run's
+outcome. Prevents retro analysis from either racing itself or rewriting the result it is analyzing.
 ## Requirements
 ### Requirement: Retro Is Opt-In Per Repo Policy
 

@@ -1,7 +1,9 @@
 # duplicate-brief-detection Specification
 
 ## Purpose
-TBD - created by archiving change duplicate-brief-detection. Update Purpose after archive.
+Clusters handoff briefs by repo-independent slug and focus-overlap signals, with an LLM verification
+gate over borderline pairs that fails open. Prevents the same work from being queued and executed
+twice while never letting the deduplicator itself block capture.
 ## Requirements
 ### Requirement: Cluster Signal Extraction
 The system SHALL extract a Cluster Signal from each queued brief consisting

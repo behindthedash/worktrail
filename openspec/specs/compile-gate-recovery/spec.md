@@ -1,7 +1,9 @@
 # compile-gate-recovery Specification
 
 ## Purpose
-TBD - created by archiving change compile-failure-recovery-procedure. Update Purpose after archive.
+Documents the compile step as a pre-launch gate with a named recovery action per failure class and an
+unattended fallback, enforced by a test over the documentation itself. Prevents a compile failure
+from stalling an unattended run with no stated next step.
 ## Requirements
 ### Requirement: The compile step is a documented pre-launch gate
 The orchestrator pre-launch gate documentation SHALL carry a dedicated, anchored section for

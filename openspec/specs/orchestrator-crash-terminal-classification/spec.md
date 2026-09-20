@@ -1,7 +1,9 @@
 # orchestrator-crash-terminal-classification Specification
 
 ## Purpose
-TBD - created by archiving change capacity-crash-resume-retryable. Update Purpose after archive.
+Journals a capacity-exhaustion crash as retryable rather than terminal, so resume re-dispatches the
+gated task without `--fresh`. Prevents a temporary provider cap from permanently killing a task's
+completed work.
 ## Requirements
 ### Requirement: A capacity-exhaustion crash is journaled as retryable
 When an exception escapes a task's drive loop and is caught by the orchestrator's per-task
