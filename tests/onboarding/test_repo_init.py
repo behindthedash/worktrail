@@ -1449,6 +1449,158 @@ class ProposeTests(unittest.TestCase):
         self.assertIn(repo_init.AUTOMERGE_WORKFLOW_RELPATH, drift_paths)
 
 
+class PullRequestsDocTests(unittest.TestCase):
+    _run_propose = ProposeTests._run_propose
+
+    def test_names_every_automerge_label(self):
+        doc = repo_init.build_pull_requests_doc(["dev", "prd"])
+        for label in repo_init.AUTOMERGE_LABELS:
+            self.assertIn(f"`{label['name']}`", doc)
+
+    def test_embeds_no_repository_slug(self):
+        doc = repo_init.build_pull_requests_doc(["dev", "prd"])
+        self.assertNotIn("behindthedash", doc)
+        self.assertIn("repos/{owner}/{repo}/issues/<n>/labels", doc)
+        self.assertNotIn("__", doc)
+
+    def test_two_branch_model_lists_merge_methods_and_promotion_rule(self):
+        doc = repo_init.build_pull_requests_doc(["dev", "prd"])
+        self.assertIn("- `dev`: squash", doc)
+        self.assertIn("- `prd`: merge", doc)
+        self.assertIn("promotion PR into `prd`", doc)
+
+    def test_three_branch_model_promotion_rule_names_stg_and_prd(self):
+        doc = repo_init.build_pull_requests_doc(["dev", "stg", "prd"])
+        self.assertIn("- `stg`: merge", doc)
+        self.assertIn("promotion PR into `stg` and `prd`", doc)
+
+    def test_main_only_model_has_no_promotion_rule(self):
+        doc = repo_init.build_pull_requests_doc(["main"])
+        self.assertIn("- `main`: squash", doc)
+        self.assertNotIn("Promotion PRs", doc)
+
+    def test_merge_methods_agree_with_the_rulesets(self):
+        for model in ("2", "3", "main"):
+            branches = repo_init.branches_for_model(model)
+            doc = repo_init.build_pull_requests_doc(branches)
+            for branch in branches:
+                ruleset = repo_init.build_ruleset_for_branch(branch, model)
+                (methods,) = [
+                    r["parameters"]["allowed_merge_methods"]
+                    for r in ruleset["rules"]
+                    if r["type"] == "pull_request"
+                ]
+                self.assertEqual(methods, [repo_init.merge_method_for_branch(branch)])
+                self.assertIn(f"- `{branch}`: {methods[0]}", doc)
+
+    def test_pointer_goes_before_a_tool_managed_block(self):
+        repo = _tmp_repo()
+        block = "<!-- aspens:start -->\n## Skills\n- x\n<!-- aspens:end -->\n"
+        (repo / "AGENTS.md").write_text("# repo\n\nhand-written\n\n" + block)
+        changed, warning = repo_init.ensure_agents_md_pr_pointer(repo)
+        self.assertTrue(changed)
+        self.assertIsNone(warning)
+        text = (repo / "AGENTS.md").read_text()
+        self.assertTrue(text.endswith(block))
+        self.assertLess(
+            text.index("## Pull requests"), text.index("<!-- aspens:start -->")
+        )
+        self.assertLess(text.index("hand-written"), text.index("## Pull requests"))
+        self.assertIn(repo_init.PULL_REQUESTS_DOC_RELPATH, text)
+
+    def test_pointer_is_appended_when_there_is_no_tool_block(self):
+        repo = _tmp_repo()
+        (repo / "AGENTS.md").write_text("# repo\n\nhand-written\n")
+        changed, _ = repo_init.ensure_agents_md_pr_pointer(repo)
+        self.assertTrue(changed)
+        text = (repo / "AGENTS.md").read_text()
+        self.assertTrue(text.startswith("# repo\n\nhand-written\n\n## Pull requests"))
+        self.assertTrue(text.endswith("\n"))
+
+    def test_pointer_is_a_noop_when_the_doc_is_already_mentioned(self):
+        repo = _tmp_repo()
+        original = f"# repo\n\nSee `{repo_init.PULL_REQUESTS_DOC_RELPATH}`.\n"
+        (repo / "AGENTS.md").write_text(original)
+        changed, warning = repo_init.ensure_agents_md_pr_pointer(repo)
+        self.assertFalse(changed)
+        self.assertIsNone(warning)
+        self.assertEqual((repo / "AGENTS.md").read_text(), original)
+
+    def test_pointer_warns_when_agents_md_is_missing(self):
+        repo = _tmp_repo()
+        changed, warning = repo_init.ensure_agents_md_pr_pointer(repo)
+        self.assertFalse(changed)
+        self.assertIn("AGENTS.md not found", warning)
+        self.assertFalse((repo / "AGENTS.md").exists())
+
+    def test_fresh_propose_writes_doc_and_links_it(self):
+        repo = _tmp_repo()
+        rc, result = self._run_propose(repo)
+        self.assertEqual(rc, 0)
+        self.assertIn(repo_init.PULL_REQUESTS_DOC_RELPATH, result["written"])
+        self.assertTrue(
+            any(w.startswith("AGENTS.md (linked") for w in result["written"])
+        )
+        self.assertEqual(
+            (repo / repo_init.PULL_REQUESTS_DOC_RELPATH).read_text(),
+            repo_init.build_pull_requests_doc(["dev", "prd"]),
+        )
+        self.assertIn(
+            repo_init.PULL_REQUESTS_DOC_RELPATH, (repo / "AGENTS.md").read_text()
+        )
+
+    def test_propose_renders_the_doc_for_the_chosen_branch_model(self):
+        repo = _tmp_repo()
+        self._run_propose(repo, branch_model="main")
+        doc = (repo / repo_init.PULL_REQUESTS_DOC_RELPATH).read_text()
+        self.assertEqual(doc, repo_init.build_pull_requests_doc(["main"]))
+
+    def test_rerun_leaves_a_customized_doc_and_one_pointer(self):
+        repo = _tmp_repo()
+        self._run_propose(repo)
+        doc_path = repo / repo_init.PULL_REQUESTS_DOC_RELPATH
+        doc_path.write_text("hand-tailored\n")
+        agents_before = (repo / "AGENTS.md").read_text()
+        rc, result = self._run_propose(repo)
+        self.assertEqual(rc, 0)
+        self.assertEqual(doc_path.read_text(), "hand-tailored\n")
+        self.assertIn(
+            f"{repo_init.PULL_REQUESTS_DOC_RELPATH} (already exists)",
+            result["skipped"],
+        )
+        self.assertEqual((repo / "AGENTS.md").read_text(), agents_before)
+        self.assertEqual(agents_before.count("## Pull requests"), 1)
+
+    def test_pointer_is_added_even_when_the_doc_already_exists(self):
+        repo = _tmp_repo()
+        doc_path = repo / repo_init.PULL_REQUESTS_DOC_RELPATH
+        doc_path.parent.mkdir(parents=True)
+        doc_path.write_text("hand-written\n")
+        self._run_propose(repo)
+        self.assertEqual(doc_path.read_text(), "hand-written\n")
+        self.assertIn(
+            repo_init.PULL_REQUESTS_DOC_RELPATH, (repo / "AGENTS.md").read_text()
+        )
+
+    def test_check_reports_state_without_writing(self):
+        repo = _tmp_repo()
+        rc, result = self._run_propose(repo, check=True)
+        self.assertEqual(rc, 0)
+        self.assertFalse(result["pull_requests_doc_exists"])
+        self.assertFalse(result["agents_md_links_pull_requests_doc"])
+        self.assertFalse((repo / "docs").exists())
+        self.assertFalse((repo / "AGENTS.md").exists())
+
+    def test_customized_doc_is_not_reported_as_drift(self):
+        repo = _tmp_repo()
+        self._run_propose(repo)
+        (repo / repo_init.PULL_REQUESTS_DOC_RELPATH).write_text("hand-tailored\n")
+        _, result = self._run_propose(repo)
+        self.assertNotIn(
+            repo_init.PULL_REQUESTS_DOC_RELPATH, [d["path"] for d in result["drift"]]
+        )
+
+
 class EnableAspensTests(unittest.TestCase):
     def test_noop_when_already_configured(self):
         repo = _tmp_repo()

@@ -24,9 +24,11 @@ Applies the workspace's repo-standards doctrine to one repo at a time: the
 `.github/workflows/rulesets_drift_guard.yml` (plus its vendored
 `scripts/ci/rulesets/rulesets_sync.py` + `requirements.txt`),
 `.github/workflows/dependabot_manifest_check.yml` (plus its vendored
-`scripts/ci/dependabot/test_dependabot_config.py` + `requirements.txt`), and a
-seeded `.worktrail/policy.yaml`. The CLI (`worktrail-repo-init`) owns
-file generation and the GitHub API calls; this skill owns the git workflow
+`scripts/ci/dependabot/test_dependabot_config.py` + `requirements.txt`),
+`docs/engineering/pull-requests.md` (agent-facing `go:risk-*` label instructions,
+linked from `AGENTS.md`), and a seeded `.worktrail/policy.yaml`. The CLI
+(`worktrail-repo-init`) owns file generation and the GitHub API calls; this
+skill owns the git workflow
 around it (worktree, commit, PR) and the judgment calls the CLI deliberately
 leaves to a human — see `references/branch-model-decision.md`.
 
@@ -104,6 +106,16 @@ whose `directory` has no manifest file the declared `package-ecosystem`
 recognizes. Unlike the rulesets drift guard, it needs no GitHub credentials at
 all — no App token, no `secrets.GITHUB_TOKEN` — since it only reads files
 already checked out in the runner.
+
+`propose` also scaffolds `docs/engineering/pull-requests.md` and adds a short
+"Pull requests" section to `AGENTS.md` (before any tool-managed block) pointing at
+it. The auto-merge workflow fails closed, so a green PR with no `go:risk-low` or
+`go:risk-medium` label never merges and shows no error; the doc tells agents in the
+repo that every PR needs the label and how to choose, set, change, and verify it. It
+is rendered for the chosen branch model (merge method per branch, and a hold-with-
+`go:no-automerge` rule for promotion branches), is repo-slug-free, and is write-if-
+absent like every other scaffolded file, so a tailored copy is never overwritten or
+reported as drift.
 
 Ask the user whether to also pass `--with-aspens` (declares `add_ons.aspens`
 in the seeded policy file and runs `aspens doc init` immediately, instead of
