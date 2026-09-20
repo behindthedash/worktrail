@@ -5636,6 +5636,31 @@ class TestConsumeRepoDecision(QueueTriageTestBase):
         self.assertEqual(path.read_text(encoding="utf-8"), before)
         self.assertEqual(decisions.decision_status(result["id"], self.base), "answered")
 
+    def test_overlong_free_form_answer_is_reported_unresolved_not_raised(self):
+        from worktrail.workqueue import decisions
+
+        path = self.write("a.md")
+        result = decisions.ask(
+            qt.REPO_ASSIGNMENT_QUESTION,
+            background="ambiguous",
+            why="cannot infer",
+            context="checked, no clear match",
+            options=["Option A", "Option B"],
+            brief="a",
+            queue_base=self.base,
+        )
+        answer = "this is a manual task, not tied to any one repo " * 8
+        self.assertGreater(len(answer), 255)
+        decisions.answer(result["id"], answer, queue_base=self.base)
+        before = path.read_text(encoding="utf-8")
+
+        outcome = qt.consume_repo_decision(path, str(self.base))
+
+        self.assertIsNotNone(outcome)
+        self.assertFalse(outcome["resolved"])
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+        self.assertEqual(decisions.decision_status(result["id"], self.base), "answered")
+
 
 class TestConsumeFreeformRehomeDecision(QueueTriageTestBase):
     """Free-form re-home directives in `consume_repo_decision()`."""

@@ -1598,6 +1598,29 @@ class Constitution(unittest.TestCase):
             self.assertIsNone(dashboard._constitution_hint(con))
 
 
+class ResolveRepoDir(unittest.TestCase):
+    """`_resolve_repo_dir` treats values that cannot be paths as unresolvable."""
+
+    def test_overlong_free_form_text_is_unresolvable(self):
+        # >255 chars in one component: `is_dir()` raises ENAMETOOLONG, it does
+        # not return False.
+        answer = "keep this as a manual task with no repo " * 8
+        self.assertGreater(len(answer), 255)
+        self.assertIsNone(dashboard._resolve_repo_dir(answer, None))
+
+    def test_overlong_free_form_text_is_unresolvable_with_repos_root(self):
+        answer = "keep this as a manual task with no repo " * 8
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(dashboard._resolve_repo_dir(answer, tmp))
+
+    def test_resolvable_paths_still_resolve(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "myrepo"
+            repo.mkdir()
+            self.assertEqual(dashboard._resolve_repo_dir(str(repo), None), repo)
+            self.assertEqual(dashboard._resolve_repo_dir("org/myrepo", tmp), repo)
+
+
 class ReposScan(unittest.TestCase):
     """Multi-repo overview: scan_repos over a parent holding several git repos."""
 
