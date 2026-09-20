@@ -29,6 +29,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from . import risk_judgment
+
 Runner = Callable[..., "subprocess.CompletedProcess[str]"]
 
 ROUTE_NAMES = {
@@ -579,7 +581,7 @@ def cited_pr_states(
     return states
 
 
-def classify_risk(text: str) -> tuple[str, list[str]]:
+def _classify_risk_by_keyword(text: str) -> tuple[str, list[str]]:
     best = "low"
     labels: list[str] = []
     for tier, (rx, _w, label) in RISK_SIGNALS:
@@ -588,6 +590,37 @@ def classify_risk(text: str) -> tuple[str, list[str]]:
             if RISK_ORDER.index(tier) > RISK_ORDER.index(best):
                 best = tier
     return best, labels
+
+
+def classify_risk(text: str, *, judgment: bool = False) -> tuple[str, list[str]]:
+    """Risk tier and its labels for free-text change prose.
+
+    Two backends over the same `RISK_ORDER` mapping:
+
+    - the `RISK_SIGNALS` keyword table (the default, and always the fallback),
+      pure and offline;
+    - `risk_judgment.judge_risk()`, a single remote judgment about what the
+      change *does*, enabled by `judgment=True` AND a configured
+      `TYPESAFE_API_KEY`. It returns `None` on a missing key or any failure, so
+      the keyword result is used whenever the judgment is unavailable -- and
+      the keyword table errs toward over-gating, which is the safe direction.
+
+    `judgment` defaults to **False** so `classify()` stays pure and
+    deterministic for `classifier_coverage`'s replay and for every test. Only
+    the live entry points turn it on, exactly as `cited_pr_states`' `gh` lookup
+    is confined to `main()`.
+
+    Why the judgment exists: the keyword table tiers on word presence alone.
+    Measured on `tests/fixtures/risk_probes.json` it got 8/24 exact tiers and
+    10/24 auto-merge gate decisions, rating 7 genuinely dangerous changes
+    mergeable and 7 trivial doc/test changes critical. See
+    `risk_judgment`'s module docstring.
+    """
+    if judgment:
+        judged = risk_judgment.judge_risk(text)
+        if judged is not None:
+            return judged
+    return _classify_risk_by_keyword(text)
 
 
 def protected_operations(text: str) -> list[str]:
@@ -600,6 +633,7 @@ def classify(
     handoff_route: str | None = None,
     pr_states: dict[str, str] | None = None,
     resumable_state: bool | None = None,
+    risk_judgment_enabled: bool = False,
 ) -> dict[str, Any]:
     """Classify a request. `state` keys (all optional): active_specs (int),
     pending_tasks (bool), open_prs (int), handoff_queue (int), worktrees (int).
@@ -612,8 +646,13 @@ def classify(
     strongly its text signals (e.g. a bug report *about* Route E's own
     false-positive keywords) happen to score. `None` (the default, e.g. a
     free-text dispatch with no claimed brief) leaves E's scoring unchanged.
-    This function stays pure/deterministic given its inputs -- live `gh`
-    lookups happen only in `main()`/the caller's pre-check, never here."""
+    `risk_judgment_enabled` (optional): when True AND `TYPESAFE_API_KEY` is
+    configured, the risk tier comes from a single remote judgment instead of
+    the keyword table (see `classify_risk`). It defaults to **False**, so this
+    function stays pure/deterministic given its inputs -- live `gh` lookups and
+    the risk judgment happen only in `main()`/the caller's pre-check, never
+    here. Route selection never consults it: only `risk`/`risk_labels` change.
+    """
     text = (request or "").strip()
     state = state or {}
     reason_parts: list[str] = []
@@ -681,7 +720,7 @@ def classify(
             "run/worktree or open PR for this brief"
         )
 
-    risk, risk_labels = classify_risk(text)
+    risk, risk_labels = classify_risk(text, judgment=risk_judgment_enabled)
     protected = protected_operations(text)
 
     # Pick the route.
@@ -878,6 +917,12 @@ def main(argv=None) -> int:
         "state, so the pr-repair signal doesn't fire for a PR that's "
         "already merged/closed (omit to skip; fail-open on any error)",
     )
+    p.add_argument(
+        "--no-risk-judgment",
+        action="store_true",
+        help="skip the remote risk judgment and tier from the keyword table "
+        "only (the judgment is already skipped when TYPESAFE_API_KEY is unset)",
+    )
     p.add_argument("--json", action="store_true", help="emit JSON (default)")
     args = p.parse_args(argv)
 
@@ -890,6 +935,7 @@ def main(argv=None) -> int:
         handoff_route=args.handoff_route,
         pr_states=pr_states,
         resumable_state=resumable_state,
+        risk_judgment_enabled=not args.no_risk_judgment,
     )
     print(json.dumps(result, indent=2))
     return 0

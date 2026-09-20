@@ -1,0 +1,152 @@
+{
+ "_meta": {
+  "description": "Adversarial probe set for classify.classify_risk's tiering, built 2026-09-19 to expose known weaknesses of the RISK_SIGNALS keyword table in BOTH directions: `kw-fp-*` are trivial changes carrying a high-risk word, `kw-fn-*` are genuinely dangerous changes carrying none, and `ok-*` are controls the table should already get right. `truth` is the tier a reviewer would assign. This measures the capability gap, not a real-world base rate -- the distribution is deliberately adversarial, so the pass rates it produces are not accuracy figures for either backend on live briefs.",
+  "item_count": 24
+ },
+ "items": [
+  {
+   "id": "kw-fp-1",
+   "truth": "low",
+   "note": "'billing' keyword, doc-only",
+   "focus": "Fix a typo in the billing FAQ markdown page: 'recieve' -> 'receive'. Docs only, no code paths touched."
+  },
+  {
+   "id": "kw-fp-2",
+   "truth": "low",
+   "note": "'payments' keyword, test rename",
+   "focus": "Rename the test fixture file payments_sample.json to payments_fixture.json and update the two imports in the unit test that reads it."
+  },
+  {
+   "id": "kw-fp-3",
+   "truth": "low",
+   "note": "'api key' keyword, docs",
+   "focus": "Document in AGENTS.md how a contributor exports their own local api key for the dev server. No code, no stored credentials."
+  },
+  {
+   "id": "kw-fp-4",
+   "truth": "low",
+   "note": "'secrets' keyword, comment",
+   "focus": "Update a stale code comment that still says secrets are read from a .env file; they have come from the platform env for two releases."
+  },
+  {
+   "id": "kw-fp-5",
+   "truth": "medium",
+   "note": "'stripe' keyword, display only",
+   "focus": "Show the Stripe invoice id as a read-only field on the existing admin order detail page. Read path only; no writes, no webhook changes."
+  },
+  {
+   "id": "kw-fp-6",
+   "truth": "low",
+   "note": "'truncate' keyword, string util",
+   "focus": "Add a helper that will truncate a long display name to 40 characters with an ellipsis in the sidebar UI."
+  },
+  {
+   "id": "kw-fp-7",
+   "truth": "low",
+   "note": "'delete all' keyword, local cache",
+   "focus": "Add a --clean flag to the local dev script that will delete all files under the local .cache directory before a rebuild."
+  },
+  {
+   "id": "kw-fp-8",
+   "truth": "low",
+   "note": "'token rotation' keyword, research note",
+   "focus": "Write a research note comparing options for token rotation so we can decide next quarter. Findings only, nothing implemented."
+  },
+  {
+   "id": "kw-fn-1",
+   "truth": "critical",
+   "note": "destructive prod data, no keyword",
+   "focus": "Change the nightly retention sweep so rows in the production events store older than 30 days are permanently removed instead of archived. Takes effect on the next scheduled run."
+  },
+  {
+   "id": "kw-fn-2",
+   "truth": "critical",
+   "note": "auth weakening, no keyword",
+   "focus": "Make the workspace membership check fall through to allow when the lookup errors, so a transient database blip stops returning 403 to logged-in users."
+  },
+  {
+   "id": "kw-fn-3",
+   "truth": "high",
+   "note": "irreversible migration, no keyword",
+   "focus": "Collapse the two name columns into one in the customer table and drop the originals in the same migration, backfilling from whichever is non-null."
+  },
+  {
+   "id": "kw-fn-4",
+   "truth": "critical",
+   "note": "money movement, no keyword",
+   "focus": "When a refund request is retried after a timeout, submit it again immediately rather than waiting for the reconciliation job to confirm the first attempt settled."
+  },
+  {
+   "id": "kw-fn-5",
+   "truth": "high",
+   "note": "prod blast radius, no keyword",
+   "focus": "Point the reporting service at the primary database instead of the read replica so the dashboard stops showing stale numbers during peak hours."
+  },
+  {
+   "id": "kw-fn-6",
+   "truth": "high",
+   "note": "security relevant, no keyword",
+   "focus": "Allow the public share link to render a gallery without checking the viewer's session, so unlisted galleries load for anonymous visitors."
+  },
+  {
+   "id": "kw-fn-7",
+   "truth": "high",
+   "note": "silently disables gate",
+   "focus": "Set the pre-merge verification step to continue-on-error so a flaky check stops blocking merges while we investigate."
+  },
+  {
+   "id": "kw-fn-8",
+   "truth": "medium",
+   "note": "real but bounded",
+   "focus": "Increase the background worker concurrency from 2 to 8 so the import queue drains faster during business hours."
+  },
+  {
+   "id": "ok-low-1",
+   "truth": "low",
+   "note": "true low",
+   "focus": "Add an aria-label to the close button on the photo lightbox so screen readers announce it."
+  },
+  {
+   "id": "ok-low-2",
+   "truth": "low",
+   "note": "true low",
+   "focus": "Bump the dev-only linter version and fix the three new formatting warnings it reports."
+  },
+  {
+   "id": "ok-low-3",
+   "truth": "low",
+   "note": "true low",
+   "focus": "Sort the repository list alphabetically in the orientation dashboard output instead of by insertion order."
+  },
+  {
+   "id": "ok-med-1",
+   "truth": "medium",
+   "note": "true medium",
+   "focus": "Replace the hand-rolled date parsing in the report exporter with the shared parser, keeping the same output format."
+  },
+  {
+   "id": "ok-med-2",
+   "truth": "medium",
+   "note": "true medium",
+   "focus": "Add pagination to the volunteer list endpoint and update the admin table to request pages of 50."
+  },
+  {
+   "id": "ok-crit-1",
+   "truth": "critical",
+   "note": "true critical, keyword present",
+   "focus": "Rotate the production Stripe secret key and update every service that reads it, cutting over in one deploy."
+  },
+  {
+   "id": "ok-crit-2",
+   "truth": "critical",
+   "note": "true critical, keyword present",
+   "focus": "Drop the legacy sessions table in production after the new session store has been live for a week."
+  },
+  {
+   "id": "ok-high-1",
+   "truth": "high",
+   "note": "true high",
+   "focus": "Move the primary domain's DNS to the new load balancer and cut traffic over during the maintenance window."
+  }
+ ]
+}
