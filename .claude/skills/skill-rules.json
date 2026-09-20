@@ -138,6 +138,14 @@
           "focus-overlap",
           "MIN_FOCUS_TOKENS",
           "OVERLAP_THRESHOLD",
+          "risk_judgment",
+          "judge_risk",
+          "compose_tier",
+          "parse_answers",
+          "blast_radius",
+          "red line",
+          "TYPESAFE_API_KEY",
+          "risk_judgment_enabled",
           "router",
           "front",
           "door",
@@ -150,7 +158,9 @@
           "(create|update|fix|add|modify|change|debug|refactor|implement|build).*risk label",
           "risk label.*(create|update|fix|add|modify|change|debug|refactor|implement|build)",
           "(create|update|fix|add|modify|change|debug|refactor|implement|build).*noun-verb grammar",
-          "noun-verb grammar.*(create|update|fix|add|modify|change|debug|refactor|implement|build)"
+          "noun-verb grammar.*(create|update|fix|add|modify|change|debug|refactor|implement|build)",
+          "(create|update|fix|add|modify|change|debug|refactor|implement|build).*red line",
+          "red line.*(create|update|fix|add|modify|change|debug|refactor|implement|build)"
         ]
       }
     },
@@ -178,6 +188,8 @@
           "classifier_corpus",
           "label_source",
           "redaction",
+          "risk_probes",
+          "risk_probe_answers",
           "tests",
           "testing",
           "conventions",
