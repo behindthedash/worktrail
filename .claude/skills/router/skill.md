@@ -54,6 +54,21 @@ triggers:
     - red line
     - TYPESAFE_API_KEY
     - risk_judgment_enabled
+    - typesafe
+    - JUDGMENT_ERRORS
+    - relatedness_judgment
+    - judge_pair
+    - judge_pairs
+    - should_edge
+    - same_work
+    - should_cluster
+    - focus-judgment
+    - JUDGED_MATCH
+    - JUDGMENT_THRESHOLD
+    - JUDGMENT_PREFILTER_FLOOR
+    - MAX_JUDGED_PAIRS
+    - cluster_telemetry
+    - log_judged_pairs
 ---
 
 You are working on **worktrail's GO v2 front door**: loading repo policy, classifying free-text
@@ -115,13 +130,64 @@ agents or writes task files — that is `orchestrator/`'s job.
   *critical* — against the judgment's 20/24 and 24/24 with zero of either error.
 - **The judgment fails safe into the keyword table, always.** `judge_risk()` returns `None` — the
   "use the keyword table" signal — on a missing `TYPESAFE_API_KEY`, an HTTP or transport error, a
-  timeout (`TIMEOUT_S`, deliberately short: a tier that arrives after the operator gave up is
-  worth less than the immediate fallback), an unparseable body, or an answer set missing a field.
+  timeout (`typesafe.TIMEOUT_S`, deliberately short: a tier that arrives after the operator gave up
+  is worth less than the immediate fallback), an unparseable body, or an answer set missing a field.
   `parse_answers()` raises `ValueError` on any shape it does not recognise rather than reading a
   missing noul as zero, so a changed or truncated response can never compose a falsely-low tier.
   The fallback errs toward over-gating, which is the safe direction. CI needs no key and no
   network: with the key unset the judgment path is never entered and behaviour is exactly the
   pre-judgment one.
+- **Both judgment backends share one client, `router/typesafe.py`, and one failure-mode rule.**
+  The endpoint (`API_URL`), `MODEL`, `API_KEY_ENV`, `TIMEOUT_S`, `is_configured()`, the
+  single-request `post(state, questions)`, the strict `noul(answers, key)` reader, and the
+  `JUDGMENT_ERRORS` tuple live there — `risk_judgment.py` re-exports `API_KEY_ENV` so its own
+  readers and tests keep one import. A second copy of the transport would be one more place for
+  the "what counts as unavailable" contract to drift; add a new backend by importing this module,
+  never by re-implementing the POST.
+- **`cluster_detect`'s focus signal also has two backends, and the lexical threshold is both the
+  prefilter and the fallback.** `relatedness_judgment.judge_pairs()` asks two Nouls per pair —
+  `same_work` (one item subsumes the other) and `should_cluster` (distinct work that causes
+  rework if done apart) — and the pure, offline `should_edge()` forms an edge when **either**
+  clears `JUDGMENT_THRESHOLD` (0.70). The union is deliberate: requiring both would drop exactly
+  the "different work, must land together" case the second question exists for. Why it exists,
+  measured 2026-09-19 in both directions: three pairs describing identical work in different
+  vocabulary scored **0.00-0.12** token overlap — invisible to `OVERLAP_THRESHOLD` (0.45) — while
+  the judgment rated them **0.76-0.86** on `same_work`; and of the 14 highest-overlap real corpus
+  pairs, **7 were unrelated** on inspection (two different epics' decomposition-gap briefs, a
+  reject-UI brief against a vitest-coverage brief).
+- **The lexical stage is demoted to a prefilter, never removed.** `_judgment_candidates()` picks
+  which pairs are worth a request at `JUDGMENT_PREFILTER_FLOOR` (0.05 — far below the edge
+  threshold on purpose, because a prefilter near 0.45 would reproduce the blindness being fixed)
+  and ranks them by overlap descending; `MAX_JUDGED_PAIRS` (40) caps one scan, because pair count
+  grows quadratically with queue size (68 briefs is 2278 pairs before repo scoping) and a
+  dashboard render may not fan out unbounded. Everything past the cap — and every pair at all when
+  the judgment is unavailable — keeps the lexical decision unchanged. The repo-scoping
+  precondition and the `MIN_FOCUS_TOKENS` thin-brief abstention are unchanged: a cross-repo pair
+  is never offered, and a brief too thin for the coefficient to read is one the judgment cannot
+  read either.
+- **A verdict replaces the focus signal and nothing else.** `_apply_relatedness_judgment()` swaps
+  a judged pair's `focus-overlap` match for `JUDGED_MATCH` (`focus-judgment`, so a reader and the
+  telemetry log can tell which rule decided) when the pair belongs together, and for **nothing**
+  when it does not — that is how a high-overlap-but-unrelated pair loses its edge. Structural
+  matches (duplicate-slug, same-target-spec, related-link) are never touched: they are facts about
+  the briefs, not a reading of their text. The whole candidate batch is handed over in ONE call,
+  already capped and ordered, so the injected side owns concurrency (`MAX_CONCURRENCY`, 8) and
+  `cluster_detect` holds no thread pool and no client; verdicts come back positionally aligned and
+  the **first** unavailable one ends the pass, because applying a later verdict past a gap would
+  make the surfaced clusters depend on which round trip failed.
+- **The judgment client is injected into `cluster_detect`, never imported by it.**
+  `compute_clusters(..., judge_pairs_fn=None, log_judged_fn=None)` defaults both to `None`, so
+  every existing caller keeps prior behaviour exactly; `dashboard.py` is the call site that
+  injects `relatedness_judgment.judge_pairs` (only when `is_configured()`) and
+  `cluster_telemetry.log_judged_pairs`. Same pattern as `_parse_fm` and `task_candidates_fn` —
+  `cluster_detect`'s own guard test rejects any network module in that file, and its contract is
+  read-only and never-crash.
+- **Every judged pair is logged for later tuning.** `cluster_telemetry.log_judged_pairs()` appends
+  one `judged` record per pair (members, the lexical overlap that ranked it, both Noul values, and
+  the verdict) sharing one timestamp, so `JUDGMENT_THRESHOLD` and the prefilter floor can be
+  retuned against real pairs without paying for inference again. Best-effort like the module's
+  other writers: the edges are already decided by the time it runs, so a failed write costs a
+  tuning datapoint and nothing else.
 - **`classify()` stays pure by default: `risk_judgment_enabled` defaults to `False`.** Only
   `main()` turns it on, with `--no-risk-judgment` to opt out — the same confinement
   `cited_pr_states`' live `gh` lookup already has — so `classifier_coverage`'s replay and every
@@ -341,7 +407,8 @@ agents or writes task files — that is `orchestrator/`'s job.
   mathematical quantity for callers measuring something other than two briefs' focus text
   (`create_handoff`'s spec-slug labels, `_target_task_edges`' task lines). A brief below the floor
   is **not** excluded from clustering — `duplicate-slug`, `same-target-spec`, `related-link` and
-  `blocked-by` all still connect it; only the "these two read alike" signal abstains.
+  `blocked-by` all still connect it; only the "these two read alike" signal abstains, and the same
+  floor gates which pairs `_judgment_candidates()` will offer to the relatedness judgment.
 
 ## Critical files
 - `router/parse_invocation.py` — the `worktrail-go` Phase 1 grammar (`parse`, `FORMS`, `ALIASES`,
@@ -353,12 +420,21 @@ agents or writes task files — that is `orchestrator/`'s job.
   `_classify_risk_by_keyword()`); also `classify()`'s J-damping guard
   (`_MENTION_ONLY_J_LABELS`, `_CI_CONFIG_RE`, `_CITED_AS_EXAMPLE_RE`) and the default-off
   `risk_judgment_enabled` flag that `main()` is the only caller to enable
+- `router/typesafe.py` — the one client both judgment backends share: `API_URL`/`MODEL`/
+  `API_KEY_ENV`/`TIMEOUT_S`, `is_configured()`, `post(state, questions)`, the strict `noul()`
+  reader, and the `JUDGMENT_ERRORS` tuple that defines "unavailable"; knows nothing about either
+  question set, and is where a new backend gets its transport instead of copying one
 - `router/risk_judgment.py` — the second `classify_risk` backend: `QUESTIONS` (one blast-radius
   score plus the four red-line nouls), `is_configured()`, `ask()`'s single request,
   `parse_answers()`'s strict shape check, the pure `compose_tier()` mapping onto
   `classify.RISK_ORDER`, and `judge_risk()`'s `None`-on-any-failure contract (its `asker`
   parameter is the injection seam tests use instead of a network fake); the tier policy lives in
   `compose_tier()`, never in the service's answer
+- `router/relatedness_judgment.py` — the second `cluster_detect` focus backend: the two-Noul
+  `QUESTIONS` (`same_work`, `should_cluster`), the pure `should_edge()` union rule at
+  `JUDGMENT_THRESHOLD`, `judge_pair()`'s `None`-on-any-failure contract (same injectable `asker`
+  seam), and `judge_pairs()`'s order-preserving concurrent batch (`MAX_CONCURRENCY`); the edge
+  rule lives in `should_edge()`, never in the service's answer
 - `router/policy.py` — `load_policy()`; the single source of truth for a repo's resolved GO policy
 - `router/run_record.py` — `finish()`'s ten-state enforcement and its two code-enforced gates;
   `cmd_scope_review` write-time reason validation and `OUT_OF_SCOPE_REASON_PREFIXES`;
@@ -381,8 +457,10 @@ agents or writes task files — that is `orchestrator/`'s job.
   warning to stderr instead of silently skipping a malformed record
 - `router/dashboard.py` — pure file inspection (no git, network, or agents); spec lifecycle stage
   and next-action detection; also the source of `_resolve_repo_dir()`, which `skill_dispatch.py`'s
-  single-brief-triage path uses to resolve a bare `repo:` value to an on-disk checkout, and of
-  `smoke_flake_aggregate()`, which builds the always-present `smoke_flakes` payload key
+  single-brief-triage path uses to resolve a bare `repo:` value to an on-disk checkout, of
+  `smoke_flake_aggregate()`, which builds the always-present `smoke_flakes` payload key, and of
+  the `compute_clusters` call site that injects `relatedness_judgment.judge_pairs` (only when
+  configured) and `cluster_telemetry.log_judged_pairs`
 - `router/smoke_flake_selfcheck.py` — `check_repo()`, the per-repo smoke-flake detector that reads
   recorded flakes out of a repo's run journals (recency-windowed) and that
   `dashboard.smoke_flake_aggregate()` calls once per in-scope repo
@@ -400,7 +478,13 @@ agents or writes task files — that is `orchestrator/`'s job.
 - `router/cluster_detect.py` — the brief-clustering signals (`_signal_matches`, `_llm_gate_score`)
   that `workqueue/create_handoff.py` consumes; `_focus_overlap()` is the guarded focus comparison
   carrying `MIN_FOCUS_TOKENS`, while `_overlap_coefficient()` stays the raw coefficient every
-  non-focus caller keeps reading
+  non-focus caller keeps reading; `_judgment_candidates()`/`_apply_relatedness_judgment()` own
+  *which* pairs are worth judging and *what a verdict does to an edge* (`JUDGED_MATCH`,
+  `JUDGMENT_PREFILTER_FLOOR`, `MAX_JUDGED_PAIRS`) while the client and the telemetry writer stay
+  injected
+- `router/cluster_telemetry.py` — the one append-only cluster log; `log_shown`, `log_outcome`, and
+  `log_judged_pairs()`'s `judged` record kind (members, overlap, both Noul values, verdict), all
+  best-effort writers that never affect what they record
 
 ---
 **Last Updated:** 2026-09-20
