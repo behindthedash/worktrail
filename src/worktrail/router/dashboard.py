@@ -2121,17 +2121,23 @@ def _resolve_repo_dir(repo: Any, repos_root: Any | None) -> Path | None:
     verbatim with no normalization. Resolve it by basename against
     `repos_root`, mirroring the basename match `auto_pick_brief`'s
     `repo_filter` already applies just above this check, instead of failing
-    `is_dir()` on the literal string. Returns None when unresolvable.
+    `is_dir()` on the literal string. Returns None when unresolvable --
+    including a value that cannot be a path at all (free-form decision-answer
+    text longer than NAME_MAX), where `is_dir()` raises ENAMETOOLONG rather
+    than returning False.
     """
     if not repo:
         return None
-    p = Path(str(repo)).expanduser()
-    if p.is_dir():
-        return p
-    if repos_root:
-        candidate = Path(str(repos_root)).expanduser() / p.name
-        if candidate.is_dir():
-            return candidate
+    try:
+        p = Path(str(repo)).expanduser()
+        if p.is_dir():
+            return p
+        if repos_root:
+            candidate = Path(str(repos_root)).expanduser() / p.name
+            if candidate.is_dir():
+                return candidate
+    except OSError:
+        return None
     return None
 
 
