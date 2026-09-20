@@ -1031,6 +1031,23 @@ class Verifier:
         is a defense-in-depth backstop and a `gh pr view`/CI check downstream
         still gates the merge.
 
+        **Scope is judged against the base tip, not the pre/post baseline
+        alone.** A resolve worker doing exactly what it was told -- merging
+        `remote/base` into the group branch -- pulls every file that landed on
+        base since the branch forked into its pre/post diff, including denied
+        ones it never authored. Run `go-20260920-124658` struck out a resolve
+        worker for `.github/workflows/gitleaks.yml` and the spec root's
+        `tasks.md` on exactly that shape: both arrived unchanged from base. So
+        `touched` is intersected with `remote/base..gb` -- the branch's *net*
+        scope -- and a path whose post-merge content equals the base tip's drops
+        out. `_detect_self_merge` deliberately keeps the pre/post baseline: it
+        asks what happened *during this worker's turn*, which is a question
+        about the turn, not about the branch's net contribution.
+
+        The narrowing is best-effort. If the `git fetch` or the base diff fails
+        we keep `touched` unnarrowed and log -- a stale-or-absent base tip must
+        make the guard noisier, never disarm it.
+
         Also logs (never gates on) the same touched-vs-declared mismatch
         `conductor.plan_audit` computes standalone, so the compile-accuracy
         signal is captured automatically for every real run instead of only
@@ -1042,6 +1059,22 @@ class Verifier:
         if getattr(p, "returncode", 1) != 0:
             return []
         touched = (getattr(p, "stdout", "") or "").splitlines()
+        fetch = self._git("fetch", "-q", self.remote, self.base)
+        base_diff = (
+            self._git("diff", "--name-only", f"{self.remote}/{self.base}..{gb}")
+            if getattr(fetch, "returncode", 1) == 0
+            else None
+        )
+        if base_diff is not None and getattr(base_diff, "returncode", 1) == 0:
+            net = set((getattr(base_diff, "stdout", "") or "").splitlines())
+            touched = [f for f in touched if f in net]
+        else:
+            failed = "fetch" if base_diff is None else "diff"
+            self.log(
+                f"    [{(group or {}).get('name')}] base-tip narrowing "
+                f"unavailable ({self.remote}/{self.base} {failed} failed) -- "
+                f"checking the unnarrowed pre/post diff"
+            )
         spec_root = forbidden_prefixes_for(self.spec_rel)[1]
         others = tuple(
             x for x in forbidden_prefixes_for(self.spec_rel) if x != spec_root
