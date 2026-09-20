@@ -1,6 +1,6 @@
 ## 1. Guard narrowing
 
-- [ ] 1.1 Narrow `_forbidden_paths_touched()` in `src/worktrail/orchestrator/verify.py` to the
+- [x] 1.1 Narrow `_forbidden_paths_touched()` in `src/worktrail/orchestrator/verify.py` to the
       branch's net scope against the base tip. After computing `touched` from
       `git diff --name-only <pre_sha>..<gb>` (unchanged, including the empty-`pre_sha` fail-open
       and the non-zero-exit early return), run a best-effort
