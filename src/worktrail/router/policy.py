@@ -5,8 +5,8 @@ Merges a repo-local `.worktrail/policy.yaml` (optional) over safe defaults so
 the front door stays repository-agnostic while repos declare their own gates.
 
 Most keys use a small, flat YAML subset (`parse_policy_yaml`): top-level
-`key: value`, one nesting level, and `- item` lists; values parse as
-bool/int/null/string. Unknown keys are kept (forward-compatible) but reported
+`key: value`, one nesting level, and `- item` / inline `[a, b]` lists; values
+parse as bool/int/null/string. Unknown keys are kept (forward-compatible) but reported
 under `unknown_keys` so typos are visible. The `routing:` block is the one
 exception — it needs arbitrary nesting, so it's parsed with `yaml.safe_load`
 (PyYAML) instead; see `_resolve_routing()`.
@@ -313,6 +313,15 @@ def _parse_scalar(raw: str) -> Any:
         s.startswith("'") and s.endswith("'")
     ):
         return s[1:-1]
+    if s.startswith("[") and s.endswith("]"):
+        # Inline flow sequence (`[]`, `[main, dev]`): without this a documented
+        # empty list loaded as the truthy string '[]'.
+        try:
+            parsed = yaml.safe_load(s)
+        except yaml.YAMLError:
+            return s
+        if isinstance(parsed, list):
+            return parsed
     low = s.lower()
     if low in ("true", "yes", "on"):
         return True
@@ -1450,6 +1459,8 @@ def automerge_eligible(
     if order.index(risk) > order.index(am.get("max_risk", "low")):
         return False, f"risk {risk} exceeds policy max_risk {am.get('max_risk')}"
     allowed = am.get("target_branches") or []
+    if isinstance(allowed, str):
+        allowed = [allowed]
     if allowed and target_branch not in allowed:
         return False, f"target branch {target_branch} not in {allowed}"
     return True, "eligible (pending live CI + review checks)"
