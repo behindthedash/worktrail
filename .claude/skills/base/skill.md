@@ -34,6 +34,7 @@ Python 3.10+ | one runtime dependency: `pyyaml` | pytest for tests (`dev` extra)
 - `src/worktrail/workqueue/` — the `$WORK_QUEUE_DIR` handoff-brief claim/done/release lifecycle (see the `workqueue` skill)
 - `src/worktrail/router/` — the deterministic route classifier, resume dashboard, policy loader, and run records (see the `router` skill)
 - `src/worktrail/drain/` — unattended queue-draining loop (see the `drain` skill)
+- `src/worktrail/onboarding/` — `worktrail-repo-init`: scaffolds/migrates a repo onto the repo-standards doctrine (see the `onboarding` skill)
 - `src/worktrail/runtime/` — provider-neutral runtime primitives: routing-catalog/target selection (`routing_source.py`, `selection.py`) and the `worktrail-detach` supervised-launch primitive (`detach.py`, see the `detach` skill)
 - `src/worktrail/shared/` — cross-cutting helpers (`homedir.py`, `brief_frontmatter.py`)
 - `scripts/ci/` — CI gate scripts callable locally, each with its `test_*.py` beside it
@@ -41,4 +42,4 @@ Python 3.10+ | one runtime dependency: `pyyaml` | pytest for tests (`dev` extra)
 - `skills/`, `commands/` — this repo's own Claude Code plugin marketplace surface (see AGENTS.md "Claude Code plugin surface")
 
 ---
-**Last Updated:** 2026-09-19
+**Last Updated:** 2026-09-20
