@@ -2511,16 +2511,149 @@ class WorkerScopeViolation(unittest.TestCase):
     rationalized around under pressure -- this is the deterministic check)."""
 
     class ScopeCheckRun(FakeRun):
-        def __init__(self, *a, touched=(), **kw):
+        """`touched` is the pre/post diff; `base_touched` the `origin/dev..gb`
+        base-tip diff the guard narrows against. It defaults to the same list,
+        so a case that only sets `touched` sees no narrowing at all and keeps
+        its pre-narrowing expectation."""
+
+        def __init__(
+            self,
+            *a,
+            touched=(),
+            base_touched=None,
+            fetch_rc=0,
+            base_diff_rc=0,
+            **kw,
+        ):
             super().__init__(*a, **kw)
             self.touched = list(touched)
+            self.base_touched = (
+                list(touched) if base_touched is None else list(base_touched)
+            )
+            self.fetch_rc = fetch_rc
+            self.base_diff_rc = base_diff_rc
 
         def __call__(self, cmd):
             if cmd[:4] == ["git", "-C", "/repo", "rev-parse"]:
                 return Proc(0, "presha", "")
+            if cmd[:5] == ["git", "-C", "/repo", "fetch", "-q"]:
+                self.calls.append(cmd)
+                return Proc(self.fetch_rc, "", "fetch boom" if self.fetch_rc else "")
             if cmd[:4] == ["git", "-C", "/repo", "diff"] and "--name-only" in cmd:
+                self.calls.append(cmd)
+                if cmd[-1].startswith("origin/dev.."):
+                    if self.base_diff_rc:
+                        return Proc(self.base_diff_rc, "", "diff boom")
+                    return Proc(0, "\n".join(self.base_touched), "")
                 return Proc(0, "\n".join(self.touched), "")
             return super().__call__(cmd)
+
+    # -- base-tip narrowing ------------------------------------------------ #
+
+    def test_denied_path_absent_from_base_diff_is_not_a_violation(self):
+        """The `go-20260920-124658` shape: a resolve worker merged base in, so
+        `.github/workflows/gitleaks.yml` shows in the pre/post diff while the
+        branch contributes nothing to it net of the base tip."""
+        run = self.ScopeCheckRun(
+            {},
+            touched=[".github/workflows/gitleaks.yml", "src/ok.py"],
+            base_touched=["src/ok.py"],
+        )
+        v = mk(run, FakeSpawn(), "/tmp/x")
+        self.assertEqual(
+            v._forbidden_paths_touched("presha", "gb", {"name": "feature-1"}), []
+        )
+
+    def test_denied_path_in_both_diffs_is_still_reported(self):
+        run = self.ScopeCheckRun(
+            {},
+            touched=[".github/workflows/gitleaks.yml"],
+            base_touched=[".github/workflows/gitleaks.yml"],
+        )
+        v = mk(run, FakeSpawn(), "/tmp/x")
+        self.assertEqual(
+            v._forbidden_paths_touched("presha", "gb", {"name": "feature-1"}),
+            [".github/workflows/gitleaks.yml"],
+        )
+
+    def test_base_diff_only_path_is_not_reported(self):
+        """Narrowing is an intersection, never a second source of violations:
+        a denied path on the base tip that this worker never touched at all
+        must not be attributed to it."""
+        run = self.ScopeCheckRun(
+            {},
+            touched=["src/ok.py"],
+            base_touched=["src/ok.py", ".github/workflows/gitleaks.yml"],
+        )
+        v = mk(run, FakeSpawn(), "/tmp/x")
+        self.assertEqual(
+            v._forbidden_paths_touched("presha", "gb", {"name": "feature-1"}), []
+        )
+
+    def test_failing_fetch_falls_back_to_unnarrowed_set_and_logs(self):
+        logged = []
+        run = self.ScopeCheckRun(
+            {},
+            touched=[".github/workflows/gitleaks.yml"],
+            base_touched=[],
+            fetch_rc=1,
+        )
+        v = mk(run, FakeSpawn(), "/tmp/x")
+        v.log = logged.append
+        self.assertEqual(
+            v._forbidden_paths_touched("presha", "gb", {"name": "feature-1"}),
+            [".github/workflows/gitleaks.yml"],
+        )
+        self.assertTrue(any("base-tip narrowing unavailable" in m for m in logged))
+        # A failed fetch must not be followed by a base diff against a tip we
+        # know is stale-or-absent.
+        self.assertFalse(
+            [c for c in run.calls if c[-1].startswith("origin/dev..")], run.calls
+        )
+
+    def test_failing_base_diff_falls_back_to_unnarrowed_set_and_logs(self):
+        logged = []
+        run = self.ScopeCheckRun(
+            {},
+            touched=[".github/workflows/gitleaks.yml"],
+            base_touched=[],
+            base_diff_rc=1,
+        )
+        v = mk(run, FakeSpawn(), "/tmp/x")
+        v.log = logged.append
+        self.assertEqual(
+            v._forbidden_paths_touched("presha", "gb", {"name": "feature-1"}),
+            [".github/workflows/gitleaks.yml"],
+        )
+        self.assertTrue(any("base-tip narrowing unavailable" in m for m in logged))
+
+    def test_empty_pre_sha_still_short_circuits_before_any_diff(self):
+        run = self.ScopeCheckRun({}, touched=[".github/workflows/gitleaks.yml"])
+        v = mk(run, FakeSpawn(), "/tmp/x")
+        self.assertEqual(
+            v._forbidden_paths_touched("", "gb", {"name": "feature-1"}), []
+        )
+        self.assertFalse(run.find("git", "-C", "/repo", "diff"), run.calls)
+        self.assertFalse(run.find("git", "-C", "/repo", "fetch"), run.calls)
+
+    def test_resolve_worker_merging_base_in_still_merges(self):
+        """End-to-end mirror of the live `go-20260920-124658` report: the
+        resolve worker brings `.github/workflows/gitleaks.yml` and the spec
+        root's `tasks.md` in unchanged from base, and the group merges."""
+        run = self.ScopeCheckRun(
+            {"run/feature-1": [view(mergeable="CONFLICTING"), view()]},
+            touched=[
+                ".github/workflows/gitleaks.yml",
+                "docs/specs/001-x/tasks.md",
+                "src/app.py",
+            ],
+            base_touched=["src/app.py"],
+        )
+        v = mk(run, FakeSpawn(), "/tmp/x")
+        res = v.run_all([FEATURE], {"feature-1": "run/feature-1"})
+
+        self.assertEqual(res["merged"], ["feature-1"])
+        self.assertEqual(res["forbidden_path_violations"], {})
 
     def test_in_scope_diff_passes(self):
         run = self.ScopeCheckRun(
