@@ -10,6 +10,12 @@ Two record kinds share one log:
   `{"kind": "shown", "at": <iso8601>, "members": [...], "signals": [...], "size": N}`
 - `"outcome"` -- written once per `consolidate_cluster.py` execute decision.
   `{"kind": "outcome", "at": <iso8601>, "status": "consolidated"|"declined", "members": [...]}`
+- `"judged"` -- written once per pair the relatedness judgment decided, with
+  both Noul values and the lexical overlap that ranked it.
+  `{"kind": "judged", "at": <iso8601>, "members": [a, b], "overlap": f,
+    "same_work": f, "should_cluster": f, "edge": bool}`
+  Recorded so `JUDGMENT_THRESHOLD` and `PREFILTER_FLOOR` can be retuned against
+  real pairs later without paying for inference again.
 
 This module never computes or persists a running precision score -- it only
 appends raw events. `cluster_log_summary.py` derives
@@ -90,6 +96,23 @@ def log_outcome(
         },
         log_path,
     )
+
+
+def log_judged_pairs(
+    records: Iterable[dict[str, Any]], log_path: Path | None = None
+) -> None:
+    """Append one `judged` record per pair the relatedness judgment decided.
+
+    All records share one timestamp -- they were judged together, in one scan,
+    matching `log_shown`'s own convention.
+
+    Best-effort like every other writer here: the judgment's verdict is already
+    applied to the edges by the time this runs, so a failed write costs a tuning
+    datapoint and nothing else.
+    """
+    at = datetime.now(timezone.utc).isoformat()
+    for record in records:
+        _append({"kind": "judged", "at": at, **record}, log_path)
 
 
 def read_records(log_path: Path | None = None) -> list[dict[str, Any]]:
