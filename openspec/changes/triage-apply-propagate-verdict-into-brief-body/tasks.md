@@ -1,6 +1,6 @@
 ## 1. Propagate the verdict into the brief body on apply
 
-- [ ] 1.1 In `src/worktrail/workqueue/queue_triage.py`, extend
+- [x] 1.1 In `src/worktrail/workqueue/queue_triage.py`, extend
       `EVALUATOR_PROMPT_TEMPLATE`: Step 2b gains a paragraph saying a `work-directly` verdict
       may carry `refuted_span` (verbatim from the brief's focus text) plus an optional
       `corrected_span` to correct one claim while still seeding the brief, and that
