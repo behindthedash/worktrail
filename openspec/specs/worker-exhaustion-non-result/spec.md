@@ -1,8 +1,11 @@
 # worker-exhaustion-non-result Specification
 
 ## Purpose
-TBD - created by openspec sync for change triage-evaluator-capacity-non-verdict. Update
-Purpose after archive.
+Makes a spawn that gave up without a model answer say so, and requires every caller to act on
+that signal rather than read the provider's error text as a result. Prevents a usage cap or
+other capacity block from being silently recorded as real work -- a triage verdict, a brief
+slug, a compile plan, a report-back, or a consumed strike or attempt budget -- and gives
+capacity blocks their own distinguishable exit status so a re-run is known to be the remedy.
 
 ## Requirements
 ### Requirement: A spawn that gave up is signalled as exhausted
