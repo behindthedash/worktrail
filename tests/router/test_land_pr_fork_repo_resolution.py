@@ -48,9 +48,22 @@ class ForkAwareRunner(FakeRun):
             return super().__call__(cmd, **kwargs)
         self.calls.append(list(cmd))
         args = cmd[1:]
-        repo = args[args.index("-R") + 1] if "-R" in args else _UPSTREAM
+        repo = self._resolve(args)
         self.resolved.append((tuple(args), repo))
         return self._gh(cmd, args, repo)
+
+    @staticmethod
+    def _resolve(args: list[str]) -> str:
+        """Which repo a `gh` call addresses: `-R <slug>` when given, else the
+        `repos/<owner>/<name>/...` path of a `gh api` call (also explicitly
+        scoped -- it never resolves against a remote), else the upstream."""
+        if "-R" in args:
+            return args[args.index("-R") + 1]
+        if args[:1] == ["api"] and len(args) > 1:
+            parts = args[1].split("/")
+            if parts[:1] == ["repos"] and len(parts) >= 3:
+                return f"{parts[1]}/{parts[2]}"
+        return _UPSTREAM
 
     def _gh(self, cmd, args, repo) -> subprocess.CompletedProcess:
         def done(rc=0, out="") -> subprocess.CompletedProcess:
