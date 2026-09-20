@@ -36,7 +36,7 @@
 
 ## 2. Backfill
 
-- [ ] 2.1 Replace the placeholder Purpose in every `openspec/specs/*/spec.md` matched by
+- [x] 2.1 Replace the placeholder Purpose in every `openspec/specs/*/spec.md` matched by
       `grep -rl "TBD - created by archiving change" openspec/specs/` (40 files as of
       2026-09-20) with a one-to-three-sentence Purpose read out of that spec's own
       requirements, in the shape the already-documented specs use (see
@@ -51,7 +51,7 @@
 
 ## 3. Verification
 
-- [ ] 3.1 [depends: 1.2, 2.1] [e2e] Run `PYTHONPATH=src pytest -q
+- [x] 3.1 [depends: 1.2, 2.1] [e2e] Run `PYTHONPATH=src pytest -q
       tests/router/test_check_spec_purpose.py tests/router/test_pre_pr_gate.py`, then
       `PYTHONPATH=src pytest -q`, `PYTHONPATH=src python3 -m
       worktrail.orchestrator.orchestrate check`, `python3 scripts/ci/ruff_pinned.py check .`
