@@ -30,7 +30,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [depends: 1.1] [e2e] Run `PYTHONPATH=src pytest -q
+- [x] 2.1 [depends: 1.1] [e2e] Run `PYTHONPATH=src pytest -q
       tests/orchestrator/test_verify.py`, then `PYTHONPATH=src pytest -q`, `PYTHONPATH=src
       python3 -m worktrail.orchestrator.orchestrate check`, `python3 scripts/ci/ruff_pinned.py
       check .`, `python3 scripts/ci/ruff_pinned.py format --check .` and `python3
