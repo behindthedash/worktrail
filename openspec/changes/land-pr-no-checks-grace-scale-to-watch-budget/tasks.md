@@ -35,7 +35,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [depends: 1.1] [e2e] Run `PYTHONPATH=src pytest -q tests/router`, then
+- [x] 2.1 [depends: 1.1] [e2e] Run `PYTHONPATH=src pytest -q tests/router`, then
       `PYTHONPATH=src pytest -q` and
       `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`. Run
       `openspec validate land-pr-no-checks-grace-scale-to-watch-budget --strict` and
