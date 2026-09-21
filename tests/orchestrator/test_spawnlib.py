@@ -2309,9 +2309,7 @@ class InfraFailureFallback(unittest.TestCase):
         """The probe branch is only useful if the spawn it lets through can
         actually lift the gate: a success records `available`, so the next
         `check()` passes instead of raising."""
-        stale = datetime.datetime.now(datetime.UTC) - datetime.timedelta(
-            minutes=30
-        )
+        stale = datetime.datetime.now(datetime.UTC) - datetime.timedelta(minutes=30)
         spawnlib.agent_capacity.record(
             "codex-sub",
             "gpt-5.3-codex",
