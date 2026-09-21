@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -103,7 +103,7 @@ def sweep_and_record(
     retention: timedelta = DEFAULT_RETENTION,
     now: datetime | None = None,
 ) -> list[dict[str, Any]]:
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     with write_lock(path):
         history = load(path)
         new_history, stuck = record_and_detect(
