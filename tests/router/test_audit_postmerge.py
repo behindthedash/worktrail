@@ -3,7 +3,7 @@ calls; subprocess is faked. Mirrors tests/router/test_reconcile_pr_labels.py
 conventions."""
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from worktrail.router import audit_postmerge as audit
 
@@ -20,7 +20,7 @@ class _FakeCompleted:
 
 
 def test_first_run_lookback_is_n_days_before_now():
-    now = datetime(2026, 1, 10, tzinfo=timezone.utc)
+    now = datetime(2026, 1, 10, tzinfo=UTC)
     assert (
         audit.first_run_lookback(lookback_days=7, now=now)
         == (now - timedelta(days=7)).isoformat()
