@@ -123,6 +123,20 @@ _NO_CHECKS_STDERR_MARKER = "no checks reported"
 _NO_CHECKS_GRACE_ATTEMPTS = 3
 _NO_CHECKS_POLL_INTERVAL_S = 3
 
+# A `statusCheckRollup` entry with no `conclusion` and one of these `state`
+# values has not reported yet. GitHub reports `mergeStateStatus: BLOCKED`
+# both for "a required check failed" and for "a required check has not
+# reported yet", so classifying BLOCKED as a product decision without first
+# checking that every required context is terminal turns a still-running
+# required check into a permanent `blocked_product_decision`.
+_NONTERMINAL_CHECK_STATES = frozenset(
+    {"PENDING", "QUEUED", "IN_PROGRESS", "WAITING", "REQUESTED", "EXPECTED"}
+)
+
+# How many times the BLOCKED branch re-enters `_merge_state_guard` waiting
+# for the required contexts to report before giving up as a ceiling.
+BLOCKED_REQUIRED_CONTEXT_POLL_MAX = 20
+
 # `ci_patch_iterations` value at which a new code defect becomes a ceiling
 # (`failed_recoverable`) instead of another `code_defect` outcome.
 CI_PATCH_ITERATION_CEILING = 5
@@ -1035,6 +1049,39 @@ def _pr_is_merged(
     return data.get("state") == "MERGED"
 
 
+def _outstanding_required_contexts(
+    status: dict[str, Any], required_contexts: list[str] | None
+) -> list[str]:
+    """The required contexts that have not reached a terminal result in
+    `status["statusCheckRollup"]` yet -- either absent from the rollup, or
+    present with no `conclusion` and a pending/queued/in-progress `state`.
+    Names are normalised the way `_merge_state_guard` normalises them
+    (`name` falling back to `context`)."""
+    if not required_contexts:
+        return []
+    terminal: set[str] = set()
+    for entry in status.get("statusCheckRollup") or []:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name") or entry.get("context")
+        if not name:
+            continue
+        conclusion = entry.get("conclusion")
+        state = entry.get("state")
+        if conclusion or state and str(state).upper() not in _NONTERMINAL_CHECK_STATES:
+            terminal.add(name)
+    return [c for c in required_contexts if c not in terminal]
+
+
+def _required_contexts_reported(
+    status: dict[str, Any], required_contexts: list[str] | None
+) -> bool:
+    """Whether every required context has reported a terminal result.
+    Vacuously `True` when there are no required contexts (None or empty):
+    nothing is being waited on, so BLOCKED is classified as before."""
+    return not _outstanding_required_contexts(status, required_contexts)
+
+
 def _merge_state_guard(
     repo: Path, pr_number: int, runner: Runner, base_slug: str | None = None
 ) -> dict[str, Any]:
@@ -1822,6 +1869,44 @@ def land_pr(request: LandRequest) -> LandOutcome:
             final_status="failed_recoverable",
             merge_result=merge_result,
         )
+
+    # A BLOCKED merge state means "a required check failed" OR "a required
+    # check has not reported yet". Only the first is a product decision, so
+    # re-poll the guard while the required contexts are still outstanding.
+    blocked_polls = 0
+    while status.get(
+        "mergeStateStatus"
+    ) == "BLOCKED" and not _required_contexts_reported(status, required_contexts):
+        if blocked_polls >= BLOCKED_REQUIRED_CONTEXT_POLL_MAX:
+            outstanding = _outstanding_required_contexts(status, required_contexts)
+            merge_result = (
+                "merge state BLOCKED with required contexts still unreported after "
+                f"{BLOCKED_REQUIRED_CONTEXT_POLL_MAX} polls: " + ", ".join(outstanding)
+            )
+            _run_record_main(
+                [
+                    "finish",
+                    run_path,
+                    "--status",
+                    "failed_recoverable",
+                    "--pr",
+                    pr_url or "",
+                    "--merge-result",
+                    merge_result,
+                ]
+            )
+            return LandOutcome(
+                outcome="ceiling",
+                pr_url=pr_url,
+                pr_number=pr_number,
+                labels=labels,
+                run=run_path,
+                final_status="failed_recoverable",
+                merge_result=merge_result,
+            )
+        time.sleep(_NO_CHECKS_POLL_INTERVAL_S)
+        status = _merge_state_guard(repo, pr_number, runner, base_slug)
+        blocked_polls += 1
 
     if status.get("mergeStateStatus") == "BLOCKED":
         merge_result = "blocked on branch protection after merge-state guard and review-thread gate"
