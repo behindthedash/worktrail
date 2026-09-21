@@ -54,9 +54,7 @@ function sentinelPath(sessionId) {
  * prompt adapters that tell OpenCode to use the installed Worktrail console
  * scripts. No external checkout or plugin path is required.
  */
-export default {
-  id: "worktrail",
-  server: async ({ directory } = {}) => ({
+export const Worktrail = async ({ directory } = {}) => ({
     "session.idle": async (input, output) => {
       const sessionId = input?.session?.id || "unknown"
       const sentinel = sentinelPath(sessionId)
@@ -106,5 +104,9 @@ export default {
         template: [OPENSPEC_PROPOSE_INSTRUCTIONS, "\nRequest: $ARGUMENTS"].join("\n"),
       }
     },
-  }),
+})
+
+export default {
+  id: "worktrail",
+  server: Worktrail,
 }
