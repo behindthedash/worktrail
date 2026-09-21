@@ -101,10 +101,10 @@ def validate_envelope(envelope: Any) -> dict[str, Any]:
             "followed by ':<qualifier>'"
         )
 
+    # An absent intent stays absent: silence from the producer is not consent
+    # to auto-implement, so the downstream route asks instead.
     intent = handoff.get("implementation_intent")
-    if intent is None:
-        intent = "requested"
-    else:
+    if intent is not None:
         intent = _as_str(intent, "handoff.implementation_intent")
         if intent not in _VALID_INTENTS:
             raise EnvelopeError(

@@ -57,11 +57,23 @@ def test_valid_v1_envelope_maps_to_create_handoff_arguments():
     assert args["captured_by"] == "datalena:qa-pipeline"
 
 
-def test_mapped_arguments_are_accepted_by_create_handoff(tmp_path):
+def test_mapped_arguments_are_accepted_by_create_handoff(tmp_path, monkeypatch):
     from worktrail.workqueue.create_handoff import create_handoff
 
-    result = create_handoff(queue_base=tmp_path, **pe.map_envelope(_envelope()))
+    from .test_create_handoff import _stub_gh_pr_list
 
+    # Keep the overlap scan off the real machine and off the network: a tmp
+    # repo instead of a resolvable slug, and a stubbed `gh pr list`.
+    gh_calls = _stub_gh_pr_list(monkeypatch, stdout="[]")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    args = pe.map_envelope(_envelope())
+    args["repo"] = str(repo)
+    args["remote"] = "acme/widgets"
+
+    result = create_handoff(queue_base=tmp_path, **args)
+
+    assert gh_calls, "the overlap scan must go through the stubbed gh"
     body = (tmp_path / "queue" / f"{result['id']}.md").read_text()
     assert "datalena:qa-pipeline" in body
     assert "behindthedash/datalena" in body
@@ -166,7 +178,7 @@ def test_optional_fields_default_cleanly():
     assert args["remote"] is None
     assert args["base_branch"] is None
     assert args["context"] is None
-    assert args["implementation_intent"] == "requested"
+    assert args["implementation_intent"] is None
     assert "Evidence:" not in args["artifacts"]
 
 
