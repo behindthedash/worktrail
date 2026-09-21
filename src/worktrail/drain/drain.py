@@ -117,7 +117,7 @@ import sys
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -679,7 +679,7 @@ def write_iteration_transcript(
     """
     if transcript_dir is None:
         return None
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     try:
         transcript_dir.mkdir(parents=True, exist_ok=True)
         stamp = now.strftime("%Y%m%dT%H%M%SZ")
@@ -722,7 +722,7 @@ def record_capacity_gate(
     with agent_capacity.write_lock(cache_path):
         data = agent_capacity.load(cache_path)
         providers = data.setdefault("providers", {})
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for key in list(providers):
             entry = providers[key]
             if not isinstance(entry, dict) or entry.get("source") != "drain":
@@ -2271,7 +2271,7 @@ def _intake_triage_out_dir(now: datetime | None = None) -> Path:
     triage run, mirroring `queue_triage._default_out_dir()`'s own layout
     (`worktrail_home()/triage/<run-id>/`) without depending on that private
     helper directly."""
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     return worktrail_home() / "triage" / f"drain-{now.strftime('%Y%m%dT%H%M%SZ')}"
 
 
