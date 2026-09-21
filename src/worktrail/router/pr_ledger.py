@@ -369,13 +369,13 @@ def query_pr_state(
     cmd = ["gh", "pr", "view", url, "--json", _VIEW_FIELDS]
     try:
         result = pr_labels._run_gh_cmd(cmd, str(repo) if repo else None, runner)
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
     if result.returncode != 0:
         return None
     try:
         data = json.loads(result.stdout)
-    except (json.JSONDecodeError, TypeError):
+    except json.JSONDecodeError, TypeError:
         return None
     return data if isinstance(data, dict) else None
 
