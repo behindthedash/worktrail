@@ -386,7 +386,7 @@ class RunLock:
                 import fcntl
 
                 fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
-            except (ImportError, OSError):
+            except ImportError, OSError:
                 pass
             self._fh.close()
             self._fh = None
@@ -530,7 +530,7 @@ def _pinned_plan_fingerprint(repo: Path, spec_rel: str) -> str | None:
             return None
         fp = journal.get("plan_fingerprint")
         return fp if isinstance(fp, str) and fp else None
-    except (OSError, ValueError, TypeError):
+    except OSError, ValueError, TypeError:
         return None
 
 
@@ -562,7 +562,7 @@ def _preserve_plan_pin(path: str | Path, jdict: dict) -> dict:
     """
     try:
         existing = json.loads(Path(path).read_text())
-    except (OSError, ValueError, TypeError):
+    except OSError, ValueError, TypeError:
         return jdict
     if not isinstance(existing, dict):
         return jdict
@@ -631,7 +631,7 @@ def _print_usage_report(journal_path: str | Path) -> None:
     """Print the per-role token + cost report and tools/skills footprint (best-effort)."""
     try:
         journal = json.loads(Path(journal_path).read_text())
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return
     print(progress.render_usage(journal))
     print(progress.render_tools_used(journal))
@@ -991,7 +991,7 @@ def reconcile_from_journal(tasks: list, journal: dict) -> list:
             continue
         try:
             dispatch.apply_report(tasks, report, e.get("role"))
-        except (ValueError, KeyError):
+        except ValueError, KeyError:
             # entry references a task outside this spec slice, or is malformed --
             # reconciliation is best-effort and must never block a resume.
             continue
@@ -1227,7 +1227,7 @@ def _fanout_failed_status(repo: Path, spec_rel: str) -> dict | None:
             return None
         status = json.loads(status_path.read_text())
         return status if status.get("phase") == "fanout_failed" else None
-    except (OSError, json.JSONDecodeError, TypeError, AttributeError):
+    except OSError, json.JSONDecodeError, TypeError, AttributeError:
         return None
 
 
@@ -2539,7 +2539,7 @@ def _add_stacked_worktree_kwargs(target, kwargs: dict) -> dict:
     fn = getattr(target, "side_effect", None) or target
     try:
         params = inspect.signature(fn).parameters
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return kwargs
     if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
         return kwargs
@@ -2907,7 +2907,7 @@ class LiveSpawn:
         probe = "\x00TASKID\x00"
         try:
             path, anchor = taskformats.task_brief_ref_for(self.spec_folder_rel, probe)
-        except (OSError, ValueError, AttributeError):
+        except OSError, ValueError, AttributeError:
             return {}
         return {
             "path_fmt": path.replace(probe, "{task_id}"),
@@ -3523,7 +3523,7 @@ def _would_land_terminal(task: dict, role: str, report: dict) -> bool:
     """True when applying `report` would drive `task` to `failed`/`escalated`."""
     try:
         new, _ = dispatch.transition(role, report, task.get("retry_count", 0))
-    except (ValueError, KeyError):
+    except ValueError, KeyError:
         return False
     return new in ("failed", "escalated")
 
@@ -3849,7 +3849,7 @@ def _task_file_in_worktree(wt: Path, spec_rel: str, task_id: str) -> Path:
     base = wt / spec_rel.strip("/")
     try:
         cand = Path(wt) / taskformats.task_brief_ref_for(base, task_id)[0]
-    except (OSError, ValueError, AttributeError):
+    except OSError, ValueError, AttributeError:
         cand = base / "tasks" / f"{task_id}.md"
     if cand.exists():
         return cand
@@ -5751,7 +5751,7 @@ def _pipeline_scheduler(
             pre_only_done |= {
                 t["id"] for t in _peek_tasks if t.get("status") in coordinator.DONE
             }
-        except (OSError, json.JSONDecodeError):
+        except OSError, json.JSONDecodeError:
             pass  # best-effort; the real resume block's own error handling still applies
     for t in tasks:
         t.setdefault("retry_count", 0)
@@ -6177,7 +6177,7 @@ def _pipeline_scheduler(
     if re_integrate and Path(journal_path).exists():
         try:
             _reset_journal = json.loads(Path(journal_path).read_text())
-        except (OSError, json.JSONDecodeError):
+        except OSError, json.JSONDecodeError:
             _reset_journal = {}
         if _clear_integration_state(_reset_journal):
             progress.atomic_write_text(
@@ -6873,7 +6873,7 @@ def _record_verify_outcomes(
 
     try:
         groups_j = json.loads(Path(journal_path).read_text()).get("groups", {})
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         groups_j = {}
 
     def _stamp(name: str, state: str) -> None:
@@ -7016,7 +7016,7 @@ def _full_real_inner(
     if resume and Path(journal_path).exists():
         try:
             _resume_journal = json.loads(Path(journal_path).read_text())
-        except (OSError, json.JSONDecodeError):
+        except OSError, json.JSONDecodeError:
             _resume_journal = None
         if _resume_journal is not None:
             _, _resume_tasks = taskformats.load_spec(str(repo / spec_rel))
@@ -7370,7 +7370,7 @@ def main(argv=None) -> int:
     try:
         sys.stdout.reconfigure(line_buffering=True)
         sys.stderr.reconfigure(line_buffering=True)
-    except (AttributeError, ValueError):
+    except AttributeError, ValueError:
         pass
     p = argparse.ArgumentParser(description="Live spawn via a headless agent CLI")
     sub = p.add_subparsers(dest="cmd", required=True)
