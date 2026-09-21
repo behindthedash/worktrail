@@ -55,7 +55,7 @@ def git_common_dir(cwd: str | Path) -> Path | None:
             timeout=15,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return None
     if proc.returncode != 0:
         return None
