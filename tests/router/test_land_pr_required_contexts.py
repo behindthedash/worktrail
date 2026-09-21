@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """The CI watch settles only once every required status-check context is
 reported (Requirement: CI watch settles only on required-context coverage).
 
@@ -132,7 +131,7 @@ class WatchCiRequiredContexts(unittest.TestCase):
             for c in fake.calls
             if c[:5] == ["gh", "pr", "checks", str(_PR), "--json"] and c[5] == "name"
         ]
-        self.assertEqual(len(probes), land_pr._NO_CHECKS_GRACE_ATTEMPTS)
+        self.assertEqual(len(probes), land_pr._no_checks_grace_attempts(60))
         self.assertFalse(
             fake.called_with_prefix("gh", "pr", "checks", str(_PR), "--watch")
         )

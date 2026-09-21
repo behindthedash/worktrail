@@ -1,6 +1,6 @@
 ## 1. Scale the registration grace to the watch budget
 
-- [ ] 1.1 In `src/worktrail/router/land_pr.py`: add a module-level helper that derives the
+- [x] 1.1 In `src/worktrail/router/land_pr.py`: add a module-level helper that derives the
       number of registration grace attempts from `watch_timeout_s` — the attempt count is
       `watch_timeout_s // _NO_CHECKS_POLL_INTERVAL_S`, floored at the existing
       `_NO_CHECKS_GRACE_ATTEMPTS` (which stays as the floor constant, keeping today's
