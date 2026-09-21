@@ -2266,7 +2266,7 @@ class TestPremiseDriftWarning(QueueTestBase):
     """Tests for the claim-time premise-drift age warning."""
 
     def _created(self, days_ago: float) -> str:
-        when = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
+        when = datetime.datetime.now(datetime.UTC) - datetime.timedelta(
             days=days_ago
         )
         return when.isoformat()
