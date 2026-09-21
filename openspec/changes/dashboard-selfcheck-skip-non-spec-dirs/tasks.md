@@ -1,6 +1,6 @@
 ## 1. Scope the selfcheck to spec folders
 
-- [ ] 1.1 In `src/worktrail/router/dashboard_selfcheck.py`, extend the existing import from
+- [x] 1.1 In `src/worktrail/router/dashboard_selfcheck.py`, extend the existing import from
       `.dashboard` to include `_NON_SPEC_DIRS`, and in `check_repo` skip any `spec_dir` whose
       `name.lower()` is in that set before the candidate glob. Do not restate the names locally
       and do not use `_is_spec_folder` -- its content test would suppress the ambiguous folders
