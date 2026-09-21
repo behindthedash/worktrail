@@ -101,3 +101,10 @@
 
 - [ ] 8.4 [e2e] Simulate a push failure and verify the relay item is not acknowledged and a
       retry completes without duplicate brief creation.
+
+## 9. Folded from 20260920-182427-pullhook-handoff-ingress-unimplemented
+
+Triage evidence for this fold is in `proposal.md`'s `## Folded from 20260920-182427-pullhook-handoff-ingress-unimplemented` section.
+
+- [ ] 9.1 Implement the merged OpenSpec change worktrail/openspec/changes/pullhook-handoff-ingress (spec PR #1273): the worktrail-pullhook-ingress command that pulls datalena.worktrail-handoff.v1 events from a PullHook channel and materializes them as canonical handoff briefs.
+      files: openspec/changes/pullhook-handoff-ingress/tasks.md

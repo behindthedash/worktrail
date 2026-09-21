@@ -29,3 +29,9 @@ None. Existing handoff creation, queue claim/done/release, and PullHook remain a
 - Local configuration/secrets for PullHook consume credential/channel.
 - Optional git-backed `$WORK_QUEUE_DIR` becomes the durable off-machine record for externally ingested briefs.
 - No requirement for producer repositories to install WorkTrail or hold work-queue GitHub credentials.
+
+## Folded from 20260920-182427-pullhook-handoff-ingress-unimplemented
+
+Implement the merged OpenSpec change worktrail/openspec/changes/pullhook-handoff-ingress (spec PR #1273): the worktrail-pullhook-ingress command that pulls datalena.worktrail-handoff.v1 events from a PullHook channel and materializes them as canonical handoff briefs. All tasks 1.1-8.4 are unchecked; no code exists. Datalena's publisher (datalena PR #2962, merged 2026-09-21) already posts to channel datalena-worktrail on pullhook.io, so events will accumulate unread until this ships.
+
+`gh repo view` confirms behindthedash/worktrail is not archived. `openspec/changes/pullhook-handoff-ingress/tasks.md` exists with 11 unchecked tasks and 0 checked (confirmed via `grep -c` for `- [ ]` / `- [x]`), and `ls src/worktrail/workqueue/ | grep -i pullhook` returns nothing, so task 1.1's `src/worktrail/workqueue/pullhook_client.py` is absent — the brief's premise holds and its work is exactly this change's scope. The brief's path string `worktrail/openspec/changes/pullhook-handoff-ingress` is just repo-prefixed; the change resolves at `openspec/changes/pullhook-handoff-ingress`.
