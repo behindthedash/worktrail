@@ -36,7 +36,7 @@
 
 ## 2. Surface the recovery action in quarantine triage
 
-- [ ] 2.1 In `src/worktrail/router/quarantine_selfcheck.py`, extend `main`'s
+- [x] 2.1 In `src/worktrail/router/quarantine_selfcheck.py`, extend `main`'s
       non-JSON output only: name `worktrail-resume-group` as the recovery action in both the
       `findings` header (explicit `--group <name>` after fixing the branch) and the
       `resumable` header (`--all-resumable`), including the repo and spec id needed to run it.
