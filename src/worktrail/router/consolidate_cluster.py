@@ -520,7 +520,7 @@ def _run_work_queue_cli(
             env=env,
         )
         return json.loads(result.stdout)
-    except (subprocess.SubprocessError, ValueError, OSError):
+    except subprocess.SubprocessError, ValueError, OSError:
         return None
 
 
