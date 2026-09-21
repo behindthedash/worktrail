@@ -72,6 +72,10 @@ triggers:
     - target_branches
     - inline flow sequence
     - parse_policy_yaml
+    - POLICY_KEY_TYPES
+    - _sweep_key_types
+    - _SWEEP_SKIP
+    - _TYPE_SWEEP_EXEMPT
 ---
 
 You are working on **worktrail's GO v2 front door**: loading repo policy, classifying free-text
@@ -232,6 +236,29 @@ agents or writes task files — that is `orchestrator/`'s job.
   never widens autonomy. `automerge.max_risk`, `agent_cli`, `fallback_agent_cli`, `agent_model`,
   `max_workers`, `pr_pacing_wait_s`, and `max_parallel_workers` are all validated/clamped the same
   way in `load_policy`.
+- **`load_policy()` runs a coarse type sweep (`_sweep_key_types`) before the per-key checks; the
+  two layers are deliberately separate.** `POLICY_KEY_TYPES` declares an expected type (or tuple)
+  for every flat `DEFAULTS` key, and a wrong-typed value is replaced by its `DEFAULTS` entry with
+  one `meta["warnings"]` line (`<key> must be <type>[ or null]; got <value!r> — using default
+  <default!r>`) — e.g. `protected_paths: migrations/` becomes `[]`, `pre_pr_cmd: true` becomes
+  `None`. A key whose default is `None` also accepts `None`, and a YAML `true` never satisfies an
+  integer key (`bool` is an `int` subclass). The per-key checks further down `load_policy` still
+  run last, unchanged, and own value-level rules (allowed literals, integer minimums, per-entry
+  cleaning). `routing`/`add_ons` are exempt (`_TYPE_SWEEP_EXEMPT`; their own resolvers run first),
+  and every key that already has a stricter per-key check is declared in `POLICY_KEY_TYPES` but
+  listed in `_SWEEP_SKIP` so the sweep never swallows a value before that check's own warning text
+  (which callers assert on) can fire — the sweep effectively covers the keys that had no
+  value-level check at all. `run_record_dir` restores its lazily-resolved
+  `default_run_record_dir()`, not `None`.
+- **A bare string under `require_human_routes` or `automerge.target_branches` is NOT a type error.**
+  Both are declared `(list, str)`: `automerge_eligible()` tests `route in require_human_routes`, so
+  a single-route `require_human_routes: B` is a working gate that sweeping it to `[]` would silently
+  open, and it already normalizes a bare `target_branches: dev` to a one-branch list. Only a value
+  that is neither (e.g. `target_branches: 7`) falls back to `[]` with a warning naming
+  `automerge.target_branches`. The sweep reaches `automerge.target_branches` separately because it
+  is a flat key living one level down. A policy key added to `DEFAULTS` with no `POLICY_KEY_TYPES`
+  entry (and not in `_TYPE_SWEEP_EXEMPT`) fails
+  `tests/router/test_policy_key_types.py::test_every_defaults_key_has_a_declared_type_or_is_exempt`.
 - **`automerge.target_branches` empty means "base branch only", and a scalar is one branch, not a
   substring.** `automerge_eligible()` treats `target_branches: []` (and unset) as no filter; a
   non-empty list rejects any PR whose target branch is not in it (`target branch <b> not in
@@ -450,8 +477,10 @@ agents or writes task files — that is `orchestrator/`'s job.
   seam), and `judge_pairs()`'s order-preserving concurrent batch (`MAX_CONCURRENCY`); the edge
   rule lives in `should_edge()`, never in the service's answer
 - `router/policy.py` — `load_policy()`; the single source of truth for a repo's resolved GO policy;
-  also `parse_policy_yaml`/`_parse_scalar` (the flat parser and its inline-flow-sequence handling)
-  and `automerge_eligible()` (including the `target_branches` scalar coercion)
+  also `parse_policy_yaml`/`_parse_scalar` (the flat parser and its inline-flow-sequence handling),
+  `POLICY_KEY_TYPES`/`_SWEEP_SKIP`/`_TYPE_SWEEP_EXEMPT`/`_sweep_key_types()` (the coarse type sweep
+  that runs ahead of the per-key checks; covered by `tests/router/test_policy_key_types.py`) and
+  `automerge_eligible()` (including the `target_branches` scalar coercion)
 - `router/run_record.py` — `finish()`'s ten-state enforcement and its two code-enforced gates;
   `cmd_scope_review` write-time reason validation and `OUT_OF_SCOPE_REASON_PREFIXES`;
   `cmd_capacity_gate`'s `_iso_retry_after` timestamp validation; `_load_lenient()`, the
@@ -503,4 +532,4 @@ agents or writes task files — that is `orchestrator/`'s job.
   best-effort writers that never affect what they record
 
 ---
-**Last Updated:** 2026-09-20
+**Last Updated:** 2026-09-21
