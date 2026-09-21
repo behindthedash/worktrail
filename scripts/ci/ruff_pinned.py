@@ -90,7 +90,7 @@ def _version_of(argv: list[str]) -> str | None:
             check=False,
             timeout=120,
         )
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return None
     if result.returncode != 0:
         return None
