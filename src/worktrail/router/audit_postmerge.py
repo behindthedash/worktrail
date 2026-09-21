@@ -143,7 +143,7 @@ def _run_gh(args: list[str], repo: Path, timeout: float = 30) -> Any | None:
             timeout=timeout,
             cwd=str(repo),
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
     if result.returncode != 0:
         return None
