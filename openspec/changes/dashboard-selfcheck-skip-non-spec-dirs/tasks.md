@@ -17,7 +17,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [depends: 1.1] [e2e] Run `PYTHONPATH=src pytest -q tests/router/test_dashboard_selfcheck.py`,
+- [x] 2.1 [depends: 1.1] [e2e] Run `PYTHONPATH=src pytest -q tests/router/test_dashboard_selfcheck.py`,
       then `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`.
       Run `openspec validate dashboard-selfcheck-skip-non-spec-dirs --strict` and
       `worktrail-compile openspec/changes/dashboard-selfcheck-skip-non-spec-dirs`.
