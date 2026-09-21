@@ -2448,7 +2448,7 @@ def log_auto_pick_miss(
         reason = str(entry.get("reason", "")).split(":", 1)[0]
         reasons[reason] = reasons.get(reason, 0) + 1
     record = {
-        "at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "at": datetime.datetime.now(datetime.UTC).isoformat(),
         "repo_filter": repo_filter,
         "total_briefs": total_briefs,
         "skipped_count": len(skipped),
@@ -2481,7 +2481,7 @@ def _hours_since_claim(claimed_at: Any) -> float | None:
         return None
     if dt.tzinfo is None:
         dt = dt.astimezone()  # assume local, matching work_queue.py's stamp
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     return (now - dt).total_seconds() / 3600.0
 
 
