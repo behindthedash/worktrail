@@ -1052,7 +1052,7 @@ def enable_gitnexus(repo: Path) -> tuple[bool, str | None]:
         return False, None
     try:
         _run(["gitnexus", "analyze", "--embeddings", "--index-only", str(repo)])
-    except (subprocess.TimeoutExpired, OSError):
+    except subprocess.TimeoutExpired, OSError:
         pass
     if (repo / ".gitnexus").is_dir():
         return True, None
@@ -1400,7 +1400,7 @@ def _ruleset_drift(repo: Path, branch: str, branch_model: str) -> dict[str, str]
     relpath = f".github/rulesets/protect-{branch}.json"
     try:
         on_disk = json.loads((repo / relpath).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return None
     baseline = build_ruleset_for_branch(branch, branch_model)
     if _ruleset_structural_view(on_disk) == _ruleset_structural_view(baseline):
