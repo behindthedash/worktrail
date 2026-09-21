@@ -123,6 +123,20 @@ _NO_CHECKS_STDERR_MARKER = "no checks reported"
 _NO_CHECKS_GRACE_ATTEMPTS = 3
 _NO_CHECKS_POLL_INTERVAL_S = 3
 
+
+def _no_checks_grace_attempts(watch_timeout_s: int) -> int:
+    """Registration-grace probe count for a run whose watch budget is
+    `watch_timeout_s`. A fixed three probes (~9s) is far shorter than the
+    registration race it exists to absorb on a run that was given a long
+    watch budget, so the count scales with that budget -- capped at one
+    `watch_timeout_s` window of grace (floor division already guarantees
+    `attempts * _NO_CHECKS_POLL_INTERVAL_S <= watch_timeout_s`) and floored
+    at `_NO_CHECKS_GRACE_ATTEMPTS` so a very short `--watch-timeout` keeps
+    today's behaviour.
+    """
+    return max(_NO_CHECKS_GRACE_ATTEMPTS, watch_timeout_s // _NO_CHECKS_POLL_INTERVAL_S)
+
+
 # `ci_patch_iterations` value at which a new code defect becomes a ceiling
 # (`failed_recoverable`) instead of another `code_defect` outcome.
 CI_PATCH_ITERATION_CEILING = 5
@@ -859,12 +873,14 @@ def _watch_ci(
     module docstring step 7 / design.md D7). Returns `{"settled": bool,
     "failing_checks": [...], "log_excerpt": str, "budget_exhausted": bool}`.
 
-    Gives "no checks reported yet" a short, separate grace period before
-    entering the main watch loop below -- see `_NO_CHECKS_STDERR_MARKER`'s
-    module-level comment. If checks still haven't registered once that grace
-    period is spent, this is reported as `budget_exhausted` (-> `ceiling`,
-    needs reconciliation), exactly like the main watch loop's own budget
-    exhaustion below -- NOT `settled: True`. Checks that are merely slow to
+    Gives "no checks reported yet" a separate grace period before entering
+    the main watch loop below -- see `_NO_CHECKS_STDERR_MARKER`'s
+    module-level comment. Its length scales with `watch_timeout_s` via
+    `_no_checks_grace_attempts`. If checks still haven't registered once that
+    grace period is spent, this is reported as `budget_exhausted` (->
+    `ceiling`, needs reconciliation) -- NOT `settled: True` -- carrying an
+    extra `"checks_unregistered": True` marker so the caller can tell it
+    apart from the main watch loop's own budget exhaustion. Checks that are merely slow to
     register (a real, common race right after `gh pr create`) are
     indistinguishable from a genuinely CI-less repo/branch from inside this
     function; reporting the former as a clean pass would land a PR whose CI
@@ -884,7 +900,7 @@ def _watch_ci(
         "budget_exhausted": False,
     }
 
-    for _ in range(_NO_CHECKS_GRACE_ATTEMPTS):
+    for _ in range(_no_checks_grace_attempts(watch_timeout_s)):
         if heartbeat:
             heartbeat()
         if _pr_is_merged(repo, pr_number, runner, base_slug):
@@ -901,6 +917,7 @@ def _watch_ci(
             "failing_checks": [],
             "log_excerpt": "",
             "budget_exhausted": True,
+            "checks_unregistered": True,
         }
 
     reruns = 0
@@ -1637,6 +1654,11 @@ def land_pr(request: LandRequest) -> LandOutcome:
         }
 
     if watch["budget_exhausted"]:
+        budget_merge_result = (
+            "required checks never registered at watch budget"
+            if watch.get("checks_unregistered")
+            else "checks still pending at watch budget"
+        )
         if run_path:
             _run_record_main(
                 [
@@ -1647,7 +1669,7 @@ def land_pr(request: LandRequest) -> LandOutcome:
                     "--pr",
                     pr_url or "",
                     "--merge-result",
-                    "checks still pending at watch budget",
+                    budget_merge_result,
                 ]
             )
         return LandOutcome(
@@ -1657,7 +1679,7 @@ def land_pr(request: LandRequest) -> LandOutcome:
             labels=labels,
             run=run_path,
             final_status="failed_recoverable",
-            merge_result="checks still pending at watch budget",
+            merge_result=budget_merge_result,
         )
 
     if not watch["settled"]:
