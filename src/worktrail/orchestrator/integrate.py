@@ -231,7 +231,7 @@ def _foreign_git(repo: Path, *args) -> str | None:
             text=True,
             timeout=30,
         )
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return None
     if r.returncode != 0:
         return None
@@ -488,7 +488,7 @@ def _write_group_task_status(iw: Path, spec_id: str, group: dict, status: dict) 
         try:
             if source.mark_status(tid, "completed", spec_ref=spec_ref):
                 changed.append(tid)
-        except (FileNotFoundError, OSError):
+        except FileNotFoundError, OSError:
             continue  # task file absent on this branch; nothing to write
     if not changed:
         return
