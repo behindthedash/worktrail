@@ -317,17 +317,31 @@ def main(argv: list[str] | None = None) -> int:
                 f"quarantine_selfcheck: {len(results)} repo(s) checked, no QUARANTINED groups"
             )
         for r in flagged:
-            print(f"{r['repo']}:")
+            print(
+                f"{r['repo']}: needs human triage -- fix the task branch, then clear "
+                f"the group with worktrail-resume-group --group <name>:"
+            )
             for f in r["findings"]:
                 print(
                     f"  spec={f['spec_id']} group={f['group']} pr_url={f['pr_url']} "
                     f"age_days={f['age_days']:.1f}"
                 )
+                print(
+                    f"    worktrail-resume-group --repo {r['path']} "
+                    f"--spec {f['spec_id']} --group {f['group']}"
+                )
         for r in resumable_repos:
-            print(f"{r['repo']} (resumable, no action needed -- re-run full-real):")
+            print(
+                f"{r['repo']} (resumable -- clear with worktrail-resume-group "
+                f"--all-resumable, then re-run full-real --resume):"
+            )
             for f in r["resumable"]:
                 print(
                     f"  spec={f['spec_id']} group={f['group']} age_days={f['age_days']:.1f}"
+                )
+                print(
+                    f"    worktrail-resume-group --repo {r['path']} "
+                    f"--spec {f['spec_id']} --all-resumable"
                 )
     return 1 if flagged else 0
 

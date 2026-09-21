@@ -9,6 +9,11 @@ on faith). `extract_needles` pulls these claims out of free-form prose;
 `run_premise_check` confirms or refutes each one against a repo checkout, and
 `format_premise_block` renders the result for inclusion in an evaluation
 prompt. See design D3 (autonomous-intake-brief-convergence) for the contract.
+
+Path presence claims resolve bare basenames: a candidate with no `/` that does
+not exist at the repo root is looked up against `git ls-files`, matching any
+tracked path whose final segment equals it, since briefs routinely name a file
+by basename alone rather than by its path from the repo root.
 """
 
 from __future__ import annotations
@@ -210,6 +215,32 @@ def _check_quoted(repo_path: Path, needle: str) -> dict[str, Any]:
     return _git_grep_fragments(repo_path, needle)
 
 
+def _basename_matches(repo_path: Path, candidate: str) -> list[str]:
+    """Tracked paths whose final segment equals `candidate`, or [].
+
+    Scoped to bare basenames (no `/`): a candidate that already carries a
+    directory component is a claim about that exact path, not a search. A
+    `repo_path` that is not a git checkout is answered without spawning git at
+    all, since `git ls-files` has nothing to list there.
+    """
+    if "/" in candidate or not (repo_path / ".git").exists():
+        return []
+    result = subprocess.run(
+        ["git", "ls-files"],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return []
+    return [
+        tracked
+        for tracked in result.stdout.splitlines()
+        if tracked.rpartition("/")[2] == candidate
+    ]
+
+
 def _check_path(
     repo_path: Path, needle: str, polarity: str = "presence"
 ) -> dict[str, Any]:
@@ -232,6 +263,17 @@ def _check_path(
             "detail": f"absence claim refuted: path exists: {candidate}",
         }
     if not target.exists():
+        matches = _basename_matches(repo_path, candidate)
+        if matches:
+            if len(matches) == 1:
+                return {"confirmed": True, "detail": f"path exists: {matches[0]}"}
+            return {
+                "confirmed": True,
+                "detail": (
+                    f"path exists: {len(matches)} tracked files named {candidate}, "
+                    f"e.g. {matches[0]}"
+                ),
+            }
         return {"confirmed": False, "detail": f"path does not exist: {candidate}"}
     if line_num is None:
         return {"confirmed": True, "detail": f"path exists: {candidate}"}

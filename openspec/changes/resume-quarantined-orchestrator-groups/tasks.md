@@ -1,6 +1,6 @@
 ## 1. Un-quarantine command
 
-- [ ] 1.1 Add `src/worktrail/orchestrator/resume_group.py`: a `main(argv=None) -> int` CLI
+- [x] 1.1 Add `src/worktrail/orchestrator/resume_group.py`: a `main(argv=None) -> int` CLI
       (`--repo`, `--spec`, `--group` repeatable, `--all-resumable`, `--dry-run`, `--json`)
       resolving the run journal via `live.journal_path_for(repo, spec_rel)`. Expose the pure
       helper `select_groups(journal, names, all_resumable) -> (selected, problems)`: a named
@@ -36,7 +36,7 @@
 
 ## 2. Surface the recovery action in quarantine triage
 
-- [ ] 2.1 In `src/worktrail/router/quarantine_selfcheck.py`, extend `main`'s
+- [x] 2.1 In `src/worktrail/router/quarantine_selfcheck.py`, extend `main`'s
       non-JSON output only: name `worktrail-resume-group` as the recovery action in both the
       `findings` header (explicit `--group <name>` after fixing the branch) and the
       `resumable` header (`--all-resumable`), including the repo and spec id needed to run it.
@@ -51,7 +51,7 @@
 
 ## 3. Route E front-door pointer
 
-- [ ] 3.1 In `skills/worktrail-go/references/routes.md`, extend Route E step 4's
+- [x] 3.1 In `skills/worktrail-go/references/routes.md`, extend Route E step 4's
       quarantined-orchestrator-groups sentence to cite `worktrail-resume-group`: fix the task
       branch first, then clear the group and re-run `full-real --resume` rather than
       hand-landing the PR and hand-running checkbox-sync. Keep the existing

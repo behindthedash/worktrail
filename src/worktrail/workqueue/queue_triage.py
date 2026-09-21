@@ -190,7 +190,11 @@ _NON_GOALS_MARKER_RE = re.compile(
 # `git` count only with a known read/verify subcommand ("gh repo view", "git
 # log") so prose like "git history" or "gh workflow" alone does not qualify;
 # `grep`/`rg` count only with a flag ("grep -rn foo") so the bare verb "grep
-# for it" does not.
+# for it" does not. An inline interpreter invocation (`python3 -c '...'`,
+# `python -m json.tool`) is a reproduction in its own right, but only with the
+# `-c`/`-m` flag present: the bare interpreter name shows up in ordinary prose
+# ("the python side of this", "a python 3.10 feature"), exactly as `grep`/`git`
+# do, so the flag is what distinguishes a run command from a mention.
 _REPRODUCTION_EVIDENCE_RE = re.compile(
     r"\bpytest\b"
     r"|\btests?/"
@@ -204,6 +208,7 @@ _REPRODUCTION_EVIDENCE_RE = re.compile(
     r"|\bgh\s+(?:pr|repo|api|run|issue|release)\b"
     r"|\bgit\s+(?:log|status|show|diff|grep|ls-files|rev-parse|branch|cherry|blame|worktree|fetch)\b"
     r"|\b(?:grep|rg)\s+-"
+    r"|\b(?:python3?|py)\s+-[cm]\b"
     r"|\breproduces?\s+via\b"
     r"|\breproduced\s+via\b"
     r"|\bconfirmed\s+via\b",

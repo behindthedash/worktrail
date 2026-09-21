@@ -1,6 +1,6 @@
 ## 1. Accept inline interpreter reproductions and resolve bare basenames
 
-- [ ] 1.1 In `src/worktrail/workqueue/queue_triage.py`, add an alternative to
+- [x] 1.1 In `src/worktrail/workqueue/queue_triage.py`, add an alternative to
       `_REPRODUCTION_EVIDENCE_RE` matching an inline interpreter invocation -- `python`,
       `python3`, or `py` followed by whitespace and a `-c` or `-m` flag -- and extend the
       comment block above the pattern to record why the flag is required (the bare interpreter
@@ -26,7 +26,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [depends: 1.1] [e2e] Run `PYTHONPATH=src pytest -q tests/workqueue/test_queue_triage.py
+- [x] 2.1 [depends: 1.1] [e2e] Run `PYTHONPATH=src pytest -q tests/workqueue/test_queue_triage.py
       tests/workqueue/test_premise_check.py`, then `PYTHONPATH=src pytest -q`, `PYTHONPATH=src
       python3 -m worktrail.orchestrator.orchestrate check`, and `python3
       scripts/ci/ruff_pinned.py check .`. Run `openspec validate

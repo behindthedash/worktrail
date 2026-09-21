@@ -1,6 +1,6 @@
 ## 1. Live evaluator smoke
 
-- [ ] 1.1 Add `src/worktrail/workqueue/triage_smoke.py`: a hand-run harness exposing
+- [x] 1.1 Add `src/worktrail/workqueue/triage_smoke.py`: a hand-run harness exposing
       `build_fixture_brief(queue_root)` (writes one intake brief whose focus carries a single
       refutable claim about this repo plus otherwise-valid directly-actionable work),
       `record_run(...)` (invokes `queue_triage.evaluate_group()` -- injectable, defaulting to the
@@ -24,7 +24,7 @@
       a verbatim substring; and `main` exits non-zero on a miss and zero on a pass.
       files: src/worktrail/workqueue/triage_smoke.py, tests/workqueue/test_triage_smoke.py
 
-- [ ] 1.2 [depends: 1.1] Record the live run and replay it offline. Run
+- [x] 1.2 [depends: 1.1] Record the live run and replay it offline. Run
       `python3 -m worktrail.workqueue.triage_smoke` against this repo with a real evaluator agent,
       committing the produced `tests/fixtures/triage_evaluator_answers.json` as recorded (never
       hand-authored) data. If the harness reports a miss -- an omitted or misquoted span -- tighten
@@ -48,7 +48,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [depends: 1.2] [e2e] Run `PYTHONPATH=src pytest -q tests/workqueue/test_triage_smoke.py
+- [x] 2.1 [depends: 1.2] [e2e] Run `PYTHONPATH=src pytest -q tests/workqueue/test_triage_smoke.py
       tests/workqueue/test_queue_triage_live_replay.py`, then `PYTHONPATH=src pytest -q` and
       `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`. Confirm the full run
       makes no live model call. Run `python3 scripts/ci/ruff_pinned.py check .`,

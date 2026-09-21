@@ -356,3 +356,43 @@ def test_presence_claim_path_needle_keeps_confirm_on_exists(repo: Path) -> None:
     result = next(r for r in run_premise_check(focus, repo) if r["kind"] == "path")
     assert result["confirmed"] is True
     assert "path exists" in result["detail"]
+
+
+def test_bare_basename_resolves_to_tracked_path(repo: Path) -> None:
+    _add(repo, "src/worktrail/drain/drain.py", "x = 1\n")
+    focus = "See `drain.py` for the retry loop."
+
+    result = next(r for r in run_premise_check(focus, repo) if r["kind"] == "path")
+    assert result["confirmed"] is True
+    assert result["detail"] == "path exists: src/worktrail/drain/drain.py"
+
+
+def test_bare_basename_with_several_matches_reports_count(repo: Path) -> None:
+    _add(repo, "src/a/helpers.py", "x = 1\n")
+    _add(repo, "src/b/helpers.py", "x = 2\n")
+    focus = "See `helpers.py` for the retry loop."
+
+    result = next(r for r in run_premise_check(focus, repo) if r["kind"] == "path")
+    assert result["confirmed"] is True
+    assert "2 tracked files named helpers.py" in result["detail"]
+    assert "helpers.py" in result["detail"]
+
+
+def test_bare_basename_with_no_match_still_refutes(repo: Path) -> None:
+    _add(repo, "src/a/helpers.py", "x = 1\n")
+    focus = "See `nowhere.py` for the retry loop."
+
+    result = next(r for r in run_premise_check(focus, repo) if r["kind"] == "path")
+    assert result["confirmed"] is False
+    assert result["detail"] == "path does not exist: nowhere.py"
+
+
+def test_rooted_path_line_needle_keeps_line_count_detail(repo: Path) -> None:
+    _add(repo, "src/worktrail/drain/drain.py", "line1\nline2\nline3\n")
+    focus = "Check `src/worktrail/drain/drain.py:2` for the retry loop."
+
+    result = next(r for r in run_premise_check(focus, repo) if r["kind"] == "path")
+    assert result["confirmed"] is True
+    assert result["detail"] == (
+        "path exists: src/worktrail/drain/drain.py (3 lines, line 2 present)"
+    )
