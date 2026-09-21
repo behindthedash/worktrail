@@ -391,7 +391,7 @@ def import_dep_edges(
                 continue
             try:
                 targets = scanner(path.read_text(encoding="utf-8"), path, repo)
-            except (SyntaxError, ValueError, UnicodeDecodeError, OSError):
+            except SyntaxError, ValueError, UnicodeDecodeError, OSError:
                 continue
             for target in targets:
                 for owner in owners.get(target.as_posix(), ()):
