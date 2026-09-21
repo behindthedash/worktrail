@@ -943,9 +943,7 @@ class OriginalCreatedPropagation(ConsolidateClusterTestCase):
 
         self.assertEqual(
             draft["original_created"],
-            datetime.datetime(
-                2026, 7, 1, 9, 0, 0, tzinfo=datetime.UTC
-            ).isoformat(),
+            datetime.datetime(2026, 7, 1, 9, 0, 0, tzinfo=datetime.UTC).isoformat(),
         )
 
     def test_native_pyyaml_datetime_created_contributes_correctly(self):
@@ -966,9 +964,7 @@ class OriginalCreatedPropagation(ConsolidateClusterTestCase):
 
         self.assertEqual(
             draft["original_created"],
-            datetime.datetime(
-                2026, 7, 1, 9, 0, 0, tzinfo=datetime.UTC
-            ).isoformat(),
+            datetime.datetime(2026, 7, 1, 9, 0, 0, tzinfo=datetime.UTC).isoformat(),
         )
 
     def test_missing_or_unparseable_created_is_skipped_without_raising(self):
@@ -992,9 +988,7 @@ class OriginalCreatedPropagation(ConsolidateClusterTestCase):
         self.assertEqual(sorted(draft["member_ids"]), sorted([m1, m2, m3]))
         self.assertEqual(
             draft["original_created"],
-            datetime.datetime(
-                2026, 7, 3, 8, 0, 0, tzinfo=datetime.UTC
-            ).isoformat(),
+            datetime.datetime(2026, 7, 3, 8, 0, 0, tzinfo=datetime.UTC).isoformat(),
         )
 
     def test_written_brief_carries_original_created_when_draft_has_it(self):
