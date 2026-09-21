@@ -17,8 +17,10 @@ this repo plus otherwise-valid directly-actionable work -- under a throwaway
 queue root (never the operator's real ``$WORK_QUEUE_DIR``), spawns one real
 evaluator over it via `queue_triage.evaluate_group()`, writes the recording to
 ``tests/fixtures/triage_evaluator_answers.json``, and exits non-zero naming
-every Step 2b condition the run missed. The committed recording is what
-``tests/workqueue/test_queue_triage_live_replay.py`` replays offline; it is
+every Step 2b condition the run missed. That default path is resolved from the
+*installed* package root -- the canonical checkout, not a branch worktree -- so
+pass ``--out`` when the recording has to land on a branch. The committed
+recording is what ``tests/workqueue/test_queue_triage_live_replay.py`` replays offline; it is
 recorded data, never hand-authored.
 
 **Never run this from pytest.** `record_run()` spawns a real agent, costs
@@ -52,9 +54,13 @@ REFUTABLE_CLAIM = (
 
 #: The otherwise-valid, directly-actionable half -- still worth doing after the
 #: claim above is refuted, so a correct run is `work-directly`, not `keep`.
+#: It deliberately names a long-stable file that exists on every branch (never
+#: one this change introduces), so the work reads as outstanding no matter which
+#: checkout `record_run()`'s `cwd` resolves to.
 ACTIONABLE_WORK = (
-    "Add a line to `src/worktrail/workqueue/triage_smoke.py`'s module docstring "
-    "stating the harness must never be run from pytest."
+    "Separately, expand `src/worktrail/workqueue/slug.py`'s module docstring to "
+    "state the two truncation limits `fallback_slugify()` applies: at most 5 "
+    "words and at most 60 characters."
 )
 
 FIXTURE_FOCUS = f"{REFUTABLE_CLAIM} {ACTIONABLE_WORK}"
