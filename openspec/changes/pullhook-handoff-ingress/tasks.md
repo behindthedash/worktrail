@@ -24,7 +24,7 @@
 
 ## 3. External-event materialization record
 
-- [ ] 3.1 In `src/worktrail/workqueue/external_events.py`, add a durable external-event
+- [x] 3.1 In `src/worktrail/workqueue/external_events.py`, add a durable external-event
       materialization record keyed by schema + event/dedupe identity that stores the
       resulting handoff ID/path in WorkTrail-owned queue metadata. It must survive process
       restart and be safe to inspect before creation. In
