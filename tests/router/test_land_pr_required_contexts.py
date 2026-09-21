@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """The CI watch settles only once every required status-check context is
 reported (Requirement: CI watch settles only on required-context coverage).
 
