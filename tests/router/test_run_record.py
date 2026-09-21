@@ -3476,9 +3476,7 @@ class TestFindByWorktree(unittest.TestCase):
         _set_started_at(older["path"], datetime.now(UTC) - timedelta(hours=2))
         newer = _start(self.tmp, request="newer run")
         main(["set", newer["path"], "worktree", wt])
-        _set_started_at(
-            newer["path"], datetime.now(UTC) - timedelta(minutes=1)
-        )
+        _set_started_at(newer["path"], datetime.now(UTC) - timedelta(minutes=1))
 
         result = _find_by_worktree(self.tmp, worktree=wt)
 
