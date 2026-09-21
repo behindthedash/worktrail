@@ -26,7 +26,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [depends: 1.1] [e2e] Run `PYTHONPATH=src pytest -q tests/workqueue/test_queue_triage.py
+- [x] 2.1 [depends: 1.1] [e2e] Run `PYTHONPATH=src pytest -q tests/workqueue/test_queue_triage.py
       tests/workqueue/test_premise_check.py`, then `PYTHONPATH=src pytest -q`, `PYTHONPATH=src
       python3 -m worktrail.orchestrator.orchestrate check`, and `python3
       scripts/ci/ruff_pinned.py check .`. Run `openspec validate
