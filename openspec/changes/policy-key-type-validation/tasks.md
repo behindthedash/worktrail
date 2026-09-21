@@ -1,6 +1,6 @@
 ## 1. Sweep policy key types against DEFAULTS
 
-- [ ] 1.1 In `src/worktrail/router/policy.py`, add a module-level `POLICY_KEY_TYPES` table
+- [x] 1.1 In `src/worktrail/router/policy.py`, add a module-level `POLICY_KEY_TYPES` table
       beside `DEFAULTS` mapping every flat policy key to its expected type (a type or tuple of
       types; `None`-defaulted keys such as `base_branch`, `pre_pr_cmd`, `integrate_smoke_cmd`,
       `post_merge_smoke_cmd`, `worktree_bootstrap_cmd`, `release_gate`, `auth_testing`,
@@ -32,7 +32,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [depends: 1.1] [e2e] Run `PYTHONPATH=src pytest -q tests/router/test_policy_key_types.py`,
+- [x] 2.1 [depends: 1.1] [e2e] Run `PYTHONPATH=src pytest -q tests/router/test_policy_key_types.py`,
       then `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m
       worktrail.orchestrator.orchestrate check`. Run `python3 scripts/ci/ruff_pinned.py check .`
       and `python3 scripts/ci/ruff_pinned.py format --check .`. Run `openspec validate
