@@ -173,3 +173,38 @@ def test_never_pulls(queue: Path):
 
     assert [c[1] for c in calls] == ["add", "commit", "push"]
     assert not any("pull" in c or "fetch" in c for c in calls)
+
+
+def test_push_timeout_is_reported_not_raised(queue: Path):
+    """A stalled push is the failure the timeout bound exists to catch: the caller
+    has to see it as a result so it can withhold the ack, not lose the process."""
+    brief, marker = _capture(queue)
+
+    def fake_run(args, cwd, timeout):
+        if args[1] == "push":
+            raise subprocess.TimeoutExpired(list(args), timeout)
+        return subprocess.CompletedProcess(list(args), 0, "", "")
+
+    result = persist_external_brief(
+        [brief, marker], event_id="evt-1", queue_base=queue, run=fake_run
+    )
+
+    assert result.status == "failed"
+    assert result.reason == "push-timeout"
+    assert not result.ok
+    assert not result.pushed
+
+
+def test_git_binary_missing_is_reported_not_raised(queue: Path):
+    brief, marker = _capture(queue)
+
+    def fake_run(args, cwd, timeout):
+        raise FileNotFoundError(2, "No such file or directory", "git")
+
+    result = persist_external_brief(
+        [brief, marker], event_id="evt-1", queue_base=queue, run=fake_run
+    )
+
+    assert result.status == "failed"
+    assert result.reason == "add-error"
+    assert not result.ok

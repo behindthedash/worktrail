@@ -78,6 +78,34 @@ def _default_run(args: Sequence[str], cwd: Path, timeout: int):
     )
 
 
+class _GitInvocationError(Exception):
+    """A git command never produced an exit status (timed out, or could not run)."""
+
+    def __init__(self, reason: str, error: str) -> None:
+        super().__init__(error)
+        self.reason = reason
+        self.error = error
+
+
+def _invoke(runner: RunFn, args: Sequence[str], root: Path, timeout: int, what: str):
+    """Run one git command, turning a non-exit failure into `_GitInvocationError`.
+
+    A stalled push (network, or a credential prompt) is the failure the timeout
+    bound exists to catch, and it is exactly the case the caller has to see as a
+    value so it can withhold the ack.
+    """
+    try:
+        return runner(list(args), root, timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise _GitInvocationError(
+            f"{what}-timeout", f"git {what} timed out after {timeout}s"
+        ) from exc
+    except OSError as exc:
+        raise _GitInvocationError(
+            f"{what}-error", f"git {what} could not run: {exc}"
+        ) from exc
+
+
 def _relative(path: Path, root: Path) -> str:
     p = Path(path)
     if not p.is_absolute():
@@ -125,21 +153,39 @@ def persist_external_brief(
 
     runner = run or _default_run
 
-    add = runner(["git", "add", "--", *rel], root, timeout)
+    try:
+        return _persist(runner, rel, event_id=event_id, root=root, timeout=timeout)
+    except _GitInvocationError as exc:
+        return PersistResult(
+            status="failed", reason=exc.reason, paths=rel, error=exc.error
+        )
+
+
+def _persist(
+    runner: RunFn,
+    rel: tuple[str, ...],
+    *,
+    event_id: str,
+    root: Path,
+    timeout: int,
+) -> PersistResult:
+    add = _invoke(runner, ["git", "add", "--", *rel], root, timeout, "add")
     if add.returncode != 0:
         return PersistResult(
             status="failed", reason="add-failed", paths=rel, error=_err(add)
         )
 
     message = f"chore(work-queue): materialize external event {event_id}"
-    commit = runner(["git", "commit", "-m", message, "--", *rel], root, timeout)
+    commit = _invoke(
+        runner, ["git", "commit", "-m", message, "--", *rel], root, timeout, "commit"
+    )
     committed = commit.returncode == 0
     if not committed and not _nothing_to_commit(commit):
         return PersistResult(
             status="failed", reason="commit-failed", paths=rel, error=_err(commit)
         )
 
-    push = runner(["git", "push"], root, timeout)
+    push = _invoke(runner, ["git", "push"], root, timeout, "push")
     if push.returncode != 0:
         return PersistResult(
             status="failed",
