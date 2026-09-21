@@ -96,7 +96,7 @@ class TimingSpawn:
         self.recorded: dict = {}  # task_id -> effective_timeout
         self._lock = threading.Lock()
 
-    def __call__(self, role: str, task: dict, wt: Path) -> "spawnlib.SpawnResult":
+    def __call__(self, role: str, task: dict, wt: Path) -> spawnlib.SpawnResult:
         effective = task.get("timeout") or self.run_level_timeout
         with self._lock:
             self.recorded[task["id"]] = effective

@@ -349,7 +349,7 @@ def _run_record_implementation_evidence_missing(run_path: str) -> str | None:
                 timeout=30,
                 check=False,
             )
-        except (OSError, subprocess.SubprocessError):
+        except OSError, subprocess.SubprocessError:
             status = None
         if status is not None and status.returncode == 0 and status.stdout.strip():
             return f"worktree {worktree} still has uncommitted changes"
@@ -1177,7 +1177,7 @@ def claim_liveness(path: Path) -> str:
     """
     try:
         fm = _read_frontmatter(path)
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return "unknown"
     pid_raw = fm.get("claimed-by-pid")
     host = fm.get("claimed-by-host")
@@ -1444,7 +1444,7 @@ def claim_batch(
     if claimed_stems:
         try:
             _set_fm_list_field(primary_path, "batch", claimed_stems)
-        except (OSError, ValueError):
+        except OSError, ValueError:
             pass  # grouping stamp is best-effort; the claims themselves hold
 
     return {

@@ -49,7 +49,7 @@ def _git_head_short(repo: Path) -> str | None:
             text=True,
             timeout=5,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
     if out.returncode != 0:
         return None

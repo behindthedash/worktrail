@@ -28,7 +28,7 @@ import json
 import os
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from worktrail.workqueue.work_queue import base_dir
@@ -149,7 +149,7 @@ def record(
         event_id=event_id,
         handoff_id=handoff_id,
         handoff_path=str(handoff_path),
-        recorded_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        recorded_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
     )
     path = record_path(schema, event_id, queue_base)
     path.parent.mkdir(parents=True, exist_ok=True)

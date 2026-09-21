@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -81,7 +81,7 @@ def clear_groups(journal: dict[str, Any], selected: list[str]) -> dict[str, Any]
     history = journal.get("resumed_quarantines")
     if not isinstance(history, list):
         history = []
-    cleared_at = datetime.now(timezone.utc).isoformat()
+    cleared_at = datetime.now(UTC).isoformat()
     for name in selected:
         record = groups.pop(name, None)
         if not isinstance(record, dict):

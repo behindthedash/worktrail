@@ -76,7 +76,7 @@ def handle_paths(name: str, sd: Path) -> dict[str, Path]:
 def _read_int(path: Path) -> int | None:
     try:
         return int(path.read_text().strip())
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return None
 
 

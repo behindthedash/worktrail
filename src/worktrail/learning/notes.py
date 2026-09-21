@@ -25,7 +25,7 @@ def load_learned_notes(repo: Path) -> str | None:
     """The `## Notes for workers` bullets, capped to whole bullets; `None` if none."""
     try:
         text = retro_memory_path(repo).read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    except OSError, UnicodeDecodeError:
         return None
     lines = text.splitlines()
     try:

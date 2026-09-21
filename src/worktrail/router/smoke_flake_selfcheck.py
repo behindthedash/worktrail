@@ -32,7 +32,7 @@ def _load_smoke_flakes(journal_file: Path) -> dict[str, str] | None:
     unreadable, does not parse, is not an object, or the map is malformed."""
     try:
         journal = json.loads(journal_file.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return None
     if not isinstance(journal, dict):
         return None

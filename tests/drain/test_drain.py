@@ -4,7 +4,7 @@ import json
 import os
 import subprocess
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from io import StringIO
 from pathlib import Path
 from unittest import mock
@@ -673,7 +673,7 @@ def test_capacity_gated_expired_retry_after_is_not_gated():
     # drain picks the agent back up once its cooldown expires (see
     # select_available_agent's docstring), which requires comparing
     # retry_after to "now" instead of only reading the stale "status" field.
-    now = datetime(2026, 8, 22, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 22, tzinfo=UTC)
     cache = {
         "providers": {
             "claude": {
@@ -686,7 +686,7 @@ def test_capacity_gated_expired_retry_after_is_not_gated():
 
 
 def test_capacity_gated_unexpired_retry_after_still_gated():
-    now = datetime(2026, 8, 22, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 22, tzinfo=UTC)
     cache = {
         "providers": {
             "claude": {
@@ -699,7 +699,7 @@ def test_capacity_gated_unexpired_retry_after_still_gated():
 
 
 def test_capacity_gated_expired_reset_at_falls_back_and_is_not_gated():
-    now = datetime(2026, 8, 22, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 22, tzinfo=UTC)
     cache = {
         "providers": {
             "codex": {
@@ -714,12 +714,12 @@ def test_capacity_gated_expired_reset_at_falls_back_and_is_not_gated():
 def test_capacity_gated_gated_status_without_timestamp_stays_gated():
     # No retry_after/reset_at at all -- unchanged prior behavior: gated
     # indefinitely until explicitly cleared.
-    now = datetime(2026, 8, 22, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 22, tzinfo=UTC)
     assert capacity_gated({"claude": {"status": "gated"}}, "claude", now=now) is True
 
 
 def test_capacity_gated_expired_gate_all_models_matched_ungates_agent():
-    now = datetime(2026, 8, 22, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 22, tzinfo=UTC)
     cache = {
         "providers": {
             "claude:opus": {
@@ -736,7 +736,7 @@ def test_capacity_gated_expired_gate_all_models_matched_ungates_agent():
 
 
 def test_select_available_agent_picks_agent_back_up_after_retry_after_expires():
-    now = datetime(2026, 8, 22, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 22, tzinfo=UTC)
     cache = {
         "providers": {
             "claude": {
@@ -921,7 +921,7 @@ def test_write_iteration_transcript_bounded_retention(tmp_path):
             Outcome("no_pick"),
             f"out-{i}",
             "",
-            now=datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=i),
+            now=datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=i),
         )
     remaining = sorted(out_dir.glob("*.log"))
     assert len(remaining) == MAX_TRANSCRIPT_FILES
@@ -1692,7 +1692,7 @@ def test_drain_usage_limit_output_becomes_blocked_and_persists_gate(
     # own "still gated for iteration 2" premise requires a fixed clock rather
     # than depending on wall-clock date never reaching Aug 8, 2026.
     monkeypatch.setattr(
-        agent_capacity, "_now", lambda: datetime(2026, 8, 8, 0, 0, tzinfo=timezone.utc)
+        agent_capacity, "_now", lambda: datetime(2026, 8, 8, 0, 0, tzinfo=UTC)
     )
     fake = FakeQueue([3, 3])
     install_fake_queue(monkeypatch, fake)
@@ -1916,7 +1916,7 @@ def test_drain_capacity_blocked_iteration_with_no_brief_records_empty_attributio
     # the stable empty attribution values alongside the populated
     # failure_class diagnostic that explains WHY the agent was blocked.
     monkeypatch.setattr(
-        agent_capacity, "_now", lambda: datetime(2026, 8, 25, tzinfo=timezone.utc)
+        agent_capacity, "_now", lambda: datetime(2026, 8, 25, tzinfo=UTC)
     )
     fake = FakeQueue([3, 3])
     install_fake_queue(monkeypatch, fake)
@@ -5716,7 +5716,7 @@ def _seed_capacity_cache(path: Path, providers: dict) -> None:
 
 def test_record_capacity_gate_prunes_expired_drain_entries(tmp_path):
     cache_path = tmp_path / "agent-capacity.json"
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     _seed_capacity_cache(
         cache_path,
         {
@@ -5738,7 +5738,7 @@ def test_record_capacity_gate_prunes_expired_drain_entries(tmp_path):
 
 def test_record_capacity_gate_keeps_foreign_and_active_entries(tmp_path):
     cache_path = tmp_path / "agent-capacity.json"
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     _seed_capacity_cache(
         cache_path,
         {

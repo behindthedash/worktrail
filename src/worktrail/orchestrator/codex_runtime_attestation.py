@@ -98,7 +98,7 @@ def worktrail_identity() -> tuple[str, str]:
             timeout=_GIT_TIMEOUT_SECONDS,
         )
         commit = head.stdout.strip() if head.returncode == 0 else UNAVAILABLE
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         commit = UNAVAILABLE
     if not re.fullmatch(r"[0-9a-f]{7,64}", commit):
         commit = UNAVAILABLE

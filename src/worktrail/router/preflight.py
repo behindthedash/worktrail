@@ -179,7 +179,7 @@ def _git(repo: Path, *args: str) -> str | None:
             text=True,
             timeout=30,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
     if result.returncode != 0:
         return None
@@ -245,7 +245,7 @@ def _open_pr_branches(repo: Path) -> list[str]:
             timeout=15,
             cwd=str(repo),
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return []
     if result.returncode != 0:
         return []
@@ -306,7 +306,7 @@ def _pr_touched_files(repo: Path, branch: str) -> frozenset | None:
             timeout=15,
             cwd=str(repo),
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
     if result.returncode != 0:
         return None
@@ -462,7 +462,7 @@ def read_marker(repo: Path) -> dict[str, Any] | None:
         return None
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except json.JSONDecodeError, OSError:
         return None
 
 
@@ -520,7 +520,7 @@ def read_running_lock(repo: Path) -> dict[str, Any] | None:
         return None
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except json.JSONDecodeError, OSError:
         return None
 
 

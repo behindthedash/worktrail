@@ -44,7 +44,7 @@ def _runplan_tasks(repo: Path, spec_id: str) -> list[dict[str, Any]] | None:
     newest = max(matches, key=lambda p: p.stat().st_mtime)
     try:
         payload = json.loads(newest.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return None
     tasks = payload.get("tasks") if isinstance(payload, dict) else None
     if not isinstance(tasks, list):
@@ -150,7 +150,7 @@ def _merged_pr_matching(repo: Path, files: list[str]) -> str | None:
             timeout=30,
             cwd=str(repo),
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
     if result.returncode != 0:
         return None
@@ -244,7 +244,7 @@ def check_repo(repo: Path) -> dict[str, Any]:
     for journal_path in _iter_journal_files(worktrees_dir):
         try:
             journal = json.loads(journal_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except OSError, json.JSONDecodeError:
             continue
         if not isinstance(journal, dict):
             continue

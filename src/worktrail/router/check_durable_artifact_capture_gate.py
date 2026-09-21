@@ -126,7 +126,7 @@ def find_planned_run_records(
         seen.add(key)
         try:
             record, warning = _load_lenient(path)
-        except (OSError, UnicodeDecodeError):
+        except OSError, UnicodeDecodeError:
             continue
         if warning is not None:
             print(

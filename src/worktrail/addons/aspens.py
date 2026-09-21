@@ -56,7 +56,7 @@ class AspensAddOn:
                 timeout=INSTALL_TIMEOUT,
                 check=False,
             )
-        except (subprocess.TimeoutExpired, OSError):
+        except subprocess.TimeoutExpired, OSError:
             pass
         self._touch_marker()
 
@@ -101,7 +101,7 @@ class AspensAddOn:
                 timeout=getattr(ctx, "timeout", CONFIGURE_TIMEOUT),
                 check=False,
             )
-        except (subprocess.TimeoutExpired, OSError):
+        except subprocess.TimeoutExpired, OSError:
             pass
 
     def run(self, ctx: Any) -> AddOnResult:
@@ -159,7 +159,7 @@ class AspensAddOn:
     def _marker_is_fresh(self) -> bool:
         try:
             last_check = float(LAST_CHECK_MARKER.read_text().strip())
-        except (OSError, ValueError):
+        except OSError, ValueError:
             return False
         return (time.time() - last_check) < CHECK_INTERVAL_SECONDS
 

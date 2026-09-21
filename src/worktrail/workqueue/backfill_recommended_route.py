@@ -77,7 +77,7 @@ def classify_focus(
             timeout=30,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
     if proc.returncode != 0:
         return None

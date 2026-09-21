@@ -155,8 +155,8 @@ def _member_created_at(text: str) -> datetime.datetime | None:
             return None
 
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=datetime.timezone.utc)
-        return dt.astimezone(datetime.timezone.utc)
+            dt = dt.replace(tzinfo=datetime.UTC)
+        return dt.astimezone(datetime.UTC)
     except Exception:  # noqa: BLE001 -- degrade, never crash the preview
         return None
 
@@ -520,7 +520,7 @@ def _run_work_queue_cli(
             env=env,
         )
         return json.loads(result.stdout)
-    except (subprocess.SubprocessError, ValueError, OSError):
+    except subprocess.SubprocessError, ValueError, OSError:
         return None
 
 

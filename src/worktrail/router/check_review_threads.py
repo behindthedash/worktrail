@@ -161,7 +161,7 @@ def _run_gh(
 ) -> subprocess.CompletedProcess[str] | None:
     try:
         return runner(["gh", *args], capture_output=True, text=True, timeout=timeout)
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
 
 
@@ -201,7 +201,7 @@ def fetch_review_threads(
             return None, "gh api graphql returned unparseable JSON"
         try:
             review_threads = data["data"]["repository"]["pullRequest"]["reviewThreads"]
-        except (KeyError, TypeError):
+        except KeyError, TypeError:
             return None, f"unexpected GraphQL response shape: {result.stdout[:300]}"
         threads.extend(review_threads.get("nodes") or [])
         page_info = review_threads.get("pageInfo") or {}
@@ -237,7 +237,7 @@ def _commit_touched_path_since(
             text=True,
             timeout=GIT_TIMEOUT_SECONDS,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
     if result.returncode != 0:
         return None

@@ -166,7 +166,7 @@ def history_path() -> Path:
 def load(path: Path) -> Dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, TypeError):
+    except OSError, json.JSONDecodeError, TypeError:
         return {"version": 1, "identities": {}}
     if not isinstance(value, dict) or not isinstance(value.get("identities"), dict):
         return {"version": 1, "identities": {}}

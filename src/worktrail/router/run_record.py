@@ -1016,7 +1016,7 @@ def _scope_review_worktree_empty_diff(record: dict[str, Any]) -> str | None:
             check=False,
             capture_output=True,
         )
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return None
     # `git diff <base_commit>` (no --cached) already reflects uncommitted edits to
     # tracked files; the one thing it never shows is a brand-new untracked file
@@ -1141,7 +1141,7 @@ def _query_merge_state(
             text=True,
             timeout=30,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
     if result.returncode != 0:
         return None
@@ -1997,7 +1997,7 @@ def _lock_path(run_path: Path, specification: str) -> Path:
 def _load_lock(lock_path: Path) -> dict[str, Any]:
     try:
         return json.loads(lock_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return {}
 
 

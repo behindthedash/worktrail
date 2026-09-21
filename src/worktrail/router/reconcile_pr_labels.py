@@ -165,7 +165,7 @@ def _open_prs(repo: Path) -> list[dict[str, Any]] | None:
             timeout=30,
             cwd=str(repo),
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
     if result.returncode != 0:
         return None

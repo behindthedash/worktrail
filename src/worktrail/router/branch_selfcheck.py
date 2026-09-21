@@ -71,7 +71,7 @@ def _resolve_ref_sha(ref: str, cwd: Path) -> str | None:
             text=True,
             timeout=5,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
     if result.returncode != 0:
         return None
@@ -106,13 +106,13 @@ def _has_merged_pr(branch: str, cwd: Path) -> bool:
             text=True,
             timeout=10,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return False
     if result.returncode != 0:
         return False
     try:
         prs = json.loads(result.stdout)
-    except (json.JSONDecodeError, ValueError):
+    except json.JSONDecodeError, ValueError:
         return False
     return isinstance(prs, list) and len(prs) > 0
 
@@ -137,7 +137,7 @@ def _has_merged_indirectly(branch: str, cwd: Path) -> bool:
             text=True,
             timeout=10,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return False
     if result.returncode != 0:
         return False
@@ -157,7 +157,7 @@ def _has_merged_indirectly(branch: str, cwd: Path) -> bool:
                 cwd=str(cwd),
                 timeout=5,
             )
-        except (OSError, subprocess.TimeoutExpired):
+        except OSError, subprocess.TimeoutExpired:
             continue
         if ancestor.returncode == 0:
             return True
@@ -191,7 +191,7 @@ def merge_method(branch: str, cwd: Path) -> str | None:
             cwd=str(cwd),
             timeout=5,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
     if ancestor.returncode == 0:
         return "ancestry"
@@ -205,7 +205,7 @@ def merge_method(branch: str, cwd: Path) -> str | None:
             text=True,
             timeout=5,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
     if cherry.returncode == 0:
         lines = [line for line in cherry.stdout.splitlines() if line.strip()]
@@ -231,7 +231,7 @@ def _local_branches(repo: Path) -> list[str]:
             text=True,
             timeout=10,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return []
     if result.returncode != 0:
         return []
@@ -251,7 +251,7 @@ def _worktree_branches(repo: Path) -> dict[str, Path]:
             text=True,
             timeout=10,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return {}
     if result.returncode != 0:
         return {}
@@ -277,7 +277,7 @@ def _is_worktree_dirty(worktree: Path) -> bool:
             text=True,
             timeout=10,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return True  # unresolvable -- fail closed, never prune
     if result.returncode != 0:
         return True

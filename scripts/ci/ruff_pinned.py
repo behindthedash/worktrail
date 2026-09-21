@@ -45,9 +45,8 @@ import re
 import shutil
 import subprocess
 import sys
-from pathlib import Path
-
 import tomllib
+from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PIN_RE = re.compile(r"^ruff==(?P<version>[0-9][0-9A-Za-z.\-+]*)$")
@@ -91,7 +90,7 @@ def _version_of(argv: list[str]) -> str | None:
             check=False,
             timeout=120,
         )
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return None
     if result.returncode != 0:
         return None

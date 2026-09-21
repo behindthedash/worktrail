@@ -267,7 +267,7 @@ def load_spec(spec_folder: str) -> tuple[str, list[dict[str, Any]]]:
         _raw_timeout = fm.get("timeout")
         try:
             _timeout: Any = int(_raw_timeout) if _raw_timeout is not None else None
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             _timeout = None
         # Non-positive timeouts are not valid overrides; normalize to None so
         # `task.get("timeout") or run_default` always falls back correctly.

@@ -114,7 +114,7 @@ def load_journal(path: Path) -> dict[str, Any] | None:
     likewise skipped, never treated as evidence of anything."""
     try:
         data = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return None
     if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
         return None

@@ -236,7 +236,7 @@ def load_cached(cache_dir: str | Path, spec_id: str, fp: str) -> RunPlan | None:
     p = cache_path(cache_dir, spec_id, fp)
     try:
         plan = RunPlan.from_dict(json.loads(p.read_text()))
-    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+    except OSError, json.JSONDecodeError, KeyError, TypeError, ValueError:
         return None
     if plan.fingerprint != fp or plan.plan_version != PLAN_VERSION:
         return None

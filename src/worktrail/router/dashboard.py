@@ -513,7 +513,7 @@ def _git_tracked(repo: Path, files: list[str]) -> set:
             )
             if result.returncode == 0:
                 return {p for p in result.stdout.split("\0") if p}
-        except (subprocess.SubprocessError, OSError):
+        except subprocess.SubprocessError, OSError:
             pass
     return set()
 
@@ -540,7 +540,7 @@ def _rename_destinations(repo_value: str) -> dict[str, str]:
             text=True,
             timeout=5,
         )
-    except (subprocess.SubprocessError, OSError):
+    except subprocess.SubprocessError, OSError:
         return {}
     if result.returncode != 0:
         return {}
@@ -620,7 +620,7 @@ def _dir_creation_timestamp(repo_value: str, directory_value: str) -> int | None
             text=True,
             timeout=5,
         )
-    except (subprocess.SubprocessError, OSError):
+    except subprocess.SubprocessError, OSError:
         return None
     if result.returncode != 0:
         return None
@@ -655,7 +655,7 @@ def _latest_commit_timestamp(repo_value: str, relative_value: str) -> int | None
             text=True,
             timeout=5,
         )
-    except (subprocess.SubprocessError, OSError):
+    except subprocess.SubprocessError, OSError:
         return None
     if result.returncode != 0:
         return None
@@ -748,7 +748,7 @@ def _identifiers_present(repo: Path, files: list[str], identifiers: list[str]) -
         path = Path(repo) / declared
         try:
             blob.append(path.read_text())
-        except (OSError, UnicodeDecodeError):
+        except OSError, UnicodeDecodeError:
             continue
     haystack = "\n".join(blob)
     return all(identifier in haystack for identifier in identifiers)
@@ -973,7 +973,7 @@ def _group_merged_on_base(repo: Path, pr_url: str) -> bool:
             text=True,
         )
         return result.returncode == 0 and bool(result.stdout.strip())
-    except (subprocess.SubprocessError, OSError):
+    except subprocess.SubprocessError, OSError:
         return False
 
 
@@ -1004,7 +1004,7 @@ def _journal_verify_pending(spec_dir: Path) -> bool:
         return any(
             not _group_merged_on_base(repo, g.get("pr_url", "")) for g in pending
         )
-    except (json.JSONDecodeError, OSError, KeyError, TypeError):
+    except json.JSONDecodeError, OSError, KeyError, TypeError:
         return False
 
 
@@ -1019,7 +1019,7 @@ def _status_phase(spec_dir: Path) -> str | None:
         if not status_path.is_file():
             return None
         return json.loads(status_path.read_text()).get("phase")
-    except (json.JSONDecodeError, OSError, KeyError, TypeError, AttributeError):
+    except json.JSONDecodeError, OSError, KeyError, TypeError, AttributeError:
         return None
 
 
@@ -1040,7 +1040,7 @@ def _sync_pending(spec_dir: Path) -> bool:
         meta = (json.loads(kg.read_text()) or {}).get("metadata", {})
         sources = meta.get("analysis_sources", []) or []
         return not any("sync" in str(s.get("agent", "")).lower() for s in sources)
-    except (json.JSONDecodeError, OSError, AttributeError, TypeError):
+    except json.JSONDecodeError, OSError, AttributeError, TypeError:
         # Unreadable KG -> can't confirm a sync ran; surfacing sync is the safe default.
         return True
 
@@ -1316,7 +1316,7 @@ def _git_last_commit_time(repo: Path, path: Path) -> int | None:
             return None
         output = result.stdout.strip()
         return int(output) if output else None
-    except (subprocess.SubprocessError, OSError):
+    except subprocess.SubprocessError, OSError:
         return None
 
 
@@ -1370,7 +1370,7 @@ def _git_added_commit_time(repo: Path, path: Path) -> int | None:
             return None
         lines = [line for line in result.stdout.splitlines() if line.strip()]
         return int(lines[-1]) if lines else None
-    except (subprocess.SubprocessError, OSError):
+    except subprocess.SubprocessError, OSError:
         return None
 
 
@@ -2202,7 +2202,7 @@ def _remote_spec_branch(
             text=True,
             timeout=5,
         )
-    except (subprocess.SubprocessError, OSError):
+    except subprocess.SubprocessError, OSError:
         return None
     if result.returncode != 0:
         return None
@@ -2448,7 +2448,7 @@ def log_auto_pick_miss(
         reason = str(entry.get("reason", "")).split(":", 1)[0]
         reasons[reason] = reasons.get(reason, 0) + 1
     record = {
-        "at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "at": datetime.datetime.now(datetime.UTC).isoformat(),
         "repo_filter": repo_filter,
         "total_briefs": total_briefs,
         "skipped_count": len(skipped),
@@ -2481,7 +2481,7 @@ def _hours_since_claim(claimed_at: Any) -> float | None:
         return None
     if dt.tzinfo is None:
         dt = dt.astimezone()  # assume local, matching work_queue.py's stamp
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     return (now - dt).total_seconds() / 3600.0
 
 
@@ -3937,7 +3937,7 @@ def main(argv=None) -> int:
         try:
             parsed = json.loads(queue_json_raw)
             queue_briefs = parsed.get("briefs", []) if isinstance(parsed, dict) else []
-        except (json.JSONDecodeError, AttributeError):
+        except json.JSONDecodeError, AttributeError:
             pass
 
     # Parse open decisions from --decisions-json/--decisions-json-file if provided.
@@ -3951,7 +3951,7 @@ def main(argv=None) -> int:
             open_decisions = (
                 parsed.get("decisions", []) if isinstance(parsed, dict) else []
             )
-        except (json.JSONDecodeError, AttributeError):
+        except json.JSONDecodeError, AttributeError:
             pass
 
     # When --root doesn't exist (e.g. launched from a workspace root like ~/

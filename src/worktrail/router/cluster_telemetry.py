@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -66,7 +66,7 @@ def _append(record: dict[str, Any], log_path: Path | None = None) -> None:
 def log_shown(clusters: Iterable[dict[str, Any]], log_path: Path | None = None) -> None:
     """Append one `"shown"` record per surfaced cluster, all sharing one
     timestamp (they were computed together, in one render)."""
-    at = datetime.now(timezone.utc).isoformat()
+    at = datetime.now(UTC).isoformat()
     for cluster in clusters:
         _append(
             {
@@ -90,7 +90,7 @@ def log_outcome(
     _append(
         {
             "kind": "outcome",
-            "at": datetime.now(timezone.utc).isoformat(),
+            "at": datetime.now(UTC).isoformat(),
             "status": status,
             "members": list(member_ids),
         },
@@ -110,7 +110,7 @@ def log_judged_pairs(
     applied to the edges by the time this runs, so a failed write costs a tuning
     datapoint and nothing else.
     """
-    at = datetime.now(timezone.utc).isoformat()
+    at = datetime.now(UTC).isoformat()
     for record in records:
         _append({"kind": "judged", "at": at, **record}, log_path)
 

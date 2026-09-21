@@ -28,7 +28,7 @@ def _tracked_lockfiles(repo_path: Path) -> list[str]:
             text=True,
             timeout=30,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return []
     if proc.returncode != 0:
         return []
@@ -38,7 +38,7 @@ def _tracked_lockfiles(repo_path: Path) -> list[str]:
 def _read_json(path: Path) -> Any | None:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return None
 
 

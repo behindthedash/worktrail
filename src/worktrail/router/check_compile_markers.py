@@ -46,7 +46,7 @@ def _run_git(repo: Path, args: Sequence[str], timeout: int = 15) -> str | None:
             text=True,
             timeout=timeout,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
     if out.returncode != 0:
         return None

@@ -572,7 +572,7 @@ def _verify_same_work(
             text=True,
             timeout=_VERIFY_TIMEOUT_SECONDS,
         )
-    except (OSError, ValueError, subprocess.TimeoutExpired):
+    except OSError, ValueError, subprocess.TimeoutExpired:
         return None
     if proc.returncode != 0:
         return None

@@ -14,7 +14,7 @@ import sys
 import tempfile
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from ..shared.homedir import env_setting, worktrail_home
@@ -81,7 +81,7 @@ class AllProvidersUnavailable(ProviderUnavailable):
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _parse_time(value: object) -> datetime | None:
@@ -91,7 +91,7 @@ def _parse_time(value: object) -> datetime | None:
         parsed = datetime.fromisoformat(value)
     except ValueError:
         return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def provider_key(target: str, model: str) -> str:
@@ -109,7 +109,7 @@ def load(path: Path | None = None) -> dict:
     path = path or cache_path()
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, TypeError):
+    except OSError, json.JSONDecodeError, TypeError:
         return {"version": 1, "providers": {}}
     if not isinstance(value, dict) or not isinstance(value.get("providers"), dict):
         return {"version": 1, "providers": {}}
@@ -455,7 +455,7 @@ def parse_explicit_reset(text: str, now: datetime | None = None) -> datetime | N
             parsed = datetime.strptime(candidate, fmt)  # noqa: DTZ007
         except ValueError:
             continue
-        return parsed.astimezone(timezone.utc)
+        return parsed.astimezone(UTC)
     return _parse_lenient_reset(text, now)
 
 
@@ -482,7 +482,7 @@ def _parse_lenient_reset(text: str, now: datetime | None) -> datetime | None:
             from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
             tz = ZoneInfo(zone_label.strip())
-        except (ZoneInfoNotFoundError, ValueError, KeyError):
+        except ZoneInfoNotFoundError, ValueError, KeyError:
             tz = None
 
     now = now or _now()
@@ -492,7 +492,7 @@ def _parse_lenient_reset(text: str, now: datetime | None) -> datetime | None:
     candidate = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if candidate <= local_now:
         candidate += timedelta(days=1)
-    return candidate.astimezone(timezone.utc)
+    return candidate.astimezone(UTC)
 
 
 def retry_time(failure_class: str, now: datetime | None = None) -> datetime:

@@ -224,7 +224,7 @@ def tracked_test_files(repo: Path) -> list[str]:
             text=True,
             timeout=30,
         )
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return []
     if proc.returncode != 0:
         return []
