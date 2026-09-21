@@ -165,13 +165,14 @@ def test_never_pulls(queue: Path):
 
     def fake_run(args, cwd, timeout):
         calls.append(list(args))
-        return subprocess.CompletedProcess(list(args), 0, "", "")
+        rc = 1 if args[1] == "diff" else 0  # 1 = paths differ from HEAD
+        return subprocess.CompletedProcess(list(args), rc, "", "")
 
     persist_external_brief(
         [brief, marker], event_id="evt-1", queue_base=queue, run=fake_run
     )
 
-    assert [c[1] for c in calls] == ["add", "commit", "push"]
+    assert [c[1] for c in calls] == ["add", "diff", "commit", "push"]
     assert not any("pull" in c or "fetch" in c for c in calls)
 
 
@@ -207,4 +208,94 @@ def test_git_binary_missing_is_reported_not_raised(queue: Path):
 
     assert result.status == "failed"
     assert result.reason == "add-error"
+    assert not result.ok
+
+
+def test_retry_is_idempotent_with_unrelated_uncommitted_content(
+    queue: Path, tmp_path: Path
+):
+    """The live-queue case: the root holds other in-flight content at retry time.
+
+    Deciding "already committed" from `git commit`'s prose misreads git's
+    "nothing added to commit but untracked files present" here as a hard
+    failure, so the retry never reaches the push and the brief stays local.
+    """
+    brief, marker = _capture(queue)
+    remote = tmp_path / "remote.git"
+    backup = tmp_path / "remote-backup.git"
+    shutil.move(str(remote), str(backup))
+
+    first = persist_external_brief([brief, marker], event_id="evt-1", queue_base=queue)
+    assert first.status == "failed"
+    after_first = _git(queue, "rev-parse", "HEAD").strip()
+
+    (queue / "queue" / "someone-elses-brief.md").write_text("in flight\n")
+    staged = queue / "queue" / "staged-by-someone-else.md"
+    staged.write_text("staged\n")
+    _git(queue, "add", "--", "queue/staged-by-someone-else.md")
+
+    shutil.move(str(backup), str(remote))
+    retry = persist_external_brief([brief, marker], event_id="evt-1", queue_base=queue)
+
+    assert retry.status == "pushed"
+    assert retry.committed is False
+    assert _git(queue, "rev-parse", "HEAD").strip() == after_first
+    assert _git(queue, "rev-parse", "origin/main").strip() == after_first
+    # the unrelated in-flight paths were neither committed nor unstaged
+    assert "A  queue/staged-by-someone-else.md" in _git(queue, "status", "--porcelain")
+    assert "?? queue/someone-elses-brief.md" in _git(queue, "status", "--porcelain")
+
+
+def test_genuine_commit_failure_is_reported(queue: Path):
+    """A real non-zero `git commit` (not the already-committed case) fails."""
+    brief, marker = _capture(queue)
+
+    def fake_run(args, cwd, timeout):
+        if args[1] == "diff":
+            return subprocess.CompletedProcess(list(args), 1, "", "")
+        if args[1] == "commit":
+            return subprocess.CompletedProcess(
+                list(args), 128, "", "fatal: could not read Username\n"
+            )
+        return subprocess.CompletedProcess(list(args), 0, "", "")
+
+    result = persist_external_brief(
+        [brief, marker], event_id="evt-1", queue_base=queue, run=fake_run
+    )
+
+    assert result.status == "failed"
+    assert result.reason == "commit-failed"
+    assert "could not read Username" in (result.error or "")
+    assert not result.ok and not result.pushed
+
+
+def test_add_failure_is_reported(queue: Path):
+    brief, marker = _capture(queue)
+
+    def fake_run(args, cwd, timeout):
+        if args[1] == "add":
+            return subprocess.CompletedProcess(
+                list(args), 128, "", "fatal: pathspec did not match\n"
+            )
+        return subprocess.CompletedProcess(list(args), 0, "", "")
+
+    result = persist_external_brief(
+        [brief, marker], event_id="evt-1", queue_base=queue, run=fake_run
+    )
+
+    assert result.status == "failed"
+    assert result.reason == "add-failed"
+    assert "pathspec" in (result.error or "")
+
+
+def test_path_outside_the_queue_root_is_reported_not_raised(
+    queue: Path, tmp_path: Path
+):
+    outside = tmp_path / "elsewhere.md"
+    outside.write_text("nope\n")
+
+    result = persist_external_brief([outside], event_id="evt-1", queue_base=queue)
+
+    assert result.status == "failed"
+    assert result.reason == "path-outside-root"
     assert not result.ok

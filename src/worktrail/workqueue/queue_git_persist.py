@@ -106,11 +106,24 @@ def _invoke(runner: RunFn, args: Sequence[str], root: Path, timeout: int, what: 
         ) from exc
 
 
+class _PathOutsideRoot(Exception):
+    """A caller-supplied path does not live under the queue root."""
+
+
 def _relative(path: Path, root: Path) -> str:
+    """Path relative to the queue root, as a git pathspec.
+
+    A path outside the root cannot be staged; this helper reports failures as a
+    value, so the caller turns that into a `PersistResult` rather than an
+    escaping `ValueError` from `Path.relative_to`.
+    """
     p = Path(path)
     if not p.is_absolute():
         return p.as_posix()
-    return p.resolve().relative_to(root.resolve()).as_posix()
+    try:
+        return p.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError as exc:
+        raise _PathOutsideRoot(f"{p} is not under the queue root {root}") from exc
 
 
 def persist_external_brief(
@@ -147,7 +160,12 @@ def persist_external_brief(
             )
         return PersistResult(status="skipped", reason="not-a-git-repo")
 
-    rel = tuple(_relative(Path(p), root) for p in paths)
+    try:
+        rel = tuple(_relative(Path(p), root) for p in paths)
+    except _PathOutsideRoot as exc:
+        return PersistResult(
+            status="failed", reason="path-outside-root", error=str(exc)
+        )
     if not rel:
         return PersistResult(status="skipped", reason="no-paths")
 
@@ -175,15 +193,21 @@ def _persist(
             status="failed", reason="add-failed", paths=rel, error=_err(add)
         )
 
-    message = f"chore(work-queue): materialize external event {event_id}"
-    commit = _invoke(
-        runner, ["git", "commit", "-m", message, "--", *rel], root, timeout, "commit"
-    )
-    committed = commit.returncode == 0
-    if not committed and not _nothing_to_commit(commit):
-        return PersistResult(
-            status="failed", reason="commit-failed", paths=rel, error=_err(commit)
+    committed = False
+    if _has_staged_changes(runner, rel, root=root, timeout=timeout):
+        message = f"chore(work-queue): materialize external event {event_id}"
+        commit = _invoke(
+            runner,
+            ["git", "commit", "-m", message, "--", *rel],
+            root,
+            timeout,
+            "commit",
         )
+        if commit.returncode != 0:
+            return PersistResult(
+                status="failed", reason="commit-failed", paths=rel, error=_err(commit)
+            )
+        committed = True
 
     push = _invoke(runner, ["git", "push"], root, timeout, "push")
     if push.returncode != 0:
@@ -198,10 +222,27 @@ def _persist(
     return PersistResult(status="pushed", committed=committed, pushed=True, paths=rel)
 
 
-def _nothing_to_commit(proc) -> bool:
-    """A re-run over already-committed paths is success, not failure."""
-    blob = f"{proc.stdout or ''}\n{proc.stderr or ''}".lower()
-    return "nothing to commit" in blob or "no changes added to commit" in blob
+def _has_staged_changes(
+    runner: RunFn, rel: tuple[str, ...], *, root: Path, timeout: int
+) -> bool:
+    """Whether the staged content of ``rel`` differs from HEAD.
+
+    Decided from repository state, not from git's prose: a retry over paths that
+    an earlier attempt already committed must skip the commit and go straight to
+    the push. Reading `git commit`'s message instead misfires whenever the queue
+    root holds unrelated untracked content, where git says "nothing added to
+    commit but untracked files present" -- the normal state of a live queue.
+    """
+    diff = _invoke(
+        runner,
+        ["git", "diff", "--cached", "--quiet", "HEAD", "--", *rel],
+        root,
+        timeout,
+        "diff",
+    )
+    # 0 = identical to HEAD, 1 = differs. Anything else (e.g. 128 on a repo with
+    # no HEAD yet) is not evidence of "already committed": let the commit run.
+    return diff.returncode != 0
 
 
 def _err(proc) -> str:
