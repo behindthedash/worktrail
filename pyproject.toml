@@ -7,7 +7,7 @@ name = "worktrail"
 version = "1.1.41"
 description = "Spec-format-agnostic task orchestration: parallel worktree fan-out, a route classifier, and a work-queue handoff system"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.14"
 license = { text = "MIT" }
 dependencies = [
     "pyyaml>=6.0",
