@@ -554,7 +554,7 @@ def _pr_state(number: str, repo: Path, runner: Runner = subprocess.run) -> str |
             text=True,
             timeout=10,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
     if result.returncode != 0:
         return None
