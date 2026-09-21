@@ -40,7 +40,7 @@ def _run(args, timeout: int) -> subprocess.CompletedProcess | None:
         return subprocess.run(
             args, check=False, capture_output=True, text=True, timeout=timeout
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
 
 
