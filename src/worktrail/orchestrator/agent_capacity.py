@@ -109,7 +109,7 @@ def load(path: Path | None = None) -> dict:
     path = path or cache_path()
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, TypeError):
+    except OSError, json.JSONDecodeError, TypeError:
         return {"version": 1, "providers": {}}
     if not isinstance(value, dict) or not isinstance(value.get("providers"), dict):
         return {"version": 1, "providers": {}}
@@ -482,7 +482,7 @@ def _parse_lenient_reset(text: str, now: datetime | None) -> datetime | None:
             from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
             tz = ZoneInfo(zone_label.strip())
-        except (ZoneInfoNotFoundError, ValueError, KeyError):
+        except ZoneInfoNotFoundError, ValueError, KeyError:
             tz = None
 
     now = now or _now()
