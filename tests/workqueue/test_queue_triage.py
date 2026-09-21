@@ -1595,6 +1595,80 @@ class TestApplyWorkDirectly(QueueTriageTestBase):
             self.assertEqual(entry["status"], "downgraded-to-keep")
         self.assertEqual(path.read_text(encoding="utf-8"), before)
 
+    def test_evidence_citing_inline_interpreter_command_is_accepted(self):
+        """An inline interpreter invocation (`python3 -c ...`, `python -m ...`)
+        is a reproduction in its own right: it names a command that was
+        actually run, not a restatement of the brief."""
+        for evidence in (
+            "Reproduced: `python3 -c 'import worktrail.router'` raises ImportError",
+            "python -m json.tool policy.json fails on the trailing comma",
+            "py -c 'print(1)' works on the Windows leg",
+        ):
+            with self.subTest(evidence=evidence):
+                path = self.write("a.md", body="## Focus\n\nsome brief\n")
+                verdicts = [
+                    qt.Verdict(
+                        brief_id="a",
+                        verdict="work-directly",
+                        duplicate_of=None,
+                        evidence=evidence,
+                        confidence="high",
+                    )
+                ]
+                log = qt.apply_verdicts(verdicts, confirm=True)
+                self.assertEqual(log[0]["action"], "stamp-frontmatter")
+                self.assertEqual(log[0]["status"], "executed")
+                fm, _ = qt.split_frontmatter(path.read_text(encoding="utf-8"))
+                self.assertEqual(fm["recommended-route"], "F")
+
+    def test_evidence_with_bare_interpreter_prose_is_rejected(self):
+        """The bare interpreter name is ordinary prose -- only the `-c`/`-m`
+        flag makes it a run command, exactly as for `grep`/`git`."""
+        path = self.write("a.md", body="## Focus\n\nsome brief\n")
+        before = path.read_text(encoding="utf-8")
+        verdicts = [
+            qt.Verdict(
+                brief_id="a",
+                verdict="work-directly",
+                duplicate_of=None,
+                evidence=evidence,
+                confidence="high",
+            )
+            for evidence in (
+                "the python side of this is already handled",
+                "this needs python 3.12, which the runner has",
+            )
+        ]
+
+        log = qt.apply_verdicts(verdicts, confirm=True)
+
+        for entry in log:
+            self.assertEqual(entry["action"], "noop")
+            self.assertEqual(entry["status"], "downgraded-to-keep")
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+
+    def test_preview_agrees_with_apply_for_inline_interpreter_evidence(self):
+        path = self.write("a.md", body="## Focus\n\nsome brief\n")
+        before = path.read_text(encoding="utf-8")
+        verdicts = [
+            qt.Verdict(
+                brief_id="a",
+                verdict="work-directly",
+                duplicate_of=None,
+                evidence="Reproduced with `python3 -c 'import worktrail'`",
+                confidence="high",
+            )
+        ]
+
+        preview = qt.apply_verdicts(verdicts, confirm=False)
+        self.assertEqual(preview[0]["action"], "stamp-frontmatter")
+        self.assertEqual(preview[0]["status"], "planned")
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+
+        log = qt.apply_verdicts(verdicts, confirm=True)
+        self.assertEqual(log[0]["action"], "stamp-frontmatter")
+        self.assertEqual(log[0]["status"], "executed")
+
     def test_malformed_frontmatter_block_is_not_clobbered(self):
         # A tab-indented value inside the fence makes the block a
         # yaml.YAMLError -- split_frontmatter degrades that leniently to {}
