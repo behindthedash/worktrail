@@ -544,7 +544,7 @@ def capacity_gated(cache: dict, agent: str, now: datetime | None = None) -> bool
 def read_capacity_cache(path: Path) -> dict:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return {}
 
 
@@ -1980,7 +1980,7 @@ def acquire_lock(lock_file: Path) -> bool:
         try:
             holder = json.loads(lock_file.read_text(encoding="utf-8"))
             pid = int(holder.get("pid", -1))
-        except (OSError, ValueError):
+        except OSError, ValueError:
             pid = -1
         if pid > 0 and _pid_alive(pid):
             return False
