@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """resume_group.py — return QUARANTINED orchestrator groups to the resume path.
 
 `integrate.py` marks a group `QUARANTINED` in the run journal
