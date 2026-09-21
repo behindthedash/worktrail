@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from worktrail.workqueue.external_events import (
+    ExternalEventRecordError,
     event_key,
     lookup,
     record,
@@ -106,11 +107,54 @@ def test_record_lives_under_worktrail_owned_queue_metadata(tmp_path: Path):
     assert [p.name for p in path.parent.iterdir()] == [path.name]
 
 
-def test_corrupt_record_reads_as_not_materialized(tmp_path: Path):
+@pytest.mark.parametrize(
+    "body",
+    ["{not json", "[]", json.dumps({"schema": SCHEMA, "event_id": "evt-1"})],
+    ids=["unparseable", "not-an-object", "missing-fields"],
+)
+def test_corrupt_record_raises_instead_of_reading_as_absent(tmp_path: Path, body: str):
+    # A present-but-unreadable marker must never degrade to "not materialized":
+    # that is how a redelivered event gets a duplicate handoff.
+    path = record_path(SCHEMA, "evt-1", queue_base=tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body)
+    with pytest.raises(ExternalEventRecordError):
+        lookup(SCHEMA, "evt-1", queue_base=tmp_path)
+
+
+def test_record_refuses_to_overwrite_a_corrupt_marker(tmp_path: Path):
     path = record_path(SCHEMA, "evt-1", queue_base=tmp_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("{not json")
-    assert lookup(SCHEMA, "evt-1", queue_base=tmp_path) is None
+    with pytest.raises(ExternalEventRecordError):
+        record(SCHEMA, "evt-1", "handoff-b", "/q/b.md", queue_base=tmp_path)
+    assert path.read_text() == "{not json"
+
+
+def test_unreadable_queue_base_raises_rather_than_reading_as_absent(tmp_path: Path):
+    not_a_dir = tmp_path / "queue-file"
+    not_a_dir.write_text("")
+    with pytest.raises(ExternalEventRecordError):
+        lookup(SCHEMA, "evt-1", queue_base=not_a_dir)
+
+
+def test_record_verifies_its_own_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    import worktrail.workqueue.external_events as mod
+
+    # A write that silently does not land must not report success.
+    monkeypatch.setattr(mod, "_atomic_write", lambda path, text: None)
+    with pytest.raises(ExternalEventRecordError):
+        record(SCHEMA, "evt-1", "handoff-a", "/q/a.md", queue_base=tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("handoff_id", "handoff_path"), [("", "/q/a.md"), ("handoff-a", "")]
+)
+def test_record_requires_a_usable_handoff_identity(
+    tmp_path: Path, handoff_id: str, handoff_path: str
+):
+    with pytest.raises(ValueError):
+        record(SCHEMA, "evt-1", handoff_id, handoff_path, queue_base=tmp_path)
 
 
 def test_queue_base_defaults_to_work_queue_dir(

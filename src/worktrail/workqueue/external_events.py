@@ -13,6 +13,12 @@ Storage is WorkTrail-owned queue metadata, one JSON file per event under
 so it survives process restart, is safe to inspect before creation (a missing
 file simply reads as "not materialized"), and gives distinct keys to distinct
 schemas that happen to share an event id.
+
+A record that is *present but unreadable* is never degraded to "not
+materialized": that would create a second handoff for an event that already has
+one, which is exactly what this record exists to prevent. It raises
+`ExternalEventRecordError` instead, so the caller can surface the damage rather
+than silently overwrite it.
 """
 
 from __future__ import annotations
@@ -28,6 +34,12 @@ from pathlib import Path
 from worktrail.workqueue.work_queue import base_dir
 
 METADATA_SUBDIR = (".worktrail", "external-events")
+
+_FIELDS = ("schema", "event_id", "handoff_id", "handoff_path", "recorded_at")
+
+
+class ExternalEventRecordError(RuntimeError):
+    """A record is present but unusable, or a write did not verify."""
 
 
 @dataclass(frozen=True)
@@ -79,26 +91,32 @@ def lookup(
 ) -> ExternalEventRecord | None:
     """Return the record for an already-materialized event, else None.
 
-    Safe to call before creation: an absent (or unreadable) record reads as
-    "not materialized yet".
+    Safe to call before creation: an *absent* record reads as "not materialized
+    yet". A record that exists but cannot be parsed raises
+    `ExternalEventRecordError` rather than reading as absent — see the module
+    docstring.
     """
     path = record_path(schema, event_id, queue_base)
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, NotADirectoryError, json.JSONDecodeError):
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
         return None
-    if not isinstance(data, dict):
-        return None
+    except OSError as exc:
+        # e.g. $WORK_QUEUE_DIR pointing at a file: a misconfiguration, not an
+        # answer about this event.
+        raise ExternalEventRecordError(f"cannot read {path}: {exc}") from exc
     try:
-        return ExternalEventRecord(
-            schema=data["schema"],
-            event_id=data["event_id"],
-            handoff_id=data["handoff_id"],
-            handoff_path=data["handoff_path"],
-            recorded_at=data["recorded_at"],
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ExternalEventRecordError(f"corrupt record {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ExternalEventRecordError(f"corrupt record {path}: not an object")
+    missing = [field for field in _FIELDS if field not in data]
+    if missing:
+        raise ExternalEventRecordError(
+            f"corrupt record {path}: missing {', '.join(missing)}"
         )
-    except KeyError:
-        return None
+    return ExternalEventRecord(**{field: data[field] for field in _FIELDS})
 
 
 def record(
@@ -112,7 +130,16 @@ def record(
 
     Idempotent: re-recording the same event returns the existing record
     unchanged, so a retry after a crash never rewrites history.
+
+    Assumes a single ingress process per key (the `--once` cron shape): this is
+    a read-then-write with no check-and-set, so two processes racing the same
+    key could each create a handoff.
+
+    Raises `ExternalEventRecordError` if the write does not read back intact.
     """
+    if not handoff_id or not str(handoff_path):
+        raise ValueError("handoff_id and handoff_path are both required")
+
     existing = lookup(schema, event_id, queue_base)
     if existing is not None:
         return existing
@@ -127,6 +154,15 @@ def record(
     path = record_path(schema, event_id, queue_base)
     path.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write(path, json.dumps(entry.to_dict(), indent=2) + "\n")
+
+    # Never trust "the write call returned" as proof the write is good: this
+    # marker is the only thing standing between a redelivered event and a
+    # duplicate handoff.
+    written = lookup(schema, event_id, queue_base)
+    if written != entry:
+        raise ExternalEventRecordError(
+            f"write verification failed for {path}: read back {written!r}"
+        )
     return entry
 
 
