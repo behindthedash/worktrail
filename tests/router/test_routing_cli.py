@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stdout
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
 
@@ -180,7 +180,7 @@ class CheckTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.routing_path = Path(self._tmp.name) / "routing.yaml"
         self.capacity_path = Path(self._tmp.name) / "agent-capacity.json"
-        self.now = datetime(2026, 8, 27, tzinfo=timezone.utc)
+        self.now = datetime(2026, 8, 27, tzinfo=UTC)
 
     def _write(self, text: str) -> None:
         self.routing_path.write_text(text, encoding="utf-8")
