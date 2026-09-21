@@ -1412,13 +1412,13 @@ def _check_repo_archived(repo: str, cwd: str | Path) -> bool | None:
             cwd=str(cwd),
             timeout=30,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
     if result.returncode != 0:
         return None
     try:
         data = json.loads(result.stdout)
-    except (json.JSONDecodeError, ValueError):
+    except json.JSONDecodeError, ValueError:
         return None
     if not isinstance(data, dict):
         return None
@@ -1920,7 +1920,7 @@ def parse_verdicts(
     for snippet in _extract_json_objects(raw_text):
         try:
             obj = json.loads(snippet)
-        except (json.JSONDecodeError, ValueError):
+        except json.JSONDecodeError, ValueError:
             continue
         if not isinstance(obj, dict):
             continue
@@ -2833,7 +2833,7 @@ def _repo_base_branch(repo: Path) -> str:
             text=True,
             timeout=15,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return "main"
     if result.returncode == 0:
         branch = result.stdout.strip()
