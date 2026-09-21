@@ -500,7 +500,7 @@ def _push(
     cmd = ["git", "-C", str(repo), "push", "-u", remote, f"HEAD:{branch}"]
     try:
         result = runner(cmd, capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return "push_ambiguous"
     if result.returncode == 0:
         return None
@@ -800,7 +800,7 @@ def _ensure_run_record(
         return None
     try:
         return json.loads(out.strip().splitlines()[-1]).get("path")
-    except (json.JSONDecodeError, IndexError):
+    except json.JSONDecodeError, IndexError:
         return None
 
 
@@ -1287,14 +1287,14 @@ def _ledger_heartbeat(pr_url: str) -> None:
     (deduplicated) recovery brief early; it never changes the outcome."""
     try:
         pr_ledger.heartbeat(pr_url)
-    except (pr_ledger.LedgerError, OSError):
+    except pr_ledger.LedgerError, OSError:
         pass
 
 
 def _ledger_unwatch(pr_url: str) -> None:
     try:
         pr_ledger.unwatch(pr_url)
-    except (pr_ledger.LedgerError, OSError):
+    except pr_ledger.LedgerError, OSError:
         pass
 
 
