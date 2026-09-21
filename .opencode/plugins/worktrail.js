@@ -54,54 +54,57 @@ function sentinelPath(sessionId) {
  * prompt adapters that tell OpenCode to use the installed Worktrail console
  * scripts. No external checkout or plugin path is required.
  */
-export const Worktrail = async ({ directory } = {}) => ({
-  "session.idle": async (input, output) => {
-    const sessionId = input?.session?.id || "unknown"
-    const sentinel = sentinelPath(sessionId)
-    if (existsSync(sentinel) || !hasSubstantiveWork(directory || process.cwd())) return
-    mkdirSync(STATE_DIR, { recursive: true })
-    writeFileSync(sentinel, "1", "utf-8")
-    output.context = output.context || []
-    output.context.push(SESSION_END_INSTRUCTION)
-  },
-
-  "session.compacted": async (input) => {
-    const sessionId = input?.session?.id
-    if (sessionId) {
+export default {
+  id: "worktrail",
+  server: async ({ directory } = {}) => ({
+    "session.idle": async (input, output) => {
+      const sessionId = input?.session?.id || "unknown"
       const sentinel = sentinelPath(sessionId)
-      if (existsSync(sentinel)) unlinkSync(sentinel)
-    }
-  },
+      if (existsSync(sentinel) || !hasSubstantiveWork(directory || process.cwd())) return
+      mkdirSync(STATE_DIR, { recursive: true })
+      writeFileSync(sentinel, "1", "utf-8")
+      output.context = output.context || []
+      output.context.push(SESSION_END_INSTRUCTION)
+    },
 
-  config: async (input) => {
-    input.command = input.command || {}
-    input.command["worktrail.go"] = {
-      description: "Route engineering work through Worktrail",
-      template: [
-        "Use Worktrail for this request.",
-        "Run `worktrail-dashboard` when orientation is needed, then follow the installed",
-        "Worktrail workflow. Use `drain` for unattended queue processing and preserve the exact request below.",
-        "\nRequest: $ARGUMENTS",
-      ].join("\n"),
-    }
-    input.command["worktrail.handoff"] = {
-      description: "Create a Worktrail handoff brief",
-      template: [
-        "Create a handoff with the Worktrail CLI, not by writing Markdown directly.",
-        "Run `worktrail-handoff --focus \"$ARGUMENTS\" --json`, then report the created path.",
-      ].join("\n"),
-    }
-    input.command["worktrail.spec-create"] = {
-      description: "Create a DevKit or OpenSpec scaffold through Worktrail",
-      template: [
-        "Use `worktrail-spec-create` to create the requested spec scaffold.",
-        "Choose OpenSpec by default unless the user explicitly requests DevKit format.",
-        "\nRequest: $ARGUMENTS",
-      ].join("\n"),
-    }
-    input.command["openspec-propose"] = {
-      description: "Propose a new OpenSpec change with all planning artifacts",
-      template: [OPENSPEC_PROPOSE_INSTRUCTIONS, "\nRequest: $ARGUMENTS"].join("\n"),
-    }
-  },
-})
+    "session.compacted": async (input) => {
+      const sessionId = input?.session?.id
+      if (sessionId) {
+        const sentinel = sentinelPath(sessionId)
+        if (existsSync(sentinel)) unlinkSync(sentinel)
+      }
+    },
+
+    config: async (input) => {
+      input.command = input.command || {}
+      input.command["worktrail.go"] = {
+        description: "Route engineering work through Worktrail",
+        template: [
+          "Use Worktrail for this request.",
+          "Run `worktrail-dashboard` when orientation is needed, then follow the installed",
+          "Worktrail workflow. Use `drain` for unattended queue processing and preserve the exact request below.",
+          "\nRequest: $ARGUMENTS",
+        ].join("\n"),
+      }
+      input.command["worktrail.handoff"] = {
+        description: "Create a Worktrail handoff brief",
+        template: [
+          "Create a handoff with the Worktrail CLI, not by writing Markdown directly.",
+          "Run `worktrail-handoff --focus \"$ARGUMENTS\" --json`, then report the created path.",
+        ].join("\n"),
+      }
+      input.command["worktrail.spec-create"] = {
+        description: "Create a DevKit or OpenSpec scaffold through Worktrail",
+        template: [
+          "Use `worktrail-spec-create` to create the requested spec scaffold.",
+          "Choose OpenSpec by default unless the user explicitly requests DevKit format.",
+          "\nRequest: $ARGUMENTS",
+        ].join("\n"),
+      }
+      input.command["openspec-propose"] = {
+        description: "Propose a new OpenSpec change with all planning artifacts",
+        template: [OPENSPEC_PROPOSE_INSTRUCTIONS, "\nRequest: $ARGUMENTS"].join("\n"),
+      }
+    },
+  }),
+}
