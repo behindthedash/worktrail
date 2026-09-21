@@ -135,6 +135,7 @@ def _no_checks_grace_attempts(watch_timeout_s: int) -> int:
     """
     return max(_NO_CHECKS_GRACE_ATTEMPTS, watch_timeout_s // _NO_CHECKS_POLL_INTERVAL_S)
 
+
 # A `statusCheckRollup` entry with no `conclusion` and one of these `state`
 # values has not reported yet. GitHub reports `mergeStateStatus: BLOCKED`
 # both for "a required check failed" and for "a required check has not
