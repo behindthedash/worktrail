@@ -79,7 +79,7 @@ def _run_gh(
             timeout=timeout,
             cwd=str(repo),
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
 
 
