@@ -1,6 +1,6 @@
 ## 1. Accept inline interpreter reproductions and resolve bare basenames
 
-- [ ] 1.1 In `src/worktrail/workqueue/queue_triage.py`, add an alternative to
+- [x] 1.1 In `src/worktrail/workqueue/queue_triage.py`, add an alternative to
       `_REPRODUCTION_EVIDENCE_RE` matching an inline interpreter invocation -- `python`,
       `python3`, or `py` followed by whitespace and a `-c` or `-m` flag -- and extend the
       comment block above the pattern to record why the flag is required (the bare interpreter
