@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """The check-registration grace period scales with the run's watch budget,
 and its exhaustion is reported distinctly from the main watch loop's.
 
