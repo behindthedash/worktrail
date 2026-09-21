@@ -82,7 +82,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.14"]
+        python-version: ["3.14"]
     steps:
       - uses: actions/checkout@v7.0.1
         if: needs.changes.outputs.bookkeeping == 'false'
