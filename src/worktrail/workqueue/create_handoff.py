@@ -221,7 +221,7 @@ def _open_pr_titles(remote: str | None) -> list[str]:
             text=True,
             timeout=_OVERLAP_SCAN_GH_TIMEOUT_SECONDS,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return []
     if result.returncode != 0:
         return []
