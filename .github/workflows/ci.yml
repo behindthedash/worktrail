@@ -133,15 +133,6 @@ jobs:
           python3 scripts/check_built_artifact_packaging.py --wheel "$wheel" --sdist "$sdist"
 
 
-  retired-python-311-status:
-    # The live repository ruleset still requires this historical check context.
-    # This is status compatibility only: Python 3.11 is not installed or tested.
-    name: "Lint, Test & Build (3.11)"
-    runs-on: ubuntu-latest
-    steps:
-      - name: Python 3.11 support retired
-        run: echo "Python 3.11 support is retired; Worktrail requires Python 3.14+."
-
   classifier-coverage-ratchet:
     name: "Classifier Coverage Ratchet"
     needs: changes
