@@ -35,7 +35,7 @@
 
 ## 4. Git-backed work-queue durability
 
-- [ ] 4.1 In `src/worktrail/workqueue/queue_git_persist.py`, add a narrow helper for newly
+- [x] 4.1 In `src/worktrail/workqueue/queue_git_persist.py`, add a narrow helper for newly
       captured external briefs that, when queue git sync is enabled, stages only the created
       brief plus the WorkTrail-owned materialization metadata, commits with the event id, and
       pushes without pulling. Failure to push is reported to the caller. When `$WORK_QUEUE_DIR`
