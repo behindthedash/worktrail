@@ -212,7 +212,7 @@ def load_actual_routes(runs_root: Path) -> dict[str, str]:
     for path in sorted(runs_root.glob("*/*.yaml")):
         try:
             record = yaml.safe_load(path.read_text(encoding="utf-8"))
-        except (OSError, yaml.YAMLError):
+        except OSError, yaml.YAMLError:
             continue
         if not isinstance(record, dict):
             continue
