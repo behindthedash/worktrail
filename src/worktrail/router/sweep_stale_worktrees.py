@@ -83,7 +83,7 @@ def _run(
             timeout=timeout,
             cwd=str(cwd) if cwd else None,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
 
 
@@ -238,7 +238,7 @@ def _run_gh(
             timeout=timeout,
             cwd=str(repo),
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
 
 
@@ -274,7 +274,7 @@ def pr_state_for_branch(repo: Path, branch: str, timeout: int = 15) -> str | Non
         return None
     try:
         data = json.loads(out.stdout)
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return None
     if not data:
         return None
@@ -293,7 +293,7 @@ def pr_state_for_url(repo: Path, pr_url: str, timeout: int = 15) -> str | None:
         return None
     try:
         data = json.loads(out.stdout)
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return None
     if not isinstance(data, dict):
         return None
@@ -317,7 +317,7 @@ def build_attribution_index(repo: Path) -> dict[str, dict[str, Any]]:
     for journal_path in quarantine_selfcheck._iter_journal_files(worktrees_dir):
         try:
             journal = json.loads(journal_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except OSError, json.JSONDecodeError:
             continue
         groups = journal.get("groups") if isinstance(journal, dict) else None
         if not isinstance(groups, dict):
