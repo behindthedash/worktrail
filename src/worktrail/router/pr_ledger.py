@@ -89,22 +89,22 @@ class LedgerError(Exception):
 
 
 def _now() -> datetime.datetime:
-    return datetime.datetime.now(datetime.timezone.utc)
+    return datetime.datetime.now(datetime.UTC)
 
 
 def _iso(ts: datetime.datetime) -> str:
-    return ts.astimezone(datetime.timezone.utc).isoformat(timespec="seconds")
+    return ts.astimezone(datetime.UTC).isoformat(timespec="seconds")
 
 
 def _parse_iso(raw: Any) -> datetime.datetime | None:
     if not isinstance(raw, str) or not raw:
         return None
     try:
-        parsed = datetime.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        parsed = datetime.datetime.fromisoformat(raw)
     except ValueError:
         return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+        parsed = parsed.replace(tzinfo=datetime.UTC)
     return parsed
 
 
