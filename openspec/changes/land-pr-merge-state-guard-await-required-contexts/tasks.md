@@ -1,6 +1,6 @@
 ## 1. Gate the BLOCKED classification on required-context reporting
 
-- [ ] 1.1 In `src/worktrail/router/land_pr.py`: add a module-level
+- [x] 1.1 In `src/worktrail/router/land_pr.py`: add a module-level
       `_required_contexts_reported(status, required_contexts) -> bool` that returns `True` when
       `required_contexts` is `None` or empty, and otherwise `True` only when every required
       context appears in `status["statusCheckRollup"]` (matching an entry's `name` or
