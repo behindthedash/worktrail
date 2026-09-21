@@ -89,6 +89,68 @@ class TestCheckRepo(unittest.TestCase):
         self.assertIn("misc-notes.md", finding["detail"])
         self.assertIn("other-notes.md", finding["detail"])
 
+    def test_non_spec_dir_is_skipped(self):
+        # `addenda` is a known non-spec directory: its tied untagged candidates
+        # are not a spec-doc ambiguity and must not be flagged.
+        _spec_dir(
+            self.tmp,
+            "addenda",
+            {
+                "misc-notes.md": "# misc\n",
+                "other-notes.md": "# other\n",
+            },
+        )
+        self.assertEqual(check_repo(self.tmp)["findings"], [])
+
+    def test_non_spec_dir_skip_is_case_insensitive(self):
+        _spec_dir(
+            self.tmp,
+            "Addenda",
+            {
+                "misc-notes.md": "# misc\n",
+                "other-notes.md": "# other\n",
+            },
+        )
+        self.assertEqual(check_repo(self.tmp)["findings"], [])
+
+    def test_same_candidates_in_a_real_spec_dir_still_flagged(self):
+        # Identical contents under a real spec id: the ambiguity is preserved.
+        _spec_dir(
+            self.tmp,
+            "001-thing",
+            {
+                "misc-notes.md": "# misc\n",
+                "other-notes.md": "# other\n",
+            },
+        )
+        findings = check_repo(self.tmp)["findings"]
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["signal"], "ambiguous-spec-doc")
+        self.assertEqual(findings[0]["spec"], "001-thing")
+
+    def test_contentless_folder_is_still_scanned(self):
+        # No tasks/, changes/ or user-request.md -- _is_spec_folder() would drop
+        # this folder, but the name-based skip keeps it in scope while the
+        # denylisted sibling is skipped.
+        _spec_dir(
+            self.tmp,
+            "research",
+            {
+                "misc-notes.md": "# misc\n",
+                "other-notes.md": "# other\n",
+            },
+        )
+        _spec_dir(
+            self.tmp,
+            "002-bare",
+            {
+                "misc-notes.md": "# misc\n",
+                "other-notes.md": "# other\n",
+            },
+        )
+        findings = check_repo(self.tmp)["findings"]
+        self.assertEqual([f["spec"] for f in findings], ["002-bare"])
+
 
 class TestSweep(unittest.TestCase):
     def test_sweep_flags_only_the_flagged_repo(self):
@@ -125,6 +187,38 @@ class TestCli(unittest.TestCase):
             rc = main(["--repo", str(tmp)])
         self.assertEqual(rc, 0)
         self.assertIn("no ambiguous spec docs", buf.getvalue())
+
+    def test_non_spec_dir_only_repo_exits_zero(self):
+        import io
+        from contextlib import redirect_stdout
+
+        tmp = Path(tempfile.mkdtemp())
+        _spec_dir(
+            tmp,
+            "addenda",
+            {
+                "misc-notes.md": "# misc\n",
+                "other-notes.md": "# other\n",
+            },
+        )
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = main(["--repo", str(tmp)])
+        self.assertEqual(rc, 0)
+        self.assertIn("no ambiguous spec docs", buf.getvalue())
+
+    def test_resolvable_spec_dir_stays_clean(self):
+        import io
+        from contextlib import redirect_stdout
+
+        tmp = Path(tempfile.mkdtemp())
+        _spec_dir(tmp, "003-resolvable", {"spec.md": "# spec\n"})
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = main(["--repo", str(tmp)])
+        self.assertEqual(rc, 0)
 
     def test_flagged_repo_exits_one(self):
         import io
