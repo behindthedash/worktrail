@@ -41,7 +41,7 @@ def journal_paths(repo: Path) -> Iterator[Path]:
 def _load(path: Path) -> dict[str, Any]:
     try:
         return json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return {}
 
 
