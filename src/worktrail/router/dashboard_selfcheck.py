@@ -9,6 +9,14 @@ silently drops that spec from dashboard rendering with no visible signal to a
 human/agent — this is a passive detector that surfaces exactly that refusal
 so it can be triaged, without changing `find_spec_file()`'s own behavior.
 
+Scoping: only real spec folders are checked. The known non-spec directories are
+skipped by reusing `dashboard._NON_SPEC_DIRS` rather than restating the names
+here, so the denylist stays single-sourced. The skip is deliberately a name test
+and NOT `dashboard._is_spec_folder()`: that helper's content test requires a
+resolvable spec doc (or `tasks/`, `changes/`, `user-request.md`), which is
+exactly what an ambiguous folder lacks -- using it would suppress the very
+findings this detector exists to surface.
+
 Usage:
   dashboard_selfcheck.py --repo /path/to/repo [--json]
   dashboard_selfcheck.py --repos-root ~/projects [--json]   # sweep every repo
@@ -22,7 +30,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .dashboard import _is_spec_doc, find_spec_file
+from .dashboard import _NON_SPEC_DIRS, _is_spec_doc, find_spec_file
 from .policy_selfcheck import discover_repo_names
 
 _SPECS_RELPATH = Path("docs") / "specs"
@@ -38,6 +46,8 @@ def check_repo(repo: Path) -> dict[str, Any]:
     findings = result["findings"]
 
     for spec_dir in sorted(p for p in specs_root.iterdir() if p.is_dir()):
+        if spec_dir.name.lower() in _NON_SPEC_DIRS:
+            continue
         cands = [f for f in spec_dir.glob("*.md") if _is_spec_doc(f.name)]
         if not cands:
             continue
