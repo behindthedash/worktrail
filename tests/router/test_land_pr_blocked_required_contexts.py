@@ -20,6 +20,8 @@ PENDING = {"name": "CI", "state": "PENDING"}
 DONE = {"name": "CI", "conclusion": "SUCCESS"}
 FAILED = {"name": "CI", "conclusion": "FAILURE"}
 DONE_BY_CONTEXT = {"context": "CI", "state": "SUCCESS"}
+STALE_CANCELLED = {"name": "CI", "conclusion": "CANCELLED"}
+RERUN_QUEUED = {"name": "CI", "state": "QUEUED", "conclusion": ""}
 
 
 def _blocked(rollup=None) -> dict:
@@ -116,6 +118,13 @@ class BlockedRequiredContextsTests(unittest.TestCase):
             land_pr._outstanding_required_contexts(_blocked([]), ["CI"]), ["CI"]
         )
 
+    def test_helper_false_when_a_duplicate_name_is_still_running(self) -> None:
+        # `_merge_state_guard`'s CANCELLED/SUCCESS rerun leaves a stale
+        # terminal entry beside the queued re-run it triggered.
+        rollup = _blocked([STALE_CANCELLED, RERUN_QUEUED])
+        self.assertFalse(land_pr._required_contexts_reported(rollup, ["CI"]))
+        self.assertEqual(land_pr._outstanding_required_contexts(rollup, ["CI"]), ["CI"])
+
     # -- orchestration coverage -----------------------------------------
 
     def test_pending_required_context_repolls_then_classifies(self) -> None:
@@ -149,6 +158,31 @@ class BlockedRequiredContextsTests(unittest.TestCase):
         self.assertIn("lint", outcome.merge_result)
         self.assertEqual(self._finish_statuses(spy), ["failed_recoverable"])
         self.assertNotIn("blocked_product_decision", self._finish_statuses(spy))
+
+    def test_duplicate_name_rerun_repolls_rather_than_classifying(self) -> None:
+        outcome, _, guard = self._run(
+            [_blocked([STALE_CANCELLED, RERUN_QUEUED]), _blocked([DONE])]
+        )
+        self.assertGreater(guard.call_count, 1)
+        self.assertEqual(outcome.final_status, "blocked_product_decision")
+
+    def test_unavailable_guard_during_repoll_is_not_a_passed_guard(self) -> None:
+        outcome, spy, _ = self._run([_blocked([PENDING]), {}])
+        self.assertEqual(outcome.outcome, "ceiling")
+        self.assertEqual(outcome.final_status, "failed_recoverable")
+        self.assertIn("merge-state guard unavailable", outcome.merge_result)
+        self.assertEqual(self._finish_statuses(spy), ["failed_recoverable"])
+
+    def test_merge_during_repoll_records_completed_and_merged(self) -> None:
+        merged = {
+            "state": "MERGED",
+            "mergeStateStatus": "CLEAN",
+            "statusCheckRollup": [DONE],
+        }
+        outcome, spy, _ = self._run([_blocked([PENDING]), merged])
+        self.assertEqual(outcome.outcome, "landed")
+        self.assertEqual(outcome.final_status, "completed_and_merged")
+        self.assertEqual(self._finish_statuses(spy), ["completed_and_merged"])
 
     def test_failing_but_terminal_required_context_classifies_immediately(self) -> None:
         outcome, _, guard = self._run([_blocked([FAILED])])

@@ -1060,6 +1060,7 @@ def _outstanding_required_contexts(
     if not required_contexts:
         return []
     terminal: set[str] = set()
+    nonterminal: set[str] = set()
     for entry in status.get("statusCheckRollup") or []:
         if not isinstance(entry, dict):
             continue
@@ -1068,9 +1069,17 @@ def _outstanding_required_contexts(
             continue
         conclusion = entry.get("conclusion")
         state = entry.get("state")
-        if conclusion or state and str(state).upper() not in _NONTERMINAL_CHECK_STATES:
+        if conclusion or (
+            state and str(state).upper() not in _NONTERMINAL_CHECK_STATES
+        ):
             terminal.add(name)
-    return [c for c in required_contexts if c not in terminal]
+        else:
+            nonterminal.add(name)
+    # Duplicate names do occur -- `_merge_state_guard`'s CANCELLED/SUCCESS
+    # rerun handling leaves a stale terminal entry beside the queued re-run
+    # it triggered -- so a name counts as reported only when EVERY entry
+    # carrying it is terminal.
+    return [c for c in required_contexts if c not in terminal or c in nonterminal]
 
 
 def _required_contexts_reported(
@@ -1760,6 +1769,44 @@ def land_pr(request: LandRequest) -> LandOutcome:
 
     status = _merge_state_guard(repo, pr_number, runner, base_slug)
 
+    # A BLOCKED merge state means "a required check failed" OR "a required
+    # check has not reported yet". Only the first is a product decision, so
+    # re-poll the guard while the required contexts are still outstanding.
+    blocked_polls = 0
+    while status.get(
+        "mergeStateStatus"
+    ) == "BLOCKED" and not _required_contexts_reported(status, required_contexts):
+        if blocked_polls >= BLOCKED_REQUIRED_CONTEXT_POLL_MAX:
+            outstanding = _outstanding_required_contexts(status, required_contexts)
+            merge_result = (
+                "merge state BLOCKED with required contexts still unreported after "
+                f"{BLOCKED_REQUIRED_CONTEXT_POLL_MAX} polls: " + ", ".join(outstanding)
+            )
+            _run_record_main(
+                [
+                    "finish",
+                    run_path,
+                    "--status",
+                    "failed_recoverable",
+                    "--pr",
+                    pr_url or "",
+                    "--merge-result",
+                    merge_result,
+                ]
+            )
+            return LandOutcome(
+                outcome="ceiling",
+                pr_url=pr_url,
+                pr_number=pr_number,
+                labels=labels,
+                run=run_path,
+                final_status="failed_recoverable",
+                merge_result=merge_result,
+            )
+        time.sleep(_NO_CHECKS_POLL_INTERVAL_S)
+        status = _merge_state_guard(repo, pr_number, runner, base_slug)
+        blocked_polls += 1
+
     if not status:
         # `_merge_state_guard()` returns `{}` when `gh pr view` failed or
         # returned unparseable data -- an unavailable guard is not a passed
@@ -1869,44 +1916,6 @@ def land_pr(request: LandRequest) -> LandOutcome:
             final_status="failed_recoverable",
             merge_result=merge_result,
         )
-
-    # A BLOCKED merge state means "a required check failed" OR "a required
-    # check has not reported yet". Only the first is a product decision, so
-    # re-poll the guard while the required contexts are still outstanding.
-    blocked_polls = 0
-    while status.get(
-        "mergeStateStatus"
-    ) == "BLOCKED" and not _required_contexts_reported(status, required_contexts):
-        if blocked_polls >= BLOCKED_REQUIRED_CONTEXT_POLL_MAX:
-            outstanding = _outstanding_required_contexts(status, required_contexts)
-            merge_result = (
-                "merge state BLOCKED with required contexts still unreported after "
-                f"{BLOCKED_REQUIRED_CONTEXT_POLL_MAX} polls: " + ", ".join(outstanding)
-            )
-            _run_record_main(
-                [
-                    "finish",
-                    run_path,
-                    "--status",
-                    "failed_recoverable",
-                    "--pr",
-                    pr_url or "",
-                    "--merge-result",
-                    merge_result,
-                ]
-            )
-            return LandOutcome(
-                outcome="ceiling",
-                pr_url=pr_url,
-                pr_number=pr_number,
-                labels=labels,
-                run=run_path,
-                final_status="failed_recoverable",
-                merge_result=merge_result,
-            )
-        time.sleep(_NO_CHECKS_POLL_INTERVAL_S)
-        status = _merge_state_guard(repo, pr_number, runner, base_slug)
-        blocked_polls += 1
 
     if status.get("mergeStateStatus") == "BLOCKED":
         merge_result = "blocked on branch protection after merge-state guard and review-thread gate"
