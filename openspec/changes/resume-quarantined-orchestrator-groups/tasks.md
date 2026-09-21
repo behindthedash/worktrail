@@ -1,6 +1,6 @@
 ## 1. Un-quarantine command
 
-- [ ] 1.1 Add `src/worktrail/orchestrator/resume_group.py`: a `main(argv=None) -> int` CLI
+- [x] 1.1 Add `src/worktrail/orchestrator/resume_group.py`: a `main(argv=None) -> int` CLI
       (`--repo`, `--spec`, `--group` repeatable, `--all-resumable`, `--dry-run`, `--json`)
       resolving the run journal via `live.journal_path_for(repo, spec_rel)`. Expose the pure
       helper `select_groups(journal, names, all_resumable) -> (selected, problems)`: a named
