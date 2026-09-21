@@ -49,7 +49,7 @@ def canonical_repo_root(repo: Path, runner: Runner = _run_git) -> Path | None:
     """Resolve a linked worktree to the checkout owning its shared git dir."""
     try:
         result = runner(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return None
     if result.returncode != 0:
         return None
@@ -139,7 +139,7 @@ def check(
     except FileNotFoundError:
         result["reason"] = "registry-missing"
         return result
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         result["reason"] = "registry-unavailable"
         return result
 
@@ -152,7 +152,7 @@ def check(
             continue
         try:
             indexed = Path(entry["path"]).expanduser().resolve()
-        except (OSError, TypeError, ValueError):
+        except OSError, TypeError, ValueError:
             continue
         storage = entry.get("storagePath")
         if indexed != canonical or (
@@ -169,7 +169,7 @@ def check(
 
         try:
             head = runner(canonical, "rev-parse", "HEAD")
-        except (OSError, subprocess.SubprocessError):
+        except OSError, subprocess.SubprocessError:
             head = None
         if (
             indexed_commit
@@ -189,7 +189,7 @@ def check(
         except subprocess.TimeoutExpired:
             result["reason"] = "mcp-timeout"
             return result
-        except (OSError, subprocess.SubprocessError, ValueError):
+        except OSError, subprocess.SubprocessError, ValueError:
             result["reason"] = "mcp-unavailable"
             return result
 
