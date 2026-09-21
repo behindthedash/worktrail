@@ -24,7 +24,7 @@ import argparse
 import json
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -73,7 +73,7 @@ def first_run_lookback(
 ) -> str:
     """ISO8601 timestamp `lookback_days` before `now` (UTC) -- the window a
     repo with no persisted marker falls back to."""
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     return (now - timedelta(days=lookback_days)).isoformat()
 
 
