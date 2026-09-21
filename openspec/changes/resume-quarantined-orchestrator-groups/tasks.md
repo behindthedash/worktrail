@@ -51,7 +51,7 @@
 
 ## 3. Route E front-door pointer
 
-- [ ] 3.1 In `skills/worktrail-go/references/routes.md`, extend Route E step 4's
+- [x] 3.1 In `skills/worktrail-go/references/routes.md`, extend Route E step 4's
       quarantined-orchestrator-groups sentence to cite `worktrail-resume-group`: fix the task
       branch first, then clear the group and re-run `full-real --resume` rather than
       hand-landing the PR and hand-running checkbox-sync. Keep the existing
