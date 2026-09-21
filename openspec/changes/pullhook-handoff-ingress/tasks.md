@@ -10,7 +10,7 @@
 
 ## 2. Envelope validation and mapping
 
-- [ ] 2.1 In `src/worktrail/workqueue/pullhook_envelope.py`, define the strict allowlisted
+- [x] 2.1 In `src/worktrail/workqueue/pullhook_envelope.py`, define the strict allowlisted
       adapter for `datalena.worktrail-handoff.v1`: reject unsupported schema versions and
       missing identity/target/focus provenance before any queue mutation, and map a valid
       envelope to `create_handoff()` arguments, including `captured_by`, repo/remote/base
