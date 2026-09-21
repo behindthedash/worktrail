@@ -1,6 +1,6 @@
 ## 1. PullHook client
 
-- [ ] 1.1 In `src/worktrail/workqueue/pullhook_client.py`, add a minimal PullHook client
+- [x] 1.1 In `src/worktrail/workqueue/pullhook_client.py`, add a minimal PullHook client
       for claim, peek, and ack using stdlib/available HTTP dependencies, a bearer consume
       credential, a bounded timeout, and secret-safe errors (the credential never appears in
       an exception message or log line). In `tests/workqueue/test_pullhook_client.py`, cover
