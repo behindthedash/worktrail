@@ -944,7 +944,7 @@ class OriginalCreatedPropagation(ConsolidateClusterTestCase):
         self.assertEqual(
             draft["original_created"],
             datetime.datetime(
-                2026, 7, 1, 9, 0, 0, tzinfo=datetime.timezone.utc
+                2026, 7, 1, 9, 0, 0, tzinfo=datetime.UTC
             ).isoformat(),
         )
 
@@ -967,7 +967,7 @@ class OriginalCreatedPropagation(ConsolidateClusterTestCase):
         self.assertEqual(
             draft["original_created"],
             datetime.datetime(
-                2026, 7, 1, 9, 0, 0, tzinfo=datetime.timezone.utc
+                2026, 7, 1, 9, 0, 0, tzinfo=datetime.UTC
             ).isoformat(),
         )
 
@@ -993,7 +993,7 @@ class OriginalCreatedPropagation(ConsolidateClusterTestCase):
         self.assertEqual(
             draft["original_created"],
             datetime.datetime(
-                2026, 7, 3, 8, 0, 0, tzinfo=datetime.timezone.utc
+                2026, 7, 3, 8, 0, 0, tzinfo=datetime.UTC
             ).isoformat(),
         )
 
