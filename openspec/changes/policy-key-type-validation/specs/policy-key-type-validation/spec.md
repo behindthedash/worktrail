@@ -14,6 +14,12 @@ not match SHALL be replaced by that key's default value.
 - **WHEN** a policy file sets `pre_pr_cmd: true`, which parses as a boolean
 - **THEN** the resolved policy's `pre_pr_cmd` is `None`
 
+#### Scenario: a bare-string require_human_routes keeps gating
+- **WHEN** a policy file sets `require_human_routes: B`, which parses as a string
+- **THEN** the value is left unchanged and no type warning is emitted, because
+  `automerge_eligible()` tests `route in require_human_routes` and a bare single-route string
+  is a working gate that replacing it with `[]` would silently open
+
 #### Scenario: a correctly-typed policy file is unchanged
 - **WHEN** a policy file sets every key with a value of its declared type
 - **THEN** the resolved policy is identical to the policy resolved before the sweep existed,
@@ -56,9 +62,16 @@ The nested `automerge.target_branches` value SHALL be subject to the same type c
 list-valued key, since a mistyped value there disables auto-merge targeting silently.
 
 #### Scenario: a mistyped target_branches falls back to empty
-- **WHEN** `automerge.target_branches` resolves to a string
+- **WHEN** `automerge.target_branches` resolves to something that is neither a list nor a
+  string, such as an integer
 - **THEN** the resolved value is `[]` and a warning naming `automerge.target_branches` is
   emitted
+
+#### Scenario: a bare-string target_branches is left to auto-merge eligibility
+- **WHEN** `automerge.target_branches` is a single bare string such as `dev`
+- **THEN** the value is left unchanged and no type warning is emitted, because
+  `automerge_eligible()` already normalizes a bare string to a single-branch list and
+  replacing it with `[]` would silently drop that restriction
 
 ### Requirement: Every DEFAULTS key has a declared expected type
 The expected-type table SHALL cover every key in `DEFAULTS`, and the test suite SHALL fail if a
