@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """The one shared PR-landing pipeline: commit, compile-marker gate, preflight
 gate + labels, push, create/update the PR, watch CI to a terminal outcome,
 and finish (or checkpoint) the run record.
