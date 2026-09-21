@@ -826,7 +826,7 @@ class SpawnAgentSelection(unittest.TestCase):
             "opencode/deepseek-v4-flash-free",
             outcome="unavailable",
             failure_class="billing",
-            retry_after=datetime.datetime.now(datetime.timezone.utc)
+            retry_after=datetime.datetime.now(datetime.UTC)
             + datetime.timedelta(seconds=300),
         )
         captured = {}
@@ -861,7 +861,7 @@ class SpawnAgentSelection(unittest.TestCase):
             "sonnet",
             outcome="unavailable",
             failure_class="billing",
-            retry_after=datetime.datetime.now(datetime.timezone.utc)
+            retry_after=datetime.datetime.now(datetime.UTC)
             + datetime.timedelta(seconds=300),
         )
         captured = {}
@@ -931,7 +931,7 @@ class SpawnAgentSelection(unittest.TestCase):
             "sonnet",
             outcome="unavailable",
             failure_class="billing",
-            retry_after=datetime.datetime.now(datetime.timezone.utc)
+            retry_after=datetime.datetime.now(datetime.UTC)
             + datetime.timedelta(seconds=300),
         )
         calls = []
@@ -2302,14 +2302,14 @@ class InfraFailureFallback(unittest.TestCase):
         self.assertEqual(gate["reset_source"], "cooldown")
         self.assertGreater(
             datetime.datetime.fromisoformat(gate["retry_after"]),
-            datetime.datetime.now(datetime.timezone.utc),
+            datetime.datetime.now(datetime.UTC),
         )
 
     def test_successful_spawn_on_a_probeable_gate_clears_it(self):
         """The probe branch is only useful if the spawn it lets through can
         actually lift the gate: a success records `available`, so the next
         `check()` passes instead of raising."""
-        stale = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
+        stale = datetime.datetime.now(datetime.UTC) - datetime.timedelta(
             minutes=30
         )
         spawnlib.agent_capacity.record(
@@ -2317,7 +2317,7 @@ class InfraFailureFallback(unittest.TestCase):
             "gpt-5.3-codex",
             outcome="unavailable",
             failure_class="billing",
-            retry_after=datetime.datetime.now(datetime.timezone.utc)
+            retry_after=datetime.datetime.now(datetime.UTC)
             + datetime.timedelta(hours=1),
             now=stale,
         )
