@@ -109,10 +109,61 @@ def test_criterion_on_a_wrapped_continuation_line_is_still_seen(tmp_path: Path):
     assert "canonical-checkout-drift-sweep.sh" in findings[0]
 
 
-def test_token_named_after_the_path_is_new_content_not_a_needle(tmp_path: Path):
+def test_token_named_after_the_path_is_still_a_needle(tmp_path: Path):
+    """The path is whichever token resolves to a file; order does not matter."""
     change, repo = _change(
         tmp_path,
-        "Extend `scripts/README.md` with an entry for `canonical-checkout-drift-sweep.sh`.",
+        "Update `scripts/README.md` to name `canonical-checkout-drift-sweep.sh`.",
+    )
+    _write(repo / "scripts" / "README.md", "# Scripts\n")
+
+    findings = ac_targets.find_missing_ac_targets(change, repo)
+
+    assert len(findings) == 1
+    assert "canonical-checkout-drift-sweep.sh" in findings[0]
+
+
+def test_verb_in_a_prior_sentence_ending_in_a_bracket_does_not_carry_over(
+    tmp_path: Path,
+):
+    """`.)` ends a sentence: its verb must not license the next one's tokens."""
+    change, repo = _change(
+        tmp_path,
+        "Rename the old helper (it no longer matches.) "
+        "In a new `tests/router/test_grace.py` using `FakeRun` from "
+        "`tests/router/test_land_pr.py`, cover the budget.",
+    )
+    _write(repo / "tests" / "router" / "test_land_pr.py", "class FakeRun:\n    pass\n")
+
+    assert ac_targets.find_missing_ac_targets(change, repo) == []
+
+
+def test_verb_lookalike_words_do_not_license_a_sentence(tmp_path: Path):
+    """`fixed`/`fixture`/`correctly` are not the nine update verbs."""
+    change, repo = _change(
+        tmp_path,
+        "The `FakeRun` fixture in `tests/router/test_land_pr.py` is fixed "
+        "and behaves correctly.",
+    )
+    _write(repo / "tests" / "router" / "test_land_pr.py", "pass\n")
+
+    assert ac_targets.find_missing_ac_targets(change, repo) == []
+
+
+def test_metadata_continuation_lines_are_not_scanned_as_prose(tmp_path: Path):
+    """`files:`/`depends:`/`review:` carry paths, not acceptance criteria."""
+    repo = tmp_path / "repo"
+    change = repo / "openspec" / "changes" / "sweep-docs"
+    _write(
+        change / "tasks.md",
+        """\
+        ## 1. Docs
+
+        - [ ] 1.1 Remove the stale note.
+              files: scripts/README.md, scripts/sweep.sh
+              depends: 1.0
+              review: skip
+        """,
     )
     _write(repo / "scripts" / "README.md", "# Scripts\n")
 
