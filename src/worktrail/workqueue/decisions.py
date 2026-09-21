@@ -535,7 +535,7 @@ def _stamp_brief(brief_id: str, decision_id: str, base: Path) -> bool:
         return False
     try:
         work_queue._set_fm_fields(path, {"awaiting-decision": decision_id})
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return False
     return True
 
@@ -551,7 +551,7 @@ def _clear_brief_stamp(brief_id: str, decision_id: str, base: Path) -> bool:
         if str(fm.get("awaiting-decision") or "") != decision_id:
             return False
         work_queue._remove_fm_field(path, "awaiting-decision")
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return False
     return True
 
