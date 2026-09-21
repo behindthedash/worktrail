@@ -1438,7 +1438,7 @@ def spawn_agent(
                 f"{last_raw}\n{proc.stderr or ''}"
             )
             if explicit_reset is not None and explicit_reset <= datetime.datetime.now(
-                datetime.timezone.utc
+                datetime.UTC
             ):
                 explicit_reset = None
             agent_capacity.record(
