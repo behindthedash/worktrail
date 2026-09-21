@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -89,7 +89,7 @@ def test_same_provider_alternate_model_precedes_next_provider():
 
 
 def test_capacity_reader_honors_ttl_at_injected_time():
-    retry_after = datetime(2026, 8, 26, 17, tzinfo=timezone.utc)
+    retry_after = datetime(2026, 8, 26, 17, tzinfo=UTC)
 
     class Capacity:
         def check(self, provider, model, *, now):
