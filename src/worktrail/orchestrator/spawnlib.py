@@ -285,7 +285,7 @@ def partial_usage_from_stream(raw: str) -> dict:
         for field in fields:
             try:
                 totals[field] += int(turn_usage.get(field, 0) or 0)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 continue
     if not turns:
         return {}
