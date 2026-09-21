@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 import time
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -2633,7 +2633,7 @@ class TestSweepOrphans(unittest.TestCase):
 
     def _backdate_updated_at(self, path, seconds_ago):
         record = _load(Path(path))
-        then = datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)
+        then = datetime.now(UTC) - timedelta(seconds=seconds_ago)
         record["updated_at"] = then.strftime("%Y-%m-%dT%H:%M:%S%z")
         Path(path).write_text(run_record._render(record), encoding="utf-8")
 
@@ -2942,7 +2942,7 @@ class TestLiveness(unittest.TestCase):
         """Directly rewrite `updated_at` bypassing `_save()`'s own auto-stamp
         (every `main(["set", ...])` call would otherwise reset it to now)."""
         record = _load(Path(path))
-        then = datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)
+        then = datetime.now(UTC) - timedelta(seconds=seconds_ago)
         record["updated_at"] = then.strftime("%Y-%m-%dT%H:%M:%S%z")
         Path(path).write_text(run_record._render(record), encoding="utf-8")
 
@@ -3038,7 +3038,7 @@ class TestDetachedOwnerReconciliation(unittest.TestCase):
 
     def _backdate_updated_at(self, path, seconds_ago):
         record = _load(Path(path))
-        then = datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)
+        then = datetime.now(UTC) - timedelta(seconds=seconds_ago)
         record["updated_at"] = then.strftime("%Y-%m-%dT%H:%M:%S%z")
         Path(path).write_text(run_record._render(record), encoding="utf-8")
 
@@ -3473,11 +3473,11 @@ class TestFindByWorktree(unittest.TestCase):
         wt = "/home/user/worktrees/contested"
         older = _start(self.tmp, request="older run")
         main(["set", older["path"], "worktree", wt])
-        _set_started_at(older["path"], datetime.now(timezone.utc) - timedelta(hours=2))
+        _set_started_at(older["path"], datetime.now(UTC) - timedelta(hours=2))
         newer = _start(self.tmp, request="newer run")
         main(["set", newer["path"], "worktree", wt])
         _set_started_at(
-            newer["path"], datetime.now(timezone.utc) - timedelta(minutes=1)
+            newer["path"], datetime.now(UTC) - timedelta(minutes=1)
         )
 
         result = _find_by_worktree(self.tmp, worktree=wt)
@@ -3521,7 +3521,7 @@ class TestWorktreeConflict(unittest.TestCase):
 
     def _backdate_updated_at(self, path, seconds_ago):
         record = _load(Path(path))
-        then = datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)
+        then = datetime.now(UTC) - timedelta(seconds=seconds_ago)
         record["updated_at"] = then.strftime("%Y-%m-%dT%H:%M:%S%z")
         Path(path).write_text(run_record._render(record), encoding="utf-8")
 
