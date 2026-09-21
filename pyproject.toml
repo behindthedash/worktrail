@@ -118,6 +118,11 @@ where = ["src"]
 [tool.setuptools.package-data]
 worktrail = [".fixtures/**/*", "learning/*.md"]
 
+[tool.ruff]
+# Keep lint behavior stable when the package runtime floor changes. Ruff otherwise
+# infers its target from requires-python and enables broad modernization rewrites.
+target-version = "py310"
+
 [tool.pytest.ini_options]
 # `scripts/ci` is here because its `test_*.py` files were otherwise collected
 # by nothing: `pytest -q` (the pre-PR gate AND CI's own step) walked only
