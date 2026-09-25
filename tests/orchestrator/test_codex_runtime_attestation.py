@@ -147,6 +147,7 @@ class TestDirectProbeReuse(_AttestationHarness):
 class TestReadOnlyParentToWritableChild(_AttestationHarness):
     def test_fixture_is_read_only_and_child_is_distinct_and_writable(self):
         seen = {}
+        parent_home = os.environ.get("CODEX_HOME")
         real_prepare = codex_probe.prepare_environment
 
         def spy(override, *, inherit_auth):
@@ -169,7 +170,7 @@ class TestReadOnlyParentToWritableChild(_AttestationHarness):
         self.assertTrue(os.access(self.child_home, os.W_OK))
         # Fixture is torn down and the ambient env restored.
         self.assertFalse(os.path.exists(seen["parent"]))
-        self.assertNotIn("CODEX_HOME", os.environ)
+        self.assertEqual(os.environ.get("CODEX_HOME"), parent_home)
 
     def test_auth_is_inherited_from_the_real_parent_into_the_child(self):
         real_parent = Path(self.tmp, "real")

@@ -62,7 +62,7 @@
 
 ## 4. Verification
 
-- [ ] 4.1 [e2e] Run `PYTHONPATH=src pytest -q tests/orchestrator/test_resume_group.py
+- [x] 4.1 [e2e] Run `PYTHONPATH=src pytest -q tests/orchestrator/test_resume_group.py
       tests/router/test_quarantine_selfcheck.py tests/test_plugin_surface.py`, then
       `PYTHONPATH=src pytest -q`,
       `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`,
@@ -72,3 +72,11 @@
       `openspec validate resume-quarantined-orchestrator-groups --strict` and
       `worktrail-compile openspec/changes/resume-quarantined-orchestrator-groups`.
       depends: 2.1, 3.1
+
+### Verification evidence (2026-09-25)
+
+- Focused recovery, triage, and plugin-surface suite: 95 passed.
+- Full suite after two test-isolation repairs: 6945 passed, 2 skipped, 376 subtests passed.
+- Attestation, capture, and slug-exhaustion checks: 82 passed; attestation with CODEX_HOME absent: 27 passed.
+- Golden orchestrator regression, pinned Ruff lint/format, executable-bit gate, strict OpenSpec validation, and compile: passed.
+- Test-only repairs preserve the actual parent CODEX_HOME and prevent capture tests from launching providers for filename summaries. Runtime code is unchanged.
