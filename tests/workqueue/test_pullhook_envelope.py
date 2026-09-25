@@ -13,24 +13,36 @@ def _envelope() -> dict:
     return {
         "schema": pe.SUPPORTED_SCHEMA,
         "event_id": "evt-0001",
+        "dedupe_key": "evt-0001",
         "captured_by": "datalena:qa-pipeline",
         "target": {
-            "repo": "behindthedash/worktrail",
-            "remote": "git@github.com:behindthedash/worktrail.git",
-            "base_branch": "main",
+            "remote": "behindthedash/datalena",
+            "base_branch": "dev",
         },
         "handoff": {
             "focus": "Fix the flaky verify smoke test",
             "context": "Observed on three consecutive merges.",
-            "approach": "Reproduce locally, then bound the wait.",
-            "artifacts": "- Producer note: see run log",
+            "suggested_approach": "Reproduce locally, then bound the wait.",
+            "artifacts": ["https://example.test/brief.md"],
             "implementation_intent": "requested",
         },
         "source": {
             "repository": "behindthedash/datalena",
-            "merged_pr": "https://github.com/behindthedash/datalena/pull/42",
-            "finding": "qa-pipeline/flaky-verify",
-            "evidence": "https://example.test/run/9",
+            "pr_number": 42,
+            "merge_sha": "abc123",
+            "run_id": "run-9",
+            "brief_path": "docs/specs/usability-briefs/brief-1.md",
+        },
+        "finding": {
+            "identity_key": "qa-pipeline/flaky-verify",
+            "persona": "analyst",
+            "route": "/reports",
+            "journey": "review report",
+            "step": "verify output",
+            "severity": "medium",
+            "heuristic": "feedback",
+            "evidence_refs": ["https://example.test/run/9"],
+            "judge_model": "model-x",
         },
     }
 
@@ -48,9 +60,9 @@ def test_valid_v1_envelope_maps_to_create_handoff_arguments():
     args = pe.map_envelope(_envelope())
 
     assert args["focus"] == "Fix the flaky verify smoke test"
-    assert args["repo"] == "behindthedash/worktrail"
-    assert args["remote"] == "git@github.com:behindthedash/worktrail.git"
-    assert args["base_branch"] == "main"
+    assert args["repo"] == "behindthedash/datalena"
+    assert args["remote"] == "behindthedash/datalena"
+    assert args["base_branch"] == "dev"
     assert args["context"] == "Observed on three consecutive merges."
     assert args["approach"] == "Reproduce locally, then bound the wait."
     assert args["implementation_intent"] == "requested"
@@ -100,11 +112,12 @@ def test_missing_schema_is_rejected():
     [
         ("event_id",),
         ("captured_by",),
-        ("target", "repo"),
+        ("target", "remote"),
         ("handoff", "focus"),
         ("source", "repository"),
-        ("source", "merged_pr"),
-        ("source", "finding"),
+        ("source", "pr_number"),
+        ("source", "merge_sha"),
+        ("finding", "identity_key"),
     ],
 )
 def test_each_missing_required_field_is_rejected(path):
@@ -116,9 +129,9 @@ def test_each_missing_required_field_is_rejected(path):
     "path",
     [
         ("event_id",),
-        ("target", "repo"),
+        ("target", "remote"),
         ("handoff", "focus"),
-        ("source", "finding"),
+        ("finding", "identity_key"),
     ],
 )
 def test_blank_required_field_is_rejected(path):
@@ -139,6 +152,7 @@ def test_blank_required_field_is_rejected(path):
         ("target", "branch"),
         ("handoff", "questions"),
         ("source", "author"),
+        ("finding", "unknown"),
     ],
 )
 def test_unknown_fields_are_rejected(section, key):
@@ -160,26 +174,74 @@ def test_provenance_is_retained_in_mapped_artifacts():
     assert "evt-0001" in artifacts
     assert "behindthedash/datalena" in artifacts
     assert "https://github.com/behindthedash/datalena/pull/42" in artifacts
+    assert "abc123" in artifacts
     assert "qa-pipeline/flaky-verify" in artifacts
     assert "https://example.test/run/9" in artifacts
-    assert "- Producer note: see run log" in artifacts
+    assert "https://example.test/brief.md" in artifacts
 
 
 def test_optional_fields_default_cleanly():
     env = _envelope()
-    for key in ("remote", "base_branch"):
-        del env["target"][key]
-    for key in ("context", "approach", "artifacts", "implementation_intent"):
+    del env["target"]["base_branch"]
+    for key in (
+        "context",
+        "suggested_approach",
+        "artifacts",
+        "implementation_intent",
+    ):
         del env["handoff"][key]
-    del env["source"]["evidence"]
+    del env["source"]["run_id"]
+    del env["source"]["brief_path"]
+    del env["finding"]["evidence_refs"]
 
     args = pe.map_envelope(env)
 
-    assert args["remote"] is None
+    assert args["remote"] == "behindthedash/datalena"
     assert args["base_branch"] is None
     assert args["context"] is None
     assert args["implementation_intent"] is None
     assert "Evidence:" not in args["artifacts"]
+
+
+def test_actual_datalena_publisher_v1_shape_is_accepted():
+    event = {
+        "schema": "datalena.worktrail-handoff.v1",
+        "event_id": "v1:stable-key",
+        "dedupe_key": "v1:stable-key",
+        "source": {
+            "repository": "behindthedash/datalena",
+            "pr_number": 2962,
+            "merge_sha": "deadbeef",
+            "run_id": "actions-123",
+            "brief_path": "docs/specs/usability-briefs/example.md",
+        },
+        "finding": {
+            "identity_key": "persona:journey:step",
+            "persona": "operator",
+            "route": "/workspace",
+            "journey": "review data",
+            "step": "save view",
+            "severity": "medium",
+            "heuristic": "feedback",
+            "evidence_refs": ["docs/evidence/example.md"],
+            "judge_model": "reviewer-v1",
+        },
+        "handoff": {
+            "focus": "Datalena usability: improve save view",
+            "context": "Accepted finding persona:journey:step.",
+            "suggested_approach": "Add a clearer save action.",
+            "artifacts": ["https://github.com/behindthedash/datalena/pull/2962"],
+        },
+        "target": {"remote": "behindthedash/datalena", "base_branch": "dev"},
+        "captured_by": "datalena-persona-usability",
+    }
+
+    args = pe.map_envelope(event)
+
+    assert args["repo"] == "behindthedash/datalena"
+    assert args["remote"] == "behindthedash/datalena"
+    assert "persona:journey:step" in args["artifacts"]
+    assert "deadbeef" in args["artifacts"]
 
 
 def test_invalid_captured_by_is_rejected():

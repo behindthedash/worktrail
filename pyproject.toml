@@ -38,6 +38,7 @@ worktrail-codex-runtime-attestation = "worktrail.orchestrator.codex_runtime_atte
 worktrail-check-provider-commands = "worktrail.orchestrator.provider_command_compatibility:main"
 worktrail-work-queue = "worktrail.workqueue.work_queue:main"
 worktrail-handoff = "worktrail.workqueue.create_handoff:main"
+worktrail-pullhook-ingress = "worktrail.workqueue.pullhook_ingress_cli:main"
 worktrail-check-duplicate-brief = "worktrail.workqueue.create_handoff:main_check_duplicate"
 worktrail-append-duplicate-signal = "worktrail.workqueue.create_handoff:main_append_duplicate_signal"
 worktrail-queue-triage = "worktrail.workqueue.queue_triage:main"

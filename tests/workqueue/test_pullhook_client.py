@@ -46,7 +46,7 @@ class FakeOpener:
 def make_client(*responses, **kwargs):
     opener = FakeOpener(*responses)
     client = PullHookClient(
-        "https://pullhook.example/api/",
+        "https://pullhook.example/",
         "worktrail-handoff",
         TOKEN,
         opener=opener,
@@ -55,17 +55,14 @@ def make_client(*responses, **kwargs):
     return client, opener
 
 
-ITEM = {
-    "delivery_id": "d-1",
-    "event_id": "evt-1",
-    "payload": {"schema": "datalena.worktrail-handoff.v1"},
-}
+EVENT = {"schema": "datalena.worktrail-handoff.v1", "event_id": "evt-1"}
+ITEM = {"id": "d-1", "body": json.dumps(EVENT)}
 
 
 def test_claim_returns_items_and_sends_bearer_credential():
-    client, opener = make_client({"items": [ITEM]})
+    client, opener = make_client({"ok": True, "webhook": ITEM})
 
-    items = client.claim(max_items=3)
+    items = client.claim()
 
     assert [i.event_id for i in items] == ["evt-1"]
     assert items[0].delivery_id == "d-1"
@@ -74,38 +71,36 @@ def test_claim_returns_items_and_sends_bearer_credential():
     request = opener.requests[0]
     assert request.method == "POST"
     assert (
-        request.full_url
-        == "https://pullhook.example/api/channels/worktrail-handoff/claim"
+        request.full_url == "https://pullhook.example/api/hooks/worktrail-handoff/claim"
     )
     assert request.get_header("Authorization") == f"Bearer {TOKEN}"
-    assert json.loads(request.data) == {"max_items": 3}
+    assert request.data is None
 
 
 def test_peek_does_not_claim():
-    client, opener = make_client({"items": [dict(ITEM, delivery_id=None)]})
+    client, opener = make_client({"ok": True, "webhook": ITEM})
 
-    items = client.peek(limit=2)
+    items = client.peek()
 
     request = opener.requests[0]
     assert request.method == "GET"
     assert request.full_url.startswith(
-        "https://pullhook.example/api/channels/worktrail-handoff/peek?"
+        "https://pullhook.example/api/hooks/worktrail-handoff/peek"
     )
-    assert "limit=2" in request.full_url
     assert request.data is None
-    assert items[0].delivery_id is None
+    assert items[0].delivery_id == "d-1"
     assert items[0].event_id == "evt-1"
 
 
-def test_ack_posts_delivery_id():
+def test_ack_deletes_claimed_item():
     client, opener = make_client({"ok": True})
 
     client.ack("d-1")
 
     request = opener.requests[0]
-    assert request.method == "POST"
-    assert request.full_url.endswith("/channels/worktrail-handoff/ack")
-    assert json.loads(request.data) == {"delivery_id": "d-1"}
+    assert request.method == "DELETE"
+    assert request.full_url.endswith("/hooks/worktrail-handoff/items/d-1")
+    assert request.data is None
 
 
 def test_ack_rejects_empty_delivery_id():
@@ -133,7 +128,7 @@ def test_bare_timeout_error_raises_pullhook_timeout():
 
 
 def test_default_timeout_is_applied():
-    client, opener = make_client({"items": []})
+    client, opener = make_client({"ok": True, "webhook": None})
     client.claim()
     assert opener.timeouts[0] == client.timeout
     assert client.timeout > 0
@@ -178,14 +173,16 @@ def test_invalid_json_raises_pullhook_error():
 
 
 def test_item_without_event_id_is_rejected():
-    client, _ = make_client({"items": [{"delivery_id": "d-1"}]})
+    client, _ = make_client({"ok": True, "webhook": {"id": "d-1", "body": "{}"}})
     with pytest.raises(PullHookError):
         client.claim()
 
 
-def test_bare_list_response_is_accepted():
-    client, _ = make_client([ITEM])
-    assert client.claim()[0].event_id == "evt-1"
+def test_claim_rejects_multi_item_request():
+    client, opener = make_client({"ok": True, "webhook": ITEM})
+    with pytest.raises(ValueError, match="one item"):
+        client.claim(max_items=2)
+    assert opener.requests == []
 
 
 def test_missing_credential_is_rejected():
