@@ -26,11 +26,13 @@ output mode.
 - **THEN** stdout is still the parseable plan, the finding goes to stderr, and the exit code is 1
 
 ### Requirement: The precheck only fires on an unambiguous update claim
-The extraction SHALL require, within a single sentence of the task's text, all three of an
-update-verb, a backticked needle, and a backticked repo-relative path. It SHALL NOT report a finding
-for additive phrasing, for unbackticked prose, or for a named path that does not exist in the target
-repository -- an absent path is left to the existing file-scope and review paths rather than
-reported here.
+The extraction SHALL require, within a single sentence of the task's text, an update verb whose
+direct object is a backticked entity needle that is not itself an existing file path, plus a
+distinct backticked repo-relative path that resolves to a file in the target repository. Other
+backticked tokens in the sentence SHALL NOT be treated as needles, and multiple possible target
+paths SHALL be treated as ambiguous. It SHALL NOT report a finding for additive phrasing, for
+unbackticked prose, or for a named path that does not exist in the target repository -- an absent
+path is left to the existing file-scope and review paths rather than reported here.
 
 #### Scenario: additive phrasing is ignored
 - **WHEN** a task says "Add a `drift-sweep` entry to `scripts/README.md`"
