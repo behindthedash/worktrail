@@ -29,10 +29,11 @@ before fan-out, which is the cheapest possible place for this to fail.
   returning one finding per task whose text asks for an update to a **backticked** entity in a
   named repo file that does not contain it.
 - The extraction is deliberately narrow, to make a finding mean something: a task only produces a
-  finding when its prose pairs an update-verb (`update`, `modify`, `amend`, `extend`, `replace`,
-  `rename`, `remove`, `fix`, `correct`) with a backticked needle and a backticked repo-relative file
-  path in the same sentence. Prose without backticks, additive phrasing (`add`, `create`,
-  `document`), and paths that do not exist in the tree produce nothing.
+  finding when its prose pairs an update verb (`update`, `modify`, `amend`, `extend`, `replace`,
+  `rename`, `remove`, `fix`, `correct`) whose direct object is a backticked entity needle (not an
+  existing file path) with exactly one distinct backticked repo-relative file path in the same
+  sentence. Other backticked tokens do not count as needles. Prose without backticks, additive
+  phrasing (`add`, `create`, `document`), and paths that do not exist in the tree produce nothing.
 - `compile.main()` gates on the findings the same way it already gates on scope, ordering and
   requirement coverage: findings are printed to stderr by a new `_print_ac_target_gap_error`, the
   `.compile-ok` marker is withheld, and the exit code is 1 in both plain and `--json` modes.

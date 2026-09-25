@@ -1533,6 +1533,69 @@ def test_an_uncovered_requirement_does_not_write_the_compile_marker(tmp_path, ca
     assert not (d / conductor_compile.COMPILE_MARKER_NAME).exists()
 
 
+def _run_compile_with_update_target(
+    tmp_path: Path, *, target_text: str, json_mode: bool = False
+):
+    import subprocess
+    from unittest.mock import patch
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    d = repo / "openspec" / "changes" / "update-entry"
+    d.mkdir(parents=True)
+    (d / "proposal.md").write_text("## Why\nBecause.\n")
+    (d / "tasks.md").write_text(
+        "## 1. Docs\n\n"
+        "- [ ] 1.1 Update the `missing-entry` entry in `scripts/README.md`.\n"
+    )
+    target = repo / "scripts" / "README.md"
+    target.parent.mkdir()
+    target.write_text(target_text)
+
+    reply = _reply(**{"1.1": {"files": ["scripts/README.md"], "deps": []}})
+    args = [str(d), *(["--json"] if json_mode else [])]
+    with patch("worktrail.conductor.compile._default_spawn", return_value=reply):
+        rc = conductor_compile.main(args)
+    return rc, d
+
+
+def test_missing_ac_update_target_fails_and_does_not_write_marker(tmp_path, capsys):
+    rc, d = _run_compile_with_update_target(tmp_path, target_text="# Docs\n")
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "missing-entry" in captured.err
+    assert "scripts/README.md" in captured.err
+    assert "correct the AC" in captured.err
+    assert not (d / conductor_compile.COMPILE_MARKER_NAME).exists()
+
+
+def test_present_ac_update_target_passes_and_writes_marker(tmp_path, capsys):
+    rc, d = _run_compile_with_update_target(
+        tmp_path, target_text="# Docs\n- `missing-entry`\n"
+    )
+
+    assert rc == 0
+    assert "ERROR" not in capsys.readouterr().err
+    assert (d / conductor_compile.COMPILE_MARKER_NAME).is_file()
+
+
+def test_json_compile_keeps_plan_parseable_when_update_target_is_missing(
+    tmp_path, capsys
+):
+    rc, d = _run_compile_with_update_target(
+        tmp_path, target_text="# Docs\n", json_mode=True
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    payload = json.loads(captured.out)
+    assert payload["spec_id"] == "update-entry"
+    assert "missing-entry" in captured.err
+    assert not (d / conductor_compile.COMPILE_MARKER_NAME).exists()
+
+
 def test_a_stale_marker_is_overwritten_by_the_next_passing_compile(tmp_path, capsys):
     import subprocess
     from unittest.mock import patch

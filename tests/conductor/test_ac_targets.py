@@ -1,9 +1,9 @@
 """Tests for the AC named-target precheck (`conductor/ac_targets.py`).
 
-The extraction is narrow on purpose: an update-verb, a backticked path that
-resolves to an existing file, and at least one other backticked token. Every
-other shape -- additive phrasing, unbackticked prose, a path that does not
-exist -- reports nothing.
+The extraction is narrow on purpose: the update verb's backticked direct
+object is the needle, and a distinct backticked path resolves to an existing
+file. A direct object that is itself an existing file is not a needle, and
+other backticked tokens do not count as needles.
 """
 
 from __future__ import annotations
@@ -109,11 +109,34 @@ def test_criterion_on_a_wrapped_continuation_line_is_still_seen(tmp_path: Path):
     assert "canonical-checkout-drift-sweep.sh" in findings[0]
 
 
-def test_token_named_after_the_path_is_still_a_needle(tmp_path: Path):
-    """The path is whichever token resolves to a file; order does not matter."""
+def test_token_named_after_the_path_is_not_the_direct_object(tmp_path: Path):
     change, repo = _change(
         tmp_path,
         "Update `scripts/README.md` to name `canonical-checkout-drift-sweep.sh`.",
+    )
+    _write(repo / "scripts" / "README.md", "# Scripts\n")
+
+    assert ac_targets.find_missing_ac_targets(change, repo) == []
+
+
+def test_only_the_update_verbs_direct_object_is_checked(tmp_path: Path):
+    change, repo = _change(
+        tmp_path,
+        "Extend `tests/conductor/test_compile.py` with gate cases that leave no "
+        "`.compile-ok` marker.",
+    )
+    _write(repo / "tests" / "conductor" / "test_compile.py", "# tests\n")
+
+    assert ac_targets.find_missing_ac_targets(change, repo) == []
+
+
+def test_update_object_is_selected_when_other_backticked_tokens_are_present(
+    tmp_path: Path,
+):
+    change, repo = _change(
+        tmp_path,
+        "Update the `canonical-checkout-drift-sweep.sh` entry in `scripts/README.md` "
+        "using `FakeRun`.",
     )
     _write(repo / "scripts" / "README.md", "# Scripts\n")
 
@@ -121,6 +144,31 @@ def test_token_named_after_the_path_is_still_a_needle(tmp_path: Path):
 
     assert len(findings) == 1
     assert "canonical-checkout-drift-sweep.sh" in findings[0]
+    assert "scripts/README.md" in findings[0]
+
+
+def test_multiple_existing_non_needle_paths_are_ambiguous(tmp_path: Path):
+    change, repo = _change(
+        tmp_path,
+        "Update the `canonical-checkout-drift-sweep.sh` entry in `scripts/README.md` "
+        "using `scripts/generate.py`.",
+    )
+    _write(repo / "scripts" / "README.md", "# Scripts\n")
+    _write(repo / "scripts" / "generate.py", "pass\n")
+
+    assert ac_targets.find_missing_ac_targets(change, repo) == []
+
+
+def test_existing_file_as_update_object_is_not_a_needle(tmp_path: Path):
+    change, repo = _change(
+        tmp_path,
+        "Extend `tests/conductor/test_compile.py` with cases from "
+        "`tests/conductor/test_ac_targets.py`.",
+    )
+    _write(repo / "tests" / "conductor" / "test_compile.py", "# tests\n")
+    _write(repo / "tests" / "conductor" / "test_ac_targets.py", "# tests\n")
+
+    assert ac_targets.find_missing_ac_targets(change, repo) == []
 
 
 def test_verb_in_a_prior_sentence_ending_in_a_bracket_does_not_carry_over(

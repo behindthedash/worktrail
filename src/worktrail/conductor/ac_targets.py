@@ -9,11 +9,12 @@ text and reports it before compile writes a plan.
 
 The extraction is deliberately narrow (see
 `openspec/changes/compile-precheck-ac-named-target-existence`): a single
-sentence must carry an update-verb, a backticked repo-relative path that
-resolves to a file existing under `repo`, and at least one other backticked
-token to look for inside it. Unbackticked prose, additive phrasing ("Add a
-... entry to ..."), and a backticked path that does not exist all report
-nothing. An absent path in particular is *not* a finding here: a task that
+sentence must carry an update verb whose direct object is a backticked entity
+needle (not itself an existing file path), and a distinct backticked
+repo-relative path that resolves to a file under `repo`. Other backticked
+tokens do not count as needles. Unbackticked prose,
+additive phrasing ("Add a ... entry to ..."), and a backticked path that does
+not exist all report nothing. An absent path in particular is *not* a finding here: a task that
 creates the file it names is the normal case, and this gate has no way to
 tell that apart from a typo -- the file-scope and requirement-coverage gates
 own that ground.
@@ -40,8 +41,13 @@ _UPDATE_VERBS = (
     "fix",
     "correct",
 )
-_UPDATE_VERB_RE = re.compile(r"\b(?:" + "|".join(_UPDATE_VERBS) + r")\b", re.IGNORECASE)
 _BACKTICKED_RE = re.compile(r"`([^`]+)`")
+_UPDATE_OBJECT_RE = re.compile(
+    r"\b(?:"
+    + "|".join(_UPDATE_VERBS)
+    + r")\b\s+(?:(?:only|the|a|an|existing|current|named|specific|same|old|new|stale|correct|matching|missing|corresponding)\s+)*`([^`]+)`",
+    re.IGNORECASE,
+)
 # A sentence may end behind a closing bracket or quote (`... exhaustion.)`).
 # Without those, two sentences are scanned as one and a verb in the first can
 # license a token pair in the second.
@@ -127,31 +133,35 @@ def find_missing_ac_targets(spec_dir: str | Path, repo: str | Path) -> list[str]
         for sentence in _SENTENCE_SPLIT_RE.split(
             _task_block_text(task, spec_dir, repo)
         ):
-            tokens = [m.group(1) for m in _BACKTICKED_RE.finditer(sentence)]
+            tokens = list(_BACKTICKED_RE.finditer(sentence))
             if len(tokens) < 2:
                 continue
-            if not _UPDATE_VERB_RE.search(_BACKTICKED_RE.sub(" ", sentence)):
+            objects = list(_UPDATE_OBJECT_RE.finditer(sentence))
+            if not objects:
                 continue
 
-            resolved = [(t, _resolve_existing(t, repo)) for t in tokens]
-            # The path is the token that resolves to an existing file; every
-            # other token in the same sentence is a needle to look for in it.
-            needles = [t for t, p in resolved if p is None]
-            for token, path in resolved:
-                if path is None:
+            for obj in objects:
+                needle = obj.group(1).strip()
+                if not needle or _resolve_existing(needle, repo) is not None:
                     continue
+                paths = [
+                    (match.group(1), _resolve_existing(match.group(1), repo))
+                    for match in tokens
+                    if match.group(1).strip() != needle
+                ]
+                paths = [(token, path) for token, path in paths if path is not None]
+                if len(paths) != 1:
+                    continue
+                token, path = paths[0]
                 text = _read_text(path)
-                if text is None:
+                if text is None or needle in text:
                     continue
-                for needle in needles:
-                    if needle.strip() in text:
-                        continue
-                    finding = (
-                        f"{task_id}: `{token}` does not contain `{needle}`"
-                        if task_id
-                        else f"`{token}` does not contain `{needle}`"
-                    )
-                    if finding not in findings:
-                        findings.append(finding)
+                finding = (
+                    f"{task_id}: `{token}` does not contain `{needle}`"
+                    if task_id
+                    else f"`{token}` does not contain `{needle}`"
+                )
+                if finding not in findings:
+                    findings.append(finding)
 
     return findings
