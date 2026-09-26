@@ -109,7 +109,9 @@ def _resolve_existing(token: str, repo: Path) -> Path | None:
 def _read_text(path: Path) -> str | None:
     try:
         return path.read_text(encoding="utf-8")
-    except OSError, UnicodeDecodeError:
+    except OSError:
+        return None
+    except UnicodeDecodeError:
         return None
 
 
