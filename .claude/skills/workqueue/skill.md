@@ -180,19 +180,24 @@ move-a-brief mechanism never diverges between callers.
   `FileNotFoundError` and aborted the *entire* `evaluate` run, including every other group that
   would otherwise have evaluated fine.
 - **`evaluate_group()` spawns its evaluator into a linked worktree whenever the group's resolved
-  `cwd` is a canonical checkout.** `_evaluator_worktree(cwd)` decides by comparing `git rev-parse
-  --git-dir` against `--git-common-dir`: equal means canonical, so it creates a detached
-  `<repo>-worktrees/.triage-evaluator-<uuid>` worktree (via
+  `cwd` is a canonical checkout.** `_evaluator_worktree(cwd)` decides by reading the checkout's
+  own `.git` entry rather than comparing `git rev-parse --git-dir` against `--git-common-dir`: a
+  `.git` *file* is a linked-worktree pointer whose `gitdir:` path is resolved against the checkout
+  when relative, and it is already-isolated (passes through) only when that gitdir holds a
+  `commondir` file; a `.git` directory is canonical. Everything else yields the original `cwd`
+  untouched — no `.git` entry at all (not a git checkout), an unreadable `.git` file (`OSError`),
+  a gitdir pointer with no `commondir`, or a canonical checkout whose `git rev-parse --verify HEAD`
+  fails (a repo with no commits, where `worktree add` could not succeed). For a canonical checkout
+  it creates a detached `<repo>-worktrees/.triage-evaluator-<uuid>` worktree (via
   `orchestrator.worktree.default_worktree_base`) and yields that path to
-  `spawnlib.spawn_agent()`; unequal (already a linked worktree) or a `rev-parse` failure (not a
-  git checkout) yields the original `cwd` untouched. Headless Codex workers refuse a
-  canonical-checkout target (`skill_dispatch._refuse_canonical_checkout`), and an evaluator that
-  only inspects repo state still needs a valid linked-worktree `cwd` to launch — the
-  `{no_repo_key}` group's `cwd` (the worktrail checkout itself) gets a worktrail linked worktree
-  the same way. A creation failure raises `WorktreeAddError` before any spawn; the temp worktree
-  is removed with `git worktree remove --force` in a `finally`, where a cleanup failure only logs
-  a warning. `EVALUATOR_PROMPT_TEMPLATE` also now tells the evaluator the pass is read-only: no
-  file modifications, commits, or pull requests.
+  `spawnlib.spawn_agent()`. Headless Codex workers refuse a canonical-checkout target
+  (`skill_dispatch._refuse_canonical_checkout`), and an evaluator that only inspects repo state
+  still needs a valid linked-worktree `cwd` to launch — the `{no_repo_key}` group's `cwd` (the
+  worktrail checkout itself) gets a worktrail linked worktree the same way. A creation failure
+  raises `WorktreeAddError` before any spawn; the temp worktree is removed with `git worktree
+  remove --force` in a `finally`, where a cleanup failure only logs a warning.
+  `EVALUATOR_PROMPT_TEMPLATE` also now tells the evaluator the pass is read-only: no file
+  modifications, commits, or pull requests.
 - **FOCUS text is scored through `cluster_detect._focus_overlap`; BODY text keeps the raw
   coefficient.** The overlap coefficient divides by the SMALLER token set, so a thin focus text
   is trivially a near-subset of any longer brief. Both of `score_candidates.py`'s scoring sites
