@@ -1,0 +1,9 @@
+## 1. Refresh the sync-pending remediation base
+
+- [ ] 1.1 In `src/worktrail/drain/drain.py`, update `_run_sync_pending` so after the existing-open-PR early return and immediately before the existing `git worktree add`, it runs `git fetch origin <base>` through `_run_git`, then creates the new remediation worktree from `origin/<base>` rather than the local `<base>` name. Keep `_base_branch_for`, the existing-PR fast path, stale-worktree reset, branch name, commit/push, landing, result shape, and finally teardown unchanged. A fetch failure must continue to reach the generic per-finding failure isolation without creating a worktree. In `tests/drain/test_drain.py`, extend the real-git sync-pending coverage with a regression that advances the fixture bare `origin/dev` from another clone after the canonical fixture's local `dev` is stale, runs the remediation with the existing fake sync spawner and mocked landing seam, and proves the resulting `chore/sync-<spec>` branch contains the remote-only base commit. Also cover the already-open-PR early return so it performs neither fetch nor worktree creation, and a failed fetch so it opens no worktree or PR while another finding still proceeds through the generic sweep. Keep the existing local-origin tests hermetic.
+  (Requirement: Sync-pending remediation)
+  files: src/worktrail/drain/drain.py tests/drain/test_drain.py
+
+## 2. Verification
+
+- [ ] 2.1 [e2e] Run `PYTHONPATH=src pytest -q tests/drain/test_drain.py`, then `PYTHONPATH=src pytest -q`, `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`, `python3 scripts/ci/ruff_pinned.py check .`, and `python3 scripts/ci/ruff_pinned.py format --check .`. Run `openspec validate drain-sync-pending-remote-base --strict` and `worktrail-compile openspec/changes/drain-sync-pending-remote-base`.
