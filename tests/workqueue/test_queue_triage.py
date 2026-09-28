@@ -53,6 +53,68 @@ class QueueTriageTestBase(unittest.TestCase):
         return p
 
 
+class TestEvaluatorWorktree(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name) / "repo"
+        self.repo.mkdir()
+        subprocess.run(
+            ["git", "-C", str(self.repo), "init", "-b", "main"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repo), "config", "user.name", "Test"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repo), "config", "user.email", "test@example.com"],
+            check=True,
+        )
+        (self.repo / "README.md").write_text("fixture\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.repo), "add", "README.md"], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo), "commit", "-m", "initial"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_canonical_checkout_gets_a_temporary_linked_worktree(self):
+        with qt._evaluator_worktree(self.repo) as evaluator_cwd:
+            evaluator = Path(evaluator_cwd)
+            self.assertNotEqual(evaluator, self.repo)
+            self.assertTrue((evaluator / ".git").is_file())
+            self.assertTrue(evaluator.is_dir())
+
+        self.assertFalse(evaluator.exists())
+
+    def test_existing_linked_worktree_is_reused(self):
+        linked = self.repo.parent / "repo-worktrees" / "existing"
+        linked.parent.mkdir()
+        subprocess.run(
+            ["git", "-C", str(self.repo), "worktree", "add", "--detach", str(linked)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        with qt._evaluator_worktree(linked) as evaluator_cwd:
+            self.assertEqual(Path(evaluator_cwd), linked)
+            self.assertTrue(linked.is_dir())
+
+        subprocess.run(
+            ["git", "-C", str(self.repo), "worktree", "remove", "--force", str(linked)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+
 class TestGroupQueueByRepo(QueueTriageTestBase):
     def test_groups_by_repo_value(self):
         self.write("a.md", repo="behindthedash/worktrail")

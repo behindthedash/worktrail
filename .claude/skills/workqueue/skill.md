@@ -23,6 +23,7 @@ triggers:
     - BATCH_MIN
     - fold-into-change
     - _fold_task_instruction
+    - _evaluator_worktree
 ---
 
 You are working on **worktrail's work-queue handoff system**: the atomic claim/done/release
@@ -178,6 +179,25 @@ move-a-brief mechanism never diverges between callers.
   — instead of using it directly as `subprocess.run()`'s `cwd`, which previously raised
   `FileNotFoundError` and aborted the *entire* `evaluate` run, including every other group that
   would otherwise have evaluated fine.
+- **`evaluate_group()` spawns its evaluator into a linked worktree whenever the group's resolved
+  `cwd` is a canonical checkout.** `_evaluator_worktree(cwd)` decides by reading the checkout's
+  own `.git` entry rather than comparing `git rev-parse --git-dir` against `--git-common-dir`: a
+  `.git` *file* is a linked-worktree pointer whose `gitdir:` path is resolved against the checkout
+  when relative, and it is already-isolated (passes through) only when that gitdir holds a
+  `commondir` file; a `.git` directory is canonical. Everything else yields the original `cwd`
+  untouched — no `.git` entry at all (not a git checkout), an unreadable `.git` file (`OSError`),
+  a gitdir pointer with no `commondir`, or a canonical checkout whose `git rev-parse --verify HEAD`
+  fails (a repo with no commits, where `worktree add` could not succeed). For a canonical checkout
+  it creates a detached `<repo>-worktrees/.triage-evaluator-<uuid>` worktree (via
+  `orchestrator.worktree.default_worktree_base`) and yields that path to
+  `spawnlib.spawn_agent()`. Headless Codex workers refuse a canonical-checkout target
+  (`skill_dispatch._refuse_canonical_checkout`), and an evaluator that only inspects repo state
+  still needs a valid linked-worktree `cwd` to launch — the `{no_repo_key}` group's `cwd` (the
+  worktrail checkout itself) gets a worktrail linked worktree the same way. A creation failure
+  raises `WorktreeAddError` before any spawn; the temp worktree is removed with `git worktree
+  remove --force` in a `finally`, where a cleanup failure only logs a warning.
+  `EVALUATOR_PROMPT_TEMPLATE` also now tells the evaluator the pass is read-only: no file
+  modifications, commits, or pull requests.
 - **FOCUS text is scored through `cluster_detect._focus_overlap`; BODY text keeps the raw
   coefficient.** The overlap coefficient divides by the SMALLER token set, so a thin focus text
   is trivially a near-subset of any longer brief. Both of `score_candidates.py`'s scoring sites
@@ -212,7 +232,8 @@ move-a-brief mechanism never diverges between callers.
   `_worktree_pr_close()` is the shared fold-into-change/propose-change pipeline and claims the
   brief before any git/worktree/`land_pr` work (see the claim-first guard above). `cmd_evaluate()`
   resolves each group's `repo:` via `_resolve_repo_dir()` before using it as the evaluator `cwd`,
-  skipping (not crashing on) a group whose repo doesn't resolve
+  skipping (not crashing on) a group whose repo doesn't resolve; `_evaluator_worktree()` then
+  wraps the evaluator spawn so a canonical checkout runs in a detached linked worktree instead
 - `workqueue/create_handoff.py` (via `worktrail-handoff`) — brief creation entrypoint; delegates
   repo inference to `repo_inference.infer_repo()` with a prefix-match fallback.
   `_scan_durable_artifact_overlaps` is the capture-time advisory scan over spec slugs, OpenSpec
@@ -245,9 +266,12 @@ move-a-brief mechanism never diverges between callers.
   `cmd_evaluate()` — always resolve it through `_resolve_repo_dir(repo, repos_root)` first and
   skip the group if it doesn't resolve, so one bad `repo:` value can't abort every other group's
   evaluation.
+- Never spawn an evaluator with the group's canonical-checkout `cwd` directly — pass it through
+  `_evaluator_worktree(cwd)` so the launch targets a linked worktree (Codex dispatch refuses a
+  canonical-checkout target) and the temp worktree is always removed afterwards.
 - Never score brief-to-brief focus text with the raw `_overlap_coefficient`, and never re-derive
   the token floor locally — import `_focus_overlap`/`MIN_FOCUS_TOKENS` from
   `router/cluster_detect.py` so the two floors stay one calibrated constant.
 
 ---
-**Last Updated:** 2026-09-19
+**Last Updated:** 2026-09-28
