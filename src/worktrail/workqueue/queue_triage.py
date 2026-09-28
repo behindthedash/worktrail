@@ -19,7 +19,9 @@ import re
 import subprocess
 import sys
 import time
+import uuid
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -50,6 +52,76 @@ logger = logging.getLogger(__name__)
 _FOCUS_BODY_RE = re.compile(r"^##\s+Focus\s*$\r?\n(.+)$", re.MULTILINE)
 
 NO_REPO_KEY = "__none__"
+
+
+@contextmanager
+def _evaluator_worktree(cwd: str | Path):
+    """Give an evaluator a linked worktree when its checkout is canonical.
+
+    Headless Codex workers are guarded against running in a canonical checkout.
+    Evaluators only inspect repo state, but still need a valid linked-worktree
+    cwd to launch. Existing worktrees are already isolated and pass through.
+    """
+    repo_root = Path(cwd).resolve()
+    git_dirs: list[Path] = []
+    for flag in ("--git-dir", "--git-common-dir"):
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", flag],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            yield str(cwd)
+            return
+        git_dir = Path(result.stdout.strip())
+        git_dirs.append(
+            (repo_root / git_dir).resolve()
+            if not git_dir.is_absolute()
+            else git_dir.resolve()
+        )
+
+    if git_dirs[0] != git_dirs[1]:
+        yield str(cwd)
+        return
+
+    from ..orchestrator.worktree import default_worktree_base
+
+    worktree_base = default_worktree_base(repo_root)
+    worktree_base.mkdir(parents=True, exist_ok=True)
+    worktree = worktree_base / f".triage-evaluator-{uuid.uuid4().hex}"
+    added = subprocess.run(
+        ["git", "-C", str(repo_root), "worktree", "add", "--detach", str(worktree)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if added.returncode != 0:
+        detail = (added.stderr or added.stdout).strip()
+        raise WorktreeAddError(f"triage evaluator worktree creation failed: {detail}")
+
+    try:
+        yield str(worktree)
+    finally:
+        removed = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_root),
+                "worktree",
+                "remove",
+                "--force",
+                str(worktree),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if removed.returncode != 0:
+            detail = (removed.stderr or removed.stdout).strip()
+            logger.warning(
+                "triage evaluator worktree cleanup failed for %s: %s", worktree, detail
+            )
 
 
 def _claim_or_reclaim_stale(brief_id: str, by: str) -> dict:
@@ -231,7 +303,8 @@ EVALUATOR_PROMPT_TEMPLATE = """\
 You are triaging work-queue briefs for the repo group `{repo}` for staleness, \
 duplication, and whether they belong folded into or proposed as an OpenSpec \
 change. Evaluate ONLY the briefs listed below; do not scan the queue for \
-others.
+others. This is a read-only evaluation: do not modify files, create commits, \
+or open pull requests.
 
 Mechanical premise check: each brief below also carries a deterministic \
 premise check run before you were spawned (a quoted claim/path/command from \
@@ -1494,7 +1567,9 @@ def evaluate_group(
     Builds `EVALUATOR_PROMPT_TEMPLATE` for this group (one `{id, focus, created}`
     line per brief, `path.stem` as `id` -- matching `work_queue.resolve()`'s
     primary identifier) and spawns one cold headless worker via
-    `spawnlib.spawn_agent()` in `cwd`, under `DEFAULT_TIER` with `agent` passed
+    `spawnlib.spawn_agent()` in an isolated linked worktree when `cwd` is a
+    canonical checkout (an existing linked worktree is reused), under
+    `DEFAULT_TIER` with `agent` passed
     through as a soft `prefer` hint (design D3: routing, not this caller, owns
     the tier's harness/model choice). `cwd` is the group's target repo checkout
     when `repo` is not `NO_REPO_KEY` (so the evaluator's `git`/`gh` calls run
@@ -1626,7 +1701,10 @@ def evaluate_group(
         propose_target_rule=propose_target_rule,
         dependency_freshness=dependency_freshness.format_freshness_block(freshness),
     )
-    result = spawnlib.spawn_agent(prompt, cwd, tier=DEFAULT_TIER, prefer=agent)
+    with _evaluator_worktree(cwd) as evaluator_cwd:
+        result = spawnlib.spawn_agent(
+            prompt, evaluator_cwd, tier=DEFAULT_TIER, prefer=agent
+        )
     candidates_by_brief = {
         path.stem: [c["id"] for c in candidates_by_path[path]] for path in briefs
     }
