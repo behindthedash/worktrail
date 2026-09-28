@@ -290,6 +290,7 @@
           "BATCH_MIN",
           "fold-into-change",
           "_fold_task_instruction",
+          "_evaluator_worktree",
           "workqueue",
           "handoff-brief",
           "queue",
