@@ -63,25 +63,32 @@ def _evaluator_worktree(cwd: str | Path):
     cwd to launch. Existing worktrees are already isolated and pass through.
     """
     repo_root = Path(cwd).resolve()
-    git_dirs: list[Path] = []
-    for flag in ("--git-dir", "--git-common-dir"):
-        result = subprocess.run(
-            ["git", "-C", str(repo_root), "rev-parse", flag],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
+    git_entry = repo_root / ".git"
+    if git_entry.is_file():
+        try:
+            gitdir_line = git_entry.read_text(encoding="utf-8").strip()
+            gitdir_value = gitdir_line.removeprefix("gitdir: ")
+            gitdir = Path(gitdir_value)
+            if not gitdir.is_absolute():
+                gitdir = (repo_root / gitdir).resolve()
+            is_linked_worktree = (gitdir / "commondir").is_file()
+        except OSError:
             yield str(cwd)
             return
-        git_dir = Path(result.stdout.strip())
-        git_dirs.append(
-            (repo_root / git_dir).resolve()
-            if not git_dir.is_absolute()
-            else git_dir.resolve()
-        )
+    else:
+        is_linked_worktree = False
 
-    if git_dirs[0] != git_dirs[1]:
+    if is_linked_worktree or not git_entry.is_dir():
+        yield str(cwd)
+        return
+
+    has_head = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "--verify", "HEAD"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if has_head.returncode != 0:
         yield str(cwd)
         return
 
