@@ -1,6 +1,6 @@
 ## 1. Isolate automatic Codex child homes
 
-- [ ] 1.1 Update the shared Codex child-environment preparation so an automatic
+- [x] 1.1 Update the shared Codex child-environment preparation so an automatic
       selection never reuses the inherited parent `CODEX_HOME`, including when
       the normal automatic location resolves to the parent; retain explicit
       `--codex-home` and `WORKTRAIL_CODEX_HOME` selection and its fail-closed
@@ -18,7 +18,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [e2e] Verify the focused router and orchestrator regressions, then run
+- [x] 2.1 [e2e] Verify the focused router and orchestrator regressions, then run
       `PYTHONPATH=src pytest -q`,
       `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`,
       `openspec validate isolate-nested-codex-home --strict`, and
