@@ -3722,7 +3722,12 @@ def _resolve_json_arg(inline: str | None, file_path: str | None) -> str | None:
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="sdd-workflow conductor resume dashboard")
     p.add_argument(
-        "--root", default="docs/specs", help="specs root to scan (default: docs/specs)"
+        "--root",
+        default="docs/specs",
+        help=(
+            "specs root to scan (default: docs/specs; for a repo, pass "
+            "<repo>/docs/specs, which also discovers its OpenSpec changes)"
+        ),
     )
     p.add_argument(
         "--picked-dir",
