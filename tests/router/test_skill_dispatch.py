@@ -624,6 +624,131 @@ class CodexHomePreflightTests(unittest.TestCase):
             finally:
                 os.chmod(tmp, 0o755)
 
+    @patch("worktrail.router.skill_dispatch.subprocess.run")
+    def test_automatic_child_home_isolated_from_writable_parent(self, run):
+        run.return_value = subprocess.CompletedProcess(
+            [], 0, "Logged in using ChatGPT\n", ""
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parent = root / "parent-home"
+            child = root / "worktrail-home"
+            parent.mkdir(mode=0o700)
+            auth = parent / "auth.json"
+            auth.write_text("{}")
+            auth.chmod(0o600)
+            with (
+                patch.dict(os.environ, {"CODEX_HOME": str(parent)}, clear=True),
+                patch.object(
+                    skill_dispatch,
+                    "default_worktrail_codex_home",
+                    return_value=str(child),
+                ),
+            ):
+                child_env, selected, automatic = (
+                    skill_dispatch.prepare_codex_child_environment()
+                )
+
+            self.assertTrue(automatic)
+            self.assertEqual(selected, str(child))
+            self.assertEqual(child_env["CODEX_HOME"], str(child))
+            self.assertTrue((child / "auth.json").is_symlink())
+            self.assertEqual((child / "auth.json").readlink(), auth)
+            run.assert_called_once()
+
+    @patch("worktrail.router.skill_dispatch.subprocess.run")
+    def test_read_only_parent_uses_distinct_automatic_home(self, run):
+        run.return_value = subprocess.CompletedProcess(
+            [], 0, "Logged in using ChatGPT\n", ""
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parent = root / "parent-home"
+            child = root / "worktrail-home"
+            parent.mkdir(mode=0o700)
+            auth = parent / "auth.json"
+            auth.write_text("{}")
+            auth.chmod(0o600)
+            parent.chmod(0o500)
+            try:
+                with (
+                    patch.dict(os.environ, {"CODEX_HOME": str(parent)}, clear=True),
+                    patch.object(
+                        skill_dispatch,
+                        "default_worktrail_codex_home",
+                        return_value=str(child),
+                    ),
+                ):
+                    child_env, selected, automatic = (
+                        skill_dispatch.prepare_codex_child_environment()
+                    )
+            finally:
+                parent.chmod(0o700)
+
+            self.assertTrue(automatic)
+            self.assertEqual(selected, str(child))
+            self.assertEqual(child_env["CODEX_HOME"], str(child))
+            self.assertTrue((child / "auth.json").is_symlink())
+            self.assertEqual((child / "auth.json").readlink(), auth)
+
+    @patch("worktrail.router.skill_dispatch.subprocess.run")
+    def test_automatic_home_collision_is_avoided_before_auth_linking(self, run):
+        run.return_value = subprocess.CompletedProcess(
+            [], 0, "Logged in using ChatGPT\n", ""
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp) / "worktrail-home"
+            parent.mkdir(mode=0o700)
+            auth = parent / "auth.json"
+            original_auth = b'{"tokens":"parent"}'
+            auth.write_bytes(original_auth)
+            auth.chmod(0o600)
+            parent.chmod(0o500)
+            try:
+                with (
+                    patch.dict(os.environ, {"CODEX_HOME": str(parent)}, clear=True),
+                    patch.object(
+                        skill_dispatch,
+                        "default_worktrail_codex_home",
+                        return_value=str(parent),
+                    ),
+                ):
+                    child_env, selected, automatic = (
+                        skill_dispatch.prepare_codex_child_environment()
+                    )
+            finally:
+                parent.chmod(0o700)
+
+            child = Path(selected)
+            self.assertTrue(automatic)
+            self.assertNotEqual(child.resolve(), parent.resolve())
+            self.assertEqual(child_env["CODEX_HOME"], selected)
+            self.assertFalse(auth.is_symlink())
+            self.assertEqual(auth.read_bytes(), original_auth)
+            self.assertTrue((child / "auth.json").is_symlink())
+            self.assertEqual((child / "auth.json").readlink(), auth)
+
+    @patch("worktrail.router.skill_dispatch.subprocess.run")
+    def test_explicit_parent_home_remains_rejected_without_auth_modification(self, run):
+        run.return_value = subprocess.CompletedProcess(
+            [], 0, "Logged in using ChatGPT\n", ""
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp) / "parent-home"
+            parent.mkdir(mode=0o700)
+            auth = parent / "auth.json"
+            original_auth = b'{"tokens":"parent"}'
+            auth.write_bytes(original_auth)
+            auth.chmod(0o600)
+            with (
+                patch.dict(os.environ, {"CODEX_HOME": str(parent)}, clear=True),
+                self.assertRaisesRegex(OSError, "must not be the same directory"),
+            ):
+                skill_dispatch.prepare_codex_child_environment(str(parent))
+
+            self.assertFalse(auth.is_symlink())
+            self.assertEqual(auth.read_bytes(), original_auth)
+
     def test_automatic_home_is_created_and_skills_are_linked(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "skills"

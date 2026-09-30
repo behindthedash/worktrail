@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from typing import ClassVar
 
 from worktrail.orchestrator import spawnlib
+from worktrail.router import skill_dispatch
 from worktrail.shared import codex_sandbox
 
 os.environ.setdefault(
@@ -1383,32 +1384,52 @@ class CodexSpawn(unittest.TestCase):
 
     def test_codex_worker_uses_prepared_child_home(self):
         seen = {}
-        child_env = {"CODEX_HOME": "/tmp/worktrail-codex-child"}
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp) / "parent-home"
+            child = Path(tmp) / "worktrail-home"
+            parent.mkdir(mode=0o700)
+            auth = parent / "auth.json"
+            auth.write_text("{}")
+            auth.chmod(0o600)
 
-        def fake_run(cmd, **kwargs):
-            seen["env"] = kwargs["env"]
-            out_path = cmd[cmd.index("--output-last-message") + 1]
-            with open(out_path, "w") as f:
-                f.write("codex final report")
-            return Proc(0, '{"type":"event"}\n', "")
+            def fake_run(cmd, **kwargs):
+                if cmd == ["codex", "login", "status"]:
+                    self.assertEqual(kwargs["env"]["CODEX_HOME"], str(parent))
+                    return subprocess.CompletedProcess(
+                        cmd, 0, "Logged in using ChatGPT\n", ""
+                    )
+                seen["env"] = kwargs["env"]
+                out_path = cmd[cmd.index("--output-last-message") + 1]
+                with open(out_path, "w") as f:
+                    f.write("codex final report")
+                return Proc(0, '{"type":"event"}\n', "")
 
-        spawnlib.subprocess.run = fake_run
-        with (
-            _patch_routing(SINGLE_CODEX_ROUTING),
-            patch.object(
-                spawnlib,
-                "prepare_codex_child_environment",
-                return_value=(child_env.copy(), child_env["CODEX_HOME"], False),
-            ) as prepare,
-        ):
-            spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build")
+            spawnlib.subprocess.run = fake_run
+            with (
+                _patch_routing(SINGLE_CODEX_ROUTING),
+                patch.dict(
+                    os.environ,
+                    {"CODEX_HOME": str(parent), "WORKTRAIL_CODEX_HOME": ""},
+                ),
+                patch.object(
+                    skill_dispatch,
+                    "default_worktrail_codex_home",
+                    return_value=str(child),
+                ),
+                patch.object(
+                    spawnlib,
+                    "prepare_codex_child_environment",
+                    wraps=skill_dispatch.prepare_codex_child_environment,
+                ) as prepare,
+            ):
+                out = spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build")
 
-        # Subscription lane: default home selection, ChatGPT auth inherited --
-        # same contract as before the codex-api-auth-lane change, now passed
-        # explicitly so the auth lane always matches the served cell's pool.
-        prepare.assert_called_once_with(None, inherit_auth=True)
-        self.assertEqual(seen["env"]["CODEX_HOME"], child_env["CODEX_HOME"])
-        self.assertEqual(seen["env"]["CC_HEADLESS"], "1")
+            self.assertEqual(out.text, "codex final report")
+            prepare.assert_called_once_with(None, inherit_auth=True)
+            self.assertEqual(seen["env"]["CODEX_HOME"], str(child))
+            self.assertEqual(seen["env"]["CC_HEADLESS"], "1")
+            self.assertTrue((child / "auth.json").is_symlink())
+            self.assertEqual((child / "auth.json").readlink(), auth)
 
     def _api_routing(self, codex_home):
         return _routing(
