@@ -12,7 +12,7 @@
 
 ## 2. Pin policy and developer instructions
 
-- [ ] 2.1 Make `.worktrail/policy.yaml` invoke Python 3.14 for its pre-PR and
+- [x] 2.1 Make `.worktrail/policy.yaml` invoke Python 3.14 for its pre-PR and
       pre-commit gates, with pytest called as `python3.14 -m pytest`; update
       `AGENTS.md`'s Development commands to use the same interpreter. Extend
       the existing policy self-check or drift coverage to assert the committed
