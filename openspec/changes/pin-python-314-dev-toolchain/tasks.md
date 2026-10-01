@@ -1,6 +1,6 @@
 ## 1. Pin the local installer
 
-- [ ] 1.1 Change `scripts/dev-install.sh` so every install and post-install
+- [x] 1.1 Change `scripts/dev-install.sh` so every install and post-install
       metadata-verification invocation uses `python3.14` (`python3.14 -m pip`
       for pip), without changing the canonical-checkout guard or its
       externally-managed-environment fallback. Update
