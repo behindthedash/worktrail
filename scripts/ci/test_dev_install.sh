@@ -23,8 +23,15 @@ echo "\$@" > "$PIP_CALLED_MARKER"
 EOF
 chmod +x "$FAKE_BIN/pip"
 
-# Stub Python 3.14 so this shell test remains hermetic while recording both
-# the pip module install and post-install metadata verification invocations.
+# Stub both the generic and pinned Python commands so this shell test proves
+# the installer uses only Python 3.14 for install and metadata verification.
+PYTHON3_CALLED_MARKER="$WORK/python3_called"
+cat > "$FAKE_BIN/python3" <<EOF
+#!/usr/bin/env bash
+echo "\$@" >> "$PYTHON3_CALLED_MARKER"
+EOF
+chmod +x "$FAKE_BIN/python3"
+
 PYTHON314_CALLED_MARKER="$WORK/python314_called"
 cat > "$FAKE_BIN/python3.14" <<EOF
 #!/usr/bin/env bash
@@ -41,25 +48,31 @@ git -C "$REPO" -c user.email=test@example.com -c user.name=test commit -q --allo
 
 # Canonical checkout: install and verification proceed through Python 3.14.
 rm -f "$PIP_CALLED_MARKER"
+rm -f "$PYTHON3_CALLED_MARKER"
 rm -f "$PYTHON314_CALLED_MARKER"
 ( cd "$REPO" && bash "$SCRIPT" ) || fail "expected success from the canonical checkout"
 [ ! -f "$PIP_CALLED_MARKER" ] || fail "bare pip must not be invoked from the canonical checkout"
-[ -f "$PYTHON314_CALLED_MARKER" ] || fail "expected Python 3.14 to be invoked from the canonical checkout"
-grep -Fqx -- "-m pip install -e .[dev]" "$PYTHON314_CALLED_MARKER" \
-  || fail "expected the Python 3.14 pip module install invocation"
-grep -q "scripts/check_packaging_metadata.py" "$PYTHON314_CALLED_MARKER" \
-  || fail "expected the packaging metadata verifier script"
+[ ! -f "$PYTHON3_CALLED_MARKER" ] || fail "bare python3 must not be invoked from the canonical checkout"
+EXPECTED_PYTHON314_CALLS="$WORK/expected_python314_calls"
+cat > "$EXPECTED_PYTHON314_CALLS" <<EOF
+-m pip install -e .[dev]
+scripts/check_packaging_metadata.py --repo $REPO
+EOF
+cmp -s "$EXPECTED_PYTHON314_CALLS" "$PYTHON314_CALLED_MARKER" \
+  || fail "expected only the Python 3.14 pip module install and metadata verification invocations"
 
 # Linked worktree: install refused, pip is never invoked.
 WT="$WORK/repo-worktree"
 git -C "$REPO" worktree add -q "$WT" -b task-branch main
 rm -f "$PIP_CALLED_MARKER"
+rm -f "$PYTHON3_CALLED_MARKER"
 rm -f "$PYTHON314_CALLED_MARKER"
 WORKTREE_STDERR="$WORK/worktree_stderr"
 if ( cd "$WT" && bash "$SCRIPT" ) 2>"$WORKTREE_STDERR"; then
   fail "expected failure from a linked worktree"
 fi
 [ -f "$PIP_CALLED_MARKER" ] && fail "pip must not be invoked from a linked worktree"
+[ -f "$PYTHON3_CALLED_MARKER" ] && fail "python3 must not be invoked from a linked worktree"
 [ -f "$PYTHON314_CALLED_MARKER" ] && fail "Python 3.14 must not be invoked from a linked worktree"
 grep -q "refusing to 'pip install -e' from a linked git worktree" "$WORKTREE_STDERR" \
   || fail "expected the worktree-refusal message on stderr"
