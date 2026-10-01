@@ -38,11 +38,3 @@ create or modify bytecode or other repository files.
 #### Scenario: Parsing is side-effect free
 - **WHEN** the parse check runs on valid Python files
 - **THEN** it leaves no `__pycache__` directory or compiled bytecode artifact in the repository
-
-### Requirement: The baseline package source is parseable
-The repository's tracked package source SHALL parse successfully with the supported CI Python
-interpreter, including modules that previously used Python-2-style multi-exception handler syntax.
-
-#### Scenario: Current package source passes the gate
-- **WHEN** the parse check runs against the repository after the syntax remediation
-- **THEN** no `src/worktrail/**/*.py` file is reported as invalid and the check exits successfully
