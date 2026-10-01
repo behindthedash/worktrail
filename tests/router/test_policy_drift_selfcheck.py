@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
 from worktrail.router.policy_drift_selfcheck import (
     check_repo,
     main,
@@ -20,6 +22,24 @@ from worktrail.router.policy_drift_selfcheck import (
 _LINT_ONLY = '"([ -d node_modules ] || npm ci) && npm run lint && npm run build"'
 _PYTEST = '"PYTHONPATH=src pytest -q"'
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+_POLICY_COMMANDS = {
+    "pre_pr_cmd": (
+        "PYTHONPATH=src python3.14 -m pytest -q && "
+        "PYTHONPATH=src python3.14 -m "
+        "worktrail.orchestrator.orchestrate check"
+    ),
+    "pre_commit_cmd": (
+        "python3.14 scripts/ci/ruff_pinned.py check . --fix && "
+        "python3.14 scripts/ci/ruff_pinned.py format ."
+    ),
+    "integrate_smoke_cmd": (
+        "PYTHONPATH=src python3.14 -m "
+        "worktrail.orchestrator.orchestrate check && "
+        "python3.14 scripts/ci/ruff_pinned.py check . && "
+        "python3.14 scripts/ci/ruff_pinned.py format --check . && "
+        "python3.14 scripts/ci/check_shebang_exec_bits.py"
+    ),
+}
 
 
 def _development_command_block() -> str:
@@ -63,28 +83,13 @@ def _signals(repo: Path):
 
 class TestCommittedPythonToolchain(unittest.TestCase):
     def test_policy_commands_pin_python_314(self):
-        policy = (_REPO_ROOT / ".worktrail" / "policy.yaml").read_text()
-        self.assertIn(
-            'pre_pr_cmd: "PYTHONPATH=src python3.14 -m pytest -q && '
-            "PYTHONPATH=src python3.14 -m "
-            'worktrail.orchestrator.orchestrate check"',
-            policy,
+        policy = yaml.safe_load((_REPO_ROOT / ".worktrail" / "policy.yaml").read_text())
+        self.assertEqual(
+            {key: policy[key] for key in _POLICY_COMMANDS}, _POLICY_COMMANDS
         )
-        self.assertIn(
-            'pre_commit_cmd: "python3.14 scripts/ci/ruff_pinned.py check . '
-            '--fix && python3.14 scripts/ci/ruff_pinned.py format ."',
-            policy,
-        )
-        self.assertIn(
-            'integrate_smoke_cmd: "PYTHONPATH=src python3.14 -m '
-            "worktrail.orchestrator.orchestrate check && python3.14 "
-            "scripts/ci/ruff_pinned.py check . && python3.14 "
-            "scripts/ci/ruff_pinned.py format --check . && python3.14 "
-            'scripts/ci/check_shebang_exec_bits.py"',
-            policy,
-        )
-        self.assertNotIn("PYTHONPATH=src pytest -q", policy)
-        self.assertNotIn("python3 -m ", policy)
+        for command in _POLICY_COMMANDS.values():
+            self.assertNotRegex(command, r"(?:^|&& )(?:PYTHONPATH=src )?pytest\b")
+            self.assertNotRegex(command, r"(?:^|&& )python3(?:\s|$)")
 
     def test_development_commands_pin_python_314(self):
         commands = _development_command_block()
@@ -94,9 +99,9 @@ class TestCommittedPythonToolchain(unittest.TestCase):
             "PYTHONPATH=src python3.14 -m worktrail.orchestrator.orchestrate check",
             commands,
         )
-        self.assertNotIn("\npytest\n", commands)
-        self.assertNotIn("\npython3 -m ", commands)
-        self.assertNotIn("\npip install", commands)
+        self.assertNotRegex(commands, r"(?m)^pytest\b")
+        self.assertNotRegex(commands, r"(?m)^python3(?:\s|$)")
+        self.assertNotRegex(commands, r"(?m)^pip\s")
 
 
 class TestOrphanedTests(unittest.TestCase):
