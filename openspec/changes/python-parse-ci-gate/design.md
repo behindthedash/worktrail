@@ -2,7 +2,7 @@
 
 The existing workflow runs Ruff, pytest, and build in its required `Lint, Test & Build` job, but
 none establishes that every tracked Python file is syntactically valid for the job interpreter.
-See `proposal.md` for the observed baseline failures and motivation.
+See `proposal.md` for the motivation.
 
 ## Goals / Non-Goals
 
@@ -10,13 +10,12 @@ See `proposal.md` for the observed baseline failures and motivation.
 
 - Make parsing an explicit, reproducible CI gate using the same Python version that runs tests.
 - Report all malformed tracked Python files in one invocation without creating repository artifacts.
-- Restore the current package source to a parseable baseline before enforcing the gate.
 
 **Non-Goals:**
 
 - Add type checking, lint-rule changes, import-time execution, or bytecode compilation artifacts.
-- Change runtime behavior while replacing invalid exception-handler syntax.
 - Alter the required job's check-run or bookkeeping-only job-gating design.
+- Impose a style preference on exception-handler syntax (PEP 758 vs the parenthesized form).
 
 ## Decisions
 
@@ -39,29 +38,36 @@ The workflow will invoke the helper after installation and before pytest, with t
 condition or a new required context, preserving the branch-protection guarantee documented in
 the workflow and tested by `tests/test_required_check_jobs.py`.
 
-### Repair the baseline as mechanical syntax-only edits
+### No baseline source remediation is required
 
-Every current parse failure is a Python-2-style multi-exception handler. Each affected module will
-be converted to the equivalent parenthesized Python 3 handler, grouped by package with the module's
-existing tests used to confirm unchanged behavior. The remediation is part of this change because
-otherwise the new gate would fail immediately on the base repository.
+An earlier draft of this change treated the repository's PEP 758 unparenthesized multi-exception
+handlers as Python-2-style syntax defects and planned to rewrite roughly 58 modules into the
+parenthesized form. That reading came from observing `python3 -m compileall` under an interpreter
+older than the project's floor. Parsing the same 482 tracked Python files in-memory yields 58
+syntax errors under Python 3.12 and zero under Python 3.14, while `pyproject.toml` declares
+`requires-python = ">=3.14"` and the required job installs 3.14.
+
+The handlers are therefore valid, intentional Python 3.14 syntax, and the baseline already
+satisfies the gate. This change adds the gate only and edits no package source. Making scripts
+directly executable on a host whose unversioned `python3` predates 3.14 is a separate concern with
+its own change (`python314-shebang-policy`); this change does not pin interpreter shebangs.
 
 ## Risks / Trade-offs
 
 - [Tracked generated or fixture Python is intentionally invalid] → The helper's tracked-file
   selection makes that exception visible; any necessary exclusion must be explicit, narrowly
   documented, and covered by a test rather than silently skipped.
-- [Large baseline remediation obscures a behavioral change] → Limit edits to exception-handler
-  syntax and run the existing affected test modules plus the full suite.
 - [Future CI matrix Python changes parser behavior] → The helper deliberately uses the job's
   interpreter, so the gate detects the compatibility change at the same point CI does.
+- [A contributor runs the helper locally under the wrong interpreter] → The check deliberately
+  parses with the executing interpreter, so a host whose `python3` is older than the project floor
+  produces failures that do not reproduce in CI. Such a report is a version signal, not a source
+  defect; confirm the interpreter before acting on it.
 
 ## Migration Plan
 
 1. Add and test the side-effect-free helper.
-2. Convert the existing invalid handlers and run their affected tests until the helper passes.
-3. Wire the helper into the existing CI job and verify workflow-step coverage.
-4. Run the normal lint, test, golden regression, build, and parse commands before merge.
+2. Wire the helper into the existing CI job and verify workflow-step coverage.
+3. Run the normal lint, test, golden regression, build, and parse commands before merge.
 
-Rollback consists of reverting the workflow step and helper together; the syntax-only Python 3
-repairs remain valid independently.
+Rollback consists of reverting the workflow step and helper together.
