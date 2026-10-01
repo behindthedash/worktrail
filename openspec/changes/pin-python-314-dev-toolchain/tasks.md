@@ -23,7 +23,7 @@
 
 ## 3. Verification
 
-- [ ] 3.1 [e2e] Run `bash scripts/ci/test_dev_install.sh`, the focused policy
+- [x] 3.1 [e2e] Run `bash scripts/ci/test_dev_install.sh`, the focused policy
       drift tests, `PYTHONPATH=src python3.14 -m pytest -q`,
       `PYTHONPATH=src python3.14 -m worktrail.orchestrator.orchestrate check`,
       `python3.14 scripts/ci/ruff_pinned.py check .`, and
