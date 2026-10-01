@@ -1,12 +1,12 @@
 # /go policy for Worktrail. The commands mirror the repository's offline CI
 # checks without installing dependencies or requiring network access.
-pre_pr_cmd: "PYTHONPATH=src pytest -q && PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check"
+pre_pr_cmd: "PYTHONPATH=src python3.14 -m pytest -q && PYTHONPATH=src python3.14 -m worktrail.orchestrator.orchestrate check"
 # orchestrator-throughput 7.1: format before every commit so it never shows up as diff noise.
 # Routed through scripts/ci/ruff_pinned.py, never a bare `ruff`: a developer
 # machine's global ruff drifts from pyproject's pin (0.16.5 vs 0.16.7 on
 # 2026-09-19) and a local PASS is only evidence about CI when the two builds
 # match.
-pre_commit_cmd: "python3 scripts/ci/ruff_pinned.py check . --fix && python3 scripts/ci/ruff_pinned.py format ."
+pre_commit_cmd: "python3.14 scripts/ci/ruff_pinned.py check . --fix && python3.14 scripts/ci/ruff_pinned.py format ."
 # The v1.0 release freeze (2026-08-08) is LIFTED as of 2026-09-19. Its own
 # stated condition -- "remove this key to lift the freeze after v1.0 ships" --
 # was met long ago: pyproject reads version 1.1.41. Leaving the key set kept
@@ -20,7 +20,7 @@ pre_commit_cmd: "python3 scripts/ci/ruff_pinned.py check . --fix && python3 scri
 # machines those two rules are off locally and on in CI -- PR #1279 shipped
 # five files that failed CI on exactly that. It answers the same question from
 # git's index, which every platform agrees on.
-integrate_smoke_cmd: "PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check && python3 scripts/ci/ruff_pinned.py check . && python3 scripts/ci/ruff_pinned.py format --check . && python3 scripts/ci/check_shebang_exec_bits.py"
+integrate_smoke_cmd: "PYTHONPATH=src python3.14 -m worktrail.orchestrator.orchestrate check && python3.14 scripts/ci/ruff_pinned.py check . && python3.14 scripts/ci/ruff_pinned.py format --check . && python3.14 scripts/ci/check_shebang_exec_bits.py"
 # smoke-gate-flaky-retry-policy: one bounded re-run of the smoke command on a
 # non-zero exit, so a load-flaky red on this 4-runner host does not quarantine a
 # group whose own diff is fine (run agent-capacity-expired-gate-hygiene, 2026-09-05,
