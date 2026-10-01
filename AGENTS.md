@@ -106,11 +106,11 @@ unchanged.
 ## Development
 
 ```bash
-./scripts/dev-install.sh   # pip install -e ".[dev]", refuses to run from a worktree
-pytest
-python3 -m worktrail.orchestrator.orchestrate check   # golden record/replay regression
-python3 scripts/ci/ruff_pinned.py check .             # NOT a bare `ruff` -- see below
-python3 scripts/ci/check_shebang_exec_bits.py
+./scripts/dev-install.sh   # invokes python3.14 -m pip install -e ".[dev]" from the canonical checkout
+PYTHONPATH=src python3.14 -m pytest
+PYTHONPATH=src python3.14 -m worktrail.orchestrator.orchestrate check   # golden record/replay regression
+python3.14 scripts/ci/ruff_pinned.py check .                            # NOT a bare `ruff` -- see below
+python3.14 scripts/ci/check_shebang_exec_bits.py
 ```
 
 **Lint through the two wrappers, never a bare `ruff`.** Both exist because a
