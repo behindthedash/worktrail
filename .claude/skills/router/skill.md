@@ -76,6 +76,10 @@ triggers:
     - _sweep_key_types
     - _SWEEP_SKIP
     - _TYPE_SWEEP_EXEMPT
+    - env_profiles
+    - auth.profile
+    - resolve_env_profile
+    - env_profile.py
 ---
 
 You are working on **worktrail's GO v2 front door**: loading repo policy, classifying free-text
@@ -236,6 +240,34 @@ agents or writes task files — that is `orchestrator/`'s job.
   never widens autonomy. `automerge.max_risk`, `agent_cli`, `fallback_agent_cli`, `agent_model`,
   `max_workers`, `pr_pacing_wait_s`, and `max_parallel_workers` are all validated/clamped the same
   way in `load_policy`.
+- **`routing.env_profiles` names *where* a target's environment comes from and stores no values.**
+  `_validate_routing_env_profiles` (never-raise warn-and-drop, like its sibling
+  `_validate_routing_*` validators; resolved *before* `targets` and returned in the resolved
+  routing dict, because a target's `auth.profile` is validated against it) accepts
+  `{name: {from, keys, expect?}}` — `from` is a path to a JSON file with an `env` object, `keys`
+  lists which of that object's names to copy, and `expect` maps a name to the literal it must
+  equal before a worker may launch. `keys` and `expect` are deliberately independent: a key may
+  be asserted without being copied (provenance checking) or copied without being asserted (so
+  its value is never printable). A malformed `expect` drops the **whole profile**, not just the
+  assertion — a silently-dropped assertion is indistinguishable from a passing one, which would
+  defeat the only thing `expect` exists for.
+- **`auth.profile` and `auth.env` are mutually exclusive alternatives for one auth lane, and a
+  profile on a `subscription` target is a warning.** `_validate_routing_targets` warns on a
+  non-mapping `auth`, on both `env` and `profile` declared together (the spawn hard-fails; the
+  target is still kept so it appears in `--check`), and on `auth.profile` on a `subscription`
+  target, because that lane strips `ANTHROPIC_API_KEY` *after* profile injection — a
+  profile-supplied key cannot survive there, though the target is still valid for non-key
+  variables. `auth.codex_home` alongside a profile is not a conflict (it selects a home, not
+  credentials). `_warn_undeclared_env_profiles` warns when an `auth.profile` names a profile
+  `env_profiles` does not declare; the target is kept (mirroring "`pool: api` without
+  `api_opt_in` is kept but ineligible") and the authoritative failure is at spawn.
+- **`worktrail-routing --check` resolves every `auth.profile` cell against the real file**,
+  marking the cell `FAIL`, printing the full `OperatorConfigError` to stderr, and exiting 1 —
+  but deliberately NOT recording an `agent_capacity` gate. A recorded gate is skipped *silently*
+  by `select_cell` on the next spawn, which would turn a loud configuration error into an
+  invisible fallback to the next rung — precisely the failure class env profiles exist to
+  remove. Gates model provider conditions; this is operator config, and its `auth` cooldown
+  would outlive the fix.
 - **`load_policy()` runs a coarse type sweep (`_sweep_key_types`) before the per-key checks; the
   two layers are deliberately separate.** `POLICY_KEY_TYPES` declares an expected type (or tuple)
   for every flat `DEFAULTS` key, and a wrong-typed value is replaced by its `DEFAULTS` entry with
@@ -481,6 +513,17 @@ agents or writes task files — that is `orchestrator/`'s job.
   `POLICY_KEY_TYPES`/`_SWEEP_SKIP`/`_TYPE_SWEEP_EXEMPT`/`_sweep_key_types()` (the coarse type sweep
   that runs ahead of the per-key checks; covered by `tests/router/test_policy_key_types.py`) and
   `automerge_eligible()` (including the `target_branches` scalar coercion)
+- `router/env_profile.py` — `resolve_env_profile()`: expands `from`, requires an absolute path
+  (refused rather than resolved relative to the routing file, because `explicit_cell_override`
+  points `WORKTRAIL_ROUTING_FILE` at a mkstemp file under /tmp), JSON-parses the file, requires
+  a mapping `env` object, asserts every `expect` entry, then copies every `keys` entry; refuses
+  a missing/empty/non-string key. Every failure raises `OperatorConfigError` naming target,
+  profile, file and key, and **no message ever contains a value for a key not named in
+  `expect`** (the operator declared that key non-secret by asserting on it, and only that key).
+  Deliberately not in `spawnlib`/`routing_cli`/`policy`: `routing_cli` imports
+  `..orchestrator.agent_capacity` and `spawnlib` imports `..router.routing_cli`, so a
+  module-level `routing_cli → spawnlib` edge would be an import cycle, and `policy.py`'s
+  validator must never open a profile file — reads belong at spawn and `--check` time.
 - `router/run_record.py` — `finish()`'s ten-state enforcement and its two code-enforced gates;
   `cmd_scope_review` write-time reason validation and `OUT_OF_SCOPE_REASON_PREFIXES`;
   `cmd_capacity_gate`'s `_iso_retry_after` timestamp validation; `_load_lenient()`, the
@@ -532,4 +575,4 @@ agents or writes task files — that is `orchestrator/`'s job.
   best-effort writers that never affect what they record
 
 ---
-**Last Updated:** 2026-09-21
+**Last Updated:** 2026-10-02
