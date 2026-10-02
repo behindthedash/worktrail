@@ -54,6 +54,63 @@ If you want the DeepSeek model available at a different capability tier than wha
 `opencode-*` target (see "Add a new harness" above) so the two models coexist as an
 intra-harness ladder — same pattern the starter config uses for `claude-fable`/`claude-sub`.
 
+## Point a harness at a custom Anthropic-compatible endpoint with an env profile
+
+Use this when the `claude` CLI itself must be aimed somewhere other than Anthropic — DeepSeek,
+OpenRouter, or any other Anthropic-compatible gateway. Configure the endpoint in a JSON file
+(commonly `~/.claude/settings.json`, whose `env` block is what an interactive session uses), then
+declare a profile that copies the relevant keys onto the worker:
+
+```yaml
+env_profiles:
+  claude-deepseek:
+    from: ~/.claude/settings.json     # required; must be absolute or start with ~
+    keys:                             # copied into the worker's environment
+      - ANTHROPIC_BASE_URL
+      - ANTHROPIC_AUTH_TOKEN
+      - ANTHROPIC_MODEL
+      - ANTHROPIC_DEFAULT_OPUS_MODEL
+      - ANTHROPIC_DEFAULT_SONNET_MODEL
+      - ANTHROPIC_DEFAULT_HAIKU_MODEL
+      - CLAUDE_CODE_SUBAGENT_MODEL
+    expect:                           # asserted before launch
+      ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
+
+targets:
+  claude-deepseek:
+    harness: claude
+    pool: api
+    api_opt_in: true
+    auth:
+      profile: claude-deepseek
+
+tiers:
+  t2-build:
+    claude-deepseek:
+      model: deepseek-flash[1m]
+```
+
+Then `worktrail-routing --check` and confirm the cell's NOTES column reads
+`env profile claude-deepseek ok`.
+
+Things worth knowing before you write one:
+
+- **A profile stores no values** — a path, key *names*, and an optional non-secret assertion. The
+  `expect` value is the one value that may appear in an error message, because writing it is what
+  declares that key non-secret. Never put a credential in `expect`, `keys`, or `from`.
+- **`keys` and `expect` are independent.** Assert a key without copying it (provenance checking),
+  or copy one without asserting (its value then never becomes printable).
+- **`auth.profile` and `auth.env` are mutually exclusive** — they name two sources for one auth
+  lane. A target declaring both fails at spawn and warns in `--check`.
+- **Copy `ANTHROPIC_BASE_URL` whenever you copy a token.** A profile that injects a DeepSeek token
+  but not the base URL sends that token to real Anthropic — a loud failure, but an expensive one
+  to diagnose.
+- **The model id needs quoting in flow style.** `{model: deepseek-flash[1m]}` is a YAML parse
+  error (`[` opens a flow sequence inside `{}`). Use block style, as above, or quote it.
+- **`pool: api` + a profile does not get `--bare`.** A profile-backed api cell omits it, because
+  `--bare` skips every `--settings`-injected hook — including the worktree guard. The injected
+  credentials already pin the endpoint, which is what `--bare` was there for.
+
 ## Add or remove a tier
 
 Add a new top-level key under `tiers:` with a cell per target that should serve it, then

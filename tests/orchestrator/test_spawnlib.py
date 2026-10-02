@@ -18,6 +18,8 @@ from collections import namedtuple
 from pathlib import Path
 from unittest.mock import patch
 
+import yaml
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from typing import ClassVar
@@ -2820,6 +2822,231 @@ class BuildChildEnv(unittest.TestCase):
             with self.subTest(pool=pool):
                 env = spawnlib.build_child_env(_cell(harness="codex", pool=pool), base)
                 self.assertEqual(env, base)
+
+    # -- env profiles (auth.profile / routing.env_profiles) ----------------- #
+    #
+    # A profile exists because `--setting-sources project,local` excludes the
+    # user-level settings file that would otherwise carry a worker's endpoint.
+    # Without injection a claude worker makes no API call and still exits 0.
+
+    def _profile_file(self, env_mapping):
+        """Write a settings-shaped JSON file and return a profile entry
+        pointing at it."""
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "settings.json"
+        path.write_text(json.dumps({"env": env_mapping}), encoding="utf-8")
+        return {"from": str(path), "keys": list(env_mapping)}
+
+    def test_env_profile_injects_declared_keys(self):
+        profile = self._profile_file({"ANTHROPIC_BASE_URL": "https://deepseek.test"})
+        cell = _cell(pool="api", auth={"profile": "deepseek"}, target="claude-deepseek")
+        env = spawnlib.build_child_env(
+            cell, {"PATH": "/usr/bin"}, env_profiles={"deepseek": profile}
+        )
+        self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://deepseek.test")
+        self.assertEqual(env["PATH"], "/usr/bin")
+
+    def test_env_profile_does_not_mutate_base_env(self):
+        profile = self._profile_file({"INJECTED": "yes"})
+        base = {"PATH": "/usr/bin"}
+        cell = _cell(pool="api", auth={"profile": "p"}, target="claude-deepseek")
+        spawnlib.build_child_env(cell, base, env_profiles={"p": profile})
+        self.assertNotIn("INJECTED", base)
+
+    def test_env_profile_overrides_an_ambient_value(self):
+        profile = self._profile_file({"ANTHROPIC_BASE_URL": "https://deepseek.test"})
+        cell = _cell(pool="api", auth={"profile": "p"}, target="claude-deepseek")
+        env = spawnlib.build_child_env(
+            cell,
+            {"ANTHROPIC_BASE_URL": "https://api.anthropic.com"},
+            env_profiles={"p": profile},
+        )
+        self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://deepseek.test")
+
+    def test_env_profile_is_harness_generic(self):
+        """Applied before the harness branch, so a future codex/opencode env
+        lane needs no reworking."""
+        profile = self._profile_file({"INJECTED": "yes"})
+        for harness in ("codex", "opencode"):
+            with self.subTest(harness=harness):
+                cell = _cell(
+                    harness=harness, pool="subscription", auth={"profile": "p"}
+                )
+                env = spawnlib.build_child_env(cell, {}, env_profiles={"p": profile})
+                self.assertEqual(env["INJECTED"], "yes")
+
+    def test_undeclared_profile_fails_loud(self):
+        cell = _cell(pool="api", auth={"profile": "ghost"}, target="claude-deepseek")
+        for table in (None, {}, {"other": {"from": "/x", "keys": ["A"]}}):
+            with self.subTest(table=table):
+                with self.assertRaises(spawnlib.OperatorConfigError) as ctx:
+                    spawnlib.build_child_env(cell, {}, env_profiles=table)
+                self.assertIn("claude-deepseek", str(ctx.exception))
+                self.assertIn("ghost", str(ctx.exception))
+
+    def test_auth_env_and_auth_profile_together_fail_loud(self):
+        profile = self._profile_file({"INJECTED": "yes"})
+        cell = _cell(
+            pool="api",
+            auth={"env": "SOME_KEY", "profile": "p"},
+            target="claude-deepseek",
+        )
+        with self.assertRaises(spawnlib.OperatorConfigError) as ctx:
+            spawnlib.build_child_env(
+                cell, {"SOME_KEY": "sk-x"}, env_profiles={"p": profile}
+            )
+        self.assertIn("two sources", str(ctx.exception))
+
+    def test_claude_api_with_profile_needs_no_auth_env(self):
+        """The profile IS the credential source; requiring auth.env on top
+        would demand a second, conflicting one."""
+        profile = self._profile_file({"ANTHROPIC_AUTH_TOKEN": "sk-from-profile"})
+        cell = _cell(pool="api", auth={"profile": "p"}, target="claude-deepseek")
+        env = spawnlib.build_child_env(cell, {}, env_profiles={"p": profile})
+        self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], "sk-from-profile")
+
+    def test_claude_api_without_profile_still_requires_auth_env(self):
+        """Regression guard: the profile lane must not weaken the existing
+        auth.env requirement for ordinary api cells."""
+        cell = _cell(pool="api", auth=None, target="claude-api")
+        with self.assertRaises(spawnlib.OperatorConfigError) as ctx:
+            spawnlib.build_child_env(cell, {"ANTHROPIC_API_KEY": "sk-x"})
+        self.assertIn("auth.env", str(ctx.exception))
+
+    def test_claude_subscription_strips_every_provider_redirect(self):
+        """Symmetric to the bug env profiles fix. The subscription branch used
+        to pop only ANTHROPIC_API_KEY, leaving the base URL and token an
+        interactive session carries in its ambient env -- so a subscription
+        worker, selected because the tier wanted Anthropic, would silently be
+        sent to whatever endpoint was ambient instead."""
+        base = {
+            "ANTHROPIC_API_KEY": "sk-ambient",
+            "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+            "ANTHROPIC_AUTH_TOKEN": "sk-deepseek",
+            "ANTHROPIC_MODEL": "deepseek-flash[1m]",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-flash[1m]",
+            "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-flash",
+            "PATH": "/usr/bin",
+        }
+        env = spawnlib.build_child_env(_cell(pool="subscription"), base)
+        for var in spawnlib._PROVIDER_REDIRECT_VARS:
+            self.assertNotIn(var, env, f"{var} would redirect the subscription lane")
+        self.assertNotIn("ANTHROPIC_API_KEY", env)
+        self.assertEqual(env["PATH"], "/usr/bin")
+
+    def test_subscription_strip_wins_over_a_profile_supplied_key(self):
+        """Ordering pin: the profile is applied BEFORE the harness/pool branch,
+        so a profile cannot re-add the variable the subscription lane removes
+        to keep an ambient key from silently billing the API."""
+        profile = self._profile_file(
+            {"ANTHROPIC_API_KEY": "sk-smuggled", "ANTHROPIC_BASE_URL": "https://x.test"}
+        )
+        cell = _cell(pool="subscription", auth={"profile": "p"})
+        env = spawnlib.build_child_env(cell, {}, env_profiles={"p": profile})
+        self.assertNotIn("ANTHROPIC_API_KEY", env)
+        self.assertNotIn("ANTHROPIC_BASE_URL", env)
+
+
+class ClaudeApiBareFlag(unittest.TestCase):
+    """`--bare` is what forces the 'api' lane off an ambient subscription
+    login, but it also skips EVERY settings-injected hook -- verified live: a
+    PreToolUse hook passed via `--settings` fires without `--bare` and does not
+    fire with it. That silently disables the worktree guard
+    (`worker_guard_settings_json`, added because a worker wrote into the
+    canonical checkout on 2026-09-05) for the whole lane, so a profile-backed
+    cell -- which does not need `--bare` for its original purpose, because
+    injected credentials already pin the endpoint and auth -- must not get it.
+    """
+
+    def test_bare_is_added_for_an_api_cell_without_a_profile(self):
+        cmd = spawnlib.build_cmd(
+            "p", _cell(pool="api", auth={"env": "K"}, target="claude-api")
+        )
+        self.assertIn("--bare", cmd)
+
+    def test_bare_is_omitted_for_a_profile_backed_api_cell(self):
+        cmd = spawnlib.build_cmd(
+            "p",
+            _cell(pool="api", auth={"profile": "p"}, target="claude-deepseek"),
+        )
+        self.assertNotIn("--bare", cmd)
+
+    def test_profile_backed_cell_keeps_the_settings_injected_guard(self):
+        """The invariant the omission protects: both `--settings` (which
+        carries the guard) and the absence of `--bare` (which would skip it)."""
+        cmd = spawnlib.build_cmd(
+            "p",
+            _cell(pool="api", auth={"profile": "p"}, target="claude-deepseek"),
+        )
+        self.assertIn("--settings", cmd)
+        self.assertNotIn("--bare", cmd)
+
+    def test_bare_is_omitted_for_a_subscription_cell(self):
+        self.assertNotIn("--bare", spawnlib.build_cmd("p", _cell(pool="subscription")))
+
+
+class ExplicitCellOverrideCarriesTargetDefinition(unittest.TestCase):
+    """`explicit_cell_override` REPLACES the operator's routing file with a
+    mkstemp one for the duration of a `--model-map`/`--effort`/`--agent
+    --model` override, so anything that temp file omits is genuinely absent
+    downstream rather than inherited. It used to carry only harness/pool, which
+    made an api- or profile-backed target unreachable through every explicit
+    override path."""
+
+    def _written(self, target, model, routing, **kwargs):
+        with (
+            _patch_routing(routing),
+            spawnlib.explicit_cell_override(target, model, **kwargs),
+        ):
+            path = os.environ.get(spawnlib.ROUTING_FILE_ENV)
+            self.assertIsNotNone(path, "override must point ROUTING_FILE_ENV")
+            return yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+
+    def _routing(self):
+        return {
+            "targets": {
+                "claude-deepseek": {
+                    "harness": "claude",
+                    "pool": "api",
+                    "api_opt_in": True,
+                    "auth": {"profile": "deepseek"},
+                }
+            },
+            "env_profiles": {
+                "deepseek": {
+                    "from": "/x/settings.json",
+                    "keys": ["ANTHROPIC_BASE_URL"],
+                },
+                "unrelated": {"from": "/x/other.json", "keys": ["B"]},
+            },
+        }
+
+    def test_carries_api_opt_in_auth_and_the_referenced_profile(self):
+        doc = self._written("claude-deepseek", "deepseek-flash[1m]", self._routing())
+        entry = doc["targets"]["claude-deepseek"]
+        self.assertTrue(entry["api_opt_in"])
+        self.assertEqual(entry["auth"], {"profile": "deepseek"})
+        self.assertEqual(
+            doc["tiers"]["explicit"]["claude-deepseek"]["model"], "deepseek-flash[1m]"
+        )
+        self.assertIn("deepseek", doc["env_profiles"])
+
+    def test_only_the_referenced_profile_is_copied(self):
+        doc = self._written("claude-deepseek", "m", self._routing())
+        self.assertEqual(list(doc["env_profiles"]), ["deepseek"])
+
+    def test_effort_rides_through_the_explicit_cell(self):
+        doc = self._written("claude-deepseek", "m", self._routing(), effort="high")
+        self.assertEqual(doc["tiers"]["explicit"]["claude-deepseek"]["effort"], "high")
+
+    def test_model_id_with_yaml_metacharacters_round_trips(self):
+        """`deepseek-flash[1m]` is not safe to interpolate into a plain YAML
+        scalar by hand -- the file is written with safe_dump for this reason."""
+        doc = self._written("claude-deepseek", "deepseek-flash[1m]", self._routing())
+        self.assertEqual(
+            doc["tiers"]["explicit"]["claude-deepseek"]["model"], "deepseek-flash[1m]"
+        )
 
 
 class DispatchIdEnvVar(unittest.TestCase):

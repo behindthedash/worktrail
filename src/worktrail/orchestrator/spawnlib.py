@@ -76,7 +76,10 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
 
+import yaml
+
 from ..router import routing_cli
+from ..router.env_profile import resolve_env_profile
 from ..router.policy import (
     ROUTING_FILE_ENV,
     OperatorConfigError,
@@ -631,7 +634,17 @@ def build_cmd(
             cmd += ["--model", model]
         if effort:
             cmd += ["--effort", effort]
-        if cell.pool == "api":
+        if cell.pool == "api" and _profile_name(cell) is None:
+            # --bare is what forces the 'api' lane off an ambient subscription
+            # login, but it also skips EVERY settings-injected hook -- verified
+            # live: a PreToolUse hook passed via --settings fires without
+            # --bare and does not fire with it. That silently disables the
+            # worktree guard (`worker_guard_settings_json`, which exists
+            # because a worker wrote into the canonical checkout on 2026-09-05)
+            # for the whole lane. A profile-backed cell does not need --bare for
+            # its original purpose: the injected credentials already pin the
+            # endpoint and auth explicitly, so --bare there would buy nothing
+            # and cost the guard.
             cmd += ["--bare"]
         if resume_session_id:
             cmd += ["--resume", resume_session_id, "--fork-session"]
@@ -665,31 +678,122 @@ def build_cmd(
     return cmd
 
 
-def build_child_env(cell: Cell, base_env: Mapping[str, str]) -> dict[str, str]:
+# Environment variables that redirect a claude spawn to a different endpoint or
+# model than the one its own auth would otherwise select. The subscription lane
+# must clear ALL of them, not just ANTHROPIC_API_KEY: an interactive Claude Code
+# session carries the operator's whole provider redirect in its ambient env
+# (verified: `ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic` is present
+# in a session's environment, and `spawn_agent` builds every child env from
+# `{**os.environ, ...}`). Leaving them set would send a subscription worker --
+# selected precisely because the tier wanted Anthropic -- to whatever endpoint
+# happens to be ambient, which is the same silent misroute in the opposite
+# direction from the one env profiles exist to fix.
+_PROVIDER_REDIRECT_VARS = (
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "CLAUDE_CODE_SUBAGENT_MODEL",
+)
+
+
+def _profile_name(cell: Cell) -> str | None:
+    """The `auth.profile` *cell* declares, if any."""
+    auth = cell.auth if isinstance(cell.auth, Mapping) else {}
+    name = auth.get("profile")
+    return name if isinstance(name, str) and name else None
+
+
+def _apply_env_profile(
+    cell: Cell,
+    env: dict[str, str],
+    env_profiles: Mapping[str, Mapping[str, Any]],
+) -> None:
+    """Merge *cell*'s declared env profile into *env*, in place.
+
+    Applied BEFORE the harness/pool branch in `build_child_env` so a claude
+    `subscription` cell's `ANTHROPIC_API_KEY` pop still wins over a
+    profile-supplied key -- otherwise a profile could re-add the very variable
+    that lane removes to keep an ambient key from silently billing the API, and
+    the documented guarantee would be defeated by config.
+
+    Every failure is `OperatorConfigError`: a profile that cannot be resolved
+    is operator configuration, and a worker launched without its endpoint makes
+    no API call while still exiting 0.
+    """
+    name = _profile_name(cell)
+    if name is None:
+        return
+    auth = cell.auth if isinstance(cell.auth, Mapping) else {}
+    if auth.get("env"):
+        raise OperatorConfigError(
+            f"routing target {cell.target!r} declares both auth.env and "
+            f"auth.profile -- they name two sources for one auth lane; remove "
+            f"one from its routing.targets entry in {resolved_routing_file_path()}"
+        )
+    profile = env_profiles.get(name)
+    if not isinstance(profile, Mapping):
+        raise OperatorConfigError(
+            f"routing target {cell.target!r} declares auth.profile {name!r}, which "
+            f"is not declared in routing.env_profiles in "
+            f"{resolved_routing_file_path()} -- add an `env_profiles: {{{name}: "
+            "{from: <file>, keys: [...]}}}` entry there"
+        )
+    env.update(
+        resolve_env_profile(
+            name,
+            profile,
+            target=cell.target,
+            declared_in=resolved_routing_file_path(),
+        )
+    )
+
+
+def build_child_env(
+    cell: Cell,
+    base_env: Mapping[str, str],
+    *,
+    env_profiles: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, str]:
     """The auth lane *cell*'s harness/pool draws from (design D6), layered onto
     a copy of *base_env*.
 
-    A claude `subscription` cell has `ANTHROPIC_API_KEY` removed so an ambient
-    key can never silently switch a subscription spawn's billing to the API.
-    A claude `api` cell requires its target's declared `auth: {env: <NAME>}`
-    and that named variable set (non-empty) in *base_env*; both are load-bearing
-    identity the launcher cannot guess, so a missing one raises
-    `OperatorConfigError` naming the target and what to fix rather than spawning
-    an unauthenticated worker. Every other harness/pool combination returns
-    *base_env* unchanged -- opencode/codex auth is unaffected by pool (D6)."""
+    A claude `subscription` cell has every provider-redirect variable removed so
+    neither an ambient API key nor an ambient base URL can silently switch a
+    subscription spawn's endpoint or billing. A claude `api` cell either
+    resolves its target's declared `auth.profile` (`env_profiles`, threaded in
+    by the caller from the same resolved routing table `select_cell` served
+    from) or requires its declared `auth: {env: <NAME>}` and that named
+    variable set (non-empty) in *base_env* -- the two are mutually exclusive,
+    and both are load-bearing identity the launcher cannot guess, so a missing
+    one raises `OperatorConfigError` naming the target and what to fix rather
+    than spawning an unauthenticated worker. Every other harness/pool
+    combination returns *base_env* unchanged -- opencode/codex auth is
+    unaffected by pool (D6), though a profile on those harnesses still applies.
+    """
     env = dict(base_env)
+    _apply_env_profile(cell, env, env_profiles or {})
     if cell.harness != "claude":
         return env
     if cell.pool == "subscription":
         env.pop("ANTHROPIC_API_KEY", None)
+        for var in _PROVIDER_REDIRECT_VARS:
+            env.pop(var, None)
         return env
     if cell.pool == "api":
+        if _profile_name(cell) is not None:
+            # The profile supplied the credentials above; requiring auth.env on
+            # top would be a second, conflicting source for the same lane.
+            return env
         auth = cell.auth if isinstance(cell.auth, Mapping) else {}
         var_name = auth.get("env")
         if not var_name:
             raise OperatorConfigError(
                 f"routing target {cell.target!r} (harness claude, pool api) has no "
-                "auth.env configured -- add `auth: {env: <ENV_VAR_NAME>}` to its "
+                "auth.env or auth.profile configured -- add `auth: {env: "
+                "<ENV_VAR_NAME>}` or `auth: {profile: <NAME>}` to its "
                 f"routing.targets entry in {resolved_routing_file_path()}"
             )
         value = env.get(var_name)
@@ -968,6 +1072,12 @@ def explicit_cell_override(target: str, model: str, *, effort: str | None = None
     `--agent`/`--model` override and `LiveSpawn.__call__`'s `--model-map`/
     `--effort` override -- same mechanism, same guarantee.
 
+    The throwaway file reproduces the target's whole definition -- harness,
+    pool, `api_opt_in`, `auth`, and the one `env_profiles` entry `auth.profile`
+    names -- not just harness/pool, because it REPLACES the routing file rather
+    than layering over it. Omitting any of them makes an api- or
+    profile-backed target unreachable through this path.
+
     Raises `OperatorConfigError` when `target` does not already name a
     declared `routing.targets` entry: an explicit override reuses a real
     target's harness/pool, it never invents one.
@@ -983,18 +1093,41 @@ def explicit_cell_override(target: str, model: str, *, effort: str | None = None
     os.close(fd)
     explicit_file = Path(path)
     try:
-        effort_line = f"      effort: {effort}\n" if effort else ""
+        # The throwaway file REPLACES the operator's routing file for the
+        # duration of the override, so anything it omits is genuinely absent
+        # downstream -- not inherited. Carrying only harness/pool silently
+        # dropped `api_opt_in` (so `select_cell` skipped an api target as
+        # ineligible and the override died with NoExecutionTarget), `auth` (so
+        # an api cell raised "has no auth.env configured"), and `env_profiles`
+        # (so a profile-backed cell resolved nothing). Only the ONE profile the
+        # target names is copied, and it carries paths and key names only --
+        # never a value, so the mkstemp 0600 file stays secret-free.
+        entry: dict[str, Any] = {
+            "harness": declared["harness"],
+            "pool": declared.get("pool", "subscription"),
+        }
+        if declared.get("api_opt_in"):
+            entry["api_opt_in"] = True
+        auth = declared.get("auth")
+        if isinstance(auth, dict):
+            entry["auth"] = auth
+        cell_def: dict[str, Any] = {"model": model}
+        if effort:
+            cell_def["effort"] = effort
+        document: dict[str, Any] = {
+            "targets": {target: entry},
+            "tiers": {"explicit": {target: cell_def}},
+        }
+        profile_name = auth.get("profile") if isinstance(auth, dict) else None
+        if profile_name:
+            profiles = routing.get("env_profiles") or {}
+            if profile_name in profiles:
+                document["env_profiles"] = {profile_name: profiles[profile_name]}
+        # safe_dump, not string interpolation: a model id may contain YAML
+        # metacharacters (e.g. `deepseek-flash[1m]`), which flow-style
+        # interpolation into a plain scalar is not safe against.
         explicit_file.write_text(
-            "targets:\n"
-            f"  {target}:\n"
-            f"    harness: {declared['harness']}\n"
-            f"    pool: {declared.get('pool', 'subscription')}\n"
-            "tiers:\n"
-            "  explicit:\n"
-            f"    {target}:\n"
-            f"      model: {model}\n"
-            f"{effort_line}",
-            encoding="utf-8",
+            yaml.safe_dump(document, sort_keys=False), encoding="utf-8"
         )
         previous = os.environ.get(ROUTING_FILE_ENV)
         os.environ[ROUTING_FILE_ENV] = str(explicit_file)
@@ -1172,7 +1305,18 @@ def spawn_agent(
             env["WORKTRAIL_DISPATCH_ID"] = dispatch_id
         else:
             env.pop("WORKTRAIL_DISPATCH_ID", None)
-        return build_child_env(current_cell, env), oc_data_dir
+        # The profile table is threaded from the SAME resolved routing dict
+        # `select_cell` served from, never re-loaded: a second read could
+        # diverge from the table that chose this cell, and it would repeat the
+        # I/O on every session-limit/infra hop.
+        return (
+            build_child_env(
+                current_cell,
+                env,
+                env_profiles=routing.get("env_profiles") or {},
+            ),
+            oc_data_dir,
+        )
 
     child_env, opencode_dir = _prepare_child_env(cell)
 

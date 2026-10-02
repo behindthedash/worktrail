@@ -74,6 +74,34 @@ targets:
   #   api_opt_in: true
   #   auth:
   #     env: ANTHROPIC_API_KEY
+  #
+  # `auth.profile` is the other way to supply an api lane's credentials, for a
+  # provider configured in a file rather than an exported variable. A profile
+  # names WHERE the values live and WHICH to copy -- it never stores a value:
+  # env_profiles:
+  #   claude-deepseek:
+  #     from: ~/.claude/settings.json     # JSON with an "env" object
+  #     keys:                             # copied into the worker's env
+  #       - ANTHROPIC_BASE_URL
+  #       - ANTHROPIC_AUTH_TOKEN
+  #     expect:                           # asserted BEFORE launch; a mismatch
+  #       ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
+  # claude-deepseek:          # must be declared under `targets:` with a cell
+  #   harness: claude         # in the tier row you want it to serve
+  #   pool: api
+  #   api_opt_in: true
+  #   auth:
+  #     profile: claude-deepseek
+  #
+  # Why this exists: workers are spawned with
+  # `--setting-sources project,local`, which excludes the operator's
+  # USER-level settings file -- deliberately, so a user-level Stop hook cannot
+  # corrupt the report-back JSON. That exclusion also drops the file's `env`
+  # block, and a worker with no endpoint makes NO API call while still exiting
+  # 0. A profile puts the environment back, and `expect` turns a misconfigured
+  # one into a loud pre-launch failure instead of a silent no-op. `keys` and
+  # `expect` are independent: assert a key without copying it, or copy one
+  # without ever making its value printable.
 
 # routing.default_tier: the tier row consulted whenever nothing more
 # specific (a task's own tier, a role, or a purpose) pins one -- replaces

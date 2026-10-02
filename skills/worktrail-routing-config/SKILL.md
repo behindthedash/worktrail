@@ -44,7 +44,8 @@ behavioral contract is `openspec/specs/model-tier-routing/spec.md` and
 
 | Key | What it is |
 |---|---|
-| `targets` | Named launch targets, each `{harness: claude\|codex\|opencode, pool: subscription\|free\|api}`. **File order is the fallback order** for any tier row that doesn't reorder it via `prefer`. |
+| `targets` | Named launch targets, each `{harness: claude\|codex\|opencode, pool: subscription\|free\|api, api_opt_in?, auth?}`. **File order is the fallback order** for any tier row that doesn't reorder it via `prefer`. |
+| `env_profiles` | Named environment sources a target's `auth.profile` points at: `{from: <json file>, keys: [...], expect?: {...}}`. Names *where* values live and *which* to copy — never stores a value. See "point a harness at a custom endpoint" in `references/how-to.md`. |
 | `tiers` | `{tier_name: {target_name: {model, effort?}}}`. A target with no cell in a row cannot serve that tier — the walk skips straight past it. |
 | `roles` | Per-role override (`review`/`resolve`/`ci-fix`/`assembly-resolve`/`implement`/`fix`/`cleanup`): `{tier, prefer?, independent?}`. |
 | `purposes` | `{purpose_value: tier_name}` — routes implement/fix/cleanup tasks by their `purpose` frontmatter instead of `complexity`. |
@@ -61,6 +62,7 @@ See `references/how-to.md` for the specific recipes:
 - Add a new harness/adapter (target)
 - Disable a harness/adapter without deleting its config
 - Add a new model to an existing harness (including adding e.g. a DeepSeek model to `opencode`)
+- Point a harness at a custom Anthropic-compatible endpoint with an env profile
 - Add or remove a tier
 - Route a purpose to a tier
 - Pin, change, or unpin the code reviewer
@@ -86,6 +88,11 @@ See `references/gotchas.md` for the non-obvious interactions this table produces
 - A cell can be stuck `unavailable` in `~/.worktrail/agent-capacity.json` after a stale billing
   gate outlives its `retry_after` — check that file before assuming a routing-table edit didn't
   take effect.
+- A worker never sees your **user-level** `~/.claude/settings.json`: every claude spawn carries
+  `--setting-sources project,local`, which excludes it. That is deliberate (a user-level Stop
+  hook corrupts a worker's report-back JSON), but it also drops that file's `env` block — so a
+  provider configured *only* there reaches no worker, and the spawn makes **zero API calls while
+  exiting 0**. Reach for an `env_profiles` entry instead of editing `--setting-sources`.
 
 ## Verify a change took effect
 

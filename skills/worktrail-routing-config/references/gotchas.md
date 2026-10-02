@@ -79,3 +79,42 @@ file for that target/model pair's current `status`.
 A drain loop or long-lived orchestrator process reads `routing.yaml` once at startup and keeps
 it in memory. Editing the file does not affect that process's remaining spawns — restart it, or
 wait for the next one-off `/go` invocation, which reads the current file fresh.
+
+## A worker never inherits your user-level `~/.claude/settings.json`
+
+Every `claude` spawn carries `--setting-sources project,local`, which excludes the operator's
+user-level settings file. That is intentional and load-bearing: a user-level Stop hook fires on
+every worker that commits or writes, forcing an extra continuation turn whose text becomes the
+final message the orchestrator parses for its report-back JSON.
+
+The collateral damage is that the file's `env` block never reaches a worker either. A provider
+configured *only* there — an alternate `ANTHROPIC_BASE_URL`, its token, model aliases — is
+invisible to every worker. The failure is silent and shaped exactly like a successful run: the
+worker makes **zero API calls**, produces no output, and still **exits 0** (measured:
+`duration_api_ms: 0`, `input_tokens: 0`, `total_cost_usd: 0`, `stop_reason: stop_sequence`).
+
+There is a second, narrower consequence: a spawn launched from an *interactive* session inherits
+that session's environment, so it works — while the same cell spawned from a drain, cron, or a
+bridge process does not. "It worked when I ran it by hand" is not evidence about the unattended
+path.
+
+Do **not** fix this by adding `user` back to `--setting-sources`; that re-opens the Stop-hook
+bug. Declare an `env_profiles` entry instead (see `how-to.md`), which copies exactly the keys
+you name and fails loudly — before launch — when the source does not match what you asserted.
+
+## `pool: api` adds `--bare`, which skips every `--settings` hook
+
+`--bare` is what forces an `api`-pool claude cell off an ambient subscription login. It also
+skips hooks defined in settings — verified live, with a marker hook: a `PreToolUse` hook passed
+via `--settings` fires without `--bare` and does **not** fire with it. That includes the worker
+worktree guard, which is injected via `--settings` and exists because a worker once wrote into
+the canonical checkout.
+
+A profile-backed api cell is the exception: it omits `--bare`, because the injected credentials
+already pin the endpoint and auth (which is what `--bare` was doing there), so `--bare` would
+buy nothing and cost the guard. An api cell *without* a profile still gets `--bare`, and so still
+runs without the guard.
+
+`--bare` also trims plugin/skill context — measured, ~1.3K input tokens versus ~19.8K for the
+same prompt. Project-level `CLAUDE.md`/`AGENTS.md` still load either way; it is the plugin
+surface that is dropped.
