@@ -5,7 +5,7 @@ import io
 import subprocess
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
@@ -190,6 +190,114 @@ class CheckTests(unittest.TestCase):
             return _FakeResult(stdout="\n".join(model_ids))
 
         return runner
+
+    def _write_settings(self, name: str, payload: str) -> Path:
+        path = Path(self._tmp.name) / name
+        path.write_text(payload, encoding="utf-8")
+        return path
+
+    def _profile_routing(self, source: Path, *, expect: str = "") -> str:
+        # Block style, not `{model: deepseek-flash[1m]}`: inside a YAML FLOW
+        # mapping `[` opens a flow sequence, so an unquoted bracketed model id
+        # there is a parse error. (Same hazard `explicit_cell_override` avoids
+        # by writing its temp file with safe_dump.)
+        return f"""
+env_profiles:
+  deepseek:
+    from: {source}
+    keys: [ANTHROPIC_BASE_URL]
+{expect}targets:
+  claude-deepseek:
+    harness: claude
+    pool: api
+    api_opt_in: true
+    auth:
+      profile: deepseek
+tiers:
+  t1-deep:
+    claude-deepseek:
+      model: deepseek-flash[1m]
+"""
+
+    def test_resolvable_env_profile_notes_ok_and_exits_zero(self):
+        source = self._write_settings(
+            "settings.json", '{"env": {"ANTHROPIC_BASE_URL": "https://ds.test"}}'
+        )
+        self._write(self._profile_routing(source))
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = _check(
+                path=self.routing_path, capacity_path=self.capacity_path, now=self.now
+            )
+        self.assertEqual(rc, 0)
+        self.assertIn("env profile deepseek ok", out.getvalue())
+
+    def test_missing_profile_file_fails_without_recording_a_capacity_gate(self):
+        """It flips the exit code but must NOT record an `agent_capacity` gate:
+        a gate is skipped silently by `select_cell` on the next spawn, which
+        would turn a loud config error into an invisible fallback -- the exact
+        failure class env profiles exist to eliminate."""
+        source = Path(self._tmp.name) / "absent.json"
+        self._write(self._profile_routing(source))
+        err = io.StringIO()
+        with (
+            mock.patch.object(agent_capacity, "record") as record,
+            redirect_stderr(err),
+        ):
+            rc = _check(
+                path=self.routing_path, capacity_path=self.capacity_path, now=self.now
+            )
+        self.assertEqual(rc, 1)
+        record.assert_not_called()
+        self.assertIn("does not exist", err.getvalue())
+        self.assertIn("unresolvable env profile", err.getvalue())
+
+    def test_expect_mismatch_names_the_key_and_fails(self):
+        source = self._write_settings(
+            "settings.json",
+            '{"env": {"ANTHROPIC_BASE_URL": "https://api.anthropic.com"}}',
+        )
+        self._write(
+            self._profile_routing(
+                source,
+                expect=(
+                    "    expect:\n"
+                    "      ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic\n"
+                ),
+            )
+        )
+        err = io.StringIO()
+        with redirect_stderr(err):
+            rc = _check(
+                path=self.routing_path, capacity_path=self.capacity_path, now=self.now
+            )
+        self.assertEqual(rc, 1)
+        self.assertIn("ANTHROPIC_BASE_URL", err.getvalue())
+        self.assertIn("api.deepseek.com", err.getvalue())
+
+    def test_dangling_profile_reference_does_not_crash_check(self):
+        """A target naming an undeclared profile warns at validation time and
+        FAILs at check time; neither may raise."""
+        self._write("""
+targets:
+  claude-deepseek:
+    harness: claude
+    pool: api
+    api_opt_in: true
+    auth:
+      profile: ghost
+tiers:
+  t1-deep:
+    claude-deepseek:
+      model: deepseek-flash[1m]
+""")
+        err = io.StringIO()
+        with redirect_stderr(err):
+            rc = _check(
+                path=self.routing_path, capacity_path=self.capacity_path, now=self.now
+            )
+        self.assertEqual(rc, 1)
+        self.assertIn("ghost", err.getvalue())
 
     def test_all_cells_clean_exits_zero(self):
         self._write("""

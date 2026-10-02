@@ -563,6 +563,33 @@ def _validate_routing_targets(
                 "target kept but ineligible until opted in"
             )
         auth = entry.get("auth")
+        if auth is not None and not isinstance(auth, dict):
+            meta["warnings"].append(
+                f"routing.targets.{name}.auth must be a mapping "
+                f"(env or profile); got {auth!r} — spawn will reject it"
+            )
+        if isinstance(auth, dict):
+            if auth.get("env") and auth.get("profile"):
+                # Two sources for one auth lane. Picking one silently is the
+                # exact failure class env profiles exist to eliminate, so this
+                # is surfaced even though the target is kept (the spawn hard-
+                # fails; see build_child_env).
+                meta["warnings"].append(
+                    f"routing.targets.{name}.auth declares both 'env' and "
+                    "'profile' — they name two sources for the same auth lane; "
+                    "remove one"
+                )
+            if auth.get("profile") and pool == "subscription":
+                # The subscription lane pops ANTHROPIC_API_KEY *after* profile
+                # injection (build_child_env), so a profile-supplied key cannot
+                # survive there. Warn rather than reject: a profile on a
+                # subscription target may still legitimately inject non-key
+                # variables.
+                meta["warnings"].append(
+                    f"routing.targets.{name}.auth.profile on a 'subscription' "
+                    "target: that lane strips ANTHROPIC_API_KEY after "
+                    "injection, so a profile-supplied API key will not survive"
+                )
         resolved[name] = {
             "harness": harness,
             "pool": pool,
@@ -570,6 +597,113 @@ def _validate_routing_targets(
             "auth": auth,
         }
     return resolved
+
+
+def _validate_routing_env_profiles(
+    raw: Any, meta: dict[str, Any]
+) -> dict[str, dict[str, Any]]:
+    """`routing.env_profiles`: named environment sources a target's
+    `auth.profile` names -- `{name: {from, keys, expect?}}`.
+
+    A profile stores **no values**: `from` is a path to a JSON file, `keys`
+    lists which of that file's `env` entries to copy, and the optional `expect`
+    maps a key to the literal it must equal before a worker is launched. The
+    split is deliberate and independent -- a key may be asserted without being
+    copied (provenance checking) and copied without being asserted (so its
+    value is never printable). Never-raise warn-and-drop, like the sibling
+    `_validate_routing_*` validators.
+
+    A malformed `expect` drops the whole profile rather than ignoring just the
+    assertion: a silently-dropped assertion is indistinguishable from a passing
+    one, which would defeat the only thing `expect` exists for.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        meta["warnings"].append(
+            f"routing.env_profiles must be a mapping of name -> profile; "
+            f"got {raw!r} — ignored"
+        )
+        return {}
+    resolved: dict[str, dict[str, Any]] = {}
+    for name, entry in raw.items():
+        if not isinstance(name, str):
+            meta["warnings"].append(
+                f"routing.env_profiles: key must be a string; got {name!r} — ignored"
+            )
+            continue
+        if not isinstance(entry, dict):
+            meta["warnings"].append(
+                f"routing.env_profiles.{name} must be a mapping "
+                f"(from/keys/expect); got {entry!r} — dropped"
+            )
+            continue
+        unknown = sorted(set(entry) - {"from", "keys", "expect"})
+        if unknown:
+            meta["warnings"].append(
+                f"routing.env_profiles.{name}: unknown key(s) "
+                f"{', '.join(unknown)} — ignored"
+            )
+        source = entry.get("from")
+        if not isinstance(source, str) or not source.strip():
+            meta["warnings"].append(
+                f"routing.env_profiles.{name}.from must be a non-empty path "
+                "string; dropped"
+            )
+            continue
+        keys = entry.get("keys")
+        if (
+            not isinstance(keys, list)
+            or not keys
+            or not all(isinstance(k, str) and k for k in keys)
+        ):
+            meta["warnings"].append(
+                f"routing.env_profiles.{name}.keys must be a non-empty list of "
+                "non-empty strings; dropped"
+            )
+            continue
+        expect = entry.get("expect")
+        if expect is not None and (
+            not isinstance(expect, dict)
+            or not all(
+                isinstance(k, str) and isinstance(v, str) for k, v in expect.items()
+            )
+        ):
+            meta["warnings"].append(
+                f"routing.env_profiles.{name}.expect must be a mapping of "
+                "string -> string; dropped"
+            )
+            continue
+        resolved[name] = {
+            "from": source,
+            "keys": list(keys),
+            "expect": dict(expect or {}),
+        }
+    return resolved
+
+
+def _warn_undeclared_env_profiles(
+    targets: dict[str, dict[str, Any]],
+    env_profiles: dict[str, dict[str, Any]],
+    meta: dict[str, Any],
+) -> None:
+    """Warn on an `auth.profile` naming a profile `env_profiles` does not
+    declare. The target is kept (mirroring "`pool: api` without `api_opt_in`
+    is kept but ineligible") so it still appears in `--check` diagnostics; the
+    authoritative failure is at spawn, where a missing profile raises.
+    """
+    for name, target in targets.items():
+        auth = target.get("auth")
+        if not isinstance(auth, dict):
+            continue
+        profile = auth.get("profile")
+        if not profile or profile in env_profiles:
+            continue
+        meta["warnings"].append(
+            f"routing.targets.{name}.auth.profile names {profile!r}, which is "
+            "not declared in routing.env_profiles; target kept but every spawn "
+            "will fail until it is declared"
+        )
 
 
 def _validate_routing_agents(
@@ -1065,10 +1199,15 @@ def _validate_routing(raw: Any, meta: dict[str, Any]) -> dict[str, Any] | None:
     if not raw:
         return None
     _reject_legacy_routing_keys(raw)
+    # Resolved before `targets`: a target's `auth.profile` is validated against
+    # this table.
+    env_profiles = _validate_routing_env_profiles(raw.get("env_profiles"), meta)
     targets = _validate_routing_targets(raw.get("targets"), meta)
+    _warn_undeclared_env_profiles(targets, env_profiles, meta)
     tiers = _validate_routing_tiers(raw.get("tiers"), targets, meta)
     return {
         "targets": targets,
+        "env_profiles": env_profiles,
         "defaults": _validate_routing_defaults(raw.get("defaults"), meta),
         "roles": _validate_routing_roles(raw.get("roles"), tiers, targets, meta),
         "tiers": tiers,

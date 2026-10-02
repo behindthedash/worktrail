@@ -27,6 +27,7 @@ from typing import Any
 import yaml
 
 from ..orchestrator import agent_capacity
+from .env_profile import resolve_env_profile
 from .policy import (
     EFFORT_VOCABULARY,
     VALID_AGENT_CLIS,
@@ -183,6 +184,13 @@ def _check(
     `:free` suffix, and an effort literal outside its target's harness's
     `EFFORT_VOCABULARY` (task 1.5), are warnings only -- they surface in the
     per-cell table and on stderr but never flip the exit code.
+
+    A cell whose target declares `auth.profile` has that profile *resolved*
+    here, against the real file, with the full failure printed to stderr and
+    the cell marked `FAIL`: a cell whose auth lane cannot resolve cannot serve,
+    so reporting `ok` would be actively misleading. It flips the exit code but
+    is deliberately not recorded as an `agent_capacity` gate -- see the inline
+    note where it is raised.
     """
     routing_path = path or _routing_file_path()
     if not routing_path.is_file():
@@ -215,6 +223,8 @@ def _check(
     opencode_models: set | None = None
     rows = []
     gated = 0
+    profiles_failed = 0
+    profile_failures: list[str] = []
 
     for row in sorted(tiers):
         for target in sorted(tiers[row]):
@@ -254,6 +264,31 @@ def _check(
                         f"warn: effort {effort!r} outside {harness!r} vocabulary"
                     )
 
+            auth = target_info.get("auth")
+            if isinstance(auth, dict) and auth.get("profile"):
+                profile_name = auth["profile"]
+                try:
+                    resolve_env_profile(
+                        profile_name,
+                        (routing.get("env_profiles") or {}).get(profile_name) or {},
+                        target=target,
+                        declared_in=routing_path,
+                    )
+                except OperatorConfigError as exc:
+                    # FAIL + exit 1, but deliberately NOT an
+                    # `agent_capacity.record()` gate: a gate is skipped
+                    # silently by `select_cell` on the next spawn, which would
+                    # turn a loud config error into an invisible fallback to
+                    # the next rung -- the failure class env profiles exist to
+                    # eliminate. Gates model provider conditions; this is
+                    # operator config.
+                    status = "FAIL"
+                    notes.append(f"env profile {profile_name} unresolvable")
+                    profile_failures.append(str(exc))
+                    profiles_failed += 1
+                else:
+                    notes.append(f"env profile {profile_name} ok")
+
             rows.append(
                 (
                     row,
@@ -277,8 +312,17 @@ def _check(
     for r in rows:
         print(fmt.format(*r))
 
+    for failure in profile_failures:
+        print(f"worktrail-routing: {failure}", file=sys.stderr)
     if gated:
         print(f"worktrail-routing: {gated} cell(s) gated -- see above", file=sys.stderr)
+        return 1
+    if profiles_failed:
+        print(
+            f"worktrail-routing: {profiles_failed} cell(s) have an unresolvable "
+            "env profile -- see above",
+            file=sys.stderr,
+        )
         return 1
     return 0
 
