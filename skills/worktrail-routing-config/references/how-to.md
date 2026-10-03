@@ -162,10 +162,62 @@ with a warning and effectively unset.
 ## Validate a change before trusting it
 
 ```bash
-worktrail-routing --check                                        # syntax + legacy-key + cell sanity
+worktrail-routing --check                                        # syntax + legacy-key + cell sanity + spawn readiness
 worktrail-policy --repo <repo-path> --resolve-routing "x:x" --json  # print the fully resolved table
 ```
 
 `--resolve-routing`'s `"x:x"` argument is vestigial (ignored) — it always returns the complete
 `{targets, tiers, roles, purposes, default_tier, env_profiles, drain}` table, which is what to read to confirm
 an edit resolved the way you expect before it affects a live spawn.
+
+## Read a readiness failure from `worktrail-routing --check`
+
+`--check` is a spawn-readiness probe, not just a schema linter: it reshapes the file through the
+same resolver a spawn uses, then builds every declared cell's command and child environment from
+that *resolved* table. So a cell whose auth lane can't be assembled fails the check — marked
+`FAIL` in the STATUS column, its message on stderr, exit code non-zero — even though the YAML
+itself is perfectly valid. Find the message's class below and fix the target it names; each one
+is deterministic in the current file/environment, so re-running only reproduces it.
+
+- **`... declares auth.profile '<name>', which is not declared in routing.env_profiles ...`** —
+  the target points at a profile this routing file doesn't define. `env_profiles:` resolves
+  alongside `targets:` in the same file, so remember a repo-local `routing:` block replaces the
+  machine-wide file entirely: a profile that exists in `~/.worktrail/routing.yaml` is absent for
+  a repo that declares its own block. Fix: declare `env_profiles: {<name>: {from: ..., keys:
+  [...]}}` there (see "Point a harness at a custom Anthropic-compatible endpoint" above).
+- **`... env profile '<name>': ...`** — the profile is declared but can't be resolved against
+  its source: a missing/relative `from`, an unreadable or non-JSON file with no `env` object, a
+  key that is missing, empty, or not a string, or an `expect` mismatch. The message names the key
+  (never an unasserted value) and the file. Fix the source file or the profile's `keys`/
+  `expect`; don't loosen `expect` just to make it pass.
+- **`... requires <VAR> to be set in the environment for its 'api' pool ...`** — the target
+  declares `auth: {env: <VAR>}` but `<VAR>` is unset or empty in the process running the check.
+  Fix: export it in the *spawning* environment — not necessarily the shell you type in, since a
+  drain under cron/systemd inherits that job's environment, and "it worked by hand" says nothing
+  about the unattended path (see gotchas.md). The routing file stores no value here; `auth.env`
+  names a variable and nothing more.
+- **`... has no auth.env or auth.profile configured ...`** (and its mirror, `... declares both
+  auth.env and auth.profile ...`) — a claude `api` cell has zero or two auth sources. Fix: give
+  it exactly one.
+- **A cell reported unready for `api_opt_in`** — the target is `pool: api` without
+  `api_opt_in: true`. Fix: add `api_opt_in: true` to its `targets:` entry (or move it off the
+  `api` pool). Without it `select_cell` silently drops the target from every row, so this is the
+  probe catching "my target is just never selected" before it wastes an afternoon.
+- **`... (harness codex, pool api) has no auth.codex_home configured ...`** — a codex `api` cell
+  spawns in its own pre-provisioned home and deliberately does not inherit the parent's ChatGPT
+  login. Fix: add `auth: {codex_home: <path>}` naming the home.
+- **`...'s auth.codex_home (<path>) has no auth.json ...`** — the declared home exists but was
+  never logged in. The probe checks this; it never creates the home. Fix: provision it once with
+  `CODEX_HOME=<path> codex login --with-api-key`.
+- **A harness the probe reports as unsupported** — `harness:` must be one of `claude`, `codex`,
+  `opencode`. Fix: correct the value.
+
+**None of these is a capacity gate, and waiting one out is not a thing.** A capacity gate is a
+note in `~/.worktrail/agent-capacity.json` with a `retry_after`, modeling a *provider* condition
+(a rate limit, a retired model); `select_cell` walks silently past a gated cell to the next rung,
+which is why a capacity-gated cell does not stop a drain. A readiness failure is operator config
+or a missing variable instead: nothing is recorded in `agent-capacity.json`, there is no
+`retry_after` to wait out, and it is deliberately not gated, because turning a loud config error
+into an invisible fallback is the exact failure mode `env_profiles` exist to eliminate. A drain
+that hits one refuses to start (exit 2, naming the cell and the routing file) rather than routing
+around it. Fix the file or export the variable, re-run `--check`, then let the drain start.
