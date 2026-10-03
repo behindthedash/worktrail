@@ -72,6 +72,15 @@ See `references/how-to.md` for the specific recipes:
 ## Gotchas
 
 See `references/gotchas.md` for the non-obvious interactions this table produces, especially:
+- `worktrail-routing --check` is a **spawn readiness probe, not a schema linter**: after the
+  schema/legacy-key pass it builds each cell's command and child environment from the resolved
+  table *in the checking shell*, so a cell whose auth lane cannot resolve there (e.g. a claude
+  `api` cell whose `auth.env` variable isn't exported in that shell) reports `FAIL` and exits
+  non-zero on an otherwise valid YAML file. A drain now runs the same probe before spawning and
+  **refuses to start** (exit 2, naming the cell and the routing file) instead of routing around
+  the cell — only a *capacity*-gated cell (`model_unavailable` in
+  `~/.worktrail/agent-capacity.json`) is still walked past. Fix the config or export the
+  variable in the environment that spawns; this is not a condition to wait out.
 - `independent: true` silently overrides `prefer` when the preferred target shares a harness
   with whichever harness implemented the task — this is the #1 cause of "I only configured
   Claude, why did Codex just get spawned."
@@ -101,6 +110,6 @@ into memory at startup — it will not see an edit until restarted. A one-off `/
 picks up the current file on its next run with no restart needed.
 
 ```bash
-worktrail-routing --check                 # validates syntax + rejects legacy keys
+worktrail-routing --check                 # schema + legacy keys + spawn readiness of every cell
 worktrail-policy --repo <repo> --resolve-routing "x:x" --json   # prints the fully resolved table
 ```

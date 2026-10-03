@@ -24,7 +24,7 @@
 
 ## 3. Skill gotcha
 
-- [ ] 3.1 Add the operator-facing gotcha to the routing-config skill: `--check` is a spawn
+- [x] 3.1 Add the operator-facing gotcha to the routing-config skill: `--check` is a spawn
       readiness probe, not a schema linter, so a cell whose auth lane cannot resolve in the
       current shell fails it; and a drain now refuses to start on such a failure instead of
       routing around it, while a capacity-gated cell is still walked past.
