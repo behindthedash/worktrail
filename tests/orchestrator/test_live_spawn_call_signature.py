@@ -5,9 +5,15 @@ real invocation.
 `run_research_session` (the `--fork-research` pre-load) passed
 `agent=`/`model=`/`effort=` and omitted the required `tier=`;
 `smoke()` (the `worktrail-live smoke` connectivity probe) passed
-`agent=`/`model=` and omitted `tier=`. The requirements they meant to express
-named an explicit harness + model, which the routing schema resolves through
-`spawnlib.explicit_cell_override()` + `tier="explicit"` -- not through kwargs.
+`agent=`/`model=` and omitted `tier=`. Neither site carries a task/role
+context, so both resolve through `tier`/`prefer` -- the routing file's
+`default_tier` row with the requested harness as a target preference
+(`live._default_tier_and_prefer`) -- not through kwargs. The explicit-cell
+pinning (`spawnlib.explicit_cell_override()` + `tier="explicit"`) these tests
+first asserted for the two sites was superseded by the model-tier-routing D3
+decision (openspec/changes/model-tier-routing-zero-usage-spawn-detection/
+design.md): `model`/`effort` stay compatibility-only here, the same contract
+`LiveSpawn.__init__` documents for its own `model`.
 
 Both defects survived because their tests patched `spawn_agent` with an
 unconstrained `MagicMock` (`side_effect=lambda *_, **kw:`), which accepts any
@@ -97,20 +103,17 @@ class SpawnCallSignatureConformanceTests(unittest.TestCase):
 
 
 class SmokeSpawnCallTests(unittest.TestCase):
-    """`smoke()` is the operator-facing probe; it must actually reach the
-    harness+model it was asked about."""
+    """`smoke()` is the operator-facing probe; the spawn must express the
+    requested harness as its target preference, so it can never silently serve
+    another harness's cell."""
 
-    def _capture_routing_file(self, harness, model):
+    def _capture(self, harness, model):
         captured = {}
 
         def _capture(*args, **kwargs):
             # autospec binds against the real signature before side_effect runs,
             # so a bad kwarg raises TypeError here exactly as it would in
             # production.
-            path = os.environ.get("WORKTRAIL_ROUTING_FILE")
-            captured["routing"] = (
-                Path(path).read_text(encoding="utf-8") if path else None
-            )
             captured["args"] = args
             captured["kwargs"] = kwargs
             return type(
@@ -128,36 +131,35 @@ class SmokeSpawnCallTests(unittest.TestCase):
         return ok, captured
 
     def test_smoke_reaches_the_spawn_with_the_real_signature(self):
-        ok, captured = self._capture_routing_file("claude", "opus")
+        ok, captured = self._capture("claude", "opus")
         self.assertTrue(ok)
         inspect.signature(spawnlib.spawn_agent).bind(
             *captured["args"], **captured["kwargs"]
         )
 
-    def test_smoke_pins_the_requested_model_through_the_explicit_cell(self):
-        _, captured = self._capture_routing_file("claude", "opus")
-        self.assertIn("model: opus", captured["routing"] or "")
-        self.assertIn("claude-sub", captured["routing"] or "")
+    def test_smoke_prefers_the_requested_harness_target(self):
+        # `model="opus"` is compatibility-only (not fed to the spawn, see
+        # test_research_session_ignores_model_and_effort_for_dispatch): the
+        # dispatch contract is the default_tier row plus claude's own target.
+        _, captured = self._capture("claude", "opus")
+        self.assertEqual(captured["kwargs"].get("tier"), "t2-build")
+        self.assertEqual(captured["kwargs"].get("prefer"), "claude-sub")
+        self.assertNotIn("model", captured["kwargs"])
 
-    def test_smoke_resolves_a_target_for_a_non_claude_harness(self):
-        ok, captured = self._capture_routing_file("codex", "gpt-5.4-mini")
+    def test_smoke_prefers_a_non_claude_harness_target(self):
+        ok, captured = self._capture("codex", "gpt-5.4-mini")
         self.assertTrue(ok)
-        self.assertIn("codex-sub", captured["routing"] or "")
-        self.assertIn("model: gpt-5.4-mini", captured["routing"] or "")
+        self.assertEqual(captured["kwargs"].get("prefer"), "codex-sub")
 
 
 class ResearchSessionSpawnCallTests(unittest.TestCase):
     """`run_research_session()` backs `--fork-research`; its pre-load spawn
-    must use the same signature and the same explicit-cell mechanism."""
+    must use the same signature and the same (`tier`, `prefer`) resolution."""
 
     def _run(self, **kwargs):
         captured = {}
 
         def _capture(*args, **kw):
-            path = os.environ.get("WORKTRAIL_ROUTING_FILE")
-            captured["routing"] = (
-                Path(path).read_text(encoding="utf-8") if path else None
-            )
             captured["args"] = args
             captured["kwargs"] = kw
             return type("R", (), {"text": "", "session_id": "sid-1"})()
@@ -180,12 +182,15 @@ class ResearchSessionSpawnCallTests(unittest.TestCase):
             *captured["args"], **captured["kwargs"]
         )
 
-    def test_research_session_pins_the_requested_model_and_effort(self):
+    def test_research_session_prefers_the_requested_harness_target(self):
         _, captured = self._run(agent="claude", model="opus", effort="high")
-        self.assertIn("model: opus", captured["routing"] or "")
-        self.assertIn("effort: high", captured["routing"] or "")
+        self.assertEqual(captured["kwargs"].get("tier"), "t2-build")
+        self.assertEqual(captured["kwargs"].get("prefer"), "claude-sub")
 
-    def test_research_session_without_effort_omits_it(self):
+    def test_research_session_ignores_model_and_effort_for_dispatch(self):
+        # A run-level model/effort is compatibility-only on these surfaces:
+        # neither may reach the spawn, only the harness's target preference.
         _, captured = self._run(agent="codex", model="gpt-5.4-mini")
-        self.assertIn("codex-sub", captured["routing"] or "")
-        self.assertNotIn("effort:", captured["routing"] or "")
+        self.assertEqual(captured["kwargs"].get("prefer"), "codex-sub")
+        self.assertNotIn("model", captured["kwargs"])
+        self.assertNotIn("effort", captured["kwargs"])
