@@ -1,6 +1,6 @@
 ## 1. Preserve the selected routing table for explicit overrides
 
-- [ ] 1.1 Update `explicit_cell_override()` to derive the temporary explicit
+- [x] 1.1 Update `explicit_cell_override()` to derive the temporary explicit
       cell from a supplied resolved routing table, retaining fail-closed
       validation for an absent target; add helper coverage for supplied-table
       target lookup, harness/pool preservation, effort injection, and the
@@ -8,7 +8,7 @@
       table that selected their target)
       files: src/worktrail/orchestrator/spawnlib.py tests/orchestrator/test_spawnlib.py
 
-- [ ] 1.2 Pass `LiveSpawn`'s already-resolved routing table into the explicit
+- [x] 1.2 Pass `LiveSpawn`'s already-resolved routing table into the explicit
       model/effort override path; add an integration regression in which
       repository-local routing selects a target absent from the machine-wide
       table and verify the temporary routing file retains the selected target
