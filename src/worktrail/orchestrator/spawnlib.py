@@ -35,7 +35,10 @@ the worker invoked. The caller receives a `SpawnResult` named-tuple with:
 
   text        — worker's final message (what the orchestrator parses for report-back)
   usage       — {input_tokens, cache_creation_input_tokens, cache_read_input_tokens,
-                  output_tokens, total_cost_usd}
+                  output_tokens, total_cost_usd}, plus the diagnostic fields
+                  `_parse_stream_json` lifts from the result event (subtype,
+                  is_error, stop_reason, num_turns, permission_denials, and
+                  duration_api_ms when the event carries it)
   tools_used  — sorted list of distinct tool names (Read, Edit, Write, Bash, …)
   skills_used — sorted list of distinct skill names invoked via the Skill tool
 
@@ -313,10 +316,14 @@ def _parse_stream_json(raw: str) -> tuple[str, dict, list[str], list[str], str]:
     `usage` also carries a few non-token diagnostic fields lifted straight from the
     "result" event: `subtype` (e.g. "success", "error_max_turns",
     "error_during_execution"), `is_error`, `stop_reason` (e.g. "end_turn",
-    "max_tokens"), `num_turns`, and `permission_denials`. None of these are used for
-    billing -- they exist so a report-back parse failure (dispatch.parse_report_back
-    raising "no report-back JSON block found") can be diagnosed from *why* the
-    worker's final turn ended instead of only the error message and duration.
+    "max_tokens"), `num_turns`, `permission_denials`, and `duration_api_ms` (the
+    event's own server-side API time, retained only when the event carries it --
+    a present-and-zero value is half of the measured zero-API-call shape
+    `_zero_api_call_result` classifies as an infra failure). None of these are
+    used for billing -- they exist so a report-back parse failure
+    (dispatch.parse_report_back raising "no report-back JSON block found") can be
+    diagnosed from *why* the worker's final turn ended instead of only the error
+    message and duration.
 
     Stream structure (`opencode run --format json`) -- a completely different JSONL
     vocabulary (verified against a live reproduction, handoff 20260722-152514):
@@ -406,6 +413,12 @@ def _parse_stream_json(raw: str) -> tuple[str, dict, list[str], list[str], str]:
                 "num_turns": int(event.get("num_turns", 0) or 0),
                 "permission_denials": event.get("permission_denials") or [],
             }
+            # Retained only when the result event actually carries it: the
+            # zero-API-call detection keys on the field's PRESENCE (see
+            # _zero_api_call_result), so defaulting an absent field to 0 would
+            # misclassify every stream that simply lacks it.
+            if "duration_api_ms" in event:
+                usage["duration_api_ms"] = int(event.get("duration_api_ms") or 0)
             session_id = event.get("session_id") or ""
 
         elif event_type == "assistant":
@@ -502,13 +515,46 @@ def _opencode_error_event(stdout: str | None) -> dict | None:
     return None
 
 
+# The four token counters a claude result event always reports. A zero-API-call
+# result leaves every one of them at 0.
+_TOKEN_COUNT_FIELDS = (
+    "input_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "output_tokens",
+)
+
+
+def _zero_api_call_result(usage: Mapping[str, Any] | None) -> bool:
+    """True for the measured "the spawn made no API call" result shape.
+
+    The claude CLI can exit 0 with a well-formed success envelope whose own
+    diagnostics prove the API was never reached: `duration_api_ms` present and
+    0, `num_turns` 0, and all four token counters 0. That is not a task verdict,
+    so `is_infra_failure` treats it as an infra failure and the spawn retries
+    instead of recording a successful empty run.
+
+    `duration_api_ms` must be PRESENT: opencode-synthesized usage dicts also
+    carry `num_turns: 0` and (for a denial-only stream) all-zero counters, and
+    must never be caught by this check.
+    """
+    if not isinstance(usage, Mapping) or "duration_api_ms" not in usage:
+        return False
+    if usage.get("duration_api_ms") != 0 or usage.get("num_turns") != 0:
+        return False
+    return all(int(usage.get(field) or 0) == 0 for field in _TOKEN_COUNT_FIELDS)
+
+
 def is_infra_failure(returncode: int, stdout: str | None) -> bool:
-    """A spawn that exited non-zero, produced no output, or (opencode) reported a
-    top-level error event -- a transient blip, not a task verdict. (A real task
-    failure is exit 0 + a `status:failed` report.)"""
+    """A spawn that exited non-zero, produced no output, (opencode) reported a
+    top-level error event, or produced the zero-API-call result shape -- a
+    transient blip, not a task verdict. (A real task failure is exit 0 + a
+    `status:failed` report.)"""
     if returncode != 0 or not (stdout or "").strip():
         return True
-    return _opencode_error_event(stdout) is not None
+    if _opencode_error_event(stdout) is not None:
+        return True
+    return _zero_api_call_result(_parse_stream_json(stdout)[1])
 
 
 def _is_auth_failure(proc: subprocess.CompletedProcess, raw: str | None) -> bool:
@@ -1230,12 +1276,13 @@ def spawn_agent(
     the caller (parsed as a missing report-back -> task failure) rather than
     looping forever.
 
-    An ordinary infra failure (non-zero exit / empty stdout) retries the SAME
-    cell up to `retries` times first -- except an auth-class failure (401,
-    consumed refresh token), which cannot clear itself and so gates the cell
+    An ordinary infra failure (non-zero exit / empty stdout / the zero-API-call
+    result shape -- see `_zero_api_call_result`) retries the SAME cell up to
+    `retries` times first -- except an auth-class failure (401, consumed
+    refresh token), which cannot clear itself and so gates the cell
     on the first attempt (`_is_auth_failure`) with no retry or backoff. Once
-    that budget is exhausted the cell
-    is gated `failure_class="infra"` (via `agent_capacity.classify_failure`)
+    that budget is exhausted the cell is gated with `classify_failure`'s class
+    (or `startup` for an exhausted zero-API-call shape)
     and, exactly like the session-limit path above, we re-select from the same
     row -- the fresh gate excludes the failed cell -- and continue this same
     attempt loop against whatever cell is served next, with its own fresh
@@ -1582,6 +1629,22 @@ def spawn_agent(
             attempt = attempts
         if attempt >= attempts:
             failure_class = _opencode_unknown_error_failure_class(cell, last_raw)
+            if failure_class is None and _zero_api_call_result(
+                _parse_stream_json(last_raw)[1]
+            ):
+                # A zero-API-call result that exhausted the retry budget maps to
+                # the short-cooldown `startup` class, ahead of classify_failure's
+                # text fallthrough: the CLI exited 0 without ever reaching the
+                # API, which is the transient spawn-layer shape startup's 60s
+                # cooldown covers. `auth` and `model_unavailable` are barred --
+                # both carry 24h cooldowns in DEFAULT_COOLDOWNS, and this shape
+                # carries no credential/model-id evidence at all (auth would
+                # also gate without retry, and model_unavailable is never
+                # probed, so either would park a healthy cell for a day). The
+                # fallthrough is not the label either: on a clean exit with no
+                # error text it can only guess `transport` (30s, a network
+                # blip) because there is nothing to match, not from evidence.
+                failure_class = "startup"
             if failure_class is None:
                 failure_class = agent_capacity.classify_failure(
                     proc.returncode, last_raw, proc.stderr or ""

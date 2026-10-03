@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from worktrail.orchestrator import live
+from worktrail.orchestrator import live, spawnlib
 
 
 class ReviewerSystemPromptTests(unittest.TestCase):
@@ -1871,3 +1871,115 @@ class LiveSpawnLearnedNotesTests(unittest.TestCase):
         ctxs, events = self._spawn_many({"agent_learning": True}, 2)
         self.assertIsNone(ctxs[0]["learned_notes"])
         self.assertEqual(events, [])
+
+
+# --------------------------------------------------------------------------- #
+# Task 2.1: the two repaired spawn call sites must reach the REAL spawn_agent
+# --------------------------------------------------------------------------- #
+
+# Mirrors the suite's conftest routing seed for the claude lane (claude-sub at
+# the t2-build default tier, model sonnet), with `claude-other` declared FIRST
+# at a different model: a spawn that lost its resolved (tier, prefer) would be
+# served claude-other/haiku, and the argv assertion below catches that.
+_E2E_ROUTING = {
+    "targets": {
+        "claude-other": {"harness": "claude", "pool": "subscription"},
+        "claude-sub": {"harness": "claude", "pool": "subscription"},
+    },
+    "tiers": {
+        "t2-build": {
+            "claude-other": {"model": "haiku", "effort": None},
+            "claude-sub": {"model": "sonnet", "effort": None},
+        }
+    },
+    "roles": {},
+    "purposes": {},
+    "default_tier": "t2-build",
+    "env_profiles": {},
+    "drain": {},
+}
+
+
+def _completed_claude_stream(text: str, session_id: str) -> str:
+    """A real completed claude `result` event -- non-zero API time, one turn,
+    non-zero tokens -- so `is_infra_failure` sees a clean success rather than
+    the zero-API-call shape."""
+    return json.dumps(
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "stop_reason": "end_turn",
+            "result": text,
+            "session_id": session_id,
+            "duration_api_ms": 1234,
+            "num_turns": 1,
+            "total_cost_usd": 0.02,
+            "usage": {
+                "input_tokens": 12,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 3,
+                "output_tokens": 4,
+            },
+        }
+    )
+
+
+class _ScriptedSpawn:
+    """One scripted `subprocess.run` worker outcome, recording each argv."""
+
+    def __init__(self, stdout: str):
+        self.stdout = stdout
+        self.argv: list[list[str]] = []
+
+    def __call__(self, cmd, **kwargs):
+        self.argv.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0, stdout=self.stdout, stderr="")
+
+
+class SpawnCallSiteE2ETests(unittest.TestCase):
+    """`run_research_session` and `smoke` must reach the REAL `spawn_agent`.
+
+    Pre-change both passed `agent=`/`model=` (and `effort=`) kwargs that
+    `spawn_agent`'s signature does not accept, so both died with `TypeError`
+    before spawning anything. Only `spawnlib.resolve_routing` and
+    `spawnlib.subprocess.run` are patched here (the hermetic pattern
+    test_spawnlib.py uses): the real `spawn_agent` sits in the path, so a
+    MagicMock patch of it cannot accept the bad kwargs and hide the defect."""
+
+    def test_run_research_session_drives_the_real_spawn_agent(self):
+        with tempfile.TemporaryDirectory() as t:
+            spec_folder = Path(t) / "docs" / "specs" / "001-spec"
+            spec_folder.mkdir(parents=True)
+            run = _ScriptedSpawn(_completed_claude_stream("context loaded", "sid-e2e"))
+            with (
+                patch.object(spawnlib, "resolve_routing", return_value=_E2E_ROUTING),
+                patch.object(subprocess, "run", new=run),
+            ):
+                session_id = live.run_research_session(spec_folder, agent="claude")
+        self.assertEqual(session_id, "sid-e2e")
+        self.assertEqual(len(run.argv), 1)
+        # The served cell is the default_tier row's own model for the requested
+        # harness -- not the decoy target declared first in _E2E_ROUTING.
+        self.assertIn(live._default_model_for_agent("claude"), run.argv[0])
+        self.assertNotIn("haiku", run.argv[0])
+
+    def test_smoke_drives_the_real_spawn_agent_and_reports_pong(self):
+        with tempfile.TemporaryDirectory() as t:
+            run = _ScriptedSpawn(_completed_claude_stream("PONG", "sid-smoke"))
+            cwd = os.getcwd()
+            os.chdir(t)  # smoke()'s cwd: a non-git dir, so no memory-dir probe writes
+            try:
+                with (
+                    patch.object(
+                        spawnlib, "resolve_routing", return_value=_E2E_ROUTING
+                    ),
+                    patch.object(subprocess, "run", new=run),
+                ):
+                    ok = live.smoke(agent="claude")
+            finally:
+                os.chdir(cwd)
+        self.assertTrue(ok)
+        self.assertEqual(len(run.argv), 1)
+        self.assertIn(live._default_model_for_agent("claude"), run.argv[0])
+        self.assertNotIn("haiku", run.argv[0])

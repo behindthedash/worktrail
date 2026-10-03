@@ -24,6 +24,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from worktrail.orchestrator import live
+from worktrail.router.policy import OperatorConfigError
 
 
 def _make_task(
@@ -1174,3 +1175,70 @@ class TestPrecheckOpenSpecScope(unittest.TestCase):
             self.assertIn("INFO: 4.1", output)
             self.assertNotIn("WARN: 4.1", output)
             self.assertNotIn("possible: already implemented", output)
+
+
+class TestPrecheckHostHarnessRouting(unittest.TestCase):
+    """Task 2.1: `precheck` must not be blocked by a routing table that
+    declares no target for the invoking host's harness.
+
+    Reproduced failure: `worktrail-live precheck` raised
+    `OperatorConfigError: no default model configured for agent 'claude'`
+    before its DAG check on a routing table with no claude target. The
+    contrast case pins that a subcommand which DOES spawn keeps that
+    resolution -- and so keeps failing fast on the same table."""
+
+    def _codex_only_routing_file(self, root: Path) -> Path:
+        path = root / "routing.yaml"
+        path.write_text(
+            "targets:\n"
+            "  codex-sub:\n"
+            "    harness: codex\n"
+            "    pool: subscription\n"
+            "tiers:\n"
+            "  t2-build:\n"
+            "    codex-sub:\n"
+            "      model: gpt-5.4-mini\n"
+            "default_tier: t2-build\n",
+            encoding="utf-8",
+        )
+        return path
+
+    def _routing_env(self, routing_file: Path):
+        # WORKTRAIL_ROUTING_FILE outranks the suite conftest's GO_ROUTING_FILE
+        # seed (env_setting prefers the current name), so this table is what
+        # `_default_model_for_agent` resolves against.
+        return mock.patch.dict(
+            os.environ, {"WORKTRAIL_ROUTING_FILE": str(routing_file)}
+        )
+
+    def test_precheck_returns_its_normal_exit_code_without_host_harness_target(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_root = Path(tmp)
+            _make_spec_dir(
+                tmp_root,
+                [_make_task("TASK-001", status="pending", files=["src/lib.py"])],
+                create_files=set(),
+            )
+            routing_file = self._codex_only_routing_file(tmp_root)
+            captured = io.StringIO()
+            with (
+                self._routing_env(routing_file),
+                mock.patch.object(live, "DEFAULT_AGENT", "claude"),
+                mock.patch("sys.stdout", captured),
+            ):
+                result = live.main(
+                    ["precheck", "--repo", str(tmp_root), "specs/001-test"]
+                )
+            self.assertEqual(result, 0, captured.getvalue())
+
+    def test_smoke_keeps_resolving_the_host_default_model(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            routing_file = self._codex_only_routing_file(Path(tmp))
+            with (
+                self._routing_env(routing_file),
+                mock.patch.object(live, "DEFAULT_AGENT", "claude"),
+                self.assertRaises(OperatorConfigError),
+            ):
+                live.main(["smoke"])

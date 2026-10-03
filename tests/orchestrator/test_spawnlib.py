@@ -129,6 +129,20 @@ SINGLE_OPENCODE_ROUTING = _routing(
     default_tier="t2-build",
 )
 
+# Two claude cells in one row: exercises the intra-harness hop when the first
+# cell's zero-API-call result exhausts its retry budget. The scripted argv
+# distinguishes them by `--model` (sonnet vs haiku).
+TWO_CLAUDE_ROUTING = _routing(
+    {"claude-a": _target("claude"), "claude-b": _target("claude")},
+    {
+        "t2-build": {
+            "claude-a": {"model": "sonnet", "effort": None},
+            "claude-b": {"model": "haiku", "effort": None},
+        }
+    },
+    default_tier="t2-build",
+)
+
 
 def _patch_routing(routing):
     """Context manager/decorator making `spawnlib.resolve_routing(...)` return
@@ -136,6 +150,59 @@ def _patch_routing(routing):
     called with, so `spawn_agent`/`spawn_claude_p` resolve a deterministic
     `Cell` without a real routing.yaml on disk."""
     return patch.object(spawnlib, "resolve_routing", return_value=routing)
+
+
+def _noop_result_stream(**overrides) -> str:
+    """A synthesized claude `result` event for a spawn that made zero API calls.
+
+    Synthesized to the documented measured shape -- no live recording of a real
+    no-op run exists on this machine. The event is an ordinary success envelope
+    (`subtype: success`, `is_error` false, `stop_reason: stop_sequence`) whose
+    own diagnostics prove the API was never reached: `duration_api_ms: 0`,
+    `num_turns: 0`, and all four token counters 0. The CLI exits 0 and prints
+    this, so the exit-code/empty-output check alone sees a clean success.
+    """
+    event = {
+        "type": "result",
+        "subtype": "success",
+        "is_error": False,
+        "stop_reason": "stop_sequence",
+        "result": "",
+        "duration_api_ms": 0,
+        "num_turns": 0,
+        "total_cost_usd": 0.0,
+        "usage": {
+            "input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "output_tokens": 0,
+        },
+    }
+    event.update(overrides)
+    return json.dumps(event)
+
+
+def _completed_result_stream(result="real answer") -> str:
+    """The ordinary claude `result` event of a real completed turn: non-zero
+    `duration_api_ms`, `num_turns >= 1`, and non-zero token counters."""
+    return json.dumps(
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "stop_reason": "end_turn",
+            "result": result,
+            "duration_api_ms": 4321,
+            "num_turns": 3,
+            "total_cost_usd": 0.02,
+            "usage": {
+                "input_tokens": 120,
+                "cache_creation_input_tokens": 10,
+                "cache_read_input_tokens": 40,
+                "output_tokens": 8,
+            },
+        }
+    )
 
 
 # Claude-only argv tokens (spec spawnlib-cross-hop-argv-invariant): every
@@ -1355,6 +1422,99 @@ class OpenCodeErrorEvent(unittest.TestCase):
         self.assertFalse(spawnlib.is_infra_failure(0, line))
 
 
+class ZeroApiCallResultDetection(unittest.TestCase):
+    """A result event whose own diagnostics prove zero API calls
+    (`duration_api_ms: 0`, `num_turns: 0`, all four token counters 0) is an
+    infra failure, not a task verdict: the worker process started, exited 0,
+    and never reached the API. Fixture synthesized to the documented measured
+    shape -- no live recording of a real no-op run exists on this machine
+    (see `_noop_result_stream`)."""
+
+    def test_parsed_usage_retains_duration_api_ms(self):
+        _, usage, *_ = spawnlib._parse_stream_json(_noop_result_stream())
+        self.assertEqual(usage["duration_api_ms"], 0)
+        self.assertEqual(usage["subtype"], "success")
+        self.assertEqual(usage["is_error"], False)
+        self.assertEqual(usage["stop_reason"], "stop_sequence")
+        self.assertEqual(usage["num_turns"], 0)
+
+    def test_opencode_synthesized_usage_has_no_duration_api_ms(self):
+        raw = json.dumps(
+            {
+                "type": "step_finish",
+                "sessionID": "ses_1",
+                "part": {
+                    "type": "step-finish",
+                    "tokens": {
+                        "total": 10,
+                        "input": 6,
+                        "output": 4,
+                        "reasoning": 0,
+                        "cache": {"write": 0, "read": 0},
+                    },
+                    "cost": 0.0,
+                },
+            }
+        )
+        _, usage, *_ = spawnlib._parse_stream_json(raw)
+        self.assertNotIn("duration_api_ms", usage)
+
+    def test_predicate_requires_presence_and_all_zeros(self):
+        usage = spawnlib._parse_stream_json(_noop_result_stream())[1]
+        self.assertTrue(spawnlib._zero_api_call_result(usage))
+        # An absent key -- the opencode-synthesized shape also carries
+        # `num_turns: 0` and all-zero counters -- must never be mistaken for a
+        # claude no-op.
+        self.assertFalse(spawnlib._zero_api_call_result({}))
+        self.assertFalse(spawnlib._zero_api_call_result(None))
+        self.assertFalse(
+            spawnlib._zero_api_call_result(
+                {k: v for k, v in usage.items() if k != "duration_api_ms"}
+            )
+        )
+        # One real API call disproves the shape, however short.
+        self.assertFalse(
+            spawnlib._zero_api_call_result({**usage, "duration_api_ms": 5})
+        )
+
+    def test_noop_result_is_an_infra_failure(self):
+        self.assertTrue(spawnlib.is_infra_failure(0, _noop_result_stream()))
+
+    def test_real_completed_turn_is_not_an_infra_failure(self):
+        self.assertFalse(spawnlib.is_infra_failure(0, _completed_result_stream()))
+
+    def test_zero_token_turn_with_one_turn_is_not_a_noop(self):
+        # A genuine API round trip can still bill 0 tokens on a cached turn;
+        # num_turns >= 1 is proof the API was reached.
+        self.assertFalse(spawnlib.is_infra_failure(0, _noop_result_stream(num_turns=1)))
+
+    def test_opencode_permission_denial_stream_is_not_a_noop(self):
+        # Denial-only stream: the synthesized opencode usage has num_turns 0 and
+        # all-zero counters, so only the missing `duration_api_ms` key keeps it
+        # out of the no-op classification.
+        raw = json.dumps(
+            {
+                "type": "tool_use",
+                "sessionID": "ses_deny",
+                "part": {
+                    "type": "tool",
+                    "tool": "bash",
+                    "callID": "call_1",
+                    "state": {
+                        "status": "error",
+                        "input": {"command": "echo hi"},
+                        "error": "The user rejected permission to use this "
+                        "specific tool call.",
+                    },
+                },
+            }
+        )
+        self.assertFalse(spawnlib.is_infra_failure(0, raw))
+
+    def test_plain_text_output_is_not_a_noop(self):
+        self.assertFalse(spawnlib.is_infra_failure(0, "ordinary worker text"))
+
+
 class CodexSpawn(unittest.TestCase):
     def setUp(self):
         self._orig = spawnlib.subprocess.run
@@ -2463,6 +2623,102 @@ class InfraFailureFallback(unittest.TestCase):
         gate = spawnlib.agent_capacity.load()["providers"]["codex-sub:gpt-5.3-codex"]
         self.assertEqual(gate["status"], "available")
         spawnlib.agent_capacity.check("codex-sub", "gpt-5.3-codex")
+
+
+class ZeroApiCallSpawnFallback(unittest.TestCase):
+    """A zero-API-call result must be handled by spawn_agent's own loop: retried
+    as an infra failure (never recorded `available`), and once the retry budget
+    is exhausted, gated with the short-cooldown `startup` class before the loop
+    hops to the next cell in the row -- never returned as a successful empty
+    run, and never gated as the `transport` text fallthrough or a 24h
+    `auth`/`model_unavailable` class."""
+
+    def setUp(self):
+        spawnlib.agent_capacity.save({"version": 1, "providers": {}})
+        self._orig = spawnlib.subprocess.run
+
+    def tearDown(self):
+        spawnlib.subprocess.run = self._orig
+
+    def test_non_final_noop_attempt_is_retried_and_never_records_available(self):
+        fr = FakeRun(
+            [
+                Proc(0, _noop_result_stream(), ""),
+                Proc(0, _completed_result_stream(), ""),
+            ]
+        )
+        spawnlib.subprocess.run = fr
+        recorded = []
+        real_record = spawnlib.agent_capacity.record
+
+        def spy(*args, **kwargs):
+            recorded.append(kwargs.get("outcome"))
+            return real_record(*args, **kwargs)
+
+        with (
+            tempfile.TemporaryDirectory() as cwd,
+            _patch_routing(SINGLE_CLAUDE_ROUTING),
+            patch.object(spawnlib.agent_capacity, "record", side_effect=spy),
+        ):
+            out = spawnlib.spawn_agent(
+                "prompt", cwd, tier="t2-build", retries=1, sleep=lambda *_: None
+            )
+        self.assertEqual(fr.calls, 2)  # the no-op was retried, not returned
+        self.assertEqual(out.text, "real answer")
+        self.assertFalse(out.exhausted)
+        # Only the completed retry recorded anything, and it recorded
+        # `available`; the no-op attempt must never be recorded as a success.
+        self.assertEqual(recorded, ["available"])
+
+    def test_noop_exhaustion_gates_cell_startup_then_hops_to_healthy_cell(self):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            model = cmd[cmd.index("--model") + 1] if "--model" in cmd else ""
+            if model == "sonnet":
+                return Proc(0, _noop_result_stream(), "")
+            return Proc(0, _completed_result_stream("b answer"), "")
+
+        spawnlib.subprocess.run = fake_run
+        with (
+            tempfile.TemporaryDirectory() as cwd,
+            _patch_routing(TWO_CLAUDE_ROUTING),
+        ):
+            out = spawnlib.spawn_agent(
+                "prompt", cwd, tier="t2-build", retries=1, sleep=lambda *_: None
+            )
+        self.assertEqual(out.text, "b answer")
+        self.assertFalse(out.exhausted)
+        self.assertEqual(
+            [c[c.index("--model") + 1] for c in calls], ["sonnet", "sonnet", "haiku"]
+        )
+        providers = spawnlib.agent_capacity.load()["providers"]
+        gate = providers["claude-a:sonnet"]
+        self.assertEqual(gate["status"], "unavailable")
+        self.assertEqual(gate["failure_class"], "startup")
+        # Short-cooldown window: the startup class (60s), not transport's 30s
+        # and not the 24h auth/model_unavailable cooldowns.
+        window = datetime.datetime.fromisoformat(
+            gate["retry_after"]
+        ) - datetime.datetime.fromisoformat(gate["checked_at"])
+        self.assertAlmostEqual(window.total_seconds(), 60, delta=1)
+        self.assertEqual(providers["claude-b:haiku"]["status"], "available")
+
+    def test_only_cell_noop_returns_exhausted_with_startup_class(self):
+        spawnlib.subprocess.run = FakeRun([Proc(0, _noop_result_stream(), "")])
+        with (
+            tempfile.TemporaryDirectory() as cwd,
+            _patch_routing(SINGLE_CLAUDE_ROUTING),
+        ):
+            out = spawnlib.spawn_agent(
+                "prompt", cwd, tier="t2-build", retries=0, sleep=lambda *_: None
+            )
+        self.assertTrue(out.exhausted)
+        self.assertEqual(out.failure_class, "startup")
+        gate = spawnlib.agent_capacity.load()["providers"]["claude-sub:sonnet"]
+        self.assertEqual(gate["status"], "unavailable")
+        self.assertEqual(gate["failure_class"], "startup")
 
 
 class SpawnClaudePFallback(unittest.TestCase):
