@@ -50,6 +50,51 @@ and free pools are capacity-gated by the harness's own login session; `api` pool
 system and bill per-token, so silently falling back into one would mask real spend. If a target
 you added never seems to get selected, check this before assuming it's a capacity gate.
 
+## `--check` is a spawn readiness probe, not a schema linter
+
+`worktrail-routing --check` validates the file's shape, then goes further: it resolves the
+table (`load_policy()` → `resolve_routing()`) and runs the spawn-readiness probe over every
+declared `(row, target)` cell, building each cell's command and child environment the way a
+real spawn would (`spawnlib.build_child_env` with the resolved `env_profiles` and the checking
+process's own environment). A cell that could not actually launch is reported `FAIL` on its
+row, its message goes to stderr, and the command exits non-zero — on a YAML file that is
+perfectly valid. The unready classes a readiness failure names:
+
+- an `api`-pool target with no `api_opt_in: true` — `select_cell` would drop it, so the cell
+  is unreachable no matter how the file reads;
+- a target whose harness is outside the supported set (`claude`/`codex`/`opencode`);
+- an auth lane that cannot resolve *in the checking shell*: a claude `api` cell with neither
+  `auth.env` nor `auth.profile`, an `auth.env` variable that is unset or empty there, an
+  `auth.profile` not declared under `env_profiles` (or whose `from` file, `keys`, or `expect`
+  no longer resolve), both `auth.env` and `auth.profile` on one target, or a codex `api` cell
+  whose `auth.codex_home` isn't declared or has no `auth.json`.
+
+The "in the checking shell" part is what catches people: the probe resolves the auth lane
+against the environment of whatever process runs `--check`, not against your interactive
+shell's defaults. A cell that checks clean when you run it by hand (`ANTHROPIC_AUTH_TOKEN`
+exported from your profile, the `env_profiles` source readable under your `$HOME`) can still
+be unready for a cron/systemd drain with a trimmed environment — and an interactive `--check`
+run cannot see that. Run the check in the same environment that will spawn.
+
+Two consequences, and they are not the same:
+
+- A readiness failure is **never recorded as a capacity gate**. That is deliberate: a gate in
+  `~/.worktrail/agent-capacity.json` is skipped silently by `select_cell` on the next spawn,
+  which would turn a loud config error into an invisible fallback to the next rung. So there is
+  nothing to wait out — retrying later changes nothing; the fix is an edit, an export, or a
+  one-time provisioning step in the environment the spawn runs in.
+- `worktrail-drain` now runs this probe before it spawns anything and **refuses to start** on
+  an unready cell (exit 2, naming the cell and the routing file) rather than logging the
+  failure and routing around it. A *capacity*-gated cell is still walked past:
+  `model_unavailable` and its siblings are provider conditions with a `retry_after`, not
+  operator config, so selection keeps falling through to the next target exactly as it did
+  before. "The drain routes around a bad cell" is now true only of capacity, never of
+  readiness.
+
+`--check` itself still exits non-zero for a `GATED` cell too, so read the STATUS column to tell
+them apart: `GATED` is the provider condition a drain will walk past; `FAIL` is the readiness
+failure it will not.
+
 ## Effort vocabulary differs per harness
 
 `EFFORT_VOCABULARY` (`policy.py`): `claude` accepts `low`/`medium`/`high`; `codex` additionally
