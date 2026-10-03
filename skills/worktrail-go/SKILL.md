@@ -35,9 +35,11 @@ spellings that are still accepted (`auto`, `drain`, `new`, `implement spec`, `fi
 - `worktrail-go handoff list` — list queued briefs, no dispatch
 - `worktrail-go BRIEF-ID` (or `handoff start BRIEF-ID`) — claim or resume a specific queued
   brief; an untriaged intake brief (no `seeded-from:`) is triaged instead: evaluate → apply →
-  report; a `work-directly` verdict continues by re-invoking `worktrail-land-pr` when
-  `landing.outcome` is `code_defect` or `review_threads_blocking`, until a terminal
-  outcome, then stops — still no Phase 3 claim/dispatch (spec `intake-to-spec-triage`)
+  report; a verdict that lands a pull request (`fold-into-change`, `propose-change`)
+  continues by re-invoking `worktrail-land-pr` when `landing.outcome` is `code_defect`
+  or `review_threads_blocking`, until a terminal outcome, then stops; a `work-directly`
+  verdict reports its stamp and stops — still no Phase 3 claim/dispatch
+  (spec `intake-to-spec-triage`)
 - `worktrail-go handoff auto` or `worktrail-go REPO handoff auto` — auto-pick the next ranked queue brief and start it, no selection prompt (spec 017)
 - `worktrail-go handoff drain [max-items] [repo]` — delegate to the unattended queue drain
 - `worktrail-go spec new X` — plan a new feature (Route C+D)
@@ -351,10 +353,12 @@ repo token in the invocation itself) before doing anything else:
      JSON is never re-typed into the command.
      Run the apply with the Bash tool's `timeout` parameter set to 600000 (the apply can
      itself drive a PR through `worktrail-land-pr`'s CI-watch to a terminal outcome).
-     Report the resulting `pr_url` and `landing.outcome` to the user. On a
-     `work-directly` verdict whose `landing.outcome` is `code_defect` or
-     `review_threads_blocking`, continue by re-invoking `worktrail-land-pr` against
-     `landing.run` (from `landing.worktree`) until a terminal outcome is reached, then
+     For a verdict that lands a pull request (`fold-into-change`, `propose-change`),
+     report the resulting `pr_url` and `landing.outcome` to the user; when that outcome
+     is `code_defect` or `review_threads_blocking`, continue by re-invoking
+     `worktrail-land-pr` against `landing.run` (from `landing.worktree`) until a
+     terminal outcome is reached, then stop. A `work-directly` verdict produces no
+     landing — report the stamp the apply returned (`action`, `status`, `path`) and
      stop. Still no Phase 3 claim/dispatch —
      a triage-gate pickup never carries into Phase 3's claim+dispatch flow in the same
      invocation.
@@ -1055,10 +1059,10 @@ When a brief is claimed, surface any related briefs from its `related` frontmatt
 /go 20260613-001000-raw-handoff
 ```
 → One-line dashboard summary → `kind: intake` → single-brief triage gate → evaluate →
-apply → report; a `work-directly` verdict continues by re-invoking `worktrail-land-pr`
-when `landing.outcome` is `code_defect` or `review_threads_blocking`, until a
-terminal outcome, then stops — every other verdict STOPs (no claim, no
-sdd-workflow dispatch, no Phase 3)
+apply → report; a verdict that lands a pull request continues by re-invoking
+`worktrail-land-pr` when `landing.outcome` is `code_defect` or
+`review_threads_blocking`, until a terminal outcome, then stops — every other verdict
+STOPs (no claim, no sdd-workflow dispatch, no Phase 3)
 
 **Auto mode (spec 017)**
 ```
