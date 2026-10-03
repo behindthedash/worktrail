@@ -1,6 +1,6 @@
 ## 1. The readiness probe
 
-- [ ] 1.1 Add `router/spawn_readiness.py` with `readiness_problems(routing, *, base_env=None)`,
+- [x] 1.1 Add `router/spawn_readiness.py` with `readiness_problems(routing, *, base_env=None)`,
       which enumerates every declared `(row, target)` tier cell, reports an `api`-pool target
       with no `api_opt_in` and a harness outside the supported set as unready, and otherwise
       builds each cell's command and child environment from the resolved table it was handed —

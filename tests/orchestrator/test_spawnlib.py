@@ -1500,6 +1500,97 @@ class CodexSpawn(unittest.TestCase):
         self.assertEqual(launched, [])
 
 
+class CodexApiHomeHelper(unittest.TestCase):
+    """`spawnlib.codex_api_home` -- the two codex `api` home validations
+    extracted out of `_prepare_child_env` so the readiness probe
+    (`router.spawn_readiness`) and the spawn path ask the same question."""
+
+    def setUp(self):
+        self._orig = spawnlib.subprocess.run
+
+    def tearDown(self):
+        spawnlib.subprocess.run = self._orig
+
+    def _cell(self, *, pool="api", auth=None, target="codex-api"):
+        return _cell(harness="codex", pool=pool, auth=auth, target=target)
+
+    def test_returns_the_declared_home_for_a_codex_api_cell(self):
+        with tempfile.TemporaryDirectory() as home:
+            (Path(home) / "auth.json").write_text("{}")
+            self.assertEqual(
+                spawnlib.codex_api_home(self._cell(auth={"codex_home": home})), home
+            )
+
+    def test_returns_none_for_every_other_cell(self):
+        """Only a codex `api` cell is this helper's business -- a subscription
+        codex cell inherits the parent login, and another harness's `api` pool
+        has nothing to do with CODEX_HOME. Neither may raise for a missing
+        codex home it was never supposed to have."""
+        self.assertIsNone(spawnlib.codex_api_home(self._cell(pool="subscription")))
+        self.assertIsNone(
+            spawnlib.codex_api_home(
+                _cell(
+                    harness="claude",
+                    pool="api",
+                    auth={"codex_home": "/nonexistent-codex-home"},
+                    target="claude-api",
+                )
+            )
+        )
+        self.assertIsNone(
+            spawnlib.codex_api_home(
+                _cell(harness="opencode", pool="api", target="opencode-api")
+            )
+        )
+
+    def test_a_missing_home_names_the_target_and_the_fix(self):
+        with self.assertRaises(spawnlib.OperatorConfigError) as ctx:
+            spawnlib.codex_api_home(self._cell())
+        message = str(ctx.exception)
+        self.assertIn("codex-api", message)
+        self.assertIn("auth.codex_home", message)
+        self.assertIn("--with-api-key", message)
+
+    def test_an_unprovisioned_home_is_refused_and_never_created(self):
+        with tempfile.TemporaryDirectory() as home:
+            with self.assertRaises(spawnlib.OperatorConfigError) as ctx:
+                spawnlib.codex_api_home(self._cell(auth={"codex_home": home}))
+            self.assertIn("auth.json", str(ctx.exception))
+            self.assertIn(home, str(ctx.exception))
+            self.assertFalse((Path(home) / "auth.json").exists())
+
+    def test_the_spawn_path_validates_through_the_shared_helper(self):
+        """Not an inlined copy: `_prepare_child_env` must reach the same helper
+        the readiness probe calls, or the check can drift from the path it
+        guards."""
+        with tempfile.TemporaryDirectory() as home:
+            (Path(home) / "auth.json").write_text("{}")
+            routing = _routing(
+                {
+                    "codex-api": _target(
+                        "codex", pool="api", api_opt_in=True, auth={"codex_home": home}
+                    )
+                },
+                {"t2-build": {"codex-api": {"model": "gpt-5.3-codex"}}},
+                default_tier="t2-build",
+            )
+            spawnlib.subprocess.run = lambda *a, **k: Proc(0, '{"type":"event"}\n', "")
+            with (
+                _patch_routing(routing),
+                patch.object(
+                    spawnlib,
+                    "prepare_codex_child_environment",
+                    return_value=({"CODEX_HOME": home}, home, False),
+                ),
+                patch.object(
+                    spawnlib, "codex_api_home", wraps=spawnlib.codex_api_home
+                ) as helper,
+            ):
+                spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build")
+        helper.assert_called_once()
+        self.assertEqual(helper.call_args.args[0].target, "codex-api")
+
+
 class OpenCodeSpawn(unittest.TestCase):
     def setUp(self):
         self._orig = spawnlib.subprocess.run
