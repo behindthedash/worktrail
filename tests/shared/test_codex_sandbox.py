@@ -9,7 +9,11 @@ import subprocess
 import pytest
 
 from worktrail.shared import codex_sandbox
-from worktrail.shared.codex_sandbox import codex_sandbox_args, git_common_dir
+from worktrail.shared.codex_sandbox import (
+    codex_sandbox_args,
+    git_admin_dir,
+    git_common_dir,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -67,16 +71,26 @@ class TestDefaultRoots:
             str(tmp_path / "queue"),
         ]
 
-    def test_git_common_dir_none_for_plain_dir(self, tmp_path):
+    def test_git_dirs_none_for_plain_dir(self, tmp_path):
         assert git_common_dir(tmp_path) is None
+        assert git_admin_dir(tmp_path) is None
 
-    def test_linked_worktree_gets_common_dir(self, tmp_path, repo):
+    def test_linked_worktree_gets_admin_and_common_dirs(self, tmp_path, repo):
         wt = tmp_path / "repo-worktrees" / "feat"
         _git("worktree", "add", "-q", "-b", "feat", str(wt), cwd=repo)
+        admin = repo / ".git" / "worktrees" / "feat"
+        assert git_admin_dir(wt) == admin
         assert git_common_dir(wt) == repo / ".git"
         roots = _add_dirs(codex_sandbox_args(wt))
-        assert roots[:2] == [str(wt), str(repo / ".git")]
+        assert roots[:3] == [str(wt), str(admin), str(repo / ".git")]
         assert str(repo) not in roots
+
+    def test_normal_checkout_admin_dir_not_duplicated(self, repo):
+        assert git_admin_dir(repo) == repo / ".git"
+        assert git_common_dir(repo) == repo / ".git"
+        roots = _add_dirs(codex_sandbox_args(repo))
+        assert roots[:2] == [str(repo), str(repo / ".git")]
+        assert roots.count(str(repo / ".git")) == 1
 
     def test_repo_sibling_worktrees_root(self, tmp_path, repo):
         roots = _add_dirs(codex_sandbox_args(repo, repo=repo))

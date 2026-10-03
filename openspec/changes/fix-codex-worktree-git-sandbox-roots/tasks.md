@@ -1,6 +1,6 @@
 ## 1. Grant linked worktree administrative git directories
 
-- [ ] 1.1 Update `src/worktrail/shared/codex_sandbox.py` so the shared writable-root
+- [x] 1.1 Update `src/worktrail/shared/codex_sandbox.py` so the shared writable-root
       builder discovers a checkout's absolute administrative git directory as well as its git
       common directory, and emits the administrative directory between the child cwd and the
       common directory. Preserve the current failure handling, stable ordering, and
