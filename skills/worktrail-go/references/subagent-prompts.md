@@ -1171,6 +1171,21 @@ state; a crashed session that never called `finish` leaves the claim held
 until an operator inspects and manually finishes/abandons the stale run
 record — the same accepted recovery path this scan already had.
 
+The `active-conflicts` scan is also available repo-wide: `--specification`
+is optional, and omitting it classifies every non-terminal run record for
+the repo, whatever its specification. Every entry in both the `live` and
+`stale` partitions then names the record's own `specification` (`null` when
+the record never got one).
+
+An orchestrator launch performs that repo-wide scan itself before fan-out:
+when a live run on the same repo carries a `specification` other than the
+launch's own, the launch prints a warning naming that run (`run_id`,
+`specification`, and record `path`) and halves its effective fan-out width,
+never below one worker and only once however many such runs are live. That
+is back-pressure on width, not an ownership stop — same-spec exclusivity is
+unchanged, and the per-spec `claim` and hard stop above still decide whether
+a run may start.
+
 ### Sibling worktree/branch check {#sibling-worktree-check}
 
 Shared by `#spec-worktree-setup` and `#change-spec-worktree-setup` — run before
