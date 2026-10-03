@@ -27,7 +27,9 @@ ruff can: an executable file whose shebang is the generic
 multi-exception syntax (Python 3.14+). `python3` follows the host -- a 3.12
 `python3` killed the Stop hook -- while the syntax only parses on 3.14, so
 the diagnostic names the `python3.14` shebang that fixes it. The policy stays
-narrow: a generic shebang on source without that syntax is left alone. This
+narrow: a generic shebang on source without that syntax is left alone, and
+the rule keys off that shebang rather than a `.py` suffix, so an extensionless
+executable is covered too -- its name is not what makes it run directly. This
 script's own shebang is pinned for the same reason: ruff's 3.14 formatter
 normalizes `except (A, B):` to the unparenthesized spelling, so its source
 needs 3.14 just as the files it reports on do.
@@ -51,9 +53,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Extensions whose shebang/mode agreement this enforces. Kept to the ones ruff
-# itself lints, so this check and `ruff check .` can never disagree about a
-# file on a platform where both run.
+# Extensions whose EXE001/EXE002 shebang/mode agreement this enforces. Kept to
+# the ones ruff itself lints, so this check and `ruff check .` can never
+# disagree about a file on a platform where both run. The interpreter rule
+# below is deliberately not suffix-filtered: it keys off the python3 shebang
+# itself, so an extensionless executable is checked as well.
 _EXTENSIONS = (".py", ".pyi")
 
 _MODE_EXEC = "100755"
@@ -69,6 +73,9 @@ def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
         ["git", "-C", str(repo), *args],
         capture_output=True,
         text=True,
+        # Executables include binaries; replacement characters keep a blob that
+        # is not text from crashing the scan (and it can never be a match).
+        errors="replace",
         check=False,
     )
 
@@ -141,26 +148,29 @@ def generic_interpreter_pep758_mismatch(content: str) -> bool:
 def find_violations(repo: Path) -> list[str]:
     """One message per direct-execution shebang problem, in path order.
 
-    Two families: the EXE001/EXE002-shaped mode disagreements, and an
-    executable file whose generic `python3` shebang cannot parse its PEP 758
-    syntax.
+    Two families: the EXE001/EXE002-shaped mode disagreements we port from
+    ruff -- limited to the suffixes ruff lints -- and any executable file
+    whose generic `python3` shebang cannot parse its PEP 758 syntax,
+    extensionless scripts included, since the shebang rather than the suffix
+    is what makes a directly runnable file Python.
     """
     problems: list[str] = []
     for mode, path in sorted(tracked_modes(repo), key=lambda row: row[1]):
-        if not path.endswith(_EXTENSIONS):
-            continue
         if mode not in (_MODE_EXEC, _MODE_PLAIN):
             continue  # symlink (120000) or gitlink (160000): not our business
+        ruff_linted = path.endswith(_EXTENSIONS)
+        if not ruff_linted and mode != _MODE_EXEC:
+            continue  # only the interpreter rule reaches beyond ruff's files
         content = indexed_content(repo, path)
         if content is None:
             continue
         shebang = content.startswith("#!")
-        if shebang and mode == _MODE_PLAIN:
+        if ruff_linted and shebang and mode == _MODE_PLAIN:
             problems.append(
                 f"{path}: EXE001 shebang present but the file is not executable. "
                 f"Fix with `git update-index --chmod=+x {path}` (or drop the shebang)."
             )
-        elif not shebang and mode == _MODE_EXEC:
+        elif ruff_linted and not shebang and mode == _MODE_EXEC:
             problems.append(
                 f"{path}: EXE002 file is executable but has no shebang. "
                 f"Fix with `git update-index --chmod=-x {path}` (or add a shebang)."

@@ -212,6 +212,38 @@ def test_pep758_rule_applies_only_to_executable_files(repo: Path) -> None:
     assert "a.py: PEP 758" not in result.stderr
 
 
+def test_extensionless_executable_with_pep758_handler_is_rejected(repo: Path) -> None:
+    """The interpreter rule keys off the shebang, not a `.py` suffix: a file
+    with no extension is run directly just the same."""
+    _add(repo, "tool", _PEP758_BODY, executable=True)
+    result = _run(repo)
+    assert result.returncode == 1
+    assert "tool: PEP 758" in result.stderr
+    assert "python3.14" in result.stderr
+
+
+def test_extensionless_executable_with_pinned_shebang_passes(repo: Path) -> None:
+    _add(repo, "tool", _PEP758_BODY_PINNED, executable=True)
+    assert _run(repo).returncode == 0
+
+
+def test_extensionless_non_python_executables_are_ignored(repo: Path) -> None:
+    """Only the exact generic python3 shebang makes an executable this rule's
+    business; shell scripts and shebangless binaries keep their own rules."""
+    _add(repo, "tool", "#!/usr/bin/env bash\nset -euo pipefail\n", executable=True)
+    _add(repo, "bare", "just data\n", executable=True)
+    assert _run(repo).returncode == 0
+
+
+def test_binary_executable_does_not_crash_the_scan(repo: Path) -> None:
+    """The scan now reads every executable's bytes; a blob that is not UTF-8
+    must be skipped rather than blow up the whole check."""
+    (repo / "blob").write_bytes(b"\x7fELF\x02\x01\x01\x00\xff\xfe\x00")
+    _git(repo, "add", "blob")
+    _git(repo, "update-index", "--chmod=+x", "blob")
+    assert _run(repo).returncode == 0
+
+
 def test_pep758_check_reads_the_index_not_the_worktree(repo: Path) -> None:
     """Fixing only the worktree must not mask what the index still ships."""
     _add(repo, "a.py", _PEP758_BODY, executable=True)
