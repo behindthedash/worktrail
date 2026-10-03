@@ -1487,9 +1487,10 @@ def _active_conflicts(tmp, **over):
         tmp,
         "--repo",
         over.get("repo", "/tmp/fake-repo"),
-        "--specification",
-        over.get("specification", "spec-a"),
     ]
+    specification = over.get("specification", "spec-a")
+    if specification is not None:
+        argv += ["--specification", specification]
     if "exclude" in over:
         argv += ["--exclude", over["exclude"]]
     out = StringIO()
@@ -1527,6 +1528,128 @@ class TestActiveConflicts(unittest.TestCase):
         results = _active_conflicts(self.tmp, specification="spec-a")
 
         self.assertEqual(results, {"live": [], "stale": [], "warnings": []})
+
+    def test_repo_wide_scan_classifies_every_specification_including_untagged(self):
+        """`specification=None` drops the specification filter: two runs under
+        different specifications plus one that never got one are classified in
+        the same `live` partition, and each entry names its own record's
+        specification (None for the untagged record) so a caller can tell which
+        run belongs to which specification.
+        """
+        first = _start(self.tmp, request="spec a run")
+        main(["set", first["path"], "specification", "spec-a"])
+        second = _start(self.tmp, request="spec b run")
+        main(["set", second["path"], "specification", "spec-b"])
+        untagged = _start(self.tmp, request="never tagged run")
+        finished = _start(self.tmp, request="finished spec c run")
+        main(["set", finished["path"], "specification", "spec-c"])
+        out = StringIO()
+        with patch("sys.stdout", out):
+            main(["finish", finished["path"], "--status", "investigation_complete"])
+
+        results = _active_conflicts(self.tmp, specification=None)
+
+        self.assertEqual(results["stale"], [])
+        self.assertEqual(
+            {e["run_id"]: e["specification"] for e in results["live"]},
+            {
+                first["run_id"]: "spec-a",
+                second["run_id"]: "spec-b",
+                untagged["run_id"]: None,
+            },
+        )
+        self.assertNotIn(finished["run_id"], {e["run_id"] for e in results["live"]})
+        for entry in results["live"]:
+            for field in (
+                "run_id",
+                "path",
+                "started_at",
+                "request_summary",
+                "agent",
+                "specification",
+            ):
+                self.assertIn(field, entry)
+
+    def test_specification_filtered_scan_still_omits_other_specifications(self):
+        matching = _start(self.tmp, request="matching run")
+        main(["set", matching["path"], "specification", "spec-a"])
+        other = _start(self.tmp, request="other spec run")
+        main(["set", other["path"], "specification", "spec-b"])
+        _start(self.tmp, request="untagged run")
+
+        results = _active_conflicts(self.tmp, specification="spec-a")
+
+        self.assertEqual(
+            {e["run_id"] for e in results["live"] + results["stale"]},
+            {matching["run_id"]},
+        )
+        self.assertEqual(results["stale"], [])
+        self.assertEqual(results["live"][0]["specification"], "spec-a")
+
+    def test_repo_wide_scan_still_skips_malformed_records_into_warnings(self):
+        """The malformed-record tolerance is part of the scan, not the
+        specification filter: a bad sibling file must be skipped into
+        `warnings` without aborting the repo-wide scan.
+        """
+        active = _start(self.tmp, request="active run")
+        main(["set", active["path"], "specification", "spec-a"])
+        corrupted = Path(self.tmp) / "fake-repo" / "go-corrupted.yaml"
+        corrupted.write_text(
+            "run_id: go-corrupted\n"
+            "request_summary: fix the thing across a line that\n"
+            "  wraps unexpectedly without quoting\n"
+        )
+
+        results = _active_conflicts(self.tmp, specification=None)
+
+        self.assertEqual({e["run_id"] for e in results["live"]}, {active["run_id"]})
+        self.assertEqual(results["stale"], [])
+        self.assertEqual(len(results["warnings"]), 1)
+        self.assertIn(str(corrupted), results["warnings"][0])
+
+    def test_cli_without_specification_prints_both_partitions(self):
+        """`--specification` is optional: the CLI invoked without it exits 0
+        and prints the repo-wide scan's live and stale partitions, each entry
+        naming its own specification.
+        """
+        repo_root = Path(self.tmp) / "target-repo"
+        repo_root.mkdir()
+        for argv in (
+            ["init", "-b", "main"],
+            ["config", "user.email", "test@example.com"],
+            ["config", "user.name", "Test"],
+        ):
+            subprocess.run(
+                ["git", "-C", str(repo_root), *argv], check=True, capture_output=True
+            )
+        (repo_root / "tracked.md").write_text("tracked", encoding="utf-8")
+        for argv in (["add", "tracked.md"], ["commit", "-m", "initial"]):
+            subprocess.run(
+                ["git", "-C", str(repo_root), *argv], check=True, capture_output=True
+            )
+
+        live = _start(self.tmp, repo=str(repo_root), request="live run")
+        main(["set", live["path"], "specification", "spec-a"])
+        stale = _start(self.tmp, repo=str(repo_root), request="stale run")
+        main(["set", stale["path"], "specification", "spec-b"])
+        main(["set", stale["path"], "base_branch", "main"])
+        main(["set", stale["path"], "worktree", str(Path(self.tmp) / "gone-worktree")])
+        main(["append", stale["path"], "files_changed", "tracked.md"])
+
+        out = StringIO()
+        with patch("sys.stdout", out):
+            rc = main(["active-conflicts", "--dir", self.tmp, "--repo", str(repo_root)])
+
+        self.assertEqual(rc, 0)
+        results = json.loads(out.getvalue())
+        self.assertEqual(
+            {e["run_id"]: e["specification"] for e in results["live"]},
+            {live["run_id"]: "spec-a"},
+        )
+        self.assertEqual(
+            {e["run_id"]: e["specification"] for e in results["stale"]},
+            {stale["run_id"]: "spec-b"},
+        )
 
     def test_exclude_omits_callers_own_record(self):
         mine = _start(self.tmp, request="my run")
@@ -1739,6 +1862,39 @@ class TestActiveConflictsPartitioning(unittest.TestCase):
         self.assertEqual({e["run_id"] for e in result["live"]}, {live["run_id"]})
         self.assertEqual(len(result["warnings"]), 1)
         self.assertIn(str(corrupted), result["warnings"][0])
+
+    def test_repo_wide_scan_partitions_records_from_every_specification(self):
+        """`specification=None` classifies every non-terminal record whatever
+        its own specification, through the same `_is_stale()` rule: a record
+        whose worktree is gone and whose `files_changed` resolve on its
+        `base_branch` lands in `stale` even under a different specification
+        than the live one.
+        """
+        live = _start(str(self.runs_dir), request="live run")
+        main(["set", live["path"], "specification", "spec-a"])
+        main(["set", live["path"], "base_branch", "main"])
+        existing_worktree = Path(self.tmp) / "still-here"
+        existing_worktree.mkdir()
+        main(["set", live["path"], "worktree", str(existing_worktree)])
+        main(["append", live["path"], "files_changed", "tracked.md"])
+
+        stale = _start(str(self.runs_dir), request="stale run")
+        main(["set", stale["path"], "specification", "spec-b"])
+        main(["set", stale["path"], "base_branch", "main"])
+        main(["set", stale["path"], "worktree", str(Path(self.tmp) / "worktree-gone")])
+        main(["append", stale["path"], "files_changed", "tracked.md"])
+
+        result = _active_conflicts_impl(self.repo_dir, self.repo_root, None, None)
+
+        self.assertEqual(
+            {e["run_id"]: e["specification"] for e in result["live"]},
+            {live["run_id"]: "spec-a"},
+        )
+        self.assertEqual(result["warnings"], [])
+        self.assertEqual(
+            {e["run_id"]: e["specification"] for e in result["stale"]},
+            {stale["run_id"]: "spec-b"},
+        )
 
 
 def _reconcile(run_path, **over):
