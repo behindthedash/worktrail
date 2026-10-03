@@ -100,7 +100,7 @@ Usage:
            [--dry-run] [--json]
 
 Exit codes: 0 = drained/stopped cleanly with a reported reason; 2 = refused to
-start (lock held, bad args, missing queue dir).
+start (lock held, bad args, missing queue dir, routing not spawn-ready).
 """
 
 from __future__ import annotations
@@ -131,12 +131,14 @@ from ..router.policy import (
     default_run_record_dir,
     load_policy,
     resolve_routing,
+    resolved_routing_file_path,
 )
 from ..router.policy_selfcheck import discover_repo_names
 from ..router.poll_run import unresolved_decision_ids as _poll_unresolved_decision_ids
 from ..router.pr_labels import ensure_pr_risk_label
 from ..router.routing_cli import _check as check_routing_liveness
 from ..router.run_record import _active_conflicts
+from ..router.spawn_readiness import readiness_problems
 from ..runtime.selection import NoExecutionTarget, select_cell
 from ..shared.codex_sandbox import codex_sandbox_args
 from ..shared.homedir import worktrail_home
@@ -557,6 +559,37 @@ def machine_wide_routing() -> dict[str, Any] | None:
     the single machine-wide `routing.yaml` here -- the one file D1 names.
     """
     return load_policy(worktrail_home()).get("routing")
+
+
+def refuse_unready_routing() -> None:
+    """Raise when any declared routing cell cannot spawn, naming it and the file.
+
+    Resolves the cell table here, fresh from the machine-wide routing file
+    (`load_policy(worktrail_home())` -> `resolve_routing()`), never the
+    validated `machine_wide_routing()` block already in scope: the probe must
+    judge exactly the table a spawn is served from. Feeding it a re-derived
+    table is the gap the `env_profiles` incident fell through -- the file
+    still declared a key the resolver had already dropped, so a check that
+    judged the declared form reported `ok` for cells that could not launch.
+
+    Every problem is a message from the spawn path's own builders
+    (`spawn_readiness.readiness_problems`), so each unready cell raises with
+    the same reason a real spawn would die on -- operator configuration, not
+    a condition to wait out, which is why this refuses the whole drain instead
+    of logging and routing around it. Capacity gates stay out of it: a gated
+    cell is a waitable runtime state the selector already walks past, and the
+    probe records no gate of its own.
+    """
+    problems = readiness_problems(resolve_routing(load_policy(worktrail_home())))
+    if not problems:
+        return
+    detail = "; ".join(
+        f"{row}/{target}: {reason}"
+        for (row, target), reason in sorted(problems.items())
+    )
+    raise RuntimeError(
+        f"routing is not spawn-ready ({resolved_routing_file_path()}): {detail}"
+    )
 
 
 def select_available_agent(
@@ -2429,6 +2462,15 @@ def drain(
     seed_backlog_pass_result: dict[str, Any] = {}
     routing = machine_wide_routing()
     try:
+        # Refuse before anything runs -- including the intake-triage pre-pass
+        # below, whose evaluate step spawns an agent of its own. A cell the
+        # spawn path's builders reject is operator configuration, not a
+        # waitable condition: raising here makes `main()` exit 2 naming every
+        # unready cell and the routing file, rather than logging and routing
+        # around a misconfiguration for the rest of the pass. Deliberately
+        # not the best-effort posture the liveness check further down uses
+        # (that one records a capacity gate, which stays walkable).
+        refuse_unready_routing()
         if slot == 0 and config.intake_triage:
             # Close the intake loop BEFORE the leader's own sweeps/seeding and
             # BEFORE the claim loop's first ready-count check, so a brief
