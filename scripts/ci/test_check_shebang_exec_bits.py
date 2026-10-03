@@ -147,6 +147,33 @@ def test_parenthesized_multi_except_is_not_a_pep758_violation(repo: Path) -> Non
     assert _run(repo).returncode == 0
 
 
+def test_individually_parenthesized_elements_are_a_pep758_violation(
+    repo: Path,
+) -> None:
+    """`except (ValueError), (TypeError):` is the PEP 758 spelling with each
+    element parenthesized: the leading `(` closes after the first exception,
+    so it is not a parenthesized tuple and an older `python3` cannot parse it."""
+    body = _PEP758_BODY.replace(
+        "except ValueError, TypeError:", "except (ValueError), (TypeError):"
+    )
+    _add(repo, "a.py", body, executable=True)
+    result = _run(repo)
+    assert result.returncode == 1
+    assert "a.py: PEP 758" in result.stderr
+
+
+def test_doubly_parenthesized_multi_except_is_not_a_pep758_violation(
+    repo: Path,
+) -> None:
+    """The control for the case above: here the leading `(` really does close
+    at the end, so the tuple is parenthesized and every python3 parses it."""
+    body = _PEP758_BODY.replace(
+        "except ValueError, TypeError:", "except ((ValueError), (TypeError)):"
+    )
+    _add(repo, "a.py", body, executable=True)
+    assert _run(repo).returncode == 0
+
+
 def test_pep758_lookalikes_in_comments_and_strings_are_not_violations(
     repo: Path,
 ) -> None:

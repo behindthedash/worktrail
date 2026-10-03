@@ -49,8 +49,10 @@ from __future__ import annotations
 
 import argparse
 import ast
+import io
 import subprocess
 import sys
+import tokenize
 from pathlib import Path
 
 # Extensions whose EXE001/EXE002 shebang/mode agreement this enforces. Kept to
@@ -107,6 +109,43 @@ def indexed_content(repo: Path, path: str) -> str | None:
     return result.stdout
 
 
+_LEXICAL_TRIVIA = (
+    tokenize.NEWLINE,
+    tokenize.NL,
+    tokenize.ENDMARKER,
+    tokenize.COMMENT,
+    tokenize.DEDENT,
+)
+
+
+def opens_with_matching_parens(span: str) -> bool:
+    """Whether the `(` opening `span` is closed by a `)` at `span`'s very end.
+
+    `except (Foo, Bar):` is parenthesized -- valid on any python3 -- but
+    `except (Foo), (Bar):` is not: there the leading `(` belongs to `Foo`
+    alone, which is exactly what PEP 758's unparenthesized spelling looks like
+    when its elements are individually parenthesized. Both spans start with
+    `(` and end with `)`, so the leading paren has to be *matched*; that is
+    done over tokens so a paren inside a string or comment within the handler
+    cannot unbalance the count.
+    """
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(span).readline))
+    except SyntaxError, tokenize.TokenError, IndentationError:
+        return False  # unlexable: do not claim it is parenthesized
+    depth = 0
+    for index, token in enumerate(tokens):
+        if token.type != tokenize.OP:
+            continue
+        if token.string == "(":
+            depth += 1
+        elif token.string == ")":
+            depth -= 1
+            if depth == 0:
+                return all(t.type in _LEXICAL_TRIVIA for t in tokens[index + 1 :])
+    return False
+
+
 def has_unparenthesized_multi_except(source: str) -> bool:
     """Whether `source` contains a PEP 758 unparenthesized multi-exception handler.
 
@@ -131,7 +170,7 @@ def has_unparenthesized_multi_except(source: str) -> bool:
         if span is None:
             continue  # no position info: do not report what cannot be verified
         stripped = span.strip()
-        if stripped.startswith("(") and stripped.endswith(")"):
+        if stripped.startswith("(") and opens_with_matching_parens(stripped):
             continue  # parenthesized tuple, valid on every supported python3
         return True
     return False
