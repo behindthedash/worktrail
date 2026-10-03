@@ -167,5 +167,5 @@ worktrail-policy --repo <repo-path> --resolve-routing "x:x" --json  # print the 
 ```
 
 `--resolve-routing`'s `"x:x"` argument is vestigial (ignored) — it always returns the complete
-`{targets, tiers, roles, purposes, default_tier, drain}` table, which is what to read to confirm
+`{targets, tiers, roles, purposes, default_tier, env_profiles, drain}` table, which is what to read to confirm
 an edit resolved the way you expect before it affects a live spawn.

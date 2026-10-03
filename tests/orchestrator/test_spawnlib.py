@@ -61,15 +61,16 @@ def _target(harness, pool="subscription", api_opt_in=False, auth=None):
 
 def _routing(targets, tiers, default_tier=None):
     """A `resolve_routing()`-shaped dict (`{targets, tiers, roles, purposes,
-    default_tier, drain}`) for patching `spawnlib.resolve_routing` in a
-    `spawn_agent`/`spawn_claude_p` test -- mirrors `tests/runtime/test_selection.py`'s
-    own `_routing`/`_target` helpers."""
+    default_tier, env_profiles, drain}`) for patching `spawnlib.resolve_routing`
+    in a `spawn_agent`/`spawn_claude_p` test -- mirrors
+    `tests/runtime/test_selection.py`'s own `_routing`/`_target` helpers."""
     return {
         "targets": targets,
         "tiers": tiers,
         "roles": {},
         "purposes": {},
         "default_tier": default_tier,
+        "env_profiles": {},
         "drain": {},
     }
 

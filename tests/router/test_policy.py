@@ -1983,6 +1983,43 @@ class Routing(unittest.TestCase):
             pol = load_policy(repo)
         self.assertEqual(resolve_routing(pol)["purposes"], {})
 
+    def test_resolve_routing_carries_env_profiles(self):
+        # The spawn seam resolves `auth.profile` off THIS resolved table,
+        # never a second policy read (`model-tier-routing`: "the same resolved
+        # routing table the cell was selected from, without re-reading
+        # policy"), so a declared profile table has to survive resolution.
+        # Dropped here, every profile-bearing cell -- e.g. a DeepSeek lane's
+        # `claude-deepseek` -- raised OperatorConfigError before launch:
+        # confirmed live 2026-10-02, the drain's intake-triage spawn died on
+        # exactly that error while the profile WAS declared in routing.yaml.
+        repo = _repo_with(
+            "routing:\n"
+            "  targets:\n"
+            "    claude-deepseek:\n"
+            "      harness: claude\n"
+            "      pool: api\n"
+            "      api_opt_in: true\n"
+            "      auth:\n"
+            "        profile: deepseek\n"
+            "  env_profiles:\n"
+            "    deepseek:\n"
+            "      from: /home/briank/.claude/settings.json\n"
+            "      keys:\n"
+            "        - ANTHROPIC_BASE_URL\n"
+        )
+        with self._no_mw_env():
+            pol = load_policy(repo)
+        self.assertEqual(
+            resolve_routing(pol)["env_profiles"],
+            {
+                "deepseek": {
+                    "from": "/home/briank/.claude/settings.json",
+                    "keys": ["ANTHROPIC_BASE_URL"],
+                    "expect": {},
+                }
+            },
+        )
+
     def test_resolve_routing_no_routing_configured_returns_empty_shape(self):
         repo = _repo_with(
             "agent_cli: claude\nagent_model: sonnet\nfallback_agent_cli: codex\n"
@@ -1998,6 +2035,7 @@ class Routing(unittest.TestCase):
                 "roles": {},
                 "purposes": {},
                 "default_tier": None,
+                "env_profiles": {},
                 "drain": {},
             },
         )

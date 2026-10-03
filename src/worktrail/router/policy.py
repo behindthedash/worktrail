@@ -1305,8 +1305,8 @@ def resolve_routing(
     policy: dict[str, Any], route: str = "", risk: str = ""
 ) -> dict[str, Any]:
     """Deterministically resolve the effective targets/tiers/roles/purposes/
-    drain configuration — the single source of truth for the selector
-    (`select_cell()`, task 2.1) and dispatch (`tier_for()`, task 4.1).
+    env_profiles/drain configuration — the single source of truth for the
+    selector (`select_cell()`, task 2.1) and dispatch (`tier_for()`, task 4.1).
 
     Args:
         policy: the dict returned by `load_policy()`.
@@ -1327,6 +1327,16 @@ def resolve_routing(
                                           # dispatch.tier_for() ahead of
                                           # complexity to resolve a task's tier
           "default_tier": Optional[str], # routing.default_tier
+          "env_profiles": {name: {"from", "keys", "expect"}},
+                                          # routing.env_profiles, the profile
+                                          # table a target's `auth.profile`
+                                          # resolves against. Threaded through
+                                          # here because spawnlib reads it off
+                                          # *this* resolved dict (never a
+                                          # second load, which could diverge
+                                          # from the table `select_cell`
+                                          # served from) -- dropping it made
+                                          # every profile-bearing cell raise.
           "drain": {"max_workers": int}, # routing.drain, the machine-wide
                                           # drain defaults (D1); {} when absent.
                                           # `agent`/`fallback_agents` are
@@ -1348,6 +1358,7 @@ def resolve_routing(
             "roles": {},
             "purposes": {},
             "default_tier": None,
+            "env_profiles": {},
             "drain": {},
         }
     drain_raw = routing.get("drain") or {}
@@ -1360,6 +1371,7 @@ def resolve_routing(
         "roles": routing.get("roles") or {},
         "purposes": routing.get("purposes") or {},
         "default_tier": routing.get("default_tier"),
+        "env_profiles": routing.get("env_profiles") or {},
         "drain": drain,
     }
 
