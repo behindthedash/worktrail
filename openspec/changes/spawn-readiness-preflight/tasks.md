@@ -67,7 +67,7 @@
 
 ## 7. Verification
 
-- [ ] 7.1 [e2e] Run the focused router and drain tests, then `PYTHONPATH=src python3.14 -m
+- [x] 7.1 [e2e] Run the focused router and drain tests, then `PYTHONPATH=src python3.14 -m
       pytest -q`, `PYTHONPATH=src python3.14 -m worktrail.orchestrator.orchestrate check`,
       `python3.14 scripts/ci/ruff_pinned.py check .`, `python3.14 scripts/ci/ruff_pinned.py
       format --check .` and `python3.14 scripts/ci/check_shebang_exec_bits.py`. Then prove the
