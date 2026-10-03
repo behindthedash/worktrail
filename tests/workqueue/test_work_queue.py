@@ -1281,6 +1281,51 @@ class TestDoneClosureEvidenceGate(QueueTestBase):
         body = (self.picked / "20260531-141200-auth.md").read_text(encoding="utf-8")
         self.assertNotIn("## Closure Note", body)
 
+    def test_done_accepts_negated_claim_phrase_with_no_evidence(self):
+        """A cue phrase inside a negation asserts the OPPOSITE of a
+        re-verification result, so it must not trip the gate. Brief
+        20261002-221651: queue_triage applies a propose-change/fold-into-change
+        verdict by handing the evaluator's raw evidence prose to
+        `done(..., note=...)` (queue_triage.py:3323), and that evidence says
+        "Not already fixed: ...". The bare `already fixed` alternation matched
+        inside the negated phrase, so `done()` returned
+        `unverified_reverification_claim` and queue_triage released the brief
+        back to `queue/` after its pull request had already merged -- observed
+        live 2026-10-02 on brief 20261002-203443 (PR #1385)."""
+        self.write("20260531-141200-auth.md", focus="auth")
+        q.claim("20260531-141200-auth")
+
+        res = q.done(
+            "20260531-141200-auth",
+            note=(
+                "Premise confirmed in-repo. Not already fixed: git log --all "
+                "--grep=verdict -i --since=2026-09-20 is empty and no mktemp "
+                "uniqueness exists in the path."
+            ),
+        )
+
+        self.assertEqual(res["status"], "done")
+        fm = q._read_frontmatter(self.picked / "20260531-141200-auth.md")
+        self.assertEqual(fm["status"], "done")
+
+    def test_done_accepts_negated_forms_of_each_claim_phrase(self):
+        """The negation guard covers the alternation as a class -- every cue
+        phrase is equally negation-blind, not just the `already fixed` instance
+        seen in the wild (e.g. "Not disproven" reports the finding still
+        stands)."""
+        for name, note in (
+            ("20260531-141201-a.md", "Not disproven: the detector still flags it"),
+            ("20260531-141202-b.md", "never re-verified against the base branch"),
+            ("20260531-141203-c.md", "not corrected detector; no change was made"),
+        ):
+            with self.subTest(note=note):
+                self.write(name, focus="auth")
+                q.claim(name[:-3])
+
+                res = q.done(name[:-3], note=note)
+
+                self.assertEqual(res["status"], "done")
+
     def test_done_accepts_disproven_claim_with_fenced_evidence(self):
         self.write("20260531-141200-auth.md", focus="auth")
         q.claim("20260531-141200-auth")
