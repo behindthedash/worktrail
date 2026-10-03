@@ -14,7 +14,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [depends: 1.1] [e2e] Run `PYTHONPATH=src pytest -q
+- [x] 2.1 [depends: 1.1] [e2e] Run `PYTHONPATH=src pytest -q
       tests/shared/test_codex_sandbox.py`, then `PYTHONPATH=src pytest -q`. Run
       `openspec validate fix-codex-worktree-git-sandbox-roots --strict` and
       `worktrail-compile openspec/changes/fix-codex-worktree-git-sandbox-roots`.
