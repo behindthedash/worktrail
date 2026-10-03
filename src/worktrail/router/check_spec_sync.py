@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """Spec sync drift guard.
 
 Shared SDD tooling invoked by pre_pr_gate.py against any consuming repo's

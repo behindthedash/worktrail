@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """
 Work-queue lifecycle owner -- the single, atomic implementation of claiming and
 releasing handoff briefs, shared by every consumer (the `handoff` skill's Consume

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """
 Plugin-cache freshness guard for Worktrail-compatible installations.
 

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """smoke_flake_selfcheck.py — recurring-smoke-flake detector.
 
 When `integrate_smoke_retries` is enabled, a smoke suite that fails once and

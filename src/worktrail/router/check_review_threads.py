@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """CI-watch-loop's PR review-thread resolution gate (`ci-watch-loop.md` case 1).
 
 Incident: datalena PR #2133 (router-capability-guard-coverage) accumulated 9
