@@ -2173,6 +2173,176 @@ def test_drain_routing_liveness_check_error_never_aborts_drain(tmp_path, monkeyp
     assert any("routing liveness check error: boom" in line for line in logs)
 
 
+# ---------------------------------------------------------------------------
+# Spawn-readiness refusal (task 6.1)
+
+
+_READY_TWO_TARGET_ROUTING = (
+    "targets:\n"
+    "  claude-sub:\n"
+    "    harness: claude\n"
+    "    pool: subscription\n"
+    "  codex-sub:\n"
+    "    harness: codex\n"
+    "    pool: subscription\n"
+    "tiers:\n"
+    "  t2-build:\n"
+    "    claude-sub:\n"
+    "      model: sonnet\n"
+    "    codex-sub:\n"
+    "      model: gpt-5.4-mini\n"
+    "default_tier: t2-build\n"
+)
+
+# An `api`-pool target with no `api_opt_in` -- the selector skips it as
+# ineligible, so the spawn path can never reach the cell
+# (spawn_readiness.readiness_problems' own unready class).
+_UNREADY_ROUTING = (
+    "targets:\n"
+    "  claude-api:\n"
+    "    harness: claude\n"
+    "    pool: api\n"
+    "tiers:\n"
+    "  t2-build:\n"
+    "    claude-api:\n"
+    "      model: sonnet\n"
+    "default_tier: t2-build\n"
+)
+
+
+def _write_routing_file(tmp_path, monkeypatch, payload):
+    """Point the machine-wide routing resolution at a per-test file.
+
+    tests/drain/conftest.py deliberately leaves GO_ROUTING_FILE at a
+    nonexistent path, so a drain test that needs the resolution path (not
+    `machine_wide_routing()`, which those capacity-gate tests monkeypatch)
+    to see a real table must set WORKTRAIL_ROUTING_FILE itself -- the current
+    env name wins over the legacy GO_ synonym.
+    """
+    routing_file = tmp_path / "routing.yaml"
+    routing_file.write_text(payload, encoding="utf-8")
+    monkeypatch.setenv("WORKTRAIL_ROUTING_FILE", str(routing_file))
+    return routing_file
+
+
+def test_drain_refuses_unready_routing_before_the_intake_triage_prepass(
+    tmp_path, monkeypatch
+):
+    """task 6.1: an unready cell refuses the whole drain, and the refusal is
+    ordered ahead of the intake-triage pre-pass -- that pre-pass spawns its
+    own evaluator agent, so a readiness failure must land before it rather
+    than after a wasted spawn. The message names every unready cell and the
+    routing file, and nothing at all is launched."""
+    fake = FakeQueue([3])
+    install_fake_queue(monkeypatch, fake)
+    routing_file = _write_routing_file(tmp_path, monkeypatch, _UNREADY_ROUTING)
+    prepass_calls = []
+    monkeypatch.setattr(
+        drain,
+        "run_intake_triage_prepass",
+        lambda *a, **k: prepass_calls.append(k) or {},
+    )
+    config = make_config(tmp_path, intake_triage=True)
+    spawned = []
+
+    def spawner(cmd, timeout):
+        spawned.append(list(cmd))
+        return SpawnOutcome(0)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        drain.drain(config, spawner=spawner, log=lambda _l: None)
+
+    message = str(excinfo.value)
+    assert "t2-build/claude-api" in message
+    assert "api_opt_in" in message
+    assert str(routing_file) in message
+    assert prepass_calls == []
+    assert spawned == []
+    # The lock is released on the way out, so a refused drain does not wedge
+    # the next one.
+    assert not config.lock_file.exists()
+
+
+def test_drain_capacity_gated_cell_still_lets_the_run_proceed(tmp_path, monkeypatch):
+    """A capacity gate is a waitable runtime condition, not an unready cell:
+    the readiness preflight must not fold gating into refusal. The primary's
+    only default-tier cell is gated, so the selector walks past it to the
+    fallback agent and the run still spawns."""
+    fake = FakeQueue([1, 0])
+    install_fake_queue(monkeypatch, fake)
+    _write_routing_file(tmp_path, monkeypatch, _READY_TWO_TARGET_ROUTING)
+    config = make_config(tmp_path, agent="claude", fallback_agents=["codex"])
+    config.capacity_cache.write_text(
+        json.dumps({"providers": {"claude-sub:sonnet": {"status": "gated"}}}),
+        encoding="utf-8",
+    )
+    cmds = []
+
+    def spawner(cmd, timeout):
+        cmds.append(list(cmd))
+        write_run_record(
+            config.runs_dir, "go-1", "completed_pr_open", pr="https://pr/1"
+        )
+        return SpawnOutcome(0)
+
+    summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
+
+    assert [i["kind"] for i in summary["iterations"]] == ["success"]
+    assert len(cmds) == 1
+    assert cmds[0][:2] == ["codex", "exec"]
+
+
+def test_drain_ready_routing_starts_normally(tmp_path, monkeypatch):
+    """task 6.1: a table every builder accepts starts the drain exactly as
+    before -- the refusal is scoped to cells the spawn path itself rejects,
+    not to routing being configured at all."""
+    fake = FakeQueue([1, 0])
+    install_fake_queue(monkeypatch, fake)
+    _write_routing_file(tmp_path, monkeypatch, _READY_TWO_TARGET_ROUTING)
+    config = make_config(tmp_path, agent="claude")
+    cmds = []
+
+    def spawner(cmd, timeout):
+        cmds.append(list(cmd))
+        write_run_record(
+            config.runs_dir, "go-1", "completed_pr_open", pr="https://pr/1"
+        )
+        return SpawnOutcome(0)
+
+    summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
+
+    assert summary["stopped"].startswith("queue_empty")
+    assert len(cmds) == 1
+    assert cmds[0][:2] == ["claude", "-p"]
+
+
+def test_main_exits_2_naming_the_cell_and_routing_file_when_unready(
+    tmp_path, monkeypatch, capsys
+):
+    """task 6.1: the refusal surfaces through main() as exit 2 with the cell
+    and the routing file on stderr -- never a logged-and-continued run."""
+    routing_file = _write_routing_file(tmp_path, monkeypatch, _UNREADY_ROUTING)
+    wq = tmp_path / "work_queue.py"
+    wq.write_text("# placeholder\n", encoding="utf-8")
+
+    rc = drain.main(
+        [
+            "--work-queue-py",
+            str(wq),
+            "--repos-root",
+            str(tmp_path / "projects"),
+            "--queue-dir",
+            str(tmp_path / "queue"),
+        ]
+    )
+
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "error:" in err
+    assert "t2-build/claude-api" in err
+    assert str(routing_file) in err
+
+
 def test_main_accepts_routing_target_name_for_agent_flag(tmp_path, monkeypatch):
     """--agent/--fallback-agent now accept a declared routing.yaml target
     name, not only a bare harness (task 5.1)."""

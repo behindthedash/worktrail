@@ -42,7 +42,7 @@
 
 ## 5. Wire the check
 
-- [ ] 5.1 In `src/worktrail/router/routing_cli.py`, make `_check` resolve the routing table
+- [x] 5.1 In `src/worktrail/router/routing_cli.py`, make `_check` resolve the routing table
       through `load_policy()` and `resolve_routing()` and run the probe against that table,
       marking every cell it reports unready as `FAIL` with the reported message, printing those
       messages to stderr and exiting non-zero, and recording no `agent_capacity` gate for them.
@@ -54,7 +54,7 @@
 
 ## 6. Wire the drain
 
-- [ ] 6.1 In `src/worktrail/drain/drain.py`, run the probe ahead of the intake-triage pre-pass
+- [x] 6.1 In `src/worktrail/drain/drain.py`, run the probe ahead of the intake-triage pre-pass
       and raise on any unready cell so `main()` exits 2 naming the cell and the routing file
       rather than logging and continuing, resolving the table itself for the probe instead of
       reusing the validated mapping already in scope. Leave the existing liveness call and its

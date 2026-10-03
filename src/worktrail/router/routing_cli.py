@@ -27,6 +27,7 @@ from typing import Any
 import yaml
 
 from ..orchestrator import agent_capacity
+from ..shared.homedir import worktrail_home
 from .env_profile import resolve_env_profile
 from .policy import (
     EFFORT_VOCABULARY,
@@ -36,8 +37,10 @@ from .policy import (
     _load_yaml_mapping,
     _validate_routing,
     load_policy,
+    resolve_routing,
     resolved_routing_file_path,
 )
+from .spawn_readiness import readiness_problems
 
 STARTER_ROUTING_YAML = """\
 # worktrail machine-wide routing config -- written by `worktrail-routing --init`.
@@ -168,13 +171,25 @@ def _show(repo: Path) -> int:
 
 
 def _check(
-    path: Path | None = None,
     runner=subprocess.run,
     capacity_path: Path | None = None,
     now=None,
 ) -> int:
     """`worktrail-routing --check`: walk every declared `routing.tiers` cell
     and report whether it can actually serve.
+
+    The table checked is the one a spawn would be served from --
+    `resolve_routing(load_policy(worktrail_home()))`, the machine-wide
+    `routing.yaml` (`WORKTRAIL_ROUTING_FILE`, else
+    `worktrail_home()/routing.yaml`) -- and every cell the spawn path's own
+    builders refuse is a `FAIL` carrying the builder's message
+    (`spawn_readiness.readiness_problems`), printed to stderr with a non-zero
+    exit. Judging the file's declared keys instead is the gap the
+    `env_profiles` incident fell through: the resolver had already dropped a
+    key the file still declared, and `--check` reported `ok` for cells that
+    could not launch. A readiness failure records no `agent_capacity` gate --
+    a gate is skipped *silently* by the next select, turning a loud
+    configuration error into an invisible fallback.
 
     An opencode cell whose model id is absent from `list_opencode_models()`
     (task 6.1) is a *gate*: it is recorded as `model_unavailable` via
@@ -192,39 +207,42 @@ def _check(
     is deliberately not recorded as an `agent_capacity` gate -- see the inline
     note where it is raised.
     """
-    routing_path = path or _routing_file_path()
+    routing_path = _routing_file_path()
     if not routing_path.is_file():
         print(
             f"worktrail-routing: no routing file at {routing_path} -- run --init first",
             file=sys.stderr,
         )
         return 1
-    raw = _load_yaml_mapping(routing_path.read_text(encoding="utf-8"))
-    if raw is None:
-        print(f"worktrail-routing: {routing_path} is malformed YAML", file=sys.stderr)
-        return 1
-    meta: dict = {"source": str(routing_path), "unknown_keys": [], "warnings": []}
     try:
-        routing = _validate_routing(raw, meta)
+        policy = load_policy(worktrail_home())
+        routing = resolve_routing(policy)
     except OperatorConfigError as exc:
         print(f"worktrail-routing: {exc}", file=sys.stderr)
         return 1
-    for warning in meta["warnings"]:
+    for warning in policy.get("_meta", {}).get("warnings", []):
         print(f"worktrail-routing: warning: {warning}", file=sys.stderr)
-    if not routing:
+    targets = routing.get("targets") or {}
+    tiers = routing.get("tiers") or {}
+    if not targets and not tiers:
         print(
             f"worktrail-routing: {routing_path} declares no routing.targets/tiers",
             file=sys.stderr,
         )
         return 1
 
-    targets = routing["targets"]
-    tiers = routing["tiers"]
+    # Resolved-table readiness, computed before the walk: a cell the probe
+    # reports is FAILed below with the builder's own message and never
+    # recorded as a capacity gate -- a gate is skipped *silently* by the next
+    # `select_cell`, which would hide the config error instead of surfacing it.
+    problems = readiness_problems(routing)
+
     opencode_models: set | None = None
     rows = []
     gated = 0
     profiles_failed = 0
     profile_failures: list[str] = []
+    readiness_failures: list[tuple[str, str, str]] = []
 
     for row in sorted(tiers):
         for target in sorted(tiers[row]):
@@ -237,57 +255,69 @@ def _check(
             notes = []
             status = "ok"
 
-            if harness == "opencode":
-                if opencode_models is None:
-                    opencode_models = list_opencode_models(runner=runner)
-                if model not in opencode_models:
-                    agent_capacity.record(
-                        target,
-                        model,
-                        outcome="unavailable",
-                        failure_class="model_unavailable",
-                        retry_after=agent_capacity.retry_time("model_unavailable", now),
-                        source="worktrail-routing --check",
-                        path=capacity_path,
-                        now=now,
-                    )
-                    status = "GATED"
-                    notes.append("model_unavailable")
-                    gated += 1
-                if pool == "free" and not (model.endswith(("-free", ":free"))):
-                    notes.append("warn: free-pool id missing -free/:free suffix")
+            problem = problems.get((row, target))
+            if problem is not None:
+                # The spawn path itself would refuse this cell: FAIL it with
+                # the builder's own message. Nothing is recorded -- not even
+                # the model_unavailable gate below, which a config error on
+                # the same cell would otherwise turn into a silent fallback.
+                status = "FAIL"
+                notes.append(problem)
+                readiness_failures.append((row, target, problem))
+            else:
+                if harness == "opencode":
+                    if opencode_models is None:
+                        opencode_models = list_opencode_models(runner=runner)
+                    if model not in opencode_models:
+                        agent_capacity.record(
+                            target,
+                            model,
+                            outcome="unavailable",
+                            failure_class="model_unavailable",
+                            retry_after=agent_capacity.retry_time(
+                                "model_unavailable", now
+                            ),
+                            source="worktrail-routing --check",
+                            path=capacity_path,
+                            now=now,
+                        )
+                        status = "GATED"
+                        notes.append("model_unavailable")
+                        gated += 1
+                    if pool == "free" and not (model.endswith(("-free", ":free"))):
+                        notes.append("warn: free-pool id missing -free/:free suffix")
 
-            if effort:
-                vocabulary = EFFORT_VOCABULARY.get(harness)
-                if vocabulary is None or effort not in vocabulary:
-                    notes.append(
-                        f"warn: effort {effort!r} outside {harness!r} vocabulary"
-                    )
+                if effort:
+                    vocabulary = EFFORT_VOCABULARY.get(harness)
+                    if vocabulary is None or effort not in vocabulary:
+                        notes.append(
+                            f"warn: effort {effort!r} outside {harness!r} vocabulary"
+                        )
 
-            auth = target_info.get("auth")
-            if isinstance(auth, dict) and auth.get("profile"):
-                profile_name = auth["profile"]
-                try:
-                    resolve_env_profile(
-                        profile_name,
-                        (routing.get("env_profiles") or {}).get(profile_name) or {},
-                        target=target,
-                        declared_in=routing_path,
-                    )
-                except OperatorConfigError as exc:
-                    # FAIL + exit 1, but deliberately NOT an
-                    # `agent_capacity.record()` gate: a gate is skipped
-                    # silently by `select_cell` on the next spawn, which would
-                    # turn a loud config error into an invisible fallback to
-                    # the next rung -- the failure class env profiles exist to
-                    # eliminate. Gates model provider conditions; this is
-                    # operator config.
-                    status = "FAIL"
-                    notes.append(f"env profile {profile_name} unresolvable")
-                    profile_failures.append(str(exc))
-                    profiles_failed += 1
-                else:
-                    notes.append(f"env profile {profile_name} ok")
+                auth = target_info.get("auth")
+                if isinstance(auth, dict) and auth.get("profile"):
+                    profile_name = auth["profile"]
+                    try:
+                        resolve_env_profile(
+                            profile_name,
+                            (routing.get("env_profiles") or {}).get(profile_name) or {},
+                            target=target,
+                            declared_in=routing_path,
+                        )
+                    except OperatorConfigError as exc:
+                        # FAIL + exit 1, but deliberately NOT an
+                        # `agent_capacity.record()` gate: a gate is skipped
+                        # silently by `select_cell` on the next spawn, which
+                        # would turn a loud config error into an invisible
+                        # fallback to the next rung -- the failure class env
+                        # profiles exist to eliminate. Gates model provider
+                        # conditions; this is operator config.
+                        status = "FAIL"
+                        notes.append(f"env profile {profile_name} unresolvable")
+                        profile_failures.append(str(exc))
+                        profiles_failed += 1
+                    else:
+                        notes.append(f"env profile {profile_name} ok")
 
             rows.append(
                 (
@@ -312,19 +342,25 @@ def _check(
     for r in rows:
         print(fmt.format(*r))
 
+    for row, target, message in readiness_failures:
+        print(f"worktrail-routing: {row}/{target}: {message}", file=sys.stderr)
     for failure in profile_failures:
         print(f"worktrail-routing: {failure}", file=sys.stderr)
+    if readiness_failures:
+        print(
+            f"worktrail-routing: {len(readiness_failures)} cell(s) not spawn-ready "
+            "-- see above",
+            file=sys.stderr,
+        )
     if gated:
         print(f"worktrail-routing: {gated} cell(s) gated -- see above", file=sys.stderr)
-        return 1
     if profiles_failed:
         print(
             f"worktrail-routing: {profiles_failed} cell(s) have an unresolvable "
             "env profile -- see above",
             file=sys.stderr,
         )
-        return 1
-    return 0
+    return 1 if (readiness_failures or gated or profiles_failed) else 0
 
 
 def _target_for_harness(harness: str) -> str:
@@ -546,11 +582,12 @@ def main(argv=None) -> int:
     p.add_argument(
         "--check",
         action="store_true",
-        help="validate every routing.tiers cell against reality: gate an "
-        "opencode model absent from `opencode models` as "
-        "model_unavailable, warn on a free-pool id missing -free/:free, "
-        "warn on an out-of-vocabulary effort, print a per-cell table, "
-        "exit non-zero on any gate",
+        help="check every routing.tiers cell for spawn readiness against the "
+        "resolved table: FAIL a cell the spawn path cannot launch "
+        "(unresolvable auth lane, unselectable api target), gate an opencode "
+        "model absent from `opencode models` as model_unavailable, warn on a "
+        "free-pool id missing -free/:free or an out-of-vocabulary effort, "
+        "print a per-cell table, exit non-zero on any FAIL or gate",
     )
     p.add_argument(
         "--migrate",
