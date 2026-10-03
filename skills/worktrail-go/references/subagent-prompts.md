@@ -1071,6 +1071,7 @@ which reports untracked files too:
       --route E \
       --risk low \
       --checkpoint \
+      --commit-message "sync($SPEC_ID): post-orchestrator docs update" \
       --title "sync($SPEC_ID): post-orchestrator docs update" \
       --summary "Updates spec artifacts and task statuses after orchestrator run. Auto-generated." \
       --json && {
