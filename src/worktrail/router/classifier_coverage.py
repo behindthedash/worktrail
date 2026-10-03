@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """Classifier Coverage Audit — replay `classify.py` over historical briefs.
 
 Read-only CLI that answers one question: **where does the route classifier

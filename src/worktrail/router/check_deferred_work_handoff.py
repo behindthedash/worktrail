@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """Stop-hook deferred-work handoff guard.
 
 Reads one or more `worktrail-run-record` YAML paths (the same `.yaml` files

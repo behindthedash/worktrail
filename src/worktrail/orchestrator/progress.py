@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """Live progress for the orchestrator: per-step timing + an on-demand checklist.
 
 The live fan-out spawns each worker as a single BLOCKING `claude -p` subprocess

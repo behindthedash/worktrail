@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """Stop-hook durable-artifact dedup gate — transcript-local evidence only.
 
 Answers one question for the Claude Code Stop hook (`suggest_next_step.py`,

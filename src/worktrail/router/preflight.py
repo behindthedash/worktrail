@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """Unified pre-PR preflight gate CLI — the single implementation behind both
 the /go orchestrator's mandatory gate (pre_pr_gate.py) and the machine-level
 PreToolUse hook that blocks `git push` / `gh pr create` / `gh pr ready`

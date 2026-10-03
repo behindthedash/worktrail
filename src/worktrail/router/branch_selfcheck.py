@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """branch_selfcheck.py — cross-repo stale local-branch detector.
 
 A local git branch that is fully merged into its repo's base branch is safe
