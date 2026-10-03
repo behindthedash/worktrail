@@ -80,6 +80,7 @@ triggers:
     - auth.profile
     - resolve_env_profile
     - env_profile.py
+    - resolve_routing
 ---
 
 You are working on **worktrail's GO v2 front door**: loading repo policy, classifying free-text
@@ -251,6 +252,13 @@ agents or writes task files — that is `orchestrator/`'s job.
   its value is never printable). A malformed `expect` drops the **whole profile**, not just the
   assertion — a silently-dropped assertion is indistinguishable from a passing one, which would
   defeat the only thing `expect` exists for.
+  `resolve_routing()` must carry this table into the resolved `{targets, tiers, roles, purposes,
+  default_tier, env_profiles, drain}` dict it returns: `spawnlib` reads the profile table off
+  *that* dict (never a second policy read, which could diverge from the table `select_cell`
+  served from), so dropping the key made every profile-bearing cell raise `OperatorConfigError`
+  ("not declared in routing.env_profiles") at launch even when the profile was declared —
+  confirmed live 2026-10-02, the drain's intake-triage spawn died on a `claude-deepseek` cell
+  whose `deepseek` profile was declared in `routing.yaml` all along.
 - **`auth.profile` and `auth.env` are mutually exclusive alternatives for one auth lane, and a
   profile on a `subscription` target is a warning.** `_validate_routing_targets` warns on a
   non-mapping `auth`, on both `env` and `profile` declared together (the spawn hard-fails; the
@@ -575,4 +583,4 @@ agents or writes task files — that is `orchestrator/`'s job.
   best-effort writers that never affect what they record
 
 ---
-**Last Updated:** 2026-10-02
+**Last Updated:** 2026-10-03

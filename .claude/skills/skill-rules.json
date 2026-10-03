@@ -204,6 +204,7 @@
           "auth.profile",
           "resolve_env_profile",
           "env_profile.py",
+          "resolve_routing",
           "router",
           "front",
           "door",

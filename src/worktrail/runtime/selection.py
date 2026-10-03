@@ -349,9 +349,9 @@ def select_cell(
     preference order, returning the first cell with capacity (design D3).
 
     ``routing`` is `resolve_routing()`'s return value: `{targets, tiers,
-    roles, purposes, default_tier, drain}`. Pure and deterministic beyond
-    ``capacity``/``now``, which callers inject (D3: "Pure, clock/capacity
-    injected, deterministic").
+    roles, purposes, default_tier, env_profiles, drain}`. Pure and
+    deterministic beyond ``capacity``/``now``, which callers inject (D3: "Pure,
+    clock/capacity injected, deterministic").
 
     Steps (D3):
       1. order = targets in file order; ``prefer`` (if it names a target with
