@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """
 `worktrail-detach` -- run a long-running command outside the agent harness's
 tracked process tree, with a log, a pid file, and an exit-code sentinel.

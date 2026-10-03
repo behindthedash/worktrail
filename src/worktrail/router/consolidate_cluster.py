@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """
 Two-phase queue consolidation for the `consolidate-cluster` dashboard action
 (spec 018, change 2026-07-14--consolidate-cluster-action).

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """
 Cluster signal extraction and pairwise Signal Match computation for the go
 skill's Consume-time cluster detection (see the `duplicate-brief-detection`

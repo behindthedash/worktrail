@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """GO v2 route classifier — deterministic, stdlib-only.
 
 Maps a free-text engineering request (plus optional repo-state signals) onto the

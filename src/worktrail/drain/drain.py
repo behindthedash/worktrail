@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """Queue-drain driver: repeatedly launch fresh-context one-shots of the
 worktrail-go skill's auto mode until the work queue is empty or a stop
 condition fires.

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """Run the exact `ruff` this repo pins, or fail loudly -- never a different one.
 
 CI installs the repo with `pip install -e ".[dev]"`, so the `ruff` on its PATH

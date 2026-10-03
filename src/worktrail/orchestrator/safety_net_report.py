@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """Aggregate observability report for the orchestrator's "safety net" recovery
 paths -- code that recovers instead of failing hard (see live.py's
 `_require_dependency_files` WARN downgrade and verify.py's `auto_merge`
