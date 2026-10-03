@@ -16,7 +16,7 @@
 
 ## 2. Routing example
 
-- [ ] 2.1 Document the readiness stage in the routing example file: what `--check` now proves
+- [x] 2.1 Document the readiness stage in the routing example file: what `--check` now proves
       beyond schema validity, that a readiness `FAIL` records no capacity gate, and that the
       named auth variables must be set in the checking shell for a claude `api` cell to report
       `ok`. (Requirement: The routing check proves spawn readiness against the resolved table)
