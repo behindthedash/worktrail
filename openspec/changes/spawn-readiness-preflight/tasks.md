@@ -16,7 +16,7 @@
 
 ## 2. Routing example
 
-- [ ] 2.1 Document the readiness stage in the routing example file: what `--check` now proves
+- [x] 2.1 Document the readiness stage in the routing example file: what `--check` now proves
       beyond schema validity, that a readiness `FAIL` records no capacity gate, and that the
       named auth variables must be set in the checking shell for a claude `api` cell to report
       `ok`. (Requirement: The routing check proves spawn readiness against the resolved table)
@@ -24,7 +24,7 @@
 
 ## 3. Skill gotcha
 
-- [ ] 3.1 Add the operator-facing gotcha to the routing-config skill: `--check` is a spawn
+- [x] 3.1 Add the operator-facing gotcha to the routing-config skill: `--check` is a spawn
       readiness probe, not a schema linter, so a cell whose auth lane cannot resolve in the
       current shell fails it; and a drain now refuses to start on such a failure instead of
       routing around it, while a capacity-gated cell is still walked past.
@@ -33,7 +33,7 @@
 
 ## 4. Skill recipe
 
-- [ ] 4.1 Add the how-to recipe for reading a readiness failure to the routing-config skill:
+- [x] 4.1 Add the how-to recipe for reading a readiness failure to the routing-config skill:
       which unready class each failure message names, what the fix is for each (declare the
       missing profile, set the named variable in the spawning environment, add `api_opt_in`,
       provision the codex home), and why none of them is a capacity gate an operator can wait
