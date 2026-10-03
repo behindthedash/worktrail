@@ -30,7 +30,7 @@ The unattended auto-pick used by `worktrail-go auto` (and therefore by every dra
 - **THEN** the execution brief is claimed and the intake brief is recorded as skipped with reason `intake-untriaged`
 
 ### Requirement: Interactive pickup of an intake brief triages it
-When a user runs `worktrail-go <brief-id>` and the brief is an intake brief, the system SHALL run the intake-triage evaluation for that single brief and present its verdict for confirmation, instead of dispatching it for implementation. Applying the verdict SHALL follow the same apply semantics as the unattended pre-pass, including landing any resulting pull request through the shared PR-landing pipeline in the same invocation. The session SHALL report the landing outcome the apply step returns; when that outcome is a code defect or blocking review threads, the session SHALL continue the CI watch loop's repair procedure against the reported branch and run record rather than stopping at "PR opened". The brief SHALL NOT be claimed into `picked/` for implementation by this path.
+When a user runs `worktrail-go <brief-id>` and the brief is an intake brief, the system SHALL run the intake-triage evaluation for that single brief and present its verdict for confirmation, instead of dispatching it for implementation. Applying the verdict SHALL follow the same apply semantics as the unattended pre-pass, including landing any resulting pull request through the shared PR-landing pipeline in the same invocation. For a verdict that lands a pull request (`fold-into-change`, `propose-change`), the session SHALL report the landing outcome the apply step returns; when that outcome is a code defect or blocking review threads, the session SHALL continue the CI watch loop's repair procedure against the reported branch and run record rather than stopping at "PR opened". The brief SHALL NOT be claimed into `picked/` for implementation by this path.
 
 #### Scenario: User names an intake brief
 - **WHEN** `worktrail-go 20260826-143940-consolidated-...` is invoked and that brief has no `seeded-from:`
@@ -40,11 +40,11 @@ When a user runs `worktrail-go <brief-id>` and the brief is an intake brief, the
 - **WHEN** `worktrail-go <brief-id>` is invoked for a brief carrying `seeded-from:`
 - **THEN** the brief is claimed and dispatched exactly as before this change
 
-#### Scenario: Work-directly continues into dispatch
+#### Scenario: Work-directly stamps and stops
 - **WHEN** an interactive pickup's applied verdict is `work-directly` and the brief is now
   stamped `seeded-from: triage:<run-date>:direct`
-- **THEN** the same invocation claims the brief and proceeds through classification and
-  dispatch as it would for an execution brief named directly
+- **THEN** the session reports the stamp and stops, without claiming the brief or dispatching
+  it in the same invocation — the brief remains in `queue/` for a later execution dispatch
 
 #### Scenario: Keep is recorded interactively
 - **WHEN** an interactive pickup's verdict is `keep` for a brief not yet due for escalation
