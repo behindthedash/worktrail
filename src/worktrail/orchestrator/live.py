@@ -263,6 +263,30 @@ def _default_model_for_agent(agent: str) -> str:
     )
 
 
+def _first_target_for_harness(routing: dict, harness: str) -> str | None:
+    """The first declared `routing.targets` entry whose harness matches --
+    the target-name form `select_cell()`'s `prefer` takes. None when the
+    routing table declares no target for *harness* (a spawn then resolves
+    that row's own order instead of a preferred target)."""
+    for name, declared in (routing.get("targets") or {}).items():
+        if isinstance(declared, dict) and declared.get("harness") == harness:
+            return name
+    return None
+
+
+def _default_tier_and_prefer(agent: str) -> tuple[str | None, str | None]:
+    """The `(tier, prefer)` pair a caller with no explicit routing should
+    spawn under: the routing file's `default_tier` row, plus the first
+    declared target whose harness matches *agent*. Resolved fresh per call,
+    matching `_default_model_for_agent()`'s contract (an operator edit to
+    routing.yaml takes effect on the very next spawn)."""
+    from ..router.policy import load_policy, resolve_routing
+    from ..shared.homedir import worktrail_home
+
+    routing = resolve_routing(load_policy(worktrail_home()))
+    return routing.get("default_tier"), _first_target_for_harness(routing, agent)
+
+
 # Every codex role defaults to the SAME model (_default_model_for_agent
 # resolved fresh per call, not a frozen snapshot -- a stale frozen copy of
 # the default here is exactly the staleness bug the function itself avoids;
@@ -2654,6 +2678,11 @@ def run_research_session(
     4. Run a single agent session with those files as context.
     5. Return the session_id from SpawnResult so workers can fork from it.
     """
+    # `model`/`effort` are compatibility-only: spawn_agent accepts neither (the
+    # served cell's model/effort come from whichever routing cell the tier row
+    # serves). The line below is kept for its fail-fast value -- the same
+    # contract LiveSpawn.__init__ documents for its own `model` -- and the
+    # `effort` parameter stays on the public signature for existing callers.
     model = model or _default_model_for_agent(agent)
     # --- collect spec content ---
     spec_lines: list[str] = []
@@ -2714,12 +2743,12 @@ def run_research_session(
     # this call bypassed LiveSpawn.__call__ entirely. No --tools restriction:
     # this is a read-only context pre-load, not a worker that edits/commits.
     extra_args = ["--setting-sources", "project,local"] if agent == "claude" else []
+    tier, prefer = _default_tier_and_prefer(agent)
     result = spawnlib.spawn_agent(
         prompt,
         spec_folder.parent.parent,
-        agent=agent,
-        model=model,
-        effort=effort,
+        tier=tier,
+        prefer=prefer,
         timeout=timeout,
         extra_args=extra_args,
         log=print,
@@ -2991,17 +3020,13 @@ class LiveSpawn:
         # further back to the run's own --agent (self.agent) when neither
         # names one -- the pre-spec "every role defaults to the run agent"
         # parity every construction site that never configures roles/
-        # role_agents at all still depends on.
-        def _target_for_harness(harness: str) -> str | None:
-            for name, declared in (self._routing.get("targets") or {}).items():
-                if isinstance(declared, dict) and declared.get("harness") == harness:
-                    return name
-            return None
-
+        # role_agents at all still depends on. Resolved against the routing
+        # table snapshotted once per instance (self._routing), the same table
+        # tier_for() read above and the peek/selection below serve from.
         if prefer is None and role in self.role_agents:
-            prefer = _target_for_harness(self.role_agents[role])
+            prefer = _first_target_for_harness(self._routing, self.role_agents[role])
         if prefer is None:
-            prefer = _target_for_harness(self.agent)
+            prefer = _first_target_for_harness(self._routing, self.agent)
         # independent=True (review's default, or an explicit routing.roles.review.
         # independent: true) excludes the harness that most recently served THIS
         # instance -- in the drive loop's implement -> review sequence for one
@@ -7230,12 +7255,16 @@ def _full_real_inner(
 
 
 def smoke(agent: str = DEFAULT_AGENT, model: str | None = None) -> bool:
+    # `model` is compatibility-only (spawn_agent accepts no such kwarg; the
+    # model comes from the served cell) -- kept, with its fail-fast resolution,
+    # for the same reason as LiveSpawn.__init__'s own `model`.
     model = model or _default_model_for_agent(agent)
+    tier, prefer = _default_tier_and_prefer(agent)
     result = spawnlib.spawn_agent(
         "Reply with exactly: PONG",
         Path.cwd(),
-        agent=agent,
-        model=model,
+        tier=tier,
+        prefer=prefer,
         timeout=120,
         retries=0,
     )
@@ -7359,6 +7388,18 @@ def _effective_role_models(agent: str, role_models: dict | None) -> dict | None:
         model = _default_model_for_agent("codex")
         return {role: model for role in _CODEX_DEFAULT_ROLES}
     return None
+
+
+# Subcommands whose tail-resolved --model/--role-model values are consumed
+# downstream: they thread into live_run/full/live_run_real/full_real, or
+# straight into smoke(). Every other subcommand (precheck, skip, clear-task,
+# status, usage, instantiate, spawn-one) never spawns, so resolving a
+# default model for it is a pure config read that can only fail -- reproduced:
+# `worktrail-live precheck` raised `OperatorConfigError: no default model
+# configured for agent 'claude'` before its DAG check on a routing table with
+# no claude target, and the role-model line below crashes the same way with a
+# codex host on a table with no codex target.
+_SPAWNING_SUBCOMMANDS = ("smoke", "live-run", "full", "live-run-real", "full-real")
 
 
 def main(argv=None) -> int:
@@ -7766,12 +7807,18 @@ def main(argv=None) -> int:
     ct.add_argument("--tasks", required=True, help="Comma-separated task IDs to clear")
 
     args = p.parse_args(argv)
-    if getattr(args, "model", None) is None:
-        args.model = _default_model_for_agent(getattr(args, "agent", DEFAULT_AGENT))
-    role_models = _effective_role_models(
-        getattr(args, "agent", DEFAULT_AGENT),
-        _parse_model_map(getattr(args, "model_map", None)),
-    )
+    # Only a spawning subcommand consumes the resolved model/role-models; a
+    # non-spawning one (precheck above all) must not be blocked by a routing
+    # table that simply declares no target for this host's harness -- see
+    # _SPAWNING_SUBCOMMANDS.
+    role_models = None
+    if args.cmd in _SPAWNING_SUBCOMMANDS:
+        if getattr(args, "model", None) is None:
+            args.model = _default_model_for_agent(getattr(args, "agent", DEFAULT_AGENT))
+        role_models = _effective_role_models(
+            getattr(args, "agent", DEFAULT_AGENT),
+            _parse_model_map(getattr(args, "model_map", None)),
+        )
     role_agents = _parse_model_map(getattr(args, "role_agent_map", None))
     tier_map = _parse_tier_map(getattr(args, "tier_map", None))
     # {purpose: tier} is a plain string-to-string map, the same "key=value,..." shape
