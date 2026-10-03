@@ -410,6 +410,11 @@ class RunResearchSessionExcludesUserSettingSourceTests(unittest.TestCase):
             with patch(
                 "worktrail.orchestrator.live.spawnlib.spawn_agent",
                 side_effect=lambda *_, **kw: captured.update(kw) or fake_result,
+                # autospec: an unconstrained MagicMock accepted the
+                # agent=/model=/effort= kwargs this call site used to pass to a
+                # function that takes none of them, so this test passed while
+                # the real spawn raised TypeError (handoff 20261001-190740).
+                autospec=True,
             ):
                 live.run_research_session(spec_folder, agent=agent)
         return captured.get("extra_args", [])

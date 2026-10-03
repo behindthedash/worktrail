@@ -263,6 +263,49 @@ def _default_model_for_agent(agent: str) -> str:
     )
 
 
+def _target_for_harness(routing: dict, harness: str) -> str | None:
+    """The first declared `routing.targets` entry whose harness is *harness*.
+
+    A harness name ("claude"/"codex"/"opencode") is not a routing key: every
+    spawn entry point takes `tier` plus an optional `prefer` naming a
+    *target*, so a caller that was given a harness has to translate before it
+    can spawn. Returns None when nothing declares *harness*, leaving the
+    caller free to fall back (LiveSpawn.__call__) or raise (the machine-wide
+    callers below)."""
+    for name, declared in (routing.get("targets") or {}).items():
+        if isinstance(declared, dict) and declared.get("harness") == harness:
+            return name
+    return None
+
+
+def _machine_wide_target_for_harness(harness: str) -> str:
+    """`_target_for_harness` resolved against the operator's machine-wide
+    routing file -- deliberately the same file `spawnlib.explicit_cell_override()`
+    reads, so a target returned here is always one that override can pin.
+
+    Raises `OperatorConfigError` for an undeclared harness rather than
+    falling through to whatever a tier row would otherwise serve: both callers
+    below are asked to spawn a *specific* harness and model, and silently
+    honouring neither would misreport which combination was exercised."""
+    from ..router.policy import (
+        OperatorConfigError,
+        load_policy,
+        resolve_routing,
+        resolved_routing_file_path,
+    )
+    from ..shared.homedir import worktrail_home
+
+    routing = resolve_routing(load_policy(worktrail_home()))
+    target = _target_for_harness(routing, harness)
+    if target is None:
+        raise OperatorConfigError(
+            f"no routing.targets entry declares harness {harness!r} -- add one "
+            f"in {resolved_routing_file_path()}, or run `worktrail-routing "
+            "--init` to write a starter config"
+        )
+    return target
+
+
 # Every codex role defaults to the SAME model (_default_model_for_agent
 # resolved fresh per call, not a frozen snapshot -- a stale frozen copy of
 # the default here is exactly the staleness bug the function itself avoids;
@@ -2714,16 +2757,22 @@ def run_research_session(
     # this call bypassed LiveSpawn.__call__ entirely. No --tools restriction:
     # this is a read-only context pre-load, not a worker that edits/commits.
     extra_args = ["--setting-sources", "project,local"] if agent == "claude" else []
-    result = spawnlib.spawn_agent(
-        prompt,
-        spec_folder.parent.parent,
-        agent=agent,
-        model=model,
-        effort=effort,
-        timeout=timeout,
-        extra_args=extra_args,
-        log=print,
-    )
+    # The caller names a harness + model, but a spawn resolves its cell from
+    # routing -- so pin both through the throwaway one-cell routing file
+    # (`compile.py`'s --agent/--model path and LiveSpawn's --model-map path use
+    # the same mechanism). Pinning also keeps --fork-research honest: workers
+    # fork from THIS session, so it must run on the harness the workers will.
+    with spawnlib.explicit_cell_override(
+        _machine_wide_target_for_harness(agent), model, effort=effort
+    ):
+        result = spawnlib.spawn_agent(
+            prompt,
+            spec_folder.parent.parent,
+            tier="explicit",
+            timeout=timeout,
+            extra_args=extra_args,
+            log=print,
+        )
     if result.session_id:
         print(
             f"{_ts()} RESEARCH: session_id={result.session_id} (workers will fork from this)"
@@ -2992,16 +3041,10 @@ class LiveSpawn:
         # names one -- the pre-spec "every role defaults to the run agent"
         # parity every construction site that never configures roles/
         # role_agents at all still depends on.
-        def _target_for_harness(harness: str) -> str | None:
-            for name, declared in (self._routing.get("targets") or {}).items():
-                if isinstance(declared, dict) and declared.get("harness") == harness:
-                    return name
-            return None
-
         if prefer is None and role in self.role_agents:
-            prefer = _target_for_harness(self.role_agents[role])
+            prefer = _target_for_harness(self._routing, self.role_agents[role])
         if prefer is None:
-            prefer = _target_for_harness(self.agent)
+            prefer = _target_for_harness(self._routing, self.agent)
         # independent=True (review's default, or an explicit routing.roles.review.
         # independent: true) excludes the harness that most recently served THIS
         # instance -- in the drive loop's implement -> review sequence for one
@@ -7231,14 +7274,19 @@ def _full_real_inner(
 
 def smoke(agent: str = DEFAULT_AGENT, model: str | None = None) -> bool:
     model = model or _default_model_for_agent(agent)
-    result = spawnlib.spawn_agent(
-        "Reply with exactly: PONG",
-        Path.cwd(),
-        agent=agent,
-        model=model,
-        timeout=120,
-        retries=0,
-    )
+    # A probe that silently hopped to another cell would report OK for a
+    # combination the operator never asked about, so pin the named harness +
+    # model rather than leaving the tier row free to serve either.
+    with spawnlib.explicit_cell_override(
+        _machine_wide_target_for_harness(agent), model
+    ):
+        result = spawnlib.spawn_agent(
+            "Reply with exactly: PONG",
+            Path.cwd(),
+            tier="explicit",
+            timeout=120,
+            retries=0,
+        )
     out = result.text.strip()
     ok = "PONG" in out
     print(f"{agent} smoke -> {out!r}  [{'OK' if ok else 'UNEXPECTED'}]")
