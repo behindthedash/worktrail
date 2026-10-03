@@ -1,6 +1,6 @@
 ## 1. No-op spawn detection in the spawn layer
 
-- [ ] 1.1 Detect the zero-API-call result shape and classify it as an infra
+- [x] 1.1 Detect the zero-API-call result shape and classify it as an infra
       failure, mapping its exhausted gate to a short-cooldown class. In
       `src/worktrail/orchestrator/spawnlib.py`:
       - retain `duration_api_ms` from the claude `result` event in
@@ -41,7 +41,7 @@
 
 ## 2. Repair the live.py spawn-layer defects
 
-- [ ] 2.1 Repair `live.py`'s spawn layer: the two call sites that pass kwargs
+- [x] 2.1 Repair `live.py`'s spawn layer: the two call sites that pass kwargs
       `spawn_agent` does not accept, and the worker-model resolution that blocks
       `precheck` on a routing table with no target for the invocation host.
       In `src/worktrail/orchestrator/live.py`:
