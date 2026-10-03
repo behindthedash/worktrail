@@ -58,7 +58,7 @@
 
 ## 3. Doctrine alignment in the skill reference
 
-- [ ] 3.1 [docs] In `skills/worktrail-go/references/subagent-prompts.md`, the
+- [x] 3.1 [docs] In `skills/worktrail-go/references/subagent-prompts.md`, the
       `#active-conflicts-scan` section states that the scan is available repo-wide
       (`--specification` omitted scans every non-terminal run for the repo, each entry naming
       its own specification), and that an orchestrator launch performs that scan itself before
