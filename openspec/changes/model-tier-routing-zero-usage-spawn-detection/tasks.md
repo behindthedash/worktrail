@@ -90,7 +90,7 @@
 
 ## 3. Verification
 
-- [ ] 3.1 [e2e] Run the full suite (`PYTHONPATH=src pytest -q`), the golden
+- [x] 3.1 [e2e] Run the full suite (`PYTHONPATH=src pytest -q`), the golden
       regression (`PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate
       check`), and the repo lint gates (`python3 scripts/ci/ruff_pinned.py check .`,
       `python3 scripts/ci/ruff_pinned.py format --check .`,
