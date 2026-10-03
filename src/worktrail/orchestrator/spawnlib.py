@@ -806,6 +806,47 @@ def build_child_env(
     return env
 
 
+def codex_api_home(cell: Cell) -> str | None:
+    """The declared, provisioned `CODEX_HOME` a codex `api` cell spawns in, or
+    None for any other cell (which spawns with the parent's ChatGPT login
+    inherited instead).
+
+    CODEX_HOME isolation is the one live-verified per-spawn auth selector for
+    codex (routing-target-selector task 3.6: `-c preferred_auth_method` and
+    OPENAI_API_KEY are both inert against a persisted login), so an `api` cell
+    with no home to point at -- or a home nothing ever logged into -- cannot
+    serve; both cases raise `OperatorConfigError` naming the target and the
+    provisioning command.
+
+    Shared with `router.spawn_readiness.readiness_problems` (`--check` and the
+    drain's preflight), so a codex `api` cell that passes the readiness probe
+    is one this path accepts: the check cannot drift from the raises it guards.
+    Only the *validation* lives here -- the home itself is created at spawn
+    time by `prepare_codex_child_environment` (a probe must not create it, or
+    the spawn it predicted would run against state it made).
+    """
+    if cell.harness != "codex" or cell.pool != "api":
+        return None
+    auth = cell.auth if isinstance(cell.auth, Mapping) else {}
+    codex_home_override = auth.get("codex_home")
+    if not codex_home_override:
+        raise OperatorConfigError(
+            f"routing target {cell.target!r} (harness codex, pool "
+            "api) has no auth.codex_home configured -- add `auth: "
+            "{codex_home: <path>}` to its routing.targets entry in "
+            f"{resolved_routing_file_path()}, naming a home provisioned "
+            "with `codex login --with-api-key`"
+        )
+    if not (Path(codex_home_override).expanduser() / "auth.json").exists():
+        raise OperatorConfigError(
+            f"routing target {cell.target!r}'s auth.codex_home "
+            f"({codex_home_override}) has no auth.json -- provision it "
+            "once with `CODEX_HOME=<that path> codex login --with-api-key` "
+            "before spawning this 'api' pool"
+        )
+    return codex_home_override
+
+
 # --------------------------------------------------------------------------- #
 # opencode headless worker environment
 # --------------------------------------------------------------------------- #
@@ -1259,31 +1300,12 @@ def spawn_agent(
             # the one live-verified per-spawn auth selector for codex
             # (routing-target-selector task 3.6: `-c preferred_auth_method`
             # and OPENAI_API_KEY are both inert against a persisted login).
-            codex_home_override: str | None = None
-            inherit_auth = True
-            if current_cell.pool == "api":
-                auth = (
-                    current_cell.auth if isinstance(current_cell.auth, Mapping) else {}
-                )
-                codex_home_override = auth.get("codex_home")
-                if not codex_home_override:
-                    raise OperatorConfigError(
-                        f"routing target {current_cell.target!r} (harness codex, pool "
-                        "api) has no auth.codex_home configured -- add `auth: "
-                        "{codex_home: <path>}` to its routing.targets entry in "
-                        f"{resolved_routing_file_path()}, naming a home provisioned "
-                        "with `codex login --with-api-key`"
-                    )
-                if not (Path(codex_home_override).expanduser() / "auth.json").exists():
-                    raise OperatorConfigError(
-                        f"routing target {current_cell.target!r}'s auth.codex_home "
-                        f"({codex_home_override}) has no auth.json -- provision it "
-                        "once with `CODEX_HOME=<that path> codex login --with-api-key` "
-                        "before spawning this 'api' pool"
-                    )
-                inherit_auth = False
+            # The declared home is validated by `codex_api_home`, shared with
+            # the readiness probe (`--check` / the drain's preflight) so the
+            # check cannot fall behind this path.
+            codex_home_override = codex_api_home(current_cell)
             env, codex_home, automatic_home = prepare_codex_child_environment(
-                codex_home_override, inherit_auth=inherit_auth
+                codex_home_override, inherit_auth=codex_home_override is None
             )
             env["CC_HEADLESS"] = "1"
             if automatic_home:
