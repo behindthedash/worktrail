@@ -33,7 +33,7 @@
 
 ## 4. Skill recipe
 
-- [ ] 4.1 Add the how-to recipe for reading a readiness failure to the routing-config skill:
+- [x] 4.1 Add the how-to recipe for reading a readiness failure to the routing-config skill:
       which unready class each failure message names, what the fix is for each (declare the
       missing profile, set the named variable in the spawning environment, add `api_opt_in`,
       provision the codex home), and why none of them is a capacity gate an operator can wait
