@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """audit_postmerge.py — fleet-wide post-merge reconciliation audit.
 
 `verify.py`'s `classify_checks()` only ever runs while a PR's own orchestrator

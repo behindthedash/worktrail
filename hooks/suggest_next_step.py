@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """Claude Stop hook for exceptional next-step capture.
 
 After substantive work, block session termination once so the agent can suggest

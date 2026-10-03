@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """Queue triage: repo-scoped dedup/staleness evaluation of the work queue.
 
 Recommended cadence: monthly, or pre-drain weekly -- not nightly. A full

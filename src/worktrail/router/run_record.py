@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """GO v2 run record — the machine-readable audit log of every front-door run.
 
 One YAML file per run under <dir>/<repo-name>/<run-id>.yaml (default dir

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """
 `go`'s Phase 3 repo-resolution staleness guard.
 

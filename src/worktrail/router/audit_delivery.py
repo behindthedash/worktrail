@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """audit_delivery.py — fleet-wide retroactive delivery audit.
 
 `integrate.py`'s `detect_unreconciled_evidence()` closes the delivery-ledger gap

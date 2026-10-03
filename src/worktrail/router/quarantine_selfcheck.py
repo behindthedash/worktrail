@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """quarantine_selfcheck.py — cross-repo QUARANTINED-group detector.
 
 The orchestrator's `integrate.py` marks a group `QUARANTINED` in its run
