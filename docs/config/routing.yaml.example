@@ -23,15 +23,20 @@
 # linter. Schema validity is only its floor: after parsing and
 # `_validate_routing()`'s warnings, it resolves the table through
 # `resolve_routing()` -- the same function a spawn reads its configuration
-# from -- and builds every declared `tiers.<row>.<target>` cell's child
-# environment the way `build_child_env()` does, under the environment of
-# the shell running the check. A cell reports `ok` only when a spawn on
-# this machine, from this shell, would actually launch it; the check
-# launches nothing and creates no state. Anything that would leave the
-# worker silently useless is `FAIL`: an unresolvable `auth.profile`, a
-# claude `api` cell whose `auth.env` variable is unset here, an `api`
-# target without `api_opt_in`, a harness outside claude/codex/opencode, or
-# a codex `api` home that has no auth.json.
+# from -- and runs a readiness stage over every declared
+# `tiers.<row>.<target>` cell: it builds the cell's launcher argv the way
+# `build_cmd()` does and constructs/validates its child environment the way
+# `build_child_env()` does, under the environment of the shell running the
+# check. `ok` is a pre-launch configuration guarantee -- launcher argv
+# buildable, harness supported, auth lane resolvable in this shell -- not a
+# promise that a spawn would start: it does not show the harness CLI is on
+# PATH, starts successfully, authenticates successfully, or reaches its
+# provider, and the readiness stage spawns no worker and records no
+# `agent_capacity` gate. Anything that would leave the worker silently
+# useless is `FAIL`: an unresolvable `auth.profile`, a claude `api` cell
+# whose `auth.env` variable is unset here, an `api` target without
+# `api_opt_in`, a harness outside claude/codex/opencode, or a codex `api`
+# home that has no auth.json.
 #
 # Running the probe against the RESOLVED table -- never this file -- is the
 # point of the stage: a resolver that drops a key the file declares fails
@@ -43,10 +48,13 @@
 # is skipped silently by the next `select_cell()`, converting a loud
 # configuration error into an invisible fallback to the next rung. Gates
 # model provider conditions a later iteration can route around; a `FAIL` is
-# operator configuration that no retry clears. `--check` exits non-zero
-# while any cell is `FAIL`, and a drain refuses to start on that verdict
-# rather than routing around it -- whereas a capacity-`GATED` cell is still
-# walked past.
+# operator configuration that no retry clears. That gate-free guarantee
+# covers the readiness failures above only -- the check's separate
+# opencode-model stage IS stateful: a declared model absent from
+# `opencode models` is recorded as a `model_unavailable` gate and reported
+# `GATED`. `--check` exits non-zero while any cell is `FAIL`, and a drain
+# refuses to start on that verdict rather than routing around it -- whereas
+# a capacity-`GATED` cell is still walked past.
 #
 # The check is environment-sensitive: the same file can report `ok` in one
 # shell and `FAIL` in another. For a claude `api` cell, the variable named
