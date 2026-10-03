@@ -12,7 +12,7 @@
 
 ## 2. Pin the verified PEP 758 executable baseline
 
-- [ ] 2.1 Replace only the first-line `#!/usr/bin/env python3` shebang with
+- [x] 2.1 Replace only the first-line `#!/usr/bin/env python3` shebang with
       `#!/usr/bin/env python3.14` in the 38 verified executable PEP 758 files, preserving every
       body line and each Git executable mode: `hooks/suggest_next_step.py`,
       `scripts/ci/ruff_pinned.py`, `src/worktrail/drain/drain.py`,
