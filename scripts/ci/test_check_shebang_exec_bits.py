@@ -8,6 +8,13 @@ import pytest
 
 SCRIPT = Path(__file__).with_name("check_shebang_exec_bits.py")
 
+# An executable file whose generic shebang cannot parse its own body: PEP 758
+# lets the handler drop its parentheses, which only Python 3.14+ accepts.
+_PEP758_BODY = (
+    "#!/usr/bin/env python3\ntry:\n    pass\nexcept ValueError, TypeError:\n    pass\n"
+)
+_PEP758_BODY_PINNED = _PEP758_BODY.replace("env python3\n", "env python3.14\n")
+
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -106,6 +113,120 @@ def test_the_index_wins_over_an_uncommitted_edit(repo: Path) -> None:
     result = _run(repo)
     assert result.returncode == 1
     assert "EXE001" in result.stderr
+
+
+def test_generic_shebang_with_pep758_handler_is_rejected(repo: Path) -> None:
+    """`python3` may resolve to an older interpreter, and this handler only
+    parses on 3.14; the diagnostic must name the pin that fixes it."""
+    _add(repo, "pkg/mod.py", _PEP758_BODY, executable=True)
+    result = _run(repo)
+    assert result.returncode == 1
+    assert "pkg/mod.py: PEP 758" in result.stderr
+    assert "python3.14" in result.stderr
+
+
+def test_python314_shebang_with_pep758_handler_passes(repo: Path) -> None:
+    """The compliant control: same body, interpreter pinned."""
+    _add(repo, "pkg/mod.py", _PEP758_BODY_PINNED, executable=True)
+    assert _run(repo).returncode == 0
+
+
+def test_generic_shebang_without_pep758_syntax_passes(repo: Path) -> None:
+    """The policy is narrow: a generic shebang alone is not a violation."""
+    _add(repo, "a.py", "#!/usr/bin/env python3\nx = 1\n", executable=True)
+    assert _run(repo).returncode == 0
+
+
+def test_parenthesized_multi_except_is_not_a_pep758_violation(repo: Path) -> None:
+    """`except (A, B):` parses on every supported python3, so the shebang may
+    stay generic; only the PEP 758 spelling is the mismatch."""
+    parenthesized = _PEP758_BODY.replace(
+        "except ValueError, TypeError:", "except (ValueError, TypeError):"
+    )
+    _add(repo, "a.py", parenthesized, executable=True)
+    assert _run(repo).returncode == 0
+
+
+def test_pep758_lookalikes_in_comments_and_strings_are_not_violations(
+    repo: Path,
+) -> None:
+    """Detection parses the source, so the text is only a hazard in real code."""
+    body = (
+        "#!/usr/bin/env python3\n"
+        "# except ValueError, TypeError:\n"
+        'NOTE = "except OSError, ValueError:"\n'
+        "x = 1\n"
+    )
+    _add(repo, "a.py", body, executable=True)
+    assert _run(repo).returncode == 0
+
+
+def test_nested_pep758_handler_is_found(repo: Path) -> None:
+    body = (
+        "#!/usr/bin/env python3\n"
+        "def f():\n"
+        "    try:\n"
+        "        pass\n"
+        "    except OSError, ValueError:\n"
+        "        pass\n"
+    )
+    _add(repo, "a.py", body, executable=True)
+    result = _run(repo)
+    assert result.returncode == 1
+    assert "a.py: PEP 758" in result.stderr
+
+
+def test_every_pep758_violation_is_reported_not_just_the_first(repo: Path) -> None:
+    _add(repo, "a.py", _PEP758_BODY, executable=True)
+    _add(
+        repo,
+        "b.py",
+        _PEP758_BODY.replace("ValueError, TypeError", "OSError, ValueError"),
+        executable=True,
+    )
+    result = _run(repo)
+    assert result.returncode == 1
+    assert "a.py: PEP 758" in result.stderr
+    assert "b.py: PEP 758" in result.stderr
+    assert "2 file(s)" in result.stderr
+
+
+def test_pep758_and_exe_violations_are_reported_together(repo: Path) -> None:
+    """The new family does not replace the mode rules: both appear, counted once."""
+    _add(repo, "interp.py", _PEP758_BODY, executable=True)
+    _add(repo, "mode.py", "#!/usr/bin/env python3\nx = 1\n", executable=False)
+    result = _run(repo)
+    assert result.returncode == 1
+    assert "mode.py: EXE001" in result.stderr
+    assert "interp.py: PEP 758" in result.stderr
+    assert "2 file(s)" in result.stderr
+
+
+def test_pep758_rule_applies_only_to_executable_files(repo: Path) -> None:
+    """Direct execution is the hazard; a non-executable file is already EXE001
+    and gets that diagnostic instead of a second one."""
+    _add(repo, "a.py", _PEP758_BODY, executable=False)
+    result = _run(repo)
+    assert result.returncode == 1
+    assert "a.py: EXE001" in result.stderr
+    assert "a.py: PEP 758" not in result.stderr
+
+
+def test_pep758_check_reads_the_index_not_the_worktree(repo: Path) -> None:
+    """Fixing only the worktree must not mask what the index still ships."""
+    _add(repo, "a.py", _PEP758_BODY, executable=True)
+    (repo / "a.py").write_text(_PEP758_BODY_PINNED)  # worktree is compliant
+    result = _run(repo)
+    assert result.returncode == 1
+    assert "a.py: PEP 758" in result.stderr
+
+
+def test_a_worktree_only_pep758_edit_is_not_a_violation(repo: Path) -> None:
+    """The reverse direction: an uncommitted edit to the hazard is not what
+    ships, so it must not turn a compliant index red."""
+    _add(repo, "a.py", _PEP758_BODY_PINNED, executable=True)
+    (repo / "a.py").write_text(_PEP758_BODY)  # worktree carries the hazard
+    assert _run(repo).returncode == 0
 
 
 def test_not_a_git_repo_exits_two(tmp_path: Path) -> None:
