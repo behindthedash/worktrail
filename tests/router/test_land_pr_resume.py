@@ -248,7 +248,7 @@ class LandPrResumeTests(unittest.TestCase):
 
     def _assert_full_pipeline(self, runner: FakeRun) -> None:
         outcome, _spy, _preflight, commit_mock, push_mock = self._run(
-            runner, _run_preflight_and_labels=(None, ["go:risk-low"])
+            runner, _run_preflight_and_labels=(None, ["go:risk-low"], None)
         )
         commit_mock.assert_called_once()
         push_mock.assert_called_once()

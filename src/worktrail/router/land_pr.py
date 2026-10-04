@@ -31,9 +31,10 @@ itself is an uncommitted file until step 1 commits it):
    changed relative to `base_branch`, compile it in-process and require a
    fresh `.compile-ok` marker (PR #902's root cause: a stale/missing marker
    reached `gh pr create` undetected).
-3. `_run_preflight_and_labels` -- run the pre-PR gate in-process; labels are
-   read back from the pass marker so they are byte-identical to what the
-   PreToolUse hook will independently check.
+3. `_run_preflight_and_labels` -- run the pre-PR gate in-process, capturing
+   its stdout/stderr so a denial carries the gate's own failure text in
+   `LandOutcome.detail`; labels are read back from the pass marker so they
+   are byte-identical to what the PreToolUse hook will independently check.
 4. `_push` -- push the (now clean, gate-passed) branch.
 5. `open_or_update_pull_request` -- find or create the PR; ensure labels on
    an existing OPEN PR rather than re-creating it (idempotent re-invocation).
@@ -289,12 +290,40 @@ def render_pr_body(
     )
 
 
+def _append_git_failure_detail(
+    detail_out: list[str] | None,
+    subcommand: str,
+    result: subprocess.CompletedProcess[str],
+) -> None:
+    """Append `<subcommand> failed: <output>` to `detail_out` when the caller
+    supplied one, quoting the failing subcommand's stderr (falling back to
+    stdout) -- the composition `_push()` already uses for its own refusal
+    detail. A failed subcommand that printed nothing still contributes a
+    non-empty, cause-identifying detail, so all four `_commit_pending()`
+    refusal causes stay distinguishable in `LandOutcome.detail`."""
+    if detail_out is None:
+        return
+    output = (result.stderr or result.stdout or "").strip()
+    detail_out.append(f"{subcommand} failed: {output or '(no output)'}")
+
+
 def _commit_pending(
-    repo: Path, commit_message: str | None, runner: Runner
+    repo: Path,
+    commit_message: str | None,
+    runner: Runner,
+    detail_out: list[str] | None = None,
 ) -> str | None:
     """Commit a dirty tree, or refuse (`"dirty_tree"`) when no
     `commit_message` was supplied -- see module docstring step 1. Never
     touches a clean tree. Returns the refused-step name, or None on success.
+
+    All four refusal causes -- a failed `git status`, no `commit_message`
+    supplied, a failed `git add`, a failed `git commit` -- keep the one
+    documented `"dirty_tree"` step name and are told apart by the
+    cause-specific text appended to `detail_out` when the caller supplies one
+    (the same out-param `_push()` uses, so every existing caller/mock of this
+    signature keeps working unchanged); the three git failures quote the
+    failing subcommand's stderr, falling back to stdout.
 
     Fails closed on a `git status` failure (transient `index.lock`
     contention, unreadable index, ...), matching `_ensure_compile_markers`'s
@@ -304,16 +333,25 @@ def _commit_pending(
     exists to close)."""
     status = _git(repo, runner, "status", "--porcelain")
     if status.returncode != 0:
+        _append_git_failure_detail(detail_out, "git status --porcelain", status)
         return "dirty_tree"
     if not status.stdout.strip():
         return None
     if not commit_message:
+        if detail_out is not None:
+            detail_out.append(
+                "tree has uncommitted changes but no commit_message was "
+                "supplied -- pass one so the pipeline commits them before "
+                "pushing"
+            )
         return "dirty_tree"
     add = _git(repo, runner, "add", "-A")
     if add.returncode != 0:
+        _append_git_failure_detail(detail_out, "git add -A", add)
         return "dirty_tree"
     commit = _git(repo, runner, "commit", "-m", commit_message)
     if commit.returncode != 0:
+        _append_git_failure_detail(detail_out, "git commit -m", commit)
         return "dirty_tree"
     return None
 
@@ -379,6 +417,37 @@ def _ensure_compile_markers(
     return None, None
 
 
+def _preflight_main(argv: list[str]) -> tuple[int, str]:
+    """`preflight.main(argv)`, capturing whatever it printed to stdout and
+    stderr. Returns `(exit_code, detail)`.
+
+    `preflight.main()` can raise `SystemExit` rather than returning a code
+    (argparse reports an invalid `--risk` choice that way) -- caught here,
+    mirroring `_run_record_main`'s shape, so an invalid risk refuses cleanly
+    instead of escaping as an uncaught `SystemExit` into
+    `land_pr(LandRequest(...))`'s caller or `main()`'s exit-code/JSON
+    contract. A string `SystemExit` code is kept as the detail; otherwise the
+    detail is the captured stderr, falling back to the captured stdout when
+    stderr is empty. The gate writes the common denial reason to stderr, so a
+    stdout-only capture would lose it -- but a gate is free to write its
+    failure to stdout, and a denial must carry it either way."""
+    out = io.StringIO()
+    err = io.StringIO()
+    detail = ""
+    try:
+        with redirect_stdout(out), redirect_stderr(err):
+            exit_code = preflight.main(argv)
+    except SystemExit as exc:
+        if isinstance(exc.code, int):
+            exit_code = exc.code
+        elif exc.code:
+            exit_code = 1
+            detail = str(exc.code)
+        else:
+            exit_code = 0
+    return exit_code, detail or err.getvalue().strip() or out.getvalue().strip()
+
+
 def _run_preflight_and_labels(
     repo: Path,
     base_branch: str,
@@ -386,10 +455,12 @@ def _run_preflight_and_labels(
     gates: Sequence[str],
     route: str,
     run_path: str | None,
-) -> tuple[str | None, list[str]]:
+) -> tuple[str | None, list[str], str | None]:
     """Preflight gate + labels -- see module docstring step 3. Returns
-    `(refused_step, labels)`; labels are only meaningful when
-    `refused_step` is None.
+    `(refused_step, labels, detail)`, mirroring `_ensure_compile_markers`;
+    labels are only meaningful when `refused_step` is None, and `detail`
+    (None on success) carries the gate's own failure output on a refusal --
+    whether the gate wrote it to stdout or to stderr.
 
     A `preflight.main()` exit of 0 does not guarantee a marker was written --
     `preflight._run()` has a real success path where tree state can't be
@@ -405,14 +476,13 @@ def _run_preflight_and_labels(
     marker left on disk from an earlier preflight run in the same worktree
     (the normal condition after any prior run) is adopted verbatim -- the
     same stale-artifact shape step 2 already refuses for a stale *compile*
-    marker, left open here for the *preflight* one.
+    marker, left open here for the *preflight* one. A refusal at either
+    marker check carries its own cause-specific `detail`.
 
-    `preflight.main()`'s own argparse constrains `--risk` to a fixed choice
-    set and raises `SystemExit` on an invalid value -- caught here (mirroring
-    `_run_record_main`'s identical guard) so an out-of-range `risk` refuses
-    cleanly instead of escaping as an uncaught `SystemExit` into
-    `land_pr(LandRequest(...))`'s caller or `main()`'s exit-code/JSON
-    contract."""
+    The gate runs through `_preflight_main()`, whose in-process capture
+    covers both streams and a `SystemExit` (argparse's invalid-`--risk`
+    refusal) so the refusal detail is the gate's own output, never a bare
+    `null`."""
     argv = ["run", "--repo", str(repo), "--risk", risk, "--target-branch", base_branch]
     if gates:
         argv += ["--gates", ",".join(gates)]
@@ -420,20 +490,31 @@ def _run_preflight_and_labels(
         argv += ["--route", route]
     if run_path:
         argv += ["--run", run_path]
-    try:
-        exit_code = preflight.main(argv)
-    except SystemExit:
-        return "preflight", []
+    exit_code, detail = _preflight_main(argv)
     if exit_code != 0:
-        return "preflight", []
+        return "preflight", [], detail
     marker = preflight.read_marker(repo)
     if marker is None:
-        return "preflight", []
+        return (
+            "preflight",
+            [],
+            (
+                "preflight gate passed but wrote no readable pass marker; cannot "
+                "read back its labels"
+            ),
+        )
     state = preflight.tree_state(repo)
     if state is None or marker.get("state") != state:
-        return "preflight", []
+        return (
+            "preflight",
+            [],
+            (
+                f"preflight pass marker is stale: marker state "
+                f"{marker.get('state')!r} does not match current tree state {state!r}"
+            ),
+        )
     labels = list(marker.get("labels") or [])
-    return None, labels
+    return None, labels, None
 
 
 _GITHUB_SLUG_RE = re.compile(r"github\.com[:/]([^/\s]+/[^/\s]+?)(?:\.git)?/?$")
@@ -1451,15 +1532,20 @@ def land_pr(request: LandRequest) -> LandOutcome:
             "(resumed run); the gate ran before that push"
         )
     else:
-        refused = _commit_pending(repo, request.commit_message, runner)
+        commit_detail: list[str] = []
+        refused = _commit_pending(repo, request.commit_message, runner, commit_detail)
         if refused:
-            return LandOutcome(outcome="refused", refused_step=refused)
+            return LandOutcome(
+                outcome="refused",
+                refused_step=refused,
+                detail=commit_detail[0] if commit_detail else None,
+            )
 
         refused, detail = _ensure_compile_markers(repo, request.base_branch, runner)
         if refused:
             return LandOutcome(outcome="refused", refused_step=refused, detail=detail)
 
-        refused, labels = _run_preflight_and_labels(
+        refused, labels, detail = _run_preflight_and_labels(
             repo,
             request.base_branch,
             request.risk,
@@ -1468,7 +1554,7 @@ def land_pr(request: LandRequest) -> LandOutcome:
             request.run,
         )
         if refused:
-            return LandOutcome(outcome="refused", refused_step=refused)
+            return LandOutcome(outcome="refused", refused_step=refused, detail=detail)
 
         branch = _current_branch(repo, runner)
         if not branch:
