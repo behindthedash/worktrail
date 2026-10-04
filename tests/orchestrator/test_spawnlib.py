@@ -3225,13 +3225,93 @@ class BuildChildEnv(unittest.TestCase):
                 self.assertEqual(env["INJECTED"], "yes")
 
     def test_undeclared_profile_fails_loud(self):
+        """The populated-table case: the operator's own table is missing the
+        name, so the message names the routing file and the entry to add."""
         cell = _cell(pool="api", auth={"profile": "ghost"}, target="claude-deepseek")
-        for table in (None, {}, {"other": {"from": "/x", "keys": ["A"]}}):
+        with self.assertRaises(spawnlib.OperatorConfigError) as ctx:
+            spawnlib.build_child_env(
+                cell, {}, env_profiles={"other": {"from": "/x", "keys": ["A"]}}
+            )
+        message = str(ctx.exception)
+        self.assertIn("claude-deepseek", message)
+        self.assertIn("ghost", message)
+        self.assertIn("not declared in routing.env_profiles", message)
+        self.assertIn("-- add an", message)
+
+    def test_empty_resolved_table_blames_the_resolver_not_the_operator(self):
+        """The #1380 shape at the raise site: the table the cell was selected
+        from carries no env_profiles at all. The raise names the target, the
+        profile and the resolved source, attributes the fault to the table
+        (resolver/caller), and carries none of the operator-instruction
+        markers -- the table, not the routing file, dropped the profile."""
+        cell = _cell(pool="api", auth={"profile": "ghost"}, target="claude-deepseek")
+        for table in (None, {}):
             with self.subTest(table=table):
                 with self.assertRaises(spawnlib.OperatorConfigError) as ctx:
                     spawnlib.build_child_env(cell, {}, env_profiles=table)
-                self.assertIn("claude-deepseek", str(ctx.exception))
-                self.assertIn("ghost", str(ctx.exception))
+                message = str(ctx.exception)
+                self.assertIn("claude-deepseek", message)
+                self.assertIn("ghost", message)
+                self.assertIn("resolved from", message)
+                self.assertIn("resolver/caller", message)
+                self.assertNotIn("not declared in routing.env_profiles", message)
+                self.assertNotIn("-- add an", message)
+
+    def test_empty_table_notes_the_files_innocence_only_when_the_loader_declares_it(
+        self,
+    ):
+        """`declared_env_profiles` is the loader's view, consulted for this one
+        clause: it appears iff supplied AND declaring the name, so an operator
+        can tell a resolver drop from a genuine omission."""
+        cell = _cell(pool="api", auth={"profile": "deepseek"}, target="claude-deepseek")
+        declaring = {"deepseek": {"from": "/x", "keys": ["A"]}}
+        not_declaring = {"other": {"from": "/y", "keys": ["B"]}}
+        for label, kwargs, expected in (
+            ("declaring", {"declared_env_profiles": declaring}, True),
+            ("not declaring", {"declared_env_profiles": not_declaring}, False),
+            ("omitted", {}, False),
+        ):
+            with self.subTest(case=label):
+                with self.assertRaises(spawnlib.OperatorConfigError) as ctx:
+                    spawnlib.build_child_env(cell, {}, env_profiles={}, **kwargs)
+                message = str(ctx.exception)
+                self.assertEqual("does declare" in message, expected)
+                self.assertIn("resolver/caller", message)
+                self.assertNotIn("not declared in routing.env_profiles", message)
+                self.assertNotIn("-- add an", message)
+
+    def test_spawn_agent_threads_the_loaders_view_for_attribution(self):
+        """End to end through `spawn_agent`: the loader's policy declares the
+        profile while the resolved table has no `env_profiles` at all, so the
+        raise before launch carries the innocence clause. A regression here
+        means the loader's table never reached `build_child_env` and the
+        operator would be told to edit a file that declares the entry."""
+        profile = self._profile_file({"ANTHROPIC_AUTH_TOKEN": "sk-x"})
+        routing = _routing(
+            {
+                "claude-deepseek": _target(
+                    "claude", pool="api", api_opt_in=True, auth={"profile": "deepseek"}
+                )
+            },
+            {"t2-build": {"claude-deepseek": {"model": "sonnet", "effort": None}}},
+            default_tier="t2-build",
+        )
+        del routing["env_profiles"]  # the resolver dropped the key
+        policy = {"routing": {"env_profiles": {"deepseek": profile}}}
+        with (
+            patch.object(spawnlib, "load_policy", return_value=policy),
+            _patch_routing(routing),
+            patch.object(
+                spawnlib.subprocess,
+                "run",
+                side_effect=AssertionError("nothing may launch on this raise"),
+            ),
+            self.assertRaises(spawnlib.OperatorConfigError) as ctx,
+        ):
+            spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build")
+        message = str(ctx.exception)
+        self.assertIn("does declare", message)
+        self.assertIn("resolver/caller", message)
 
     def test_auth_env_and_auth_profile_together_fail_loud(self):
         profile = self._profile_file({"INJECTED": "yes"})

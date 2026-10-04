@@ -205,6 +205,12 @@ class TestUnreadyClasses(ReadinessTestCase):
         message = self._only_problem(routing, target="claude-api", base_env={})
         self.assertIn("deepseek", message)
         self.assertIn("env_profiles", message)
+        # An empty/absent resolved table is the resolver/caller's fault, not
+        # the operator's: the probe judges the table it was handed and never
+        # claims the file does not declare the entry.
+        self.assertIn("resolver/caller", message)
+        self.assertNotIn("-- add an", message)
+        self.assertNotIn("not declared in routing.env_profiles", message)
 
     def test_profile_key_dropped_by_the_resolver_is_reported(self):
         """The #1380 shape: the routing file declares `env_profiles` and the
@@ -229,6 +235,13 @@ class TestUnreadyClasses(ReadinessTestCase):
         message = self._only_problem(routing, target="claude-api", base_env={})
         self.assertIn("deepseek", message)
         self.assertIn("env_profiles", message)
+        # Provenance markers: the failure is attributed to the resolved
+        # table's emptiness, and the probe -- which opens no file and is
+        # never given the loader's table -- must not claim to know whether
+        # the file declares the profile.
+        self.assertIn("resolver/caller", message)
+        self.assertNotIn("-- add an", message)
+        self.assertNotIn("not declared in routing.env_profiles", message)
 
     def test_profile_source_file_missing(self):
         routing = _routing(
