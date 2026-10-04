@@ -71,7 +71,7 @@
 
 ## 4. Verification
 
-- [ ] 4.1 [e2e] Run `PYTHONPATH=src pytest -q` and
+- [x] 4.1 [e2e] Run `PYTHONPATH=src pytest -q` and
       `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check` (the golden
       record/replay regression) and confirm both pass, then run
       `openspec validate same-repo-run-concurrency-contract --strict` and
