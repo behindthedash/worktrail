@@ -64,9 +64,11 @@ finish PATH --status completed_pr_open [--pr URL] [--merge-result ...]
           -> stamp one pending-user-decision lifecycle hop into the record's
              `pending_decisions` list (idempotent per event+decision-id; see
              DECISION_EVENTS / workqueue/decisions.py's envelope contract)
-  active-conflicts --dir DIR --repo REPO --specification SPEC [--exclude PATH]
-         -> read-only scan for other non-terminal runs on the same
-            repo+specification; prints a JSON array (see contracts/active-conflicts-cli.md)
+  active-conflicts --dir DIR --repo REPO [--specification SPEC] [--exclude PATH]
+         -> read-only scan for other non-terminal runs on the same repo;
+            --specification restricts it to that specification, omitting it
+            scans repo-wide (each entry names its own specification); prints
+            a JSON array (see contracts/active-conflicts-cli.md)
   claim  RUN_PATH --specification SPEC [--remote] [--remote-ttl-seconds N]
          -> atomically claim repo+specification for the run at RUN_PATH before
             committing to implement it. Closes the TOCTOU gap in the read-only
@@ -1348,11 +1350,17 @@ def _is_stale(record: dict[str, Any], repo_dir: Path, base_branch: str) -> bool:
 
 
 def _active_conflicts(
-    repo_dir: Path, repo_root: Path, specification: str, exclude: Path | None
+    repo_dir: Path, repo_root: Path, specification: str | None, exclude: Path | None
 ) -> dict[str, list[Any]]:
-    """Other non-terminal run records under `repo_dir` targeting `specification`,
-    partitioned into `{"live": [...], "stale": [...], "warnings": [...]}` via
-    `_is_stale()`.
+    """Non-terminal run records under `repo_dir` faithfully partitioned into
+    `{"live": [...], "stale": [...], "warnings": [...]}` via `_is_stale()`.
+
+    With `specification` set, only records targeting that exact specification
+    are classified. With `specification=None` the scan is repo-wide: every
+    non-terminal record is classified whatever its own specification, and each
+    entry's `specification` names that record's own value (None when the
+    record never got one) -- how a caller detects concurrent work on the same
+    repo under a different specification.
 
     `repo_root` is the actual git repository (for `_is_stale()`'s `git cat-file`
     check), distinct from `repo_dir` (the run-records directory for this repo).
@@ -1379,7 +1387,10 @@ def _active_conflicts(
                 continue
             if record.get("final_status") is not None:
                 continue
-            if record.get("specification") != specification:
+            if (
+                specification is not None
+                and record.get("specification") != specification
+            ):
                 continue
             entry = {
                 "run_id": record.get("run_id"),
@@ -1387,6 +1398,7 @@ def _active_conflicts(
                 "started_at": record.get("started_at"),
                 "request_summary": record.get("request_summary"),
                 "agent": record.get("agent"),
+                "specification": record.get("specification"),
             }
             base_branch = record.get("base_branch")
             is_stale = bool(base_branch) and _is_stale(record, repo_root, base_branch)
@@ -1443,7 +1455,12 @@ def _file_overlap_conflicts(
 
 
 def cmd_active_conflicts(args: argparse.Namespace) -> int:
-    """Read-only scan for other non-terminal runs on the same repo+specification.
+    """Read-only scan for other non-terminal runs on the same repo.
+
+    With `--specification SPEC` the scan is restricted to that specification;
+    with it omitted the scan is repo-wide — every non-terminal record for the
+    repo is classified, each entry naming its own `specification` (null when
+    the record never got one).
 
     Prints the `{"live": [...], "stale": [...]}` partition from
     `_active_conflicts()`.
@@ -2518,7 +2535,13 @@ def main(argv=None) -> int:
     s = sub.add_parser("active-conflicts")
     s.add_argument("--dir", required=True)
     s.add_argument("--repo", required=True)
-    s.add_argument("--specification", required=True)
+    s.add_argument(
+        "--specification",
+        default=None,
+        help="restrict the scan to records targeting this exact specification; "
+        "omit for a repo-wide scan of every non-terminal record (each entry "
+        "names its own specification, null when the record never got one)",
+    )
     s.add_argument("--exclude", default=None)
     s.set_defaults(func=cmd_active_conflicts)
 

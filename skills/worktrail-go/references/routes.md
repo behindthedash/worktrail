@@ -99,7 +99,8 @@ criteria.
 
 **After spec-to-tasks and its scope-check gate pass (always):** run
 `worktrail-land-pr --repo "$WT" --base "$BASE" --run "$RUN" --route C --risk
-low --checkpoint` so the spec artifact is durable across sessions. This pushes
+low --checkpoint --commit-message "chore($SPEC_ID): add spec artifacts"` so the
+spec artifact is durable across sessions. This pushes
 `spec/$SPEC_ID`, opens the docs-only PR (→ `$BASE`), and CI-watches it to a
 terminal outcome — merged, or `completed_pr_open` with auto-merge armed —
 before asking the implementation-intent question below. The scope-check

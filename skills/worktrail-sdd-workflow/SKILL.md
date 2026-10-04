@@ -188,13 +188,15 @@ earlier `blocked` or mis-phrased entry.
 pipeline from the worktree root; it atomically handles commit, compile-marker
 verification, pre-PR gate, push, PR open/update, CI watch to a terminal
 outcome, and run-record finish. Requires `--repo`, `--base`, `--title`,
-`--summary` or `--summary-file`, `--route`, `--risk`, optional `--gates` and
-`--commit-message`, and `--json`:
+`--summary` or `--summary-file`, `--route`, `--risk`, `--commit-message`
+whenever the tree is dirty — the normal dispatch case, since a dispatch's work
+is uncommitted; only a clean tree may omit it — optional `--gates`, and
+`--json`:
 
 ```bash
 worktrail-land-pr --repo "$PWD" --base "$BASE" --run "$RUN" --title "$TITLE" \
   --summary-file /path/to/pr/body --route "$ROUTE" --risk "$RISK_LEVEL" \
-  --gates "$GATES" --json
+  --commit-message "$COMMIT_MESSAGE" --gates "$GATES" --json
 ```
 
 | Exit code | Outcome | State |

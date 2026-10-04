@@ -182,7 +182,16 @@ _FM_RE = re.compile(r"^---\r?\n(.*?)\n---\r?\n", re.DOTALL)
 # ("disproven", "re-verified", "no longer flags", ...) rather than merely
 # described ("duplicate of X", "out of scope") -- the latter carry no
 # re-verification claim and are unaffected by `_reverification_claim_missing_evidence`.
+#
+# A cue inside a negation asserts the OPPOSITE of a re-verification result, so it
+# must not count. queue_triage hands the evaluator's raw evidence prose to
+# `done(..., note=...)`, and that prose reports a *refuted* premise as
+# "Not already fixed: <command> is empty" -- reading that as a claim rolled the
+# brief back to `queue/` after its PR had already merged (brief 20261002-221651,
+# observed live 2026-10-02 on brief 20261002-203443). One fixed-width lookbehind
+# per negation word: `re` has no variable-width lookbehind.
 _REVERIFICATION_CLAIM_RE = re.compile(
+    r"(?<!\bnot )(?<!\bnever )(?<!\bno )"
     r"\b(disproven|re-?verified|no longer (?:flags?|triggers?|applies)|"
     r"corrected (?:detector|check|script)|already fixed)\b",
     re.IGNORECASE,
