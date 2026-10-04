@@ -317,6 +317,28 @@ ROUTE_SIGNALS: dict[str, list[tuple[re.Pattern, int, str]]] = {
 # do not widen to other J labels without their own confirmed false-positive.
 _MENTION_ONLY_J_LABELS = {"routing-logic", "classify-py"}
 
+# A J score built ENTIRELY from these two labels, whose only occurrence is a
+# consumer by-phrase, is the incidental-consumer-mention shape -- both fire on
+# prose that merely NAMES the go front door as a consumer of the result under
+# discussion (live incident 2026-10-03, brief 20261003-204443: the bare clause
+# "the machine-readable surface consumed programmatically by drain,
+# queue-triage, and the go front door" scored J=7 at high confidence with
+# every other route at 0). Scoped to only these two evidence-confirmed labels
+# -- do not widen to other J labels without their own confirmed false-positive.
+_CONSUMER_MENTION_J_LABELS = {"go-skill", "front-door"}
+
+# "…consumed/used/read by <list> and the go front door": the front door appears
+# as the agent of a consumption cue's by-phrase -- i.e. it is named as a
+# CONSUMER of the thing under discussion, which cannot be the change target.
+# The by-phrase frame is what separates this shape from a target mention ("add
+# a guard to the go front door" has the phrase, but no consumption cue + "by"
+# before it), so no further citation carve-out is needed.
+_CONSUMER_BY_PHRASE_RE = re.compile(
+    r"\b(?:consum(?:e|ed|es|ing)|use[sd]?|read|reads|called|callers?|invoked"
+    r"|drives?|driven)\b[^.;]{0,100}\bby\b[^.;]{0,160}?\b(?:go\s+)?front[- ]?door\b",
+    re.IGNORECASE,
+)
+
 # Strong signal that the actual change target is CI/branch-protection config,
 # not this repo's own routing/workflow machinery.
 _CI_CONFIG_RE = re.compile(
@@ -680,6 +702,27 @@ def classify(
             f"J damped: signals {hits['J']} are filename/path mentions only, "
             "alongside a strong CI/config signal -- treated as cited "
             "evidence, not the change target"
+        )
+        scores["J"] = 0
+        hits["J"] = []
+
+    # A J score built entirely from go-skill/front-door hits whose only
+    # occurrence is a consumer by-phrase ("...consumed programmatically by
+    # drain, queue-triage, and the go front door") is the
+    # incidental-consumer-mention shape: the front door is named as a consumer
+    # of the result under discussion, not as the change target. Damp it so the
+    # runner-up route (or the brief's own recommended-route, via the override
+    # below) wins instead.
+    if (
+        scores["J"] > 0
+        and hits["J"]
+        and set(hits["J"]) <= _CONSUMER_MENTION_J_LABELS
+        and _CONSUMER_BY_PHRASE_RE.search(text)
+    ):
+        reason_parts.append(
+            f"J damped: signals {hits['J']} name the go front door only as a "
+            "consumer of the thing under discussion -- treated as an "
+            "incidental mention, not the change target"
         )
         scores["J"] = 0
         hits["J"] = []

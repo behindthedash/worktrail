@@ -239,6 +239,16 @@
       "id": "classify-py-self-reference-quoting-ci-config-as-example-still-wins",
       "request": "A defect report about classify.py's routing logic said it wrongly demotes true positives; it quotes another brief's .github/rulesets promotion as a worked example.",
       "expect": {"route": "J", "confidence": "medium"}
+    },
+    {
+      "id": "consumer-noun-mention-of-front-door-is-not-workflow-evolution",
+      "request": "Fix the bug where the refusal detail is missing from the machine-readable surface consumed programmatically by drain, queue-triage, and the go front door",
+      "expect": {"route": "F", "confidence": "high"}
+    },
+    {
+      "id": "front-door-as-change-target-is-still-workflow-evolution",
+      "request": "Add a guard to the go front door so it stops misrouting consumer mentions",
+      "expect": {"route": "J", "confidence": "high"}
     }
   ]
 }

@@ -81,6 +81,8 @@ triggers:
     - resolve_env_profile
     - env_profile.py
     - resolve_routing
+    - _CONSUMER_MENTION_J_LABELS
+    - _CONSUMER_BY_PHRASE_RE
 ---
 
 You are working on **worktrail's GO v2 front door**: loading repo policy, classifying free-text
@@ -218,6 +220,18 @@ agents or writes task files — that is `orchestrator/`'s job.
   CI/config phrase is quoted evidence, not the report's own change target, so it must not
   trigger the damp. Scoped narrowly to these two evidence-confirmed labels — do not widen
   `_MENTION_ONLY_J_LABELS` without its own confirmed false-positive.
+- **A J score built entirely from `_CONSUMER_MENTION_J_LABELS` (`go-skill`, `front-door`) whose
+  only occurrence is a consumer by-phrase (`_CONSUMER_BY_PHRASE_RE`: a consumption cue —
+  `consumed`/`used`/`read`/`called`/`drives`/… — followed by `by` and then the front door) is
+  also damped to zero** — that shape names the front door as a *consumer* of the result under
+  discussion, which cannot be the change target (live incident 2026-10-03, brief 20261003-204443:
+  the bare clause "the machine-readable surface consumed programmatically by drain, queue-triage,
+  and the go front door" scored J=7 at high confidence with every other route at 0). The by-phrase
+  frame is what separates the two shapes, so no citation carve-out is needed: "add a guard to the
+  go front door so it stops misrouting consumer mentions" still routes J. Damping is scoped to a J
+  score built *entirely* from these two labels — a request that also carries another J signal
+  (e.g. `cassette`) still wins on it. Do not widen `_CONSUMER_MENTION_J_LABELS` without its own
+  confirmed false-positive.
 - **The parser translates into the executor's vocabulary, not the user's.** `worktrail-sdd-workflow`
   still speaks `handoff:<id>`, `route:<X>`, and the v1 intent words (`V1_INTENTS`); so `spec
   explore` yields `intent: brainstorm`, and `spec fix` yields `route: F` (the executor has no `fix`
@@ -508,8 +522,9 @@ agents or writes task files — that is `orchestrator/`'s job.
   `work_queue.resolve()` so nothing here becomes a second implementation
 - `router/classify.py` — `classify_risk()` and the `RISK_SIGNALS` table (the `authz` pattern's
   `(?<![-@])` compound-token guard lives here, now inside the extracted
-  `_classify_risk_by_keyword()`); also `classify()`'s J-damping guard
-  (`_MENTION_ONLY_J_LABELS`, `_CI_CONFIG_RE`, `_CITED_AS_EXAMPLE_RE`) and the default-off
+  `_classify_risk_by_keyword()`); also `classify()`'s two J-damping guards
+  (`_MENTION_ONLY_J_LABELS`, `_CI_CONFIG_RE`, `_CITED_AS_EXAMPLE_RE`; and
+  `_CONSUMER_MENTION_J_LABELS`, `_CONSUMER_BY_PHRASE_RE`) and the default-off
   `risk_judgment_enabled` flag that `main()` is the only caller to enable
 - `router/typesafe.py` — the one client both judgment backends share: `API_URL`/`MODEL`/
   `API_KEY_ENV`/`TIMEOUT_S`, `is_configured()`, `post(state, questions)`, the strict `noul()`

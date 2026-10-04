@@ -205,6 +205,8 @@
           "resolve_env_profile",
           "env_profile.py",
           "resolve_routing",
+          "_CONSUMER_MENTION_J_LABELS",
+          "_CONSUMER_BY_PHRASE_RE",
           "router",
           "front",
           "door",

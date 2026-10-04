@@ -251,6 +251,50 @@ class TestOverridesAndSignals(unittest.TestCase):
         )
         self.assertEqual(r["route"], "J")
 
+    def test_front_door_consumer_mention_does_not_win_workflow_evolution(self):
+        # Live incident 2026-10-03 (brief 20261003-204443, filed against brief
+        # 20261003-163000's misroute): the go front door is named only as a
+        # CONSUMER of the machine-readable surface under discussion, yet the
+        # go-skill/front-door signals scored J=7 at high confidence with every
+        # other route at 0. J must not win.
+        r = classify(
+            "Fix the bug where the refusal detail is missing from the "
+            "machine-readable surface consumed programmatically by drain, "
+            "queue-triage, and the go front door"
+        )
+        self.assertNotEqual(r["route"], "J")
+        self.assertEqual(r["route"], "F")
+
+    def test_bare_front_door_consumer_clause_is_no_signal_default(self):
+        # The incidental clause alone (no other route evidence) must not score
+        # J: with it damped the classifier falls through to the no-signal
+        # dashboard default at low confidence, which is what lets the brief's
+        # own recommended-route override be consulted instead.
+        r = classify(
+            "the machine-readable surface consumed programmatically by "
+            "drain, queue-triage, and the go front door"
+        )
+        self.assertNotEqual(r["route"], "J")
+        self.assertEqual(r["route_source"], "no-signal-default")
+
+    def test_front_door_target_mention_still_wins_workflow_evolution(self):
+        # The damping only fires on the consumer by-phrase -- a genuine
+        # workflow-evolution request whose target IS the front door still wins.
+        r = classify(
+            "Add a guard to the go front door so it stops misrouting consumer mentions"
+        )
+        self.assertEqual(r["route"], "J")
+
+    def test_front_door_consumer_mention_with_other_j_signal_still_wins(self):
+        # Scoped like the mention-only damping: only a J score built ENTIRELY
+        # from go-skill/front-door is dampable. A request that also cites a
+        # cassette still wins on its other, non-consumer J signal.
+        r = classify(
+            "The cassette is consumed by the go front door and drain, and "
+            "the refusal detail never reaches it"
+        )
+        self.assertEqual(r["route"], "J")
+
     def test_ci_repair_forces_continue_route(self):
         r = classify("the bug is that CI is broken on my branch")
         self.assertEqual(r["route"], "E")
