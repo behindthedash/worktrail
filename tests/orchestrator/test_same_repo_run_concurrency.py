@@ -334,6 +334,13 @@ class SameRepoConcurrencyEndToEnd(_IsolatedHomeCase, _LifecycleCase):
 
             stdout = out.getvalue()
             self.assertIn("WARN same-repo concurrency:", stdout)
+            # The scan must run immediately after load_spec() -- before
+            # apply_run_plan() (the first thing that prints the plan's
+            # `parallelism:` summary line) does any planning work.
+            self.assertLess(
+                stdout.index("WARN same-repo concurrency:"),
+                stdout.index("parallelism:"),
+            )
             self.assertIn(foreign["run_id"], stdout)
             self.assertIn(foreign["path"], stdout)
             self.assertIn("other-spec", stdout)

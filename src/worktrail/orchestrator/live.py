@@ -5821,7 +5821,10 @@ def _pipeline_scheduler(
     gitnexus_capability = gitnexus_check(repo)
     role_models = _effective_role_models(agent, role_models)
     spec_id, tasks = taskformats.load_spec(str(repo / spec_rel))
-    tasks = apply_run_plan(repo, spec_rel, spec_id, tasks)
+    # Detect other live same-repo runs before apply_run_plan(): an unscoped
+    # OpenSpec change compiles its plan here (possibly model-backed), and a
+    # launch that is going to be width-capped should report the concurrent
+    # run before doing that work, not after.
     same_repo_live = _same_repo_live_runs(repo, spec_id)
     if same_repo_live:
         print(
@@ -5833,6 +5836,7 @@ def _pipeline_scheduler(
                 f"{_ts()} WARN same-repo concurrency: run {entry['run_id']} "
                 f"(specification {entry['specification']}) -- {entry['path']}"
             )
+    tasks = apply_run_plan(repo, spec_rel, spec_id, tasks)
     max_workers = _resolve_max_workers(
         repo, tasks, max_workers, same_repo_live=len(same_repo_live)
     )
