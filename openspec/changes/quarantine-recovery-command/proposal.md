@@ -100,3 +100,13 @@ Triage each group: repair and resume it, or discard it if the work already lande
 worktrail-selfcheck-fleet-sweep: quarantine worktrail built-artifact-packaging-parity-gate
 
 Journal still quarantined (read via python3.14 json.load of $HOME/projects/worktrail-worktrees/run-built-artifact-packaging-parity-gate.json: tail-3.5 + tail-4.2 both state=QUARANTINED reason=merge_conflict, mtime 2026-08-30). OpenSpec change openspec/changes/quarantine-recovery-command is still active (not in openspec/changes/archive/) and its proposal.md already carries a '## Folded from 20261003-191621-quarantine-journal-never-cleared' section naming brief 20260930-112541, with tasks.md 4.1 listing ../run-built-artifact-packaging-parity-gate.json as a target file. The branch-repair+journal-clear command is exactly the triage path this brief asks to run.
+
+## Folded from 20260930-112546-worktrail-has-orchestrator-groups-stuck
+
+worktrail has orchestrator groups stuck in QUARANTINED for spec `openspec-validate-ci-gate` (worktrail-quarantine-selfcheck): base/dropped (task_failure, 38d); tail-4.1 (merge_conflict, 38d)
+
+Triage each group: repair and resume it, or discard it if the work already landed or is no longer wanted.
+
+worktrail-selfcheck-fleet-sweep: quarantine worktrail openspec-validate-ci-gate
+
+Journal run-openspec-validate-ci-gate.json still holds base/dropped (task_failure) and tail-4.1 (merge_conflict) QUARANTINED (mtime 2026-08-22), plus tail-2.2 OPEN. Change openspec/changes/quarantine-recovery-command is active and its proposal.md folded section names brief 20260930-112546 directly; tasks.md 4.1 lists ../run-openspec-validate-ci-gate.json. The other listed candidate (tail-dispatch-require-merged-deps) is a poor fit — it gates tail dispatch on declared deps, which is unrelated to clearing stuck journal records.
