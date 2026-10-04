@@ -1,6 +1,6 @@
 ## 1. Repo-wide active-conflicts scan
 
-- [ ] 1.1 In `src/worktrail/router/run_record.py`: `_active_conflicts()` gains an optional
+- [x] 1.1 In `src/worktrail/router/run_record.py`: `_active_conflicts()` gains an optional
       specification (`specification: str | None`); when it is None, every non-terminal record
       under the repo's run-record directory is classified, whatever its `specification`, and
       every entry in both partitions carries the record's own `specification` value (None when
@@ -23,7 +23,7 @@
 
 ## 2. Launch-time same-repo detection and width back-pressure
 
-- [ ] 2.1 In `src/worktrail/orchestrator/live.py`: add a `_same_repo_live_runs(repo, spec_id)`
+- [x] 2.1 In `src/worktrail/orchestrator/live.py`: add a `_same_repo_live_runs(repo, spec_id)`
       helper returning the repo's live run-record entries for specifications other than
       `spec_id` -- resolve the records root the way the pipeline's other consumers do (the
       policy's `run_record_dir` when set, else `worktrail_home()/runs`, via `load_policy()`),
