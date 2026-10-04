@@ -43,7 +43,7 @@
 
 ## 3. Verification
 
-- [ ] 3.1 [depends: 1.1, 2.1] [e2e] Run `python3 scripts/ci/check_shebang_exec_bits.py`, its focused
+- [x] 3.1 [depends: 1.1, 2.1] [e2e] Run `python3 scripts/ci/check_shebang_exec_bits.py`, its focused
       test module, the focused tests for each affected subsystem, `pytest -q`, the orchestrator
       golden regression, pinned Ruff lint and format checks, and `python3 -m build`. Confirm the
       checker reports neither an EXE001/EXE002 violation nor a generic-`python3` PEP 758 violation.
