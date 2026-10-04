@@ -152,6 +152,30 @@ def test_fable_limit_wording_also_classifies_as_billing():
     )
 
 
+def test_insufficient_balance_wording_classifies_as_billing():
+    # Live reproduction 2026-10-03 (worktrail-drain, drain-logs/
+    # 2026-10-03T09-17-01Z.json, iteration 1): the claude-deepseek API cell
+    # answered "API Error: 402 Insufficient Balance", which matched no
+    # billing token -- the unrelated "the rest of the command" wording in the
+    # accompanying stderr landed it in "startup" instead (the bare line alone
+    # classified as "transport"), so two 16s fast-fail iterations tripped the
+    # drain's circuit breaker instead of gating the provider as a capacity
+    # issue.
+    stdout = (
+        "API Error: 402 Insufficient Balance "
+        "(request_id: fb85b25d-6bc3-43de-9efe-c0be0b3ade87)"
+    )
+    stderr = (
+        "Permission allow rule (../../../.claude/settings.json): Bash(claude * "
+        "--permission-mode bypassPermissions *) has a wildcard before the rest "
+        "of the command, so it also matches any options inserted at that "
+        "position and approves them without a prompt.\n"
+        '[claude-code:unrecognized_model] {"model":"deepseek-flash[1m]",'
+        '"query_source":"sdk"}'
+    )
+    assert agent_capacity.classify_failure(1, stdout, stderr) == "billing"
+
+
 def test_parse_explicit_reset_extracts_codex_notice():
     stdout = (
         "ERROR: You've hit your usage limit. Upgrade to Pro "

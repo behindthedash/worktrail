@@ -380,6 +380,13 @@ def classify_failure(returncode: int, stdout: str, stderr: str) -> str:
     # parse_explicit_reset returns nothing and the gate falls back to the
     # generic "billing" cooldown (DEFAULT_COOLDOWNS["billing"]) instead of a
     # provider-derived reset.
+    # "insufficient balance" covers the DeepSeek-compatible API cell's account-
+    # exhaustion wording (confirmed live 2026-10-03: "API Error: 402
+    # Insufficient Balance" matched no billing token -- the unrelated "the rest
+    # of the command" wording in the same capture landed it in "startup"
+    # instead -- so two 16s fast-fail iterations tripped worktrail-drain's
+    # circuit breaker instead of gating the cell). The notice carries no reset
+    # timestamp, so the gate falls back to the generic "billing" cooldown.
     if any(
         token in text
         for token in (
@@ -391,6 +398,7 @@ def classify_failure(returncode: int, stdout: str, stderr: str) -> str:
             "weekly limit",
             "fable limit",
             "reached your",
+            "insufficient balance",
         )
     ):
         return "billing"

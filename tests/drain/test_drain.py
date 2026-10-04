@@ -757,6 +757,7 @@ def test_select_available_agent_picks_agent_back_up_after_retry_after_expires():
         "claude",
         None,
         None,
+        None,
     )
 
 
@@ -766,12 +767,22 @@ def test_select_available_agent_picks_agent_back_up_after_retry_after_expires():
 
 def test_select_available_agent_prefers_primary_when_ungated():
     cache = {"providers": {"claude": {"status": "gated"}}}
-    assert select_available_agent(cache, ["codex", "claude"]) == ("codex", None, None)
+    assert select_available_agent(cache, ["codex", "claude"]) == (
+        "codex",
+        None,
+        None,
+        None,
+    )
 
 
 def test_select_available_agent_skips_gated_primary_for_fallback():
     cache = {"providers": {"codex": {"status": "unavailable"}}}
-    assert select_available_agent(cache, ["codex", "claude"]) == ("claude", None, None)
+    assert select_available_agent(cache, ["codex", "claude"]) == (
+        "claude",
+        None,
+        None,
+        None,
+    )
 
 
 def test_select_available_agent_none_when_every_candidate_gated():
@@ -785,7 +796,12 @@ def test_select_available_agent_none_when_every_candidate_gated():
 
 
 def test_select_available_agent_never_tried_counts_as_available():
-    assert select_available_agent({}, ["codex", "claude"]) == ("codex", None, None)
+    assert select_available_agent({}, ["codex", "claude"]) == (
+        "codex",
+        None,
+        None,
+        None,
+    )
 
 
 def test_select_available_agent_single_candidate_no_fallback_configured():
@@ -828,14 +844,14 @@ def test_select_available_agent_returns_the_cells_effort_too():
     cache = {}
     assert select_available_agent(
         cache, ["claude"], routing=_ROUTING_TWO_CLAUDE_MODELS
-    ) == ("claude", "sonnet", "medium")
+    ) == ("claude", "sonnet", "medium", "claude-sub")
 
 
 def test_select_available_agent_per_target_gate_falls_through_same_tier_row():
     cache = {"providers": {"claude-sub:sonnet": {"status": "gated"}}}
     assert select_available_agent(
         cache, ["claude", "codex"], routing=_ROUTING_TWO_CLAUDE_MODELS
-    ) == ("codex", "gpt-5", None)
+    ) == ("codex", "gpt-5", None, "codex-sub")
 
 
 def test_select_available_agent_never_consults_a_row_other_than_default_tier():
@@ -1674,6 +1690,44 @@ def test_drain_routing_all_configured_models_gated_still_capacity_gates(
     summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
     assert len(summary["iterations"]) == 1
     assert summary["stopped"].startswith("capacity_gated")
+
+
+def test_drain_routing_blocked_gate_is_keyed_by_target_and_fails_over(
+    tmp_path, monkeypatch
+):
+    """Live reproduction 2026-10-03 (worktrail-drain, drain-logs/
+    2026-10-03T09-17-01Z.json, transcript 20261003T092437Z-iter1-claude.log):
+    with routing configured, a blocked iteration's gate was written under the
+    bare harness name while select_available_agent()'s own per-cell check
+    queries provider_key(target, model) -- the gate was invisible, the same
+    exhausted cell was re-selected, and the second blocked iteration advanced
+    to the circuit breaker instead of failing over to the next target and
+    stopping capacity_gated (the shape behind the bridge-health-guard
+    drain_circuit_breaker findings)."""
+    fake = FakeQueue([2, 2, 2, 2, 0])
+    install_fake_queue(monkeypatch, fake)
+    monkeypatch.setattr(
+        drain, "machine_wide_routing", lambda: _ROUTING_TWO_CLAUDE_MODELS
+    )
+    config = make_config(tmp_path, agent="claude", fallback_agents=["codex"])
+    seen_models = []
+
+    def spawner(cmd, timeout):
+        seen_models.append(cmd[cmd.index("--model") + 1] if "--model" in cmd else None)
+        return SpawnOutcome(1, "API Error: 402 Insufficient Balance", "")
+
+    summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
+
+    # Failover: each target in the row ran once -- the blocked cell's gate
+    # sent the next iteration to the next target instead of re-picking the
+    # same exhausted cell.
+    assert seen_models == ["sonnet", "gpt-5"]
+    assert [item["kind"] for item in summary["iterations"]] == ["blocked", "blocked"]
+    assert summary["stopped"].startswith("capacity_gated")
+    cache = json.loads(config.capacity_cache.read_text())
+    for key in ("claude-sub", "codex-sub"):
+        assert cache["providers"][key]["status"] == "unavailable"
+        assert cache["providers"][key]["failure_class"] == "billing"
 
 
 def test_drain_usage_limit_output_becomes_blocked_and_persists_gate(
