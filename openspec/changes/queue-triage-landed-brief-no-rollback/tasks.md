@@ -1,6 +1,6 @@
 ## 1. Stop releasing a claimed brief whose PR exists
 
-- [ ] 1.1 (Requirements: Merged fold/propose landing tears down its local branch) In
+- [x] 1.1 (Requirements: Merged fold/propose landing tears down its local branch) In
       `src/worktrail/workqueue/queue_triage.py`'s `_worktree_pr_close()`, drop the
       `release(v.brief_id)` call from the post-landing closure-rejection branch
       (`done_res = done(...)` / `if done_res["status"] != "done":` near the end of the
