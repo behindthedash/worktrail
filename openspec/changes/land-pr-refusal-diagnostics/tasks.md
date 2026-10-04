@@ -1,6 +1,6 @@
 ## 1. Refusals carry the failed step's output
 
-- [ ] 1.1 Give every locally-checkable refusal in the PR-landing pipeline a detail that
+- [x] 1.1 Give every locally-checkable refusal in the PR-landing pipeline a detail that
       identifies its cause, restoring conformance with the capability's *Refusal leaves the
       remote untouched* requirement, which demands a refused outcome naming the failed step
       together with its output.
