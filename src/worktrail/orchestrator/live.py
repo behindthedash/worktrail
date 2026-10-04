@@ -4553,28 +4553,90 @@ def _apply_skip_review_commit(
     return old, "cleaning"
 
 
-def _resolve_max_workers(repo: Path, tasks: list, requested: int | None) -> int:
+def _same_repo_live_runs(repo: Path, spec_id: str) -> list:
+    """Live run-record entries for this repo under a specification OTHER than
+    `spec_id`.
+
+    The per-spec `RunLock` (acquired before the scheduler runs) already aborts
+    a second run for the SAME spec; it cannot see a concurrent run for a
+    different specification on the same repo -- those share the repo's
+    worktrees/files but not its lock. Records are resolved the way the
+    pipeline's other readers do (the policy's `run_record_dir` when set, else
+    `worktrail_home()/runs`; see `release_gate._runs_dir`), then
+    `<root>/<repo.name>` is scanned repo-wide via `_active_conflicts()` and
+    reduced to its `live` partition -- `_is_stale()` already drops records
+    whose worktree is gone and whose work already landed on the base branch.
+    """
+    from ..router.policy import default_run_record_dir, load_policy
+    from ..router.run_record import _active_conflicts
+
+    runs_dir = (
+        Path(
+            str(load_policy(repo).get("run_record_dir") or default_run_record_dir())
+        ).expanduser()
+        / repo.name
+    )
+    conflicts = _active_conflicts(runs_dir, repo, None, None)
+    return [
+        entry for entry in conflicts["live"] if entry.get("specification") != spec_id
+    ]
+
+
+def _same_repo_width_note(
+    repo: Path, width: int, same_repo_live: int
+) -> tuple[int, str]:
+    """Halve `width` once when other specifications have live runs on this repo.
+
+    Returns `(effective_width, note)`; with no other live run the width is
+    unchanged and the note is empty, so callers print exactly their
+    pre-existing line. The cap applies once regardless of the count --
+    `max(1, width // 2)` -- so a concurrent run slows the fan-out without
+    serializing it outright, and the effective width never drops below one.
+    """
+    if same_repo_live <= 0:
+        return width, ""
+    return max(1, width // 2), (
+        f" (halved for same-repo concurrency: {same_repo_live} other live "
+        f"run(s) on {repo.name})"
+    )
+
+
+def _resolve_max_workers(
+    repo: Path, tasks: list, requested: int | None, *, same_repo_live: int = 0
+) -> int:
     """Effective fan-out width. An explicit invocation value wins; else the repo
     policy's `max_workers`; else the plan's own width capped by the policy's
     `max_parallel_workers` (default 6). A fixed default of 3 silently ran a
     width-7 plan as three serial ticks (run orchestrator-throughput, 2026-09-02);
-    the effective value is printed next to the plan so the cap is visible."""
+    the effective value is printed next to the plan so the cap is visible.
+
+    `same_repo_live` is the count of other live runs on this repo under a
+    different specification (`_same_repo_live_runs()`); when it is positive the
+    width resolved by the rules above is halved once (`_same_repo_width_note()`
+    caps at `max(1, width // 2)`) and the printed width line names the count and
+    the same-repo concurrency reason. With the default 0, both the width and the
+    printed line are exactly what they were before this parameter existed.
+    """
     if requested is not None:
-        return max(1, int(requested))
+        n, note = _same_repo_width_note(repo, max(1, int(requested)), same_repo_live)
+        if note:
+            print(f"{_ts()} fan-out workers: {n}{note}")
+        return n
     from ..conductor import parallelism
     from ..router.policy import load_policy
 
     policy = load_policy(repo)
     configured = policy.get("max_workers")
     if configured:
-        n = max(1, int(configured))
-        print(f"{_ts()} fan-out workers: {n} (policy max_workers)")
+        n, note = _same_repo_width_note(repo, max(1, int(configured)), same_repo_live)
+        print(f"{_ts()} fan-out workers: {n} (policy max_workers){note}")
         return n
     width = parallelism.profile(tasks).width
     cap = max(1, int(policy.get("max_parallel_workers") or 6))
-    n = max(1, min(width, cap))
+    n, note = _same_repo_width_note(repo, max(1, min(width, cap)), same_repo_live)
     print(
-        f"{_ts()} fan-out workers: {n} (plan width {width}, max_parallel_workers {cap})"
+        f"{_ts()} fan-out workers: {n} (plan width {width}, "
+        f"max_parallel_workers {cap}){note}"
     )
     return n
 
@@ -5759,8 +5821,25 @@ def _pipeline_scheduler(
     gitnexus_capability = gitnexus_check(repo)
     role_models = _effective_role_models(agent, role_models)
     spec_id, tasks = taskformats.load_spec(str(repo / spec_rel))
+    # Detect other live same-repo runs before apply_run_plan(): an unscoped
+    # OpenSpec change compiles its plan here (possibly model-backed), and a
+    # launch that is going to be width-capped should report the concurrent
+    # run before doing that work, not after.
+    same_repo_live = _same_repo_live_runs(repo, spec_id)
+    if same_repo_live:
+        print(
+            f"{_ts()} WARN same-repo concurrency: {len(same_repo_live)} other live "
+            f"run(s) on {repo.name}"
+        )
+        for entry in same_repo_live:
+            print(
+                f"{_ts()} WARN same-repo concurrency: run {entry['run_id']} "
+                f"(specification {entry['specification']}) -- {entry['path']}"
+            )
     tasks = apply_run_plan(repo, spec_rel, spec_id, tasks)
-    max_workers = _resolve_max_workers(repo, tasks, max_workers)
+    max_workers = _resolve_max_workers(
+        repo, tasks, max_workers, same_repo_live=len(same_repo_live)
+    )
     pre_only_done = {t["id"] for t in tasks if t.get("status") in coordinator.DONE}
     if only and resume and Path(journal_path).exists():
         # A task can be genuinely already-done purely via a PRIOR run's journal
