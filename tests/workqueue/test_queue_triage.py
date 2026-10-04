@@ -3028,6 +3028,86 @@ class TestLandingTeardown(TestApplyFoldIntoChange):
         self.assertTrue((self.queue / "a.md").exists())
         self.assertEqual(qt.read_frontmatter(self.queue / "a.md")["status"], "queued")
 
+    def test_rejected_closure_after_merged_landing_keeps_brief_picked(self):
+        """A merged landing whose `done()` is rejected keeps the brief claimed
+        in `picked/` -- the PR exists, so releasing it would re-queue work the
+        PR already captures and let a retry re-run the whole pipeline. The
+        stalled-in-flight resume path closes it against that PR instead.
+        """
+        pr_url = "https://github.com/acme/widgets/pull/42"
+        run = self._dispatcher()
+        land_outcome = LandOutcome(
+            outcome="landed",
+            pr_url=pr_url,
+            pr_number=42,
+            labels=["go:risk-low"],
+            run=None,
+            final_status="completed_and_merged",
+            merge_result="merged (squash)",
+        )
+        rejection = {
+            "status": "unverified_reverification_claim",
+            "error": "reverification claim lacks evidence",
+            "path": None,
+        }
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+            ),
+            mock.patch(
+                "worktrail.workqueue.queue_triage.land_pr", return_value=land_outcome
+            ),
+            mock.patch("worktrail.workqueue.queue_triage.done", return_value=rejection),
+            mock.patch(
+                "worktrail.workqueue.queue_triage.release",
+                side_effect=qt.release,
+            ) as mock_release,
+        ):
+            entry = qt.apply_verdicts([self.verdict], confirm=True)[0]
+
+        self.assertEqual(entry["status"], "error")
+        self.assertIn("done: unverified_reverification_claim", entry["error"])
+        self.assertIs(entry["rolled_back"], False)
+        self.assertEqual(entry["branch"], self.branch)
+        self.assertEqual(entry["pr_url"], pr_url)
+        self.assertEqual(entry["landing"]["final_status"], "completed_and_merged")
+
+        # Not re-queued: still claimed in picked/ under the claim's status.
+        self.assertFalse((self.queue / "a.md").exists())
+        picked = self.base / "picked" / "a.md"
+        self.assertTrue(picked.exists())
+        self.assertEqual(qt.read_frontmatter(picked)["status"], "picked")
+        mock_release.assert_not_called()
+
+    def test_refused_without_pr_releases_the_brief_exactly_once(self):
+        """The companion contract: with no PR ever created there is nothing to
+        resume, so the guarded cleanup `finally` releases the brief back to
+        `queue/` -- exactly once.
+        """
+        run = self._dispatcher()
+        land_outcome = LandOutcome(
+            outcome="refused", refused_step="push", detail="git push failed"
+        )
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+            ),
+            mock.patch(
+                "worktrail.workqueue.queue_triage.land_pr", return_value=land_outcome
+            ),
+            mock.patch(
+                "worktrail.workqueue.queue_triage.release",
+                side_effect=qt.release,
+            ) as mock_release,
+        ):
+            entry = qt.apply_verdicts([self.verdict], confirm=True)[0]
+
+        self.assertEqual(entry["status"], "error")
+        self.assertEqual(mock_release.call_count, 1)
+        self.assertTrue((self.queue / "a.md").exists())
+        self.assertEqual(qt.read_frontmatter(self.queue / "a.md")["status"], "queued")
+        self.assertFalse((self.base / "picked" / "a.md").exists())
+
 
 class TestApplyProposeChange(QueueTriageTestBase):
     """3.2's `propose-change` apply action: fresh worktree off the target
