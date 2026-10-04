@@ -36,7 +36,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [e2e] Run `PYTHONPATH=src python3.14 -m pytest -q
+- [x] 2.1 [e2e] Run `PYTHONPATH=src python3.14 -m pytest -q
       tests/workqueue/test_queue_triage.py`, then the full `PYTHONPATH=src python3.14 -m pytest
       -q` and `PYTHONPATH=src python3.14 -m worktrail.orchestrator.orchestrate check`. Lint
       through the pinned wrapper: `python3.14 scripts/ci/ruff_pinned.py check .` and
