@@ -560,6 +560,44 @@ def _pinned_plan_fingerprint(repo: Path, spec_rel: str) -> str | None:
 
 PLAN_PIN_KEYS = ("plan_fingerprint", "plan_fingerprints")
 
+# Journal keys the pipeline phase owns and writes itself: `groups` via the
+# pipeline scheduler's `_record()`/`_record_group_fn`, `integrate_complete`
+# via `integrate._mark_integrate_complete_if_terminal`. `live_run_real`'s
+# `record()` -- the writer the tail phase reaches through
+# `_dispatch_pending_tail`'s `out_cassette=journal_path` call -- has no
+# in-memory copy of either, so without an explicit carry-forward its wholesale
+# rewrite erases the group records the pipeline phase persisted (including the
+# QUARANTINED ones `worktrail-resume-group` exists to clear) and
+# `_mark_integrate_complete_if_terminal`'s later read of `journal["groups"]`
+# sees an empty map.
+PIPELINE_PHASE_KEYS = ("groups", "integrate_complete")
+
+
+def _carry_forward_keys(path: str | Path, jdict: dict, keys: tuple[str, ...]) -> dict:
+    """Carry an explicitly declared tuple of keys across a wholesale journal rewrite.
+
+    Both schedulers' `record()` build their journal dict from scratch and write
+    it with `atomic_write_text`, so anything written to the journal by a
+    *different* writer is destroyed on the next write. This copies just the
+    declared `keys` from the journal on disk into `jdict`, leaving a key already
+    set in `jdict` (i.e. the rebuilding writer's own value) untouched.
+
+    Deliberately not a general merge of the on-disk journal: each caller
+    declares exactly the keys a different writer owns, so state the rebuild
+    intends to drop is never resurrected. Best-effort: journal I/O never takes
+    a run down (a missing, unreadable, or non-object journal is a no-op).
+    """
+    try:
+        existing = json.loads(Path(path).read_text())
+    except OSError, ValueError, TypeError:
+        return jdict
+    if not isinstance(existing, dict):
+        return jdict
+    for key in keys:
+        if key in existing and key not in jdict:
+            jdict[key] = existing[key]
+    return jdict
+
 
 def _preserve_plan_pin(path: str | Path, jdict: dict) -> dict:
     """Carry the run's plan pin across a wholesale journal rewrite.
@@ -582,18 +620,11 @@ def _preserve_plan_pin(path: str | Path, jdict: dict) -> dict:
 
     Only the pin keys are carried over -- this is deliberately not a general
     merge of the on-disk journal, which would resurrect stale state the
-    rebuilding writer intends to drop.
+    rebuilding writer intends to drop. The pipeline scheduler's `_record()`
+    keeps calling this (not the generalized helper with the union) because it
+    owns and writes `groups` itself.
     """
-    try:
-        existing = json.loads(Path(path).read_text())
-    except OSError, ValueError, TypeError:
-        return jdict
-    if not isinstance(existing, dict):
-        return jdict
-    for key in PLAN_PIN_KEYS:
-        if key in existing and key not in jdict:
-            jdict[key] = existing[key]
-    return jdict
+    return _carry_forward_keys(path, jdict, PLAN_PIN_KEYS)
 
 
 def _record_plan_fingerprint(repo: Path, spec_rel: str, plan) -> None:
@@ -4924,7 +4955,14 @@ def live_run_real(
                 journal_dict["run_id"] = run_id
             if _budget_stopped_at[0] is not None:
                 journal_dict["budget_stopped_at"] = _budget_stopped_at[0]
-            _preserve_plan_pin(out_cassette, journal_dict)
+            # This closure is also the tail phase's writer (reached through
+            # `_dispatch_pending_tail`'s `out_cassette=journal_path` call), and
+            # the tail phase has no in-memory copy of the pipeline phase's
+            # group records -- carry them (plus the plan pin) across the
+            # rebuild, or they are erased mid-run.
+            _carry_forward_keys(
+                out_cassette, journal_dict, PLAN_PIN_KEYS + PIPELINE_PHASE_KEYS
+            )
             progress.atomic_write_text(
                 out_cassette, json.dumps(journal_dict, indent=2, sort_keys=True) + "\n"
             )
