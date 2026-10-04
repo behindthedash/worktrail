@@ -163,7 +163,7 @@ class LandPrResumeTests(unittest.TestCase):
             mock.patch.object(land_pr, "load_policy", return_value={}),
             mock.patch.object(land_pr, "preflight") as preflight_mock,
             mock.patch.object(
-                land_pr, "_commit_pending", return_value=None
+                land_pr, "_commit_pending", return_value=(None, None)
             ) as commit_mock,
             mock.patch.object(land_pr, "_push", return_value=None) as push_mock,
             mock.patch.object(
@@ -248,7 +248,7 @@ class LandPrResumeTests(unittest.TestCase):
 
     def _assert_full_pipeline(self, runner: FakeRun) -> None:
         outcome, _spy, _preflight, commit_mock, push_mock = self._run(
-            runner, _run_preflight_and_labels=(None, ["go:risk-low"])
+            runner, _run_preflight_and_labels=(None, ["go:risk-low"], None)
         )
         commit_mock.assert_called_once()
         push_mock.assert_called_once()

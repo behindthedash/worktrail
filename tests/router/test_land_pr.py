@@ -14,7 +14,10 @@ copy of those tests.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -141,14 +144,17 @@ class RenderPrBodyTests(unittest.TestCase):
 class CommitPendingTests(unittest.TestCase):
     def test_dirty_tree_without_commit_message_refuses(self) -> None:
         runner = FakeRun().script("git", "status", "--porcelain", stdout="M f.py\n")
-        result = land_pr._commit_pending(Path("/repo"), None, runner)
-        self.assertEqual(result, "dirty_tree")
+        refused, detail = land_pr._commit_pending(Path("/repo"), None, runner)
+        self.assertEqual(refused, "dirty_tree")
         self.assertFalse(runner.called_with_prefix("git", "commit"))
+        self.assertTrue(detail)
+        self.assertIn("commit_message", detail)
 
     def test_clean_tree_never_touches_commit(self) -> None:
         runner = FakeRun().script("git", "status", "--porcelain", stdout="")
-        result = land_pr._commit_pending(Path("/repo"), "msg", runner)
-        self.assertIsNone(result)
+        refused, detail = land_pr._commit_pending(Path("/repo"), "msg", runner)
+        self.assertIsNone(refused)
+        self.assertIsNone(detail)
         self.assertFalse(runner.called_with_prefix("git", "add"))
 
     def test_dirty_tree_with_commit_message_commits(self) -> None:
@@ -158,16 +164,81 @@ class CommitPendingTests(unittest.TestCase):
             .script("git", "add", "-A")
             .script("git", "commit", "-m")
         )
-        result = land_pr._commit_pending(Path("/repo"), "chore: commit", runner)
-        self.assertIsNone(result)
+        refused, detail = land_pr._commit_pending(
+            Path("/repo"), "chore: commit", runner
+        )
+        self.assertIsNone(refused)
+        self.assertIsNone(detail)
         self.assertTrue(runner.called_with_prefix("git", "commit", "-m"))
 
     def test_failed_git_status_fails_closed(self) -> None:
         runner = FakeRun().script(
             "git", "status", "--porcelain", returncode=1, stderr="index.lock"
         )
-        result = land_pr._commit_pending(Path("/repo"), "msg", runner)
-        self.assertEqual(result, "dirty_tree")
+        refused, detail = land_pr._commit_pending(Path("/repo"), "msg", runner)
+        self.assertEqual(refused, "dirty_tree")
+        self.assertIn("git status --porcelain", detail)
+        self.assertIn("index.lock", detail)
+
+    def test_git_failure_with_no_output_still_names_the_subcommand(self) -> None:
+        """A git process that exits non-zero without printing anything must
+        still produce a non-empty, cause-identifying detail."""
+        runner = FakeRun().script("git", "status", "--porcelain", returncode=1)
+        refused, detail = land_pr._commit_pending(Path("/repo"), "msg", runner)
+        self.assertEqual(refused, "dirty_tree")
+        self.assertIn("git status --porcelain", detail)
+        self.assertIn("(no output)", detail)
+
+    def test_four_refusal_causes_have_distinguishable_details(self) -> None:
+        """The four causes keep the one documented `"dirty_tree"` step name,
+        so `detail` is what tells a caller which one fired -- each names the
+        failing cause, and the three git failures quote the subcommand's
+        stderr (falling back to stdout)."""
+        cases = {
+            "status failure": (
+                FakeRun().script(
+                    "git",
+                    "status",
+                    "--porcelain",
+                    returncode=1,
+                    stderr="index.lock: File exists",
+                ),
+                "msg",
+                ("git status --porcelain", "index.lock"),
+            ),
+            "missing commit_message": (
+                FakeRun().script("git", "status", "--porcelain", stdout="M f.py\n"),
+                None,
+                ("commit_message",),
+            ),
+            "add failure": (
+                FakeRun()
+                .script("git", "status", "--porcelain", stdout="M f.py\n")
+                .script("git", "add", "-A", returncode=1, stdout="add stdout detail"),
+                "msg",
+                ("git add -A", "add stdout detail"),
+            ),
+            "commit failure": (
+                FakeRun()
+                .script("git", "status", "--porcelain", stdout="M f.py\n")
+                .script("git", "add", "-A")
+                .script("git", "commit", "-m", returncode=1, stderr="commit exploded"),
+                "msg",
+                ("git commit -m", "commit exploded"),
+            ),
+        }
+        details: dict[str, str] = {}
+        for cause, (runner, message, expected) in cases.items():
+            with self.subTest(cause=cause):
+                refused, detail = land_pr._commit_pending(
+                    Path("/repo"), message, runner
+                )
+                self.assertEqual(refused, "dirty_tree")
+                self.assertTrue(detail, "refusal carried no detail")
+                for fragment in expected:
+                    self.assertIn(fragment, detail)
+                details[cause] = detail
+        self.assertEqual(len(set(details.values())), len(cases), details)
 
 
 class EnsureCompileMarkersTests(unittest.TestCase):
@@ -276,33 +347,93 @@ def stdout(value: str) -> str:
     return value + "\n"
 
 
+def _init_temp_repo(testcase: unittest.TestCase) -> str:
+    """A real one-commit git worktree with no `pre_pr_cmd` configured --
+    `_run_preflight_and_labels()` runs the real gate against it and
+    default-denies with `PRE-PR GATE: FAIL — unconfigured (default-deny)`
+    written to stderr (see `pre_pr_gate.main`)."""
+    repo = tempfile.mkdtemp(prefix="land-pr-")
+    testcase.addCleanup(shutil.rmtree, repo, ignore_errors=True)
+
+    def git(*args: str) -> None:
+        subprocess.run(
+            ["git", *args], cwd=repo, capture_output=True, text=True, check=True
+        )
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "test@example.com")
+    git("config", "user.name", "Test")
+    (Path(repo) / "README.md").write_text("base\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-q", "-m", "base")
+    return repo
+
+
 class RunPreflightAndLabelsTests(unittest.TestCase):
-    def test_nonzero_exit_refuses(self) -> None:
-        with mock.patch.object(land_pr.preflight, "main", return_value=1):
-            refused, labels = land_pr._run_preflight_and_labels(
+    def test_nonzero_exit_refuses_with_captured_stderr_detail(self) -> None:
+        def deny(*_args, **_kwargs) -> int:
+            print("PRE-PR GATE: FAIL — unconfigured (default-deny).", file=sys.stderr)
+            return 2
+
+        with mock.patch.object(land_pr.preflight, "main", side_effect=deny):
+            refused, labels, detail = land_pr._run_preflight_and_labels(
                 Path("/repo"), "main", "low", [], "B", None
             )
         self.assertEqual(refused, "preflight")
         self.assertEqual(labels, [])
+        self.assertIn("PRE-PR GATE: FAIL", detail)
 
-    def test_systemexit_from_bad_risk_refuses(self) -> None:
-        with mock.patch.object(land_pr.preflight, "main", side_effect=SystemExit(2)):
-            refused, _labels = land_pr._run_preflight_and_labels(
-                Path("/repo"), "main", "not-a-risk", [], "B", None
+    def test_nonzero_exit_detail_falls_back_to_captured_stdout(self) -> None:
+        """A gate free to write its failure to stdout must still reach the
+        refusal detail -- the capture cannot be stderr-only."""
+
+        def deny(*_args, **_kwargs) -> int:
+            print("gate denied on stdout")
+            return 1
+
+        with mock.patch.object(land_pr.preflight, "main", side_effect=deny):
+            refused, labels, detail = land_pr._run_preflight_and_labels(
+                Path("/repo"), "main", "low", [], "B", None
             )
         self.assertEqual(refused, "preflight")
+        self.assertEqual(labels, [])
+        self.assertIn("gate denied on stdout", detail)
 
-    def test_unreadable_marker_refuses(self) -> None:
+    def test_systemexit_from_bad_risk_refuses_with_detail(self) -> None:
+        # The REAL `preflight.main` (not mocked): argparse rejects the risk
+        # choice and raises `SystemExit(2)` after writing its usage/error to
+        # stderr -- no repo is ever touched.
+        refused, labels, detail = land_pr._run_preflight_and_labels(
+            Path("/repo"), "main", "not-a-risk", [], "B", None
+        )
+        self.assertEqual(refused, "preflight")
+        self.assertEqual(labels, [])
+        self.assertIn("invalid choice", detail)
+
+    def test_systemexit_string_code_becomes_the_detail(self) -> None:
+        with mock.patch.object(
+            land_pr.preflight, "main", side_effect=SystemExit("risk refused")
+        ):
+            refused, labels, detail = land_pr._run_preflight_and_labels(
+                Path("/repo"), "main", "low", [], "B", None
+            )
+        self.assertEqual(refused, "preflight")
+        self.assertEqual(labels, [])
+        self.assertEqual(detail, "risk refused")
+
+    def test_unreadable_marker_refuses_with_detail(self) -> None:
         with (
             mock.patch.object(land_pr.preflight, "main", return_value=0),
             mock.patch.object(land_pr.preflight, "read_marker", return_value=None),
         ):
-            refused, _labels = land_pr._run_preflight_and_labels(
+            refused, labels, detail = land_pr._run_preflight_and_labels(
                 Path("/repo"), "main", "low", [], "B", None
             )
         self.assertEqual(refused, "preflight")
+        self.assertEqual(labels, [])
+        self.assertTrue(detail)
 
-    def test_stale_marker_state_refuses(self) -> None:
+    def test_stale_marker_state_refuses_with_detail(self) -> None:
         with (
             mock.patch.object(land_pr.preflight, "main", return_value=0),
             mock.patch.object(
@@ -312,10 +443,14 @@ class RunPreflightAndLabelsTests(unittest.TestCase):
             ),
             mock.patch.object(land_pr.preflight, "tree_state", return_value="new"),
         ):
-            refused, _labels = land_pr._run_preflight_and_labels(
+            refused, labels, detail = land_pr._run_preflight_and_labels(
                 Path("/repo"), "main", "low", [], "B", None
             )
         self.assertEqual(refused, "preflight")
+        self.assertEqual(labels, [])
+        self.assertIn("stale", detail)
+        self.assertIn("old", detail)
+        self.assertIn("new", detail)
 
     def test_matching_marker_returns_its_labels(self) -> None:
         with (
@@ -327,11 +462,31 @@ class RunPreflightAndLabelsTests(unittest.TestCase):
             ),
             mock.patch.object(land_pr.preflight, "tree_state", return_value="s"),
         ):
-            refused, labels = land_pr._run_preflight_and_labels(
+            refused, labels, detail = land_pr._run_preflight_and_labels(
                 Path("/repo"), "main", "high", [], "B", None
             )
         self.assertIsNone(refused)
         self.assertEqual(labels, ["go:risk-high"])
+        self.assertIsNone(detail)
+
+
+class RealPreflightDenialTests(unittest.TestCase):
+    """`_run_preflight_and_labels()` with the REAL preflight gate (nothing
+    mocked on the failing path) against a worktree whose pre-PR gate denies
+    -- the case `RunPreflightAndLabelsTests` cannot catch, because it mocks
+    `preflight.main` itself. The gate writes its denial reason to stderr and
+    leaves stdout empty, so a stdout-only capture would surface a bare
+    `refused` with no way to tell what failed."""
+
+    def test_real_gate_denial_detail_carries_the_gate_output(self) -> None:
+        repo = _init_temp_repo(self)
+        refused, labels, detail = land_pr._run_preflight_and_labels(
+            Path(repo), "main", "low", [], "B", None
+        )
+        self.assertEqual(refused, "preflight")
+        self.assertEqual(labels, [])
+        self.assertIn("PRE-PR GATE: FAIL", detail)
+        self.assertIn("unconfigured (default-deny)", detail)
 
 
 class OpenOrUpdatePullRequestTests(unittest.TestCase):
@@ -741,9 +896,9 @@ class LandPrOrchestrationTests(unittest.TestCase):
 
     def _patched(self, **overrides):
         defaults = {
-            "_commit_pending": None,
+            "_commit_pending": (None, None),
             "_ensure_compile_markers": (None, None),
-            "_run_preflight_and_labels": (None, ["go:risk-low"]),
+            "_run_preflight_and_labels": (None, ["go:risk-low"], None),
             "_current_branch": "feature",
             "_push_target": ("origin", None),
             "_push": None,
@@ -765,8 +920,8 @@ class LandPrOrchestrationTests(unittest.TestCase):
         }
         defaults.update(overrides)
         # An `_UNPATCHED` override means "do not patch this here" -- the
-        # test supplies its own outer patch for that seam (`None` is a real
-        # return value for e.g. `_commit_pending`).
+        # test supplies its own outer patch for that seam (`(None, None)` is
+        # a real return value for e.g. `_commit_pending`).
         patchers = [
             mock.patch.object(land_pr, name, return_value=value)
             for name, value in defaults.items()
@@ -789,7 +944,7 @@ class LandPrOrchestrationTests(unittest.TestCase):
 
     def test_invalid_route_refuses_before_touching_anything(self) -> None:
         request = _land_request(route="Z")
-        outcome, spy = self._run(request, _commit_pending=None)
+        outcome, spy = self._run(request, _commit_pending=(None, None))
         self.assertEqual(outcome.outcome, "refused")
         self.assertEqual(outcome.refused_step, "route")
         self.assertEqual(spy.calls, [])
@@ -797,10 +952,26 @@ class LandPrOrchestrationTests(unittest.TestCase):
     def test_dirty_tree_refuses_and_never_pushes(self) -> None:
         request = _land_request()
         with mock.patch.object(land_pr, "_push") as push_mock:
-            outcome, _ = self._run(request, _commit_pending="dirty_tree")
+            outcome, _ = self._run(
+                request, _commit_pending=("dirty_tree", "mock dirty-tree detail")
+            )
         self.assertEqual(outcome.outcome, "refused")
         self.assertEqual(outcome.refused_step, "dirty_tree")
+        self.assertEqual(outcome.detail, "mock dirty-tree detail")
         push_mock.assert_not_called()
+
+    def test_dirty_tree_refusal_through_real_commit_pending_carries_detail(
+        self,
+    ) -> None:
+        """`land_pr()` must thread the real `_commit_pending()`'s refusal
+        detail into `LandOutcome.detail`, not just the mocked seam."""
+        runner = FakeRun().script("git", "status", "--porcelain", stdout="M f.py\n")
+        request = _land_request(commit_message=None, runner=runner)
+        outcome, _ = self._run(request, _commit_pending=_UNPATCHED, _resume_state=None)
+        self.assertEqual(outcome.outcome, "refused")
+        self.assertEqual(outcome.refused_step, "dirty_tree")
+        self.assertTrue(outcome.detail)
+        self.assertIn("commit_message", outcome.detail)
 
     def test_compile_gap_refuses_and_never_pushes(self) -> None:
         request = _land_request()
@@ -816,10 +987,31 @@ class LandPrOrchestrationTests(unittest.TestCase):
     def test_preflight_failure_refuses_and_never_pushes(self) -> None:
         request = _land_request()
         with mock.patch.object(land_pr, "_push") as push_mock:
-            outcome, _ = self._run(request, _run_preflight_and_labels=("preflight", []))
+            outcome, _ = self._run(
+                request,
+                _run_preflight_and_labels=(
+                    "preflight",
+                    [],
+                    "PRE-PR GATE: FAIL — unconfigured (default-deny).",
+                ),
+            )
         self.assertEqual(outcome.outcome, "refused")
         self.assertEqual(outcome.refused_step, "preflight")
+        self.assertIn("PRE-PR GATE: FAIL", outcome.detail)
         push_mock.assert_not_called()
+
+    def test_preflight_refusal_through_real_helper_carries_detail(self) -> None:
+        """`land_pr()` with the real `_run_preflight_and_labels()` against a
+        worktree whose gate denies: the gate's own stderr text reaches
+        `LandOutcome.detail`."""
+        request = _land_request(repo=_init_temp_repo(self))
+        outcome, _ = self._run(
+            request, _run_preflight_and_labels=_UNPATCHED, _resume_state=None
+        )
+        self.assertEqual(outcome.outcome, "refused")
+        self.assertEqual(outcome.refused_step, "preflight")
+        self.assertTrue(outcome.detail)
+        self.assertIn("PRE-PR GATE: FAIL", outcome.detail)
 
     def test_non_transient_code_defect_increments_iteration_no_finish(self) -> None:
         request = _land_request()

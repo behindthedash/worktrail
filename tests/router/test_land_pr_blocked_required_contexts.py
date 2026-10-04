@@ -47,9 +47,9 @@ class BlockedRequiredContextsTests(unittest.TestCase):
             ]
         )
         defaults = {
-            "_commit_pending": None,
+            "_commit_pending": (None, None),
             "_ensure_compile_markers": (None, None),
-            "_run_preflight_and_labels": (None, ["go:risk-low"]),
+            "_run_preflight_and_labels": (None, ["go:risk-low"], None),
             "_current_branch": "feature",
             "_push_target": ("origin", "o/r"),
             "_push": None,
