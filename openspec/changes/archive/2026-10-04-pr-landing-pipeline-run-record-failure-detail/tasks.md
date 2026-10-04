@@ -35,7 +35,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [depends: 1.1] [e2e] Run `PYTHONPATH=src python3.14 -m pytest -q
+- [x] 2.1 [depends: 1.1] [e2e] Run `PYTHONPATH=src python3.14 -m pytest -q
       tests/router/test_land_pr.py`, then `PYTHONPATH=src python3.14 -m pytest -q` and
       `PYTHONPATH=src python3.14 -m worktrail.orchestrator.orchestrate check` -- all green.
       Run `python3.14 scripts/ci/ruff_pinned.py check .`,
