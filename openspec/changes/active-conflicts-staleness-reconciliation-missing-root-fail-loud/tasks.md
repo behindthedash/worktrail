@@ -1,6 +1,6 @@
 ## 1. Fail loud on an unresolved records root
 
-- [ ] 1.1 Regression test first, then the fix, in `src/worktrail/router/run_record.py` +
+- [x] 1.1 Regression test first, then the fix, in `src/worktrail/router/run_record.py` +
       `tests/router/test_run_record.py`.
       (a) Add failing regressions BEFORE touching source: in `tests/router/test_run_record.py`,
       assert a scan whose records root `<dir>/<repo.name>` does not exist returns empty
