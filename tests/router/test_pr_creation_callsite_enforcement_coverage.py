@@ -154,7 +154,7 @@ def _proves_land_pr_labels_come_from_preflight_marker():
         ),
         patch.object(land_pr.preflight, "tree_state", return_value="tree-1"),
     ):
-        refused, labels = land_pr._run_preflight_and_labels(
+        refused, labels, _detail = land_pr._run_preflight_and_labels(
             Path("/fake/repo"), "main", "low", [], "E", None
         )
     if refused is not None or labels != marker_labels:
@@ -184,10 +184,14 @@ def _proves_land_pr_labels_come_from_preflight_marker():
             "sourcing its labels from the pass marker"
         )
     source = inspect.getsource(land_pr.land_pr)
-    if "_run_preflight_and_labels(" not in source or "labels," not in source:
+    if (
+        "refused, labels, detail = _run_preflight_and_labels(" not in source
+        or "labels," not in source
+    ):
         raise AssertionError(
             "land_pr() no longer threads _run_preflight_and_labels()'s labels "
-            "into open_or_update_pull_request()"
+            "(three-element `refused, labels, detail` return) into "
+            "open_or_update_pull_request()"
         )
 
 
@@ -288,11 +292,15 @@ def _proves_land_pr_py_applies_preflight_labels_on_update():
         )
 
     source = inspect.getsource(land_pr._run_preflight_and_labels)
-    if "preflight.read_marker" not in source:
+    if (
+        "preflight.read_marker" not in source
+        or 'labels = list(marker.get("labels") or [])' not in source
+    ):
         raise AssertionError(
-            "_run_preflight_and_labels no longer sources labels from "
-            "preflight.read_marker() -- land_pr()'s update-path labels would "
-            "no longer be preflight-computed"
+            "_run_preflight_and_labels no longer sources the labels it returns "
+            "in its three-element return from preflight.read_marker() -- "
+            "land_pr()'s update-path labels would no longer be "
+            "preflight-computed"
         )
 
 
@@ -571,7 +579,7 @@ def _proves_land_pr_py_refuses_stale_preflight_marker():
         ),
         patch.object(land_pr.preflight, "tree_state", return_value="current-sha"),
     ):
-        refused, labels = land_pr._run_preflight_and_labels(
+        refused, labels, _detail = land_pr._run_preflight_and_labels(
             Path("/tmp"), "main", "low", [], "E", None
         )
     if refused != "preflight":
@@ -590,7 +598,7 @@ def _proves_land_pr_py_refuses_stale_preflight_marker():
         ),
         patch.object(land_pr.preflight, "tree_state", return_value="current-sha"),
     ):
-        refused2, labels2 = land_pr._run_preflight_and_labels(
+        refused2, labels2, _detail2 = land_pr._run_preflight_and_labels(
             Path("/tmp"), "main", "low", [], "E", None
         )
     if refused2 is not None or labels2 != ["go:risk-low"]:
