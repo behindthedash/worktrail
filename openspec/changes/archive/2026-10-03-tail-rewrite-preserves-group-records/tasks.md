@@ -26,7 +26,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [e2e] Run `PYTHONPATH=src python3.14 -m pytest -q
+- [x] 2.1 [e2e] Run `PYTHONPATH=src python3.14 -m pytest -q
       tests/orchestrator/test_tail_journal_group_survival.py
       tests/orchestrator/test_plan_fingerprint_record.py
       tests/orchestrator/test_quarantine_journal_persistence.py
