@@ -1,6 +1,6 @@
 ## 1. Preserve the pipeline phase's journal records across the tail rewrite
 
-- [ ] 1.1 In `src/worktrail/orchestrator/live.py`, make the journal carry-forward a
+- [x] 1.1 In `src/worktrail/orchestrator/live.py`, make the journal carry-forward a
       declared-key operation: one helper that copies an explicitly passed key tuple from the
       journal on disk into the dict about to be written, used by both existing callers, with
       `PLAN_PIN_KEYS` kept as-is and a new declared tuple for the keys the pipeline phase owns
