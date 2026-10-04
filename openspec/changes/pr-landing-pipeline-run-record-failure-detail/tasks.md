@@ -1,6 +1,6 @@
 ## 1. Carry a run-record failure's stdout message into the landing detail
 
-- [ ] 1.1 Give `_run_record_main` the same stdout fallback its sibling already has, restoring
+- [x] 1.1 Give `_run_record_main` the same stdout fallback its sibling already has, restoring
       conformance with the capability's *Run record is completed with a real state* requirement
       ("its detail contains the run-record tool's failure message", whether the tool wrote it
       to stdout or to stderr).
