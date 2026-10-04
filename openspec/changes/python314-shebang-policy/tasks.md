@@ -1,6 +1,6 @@
 ## 1. Enforce the direct-execution interpreter policy
 
-- [ ] 1.1 Extend `scripts/ci/check_shebang_exec_bits.py` so its index-based scan also finds every
+- [x] 1.1 Extend `scripts/ci/check_shebang_exec_bits.py` so its index-based scan also finds every
       executable Python file whose indexed first line is `#!/usr/bin/env python3` and whose source
       contains a PEP 758 unparenthesized multi-exception handler. Report a repository-relative,
       actionable diagnostic directing the author to `python3.14`, retain all EXE001/EXE002 behavior,
