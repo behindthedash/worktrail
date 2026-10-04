@@ -1399,6 +1399,11 @@ def _active_conflicts(
     this is the mandatory `#active-conflicts-scan` hard-stop gate, and one bad
     file must never silently disable it for every other run. Skipped files are
     reported in `warnings`, never dropped without a trace.
+
+    A `repo_dir` that does not exist is not a silent clean scan either: both
+    partitions stay empty but `warnings` names the exact path that was never
+    read, so a caller can tell "nothing was scanned" apart from "nothing was
+    found". `cmd_active_conflicts` pairs this with exit 1.
     """
     live: list[dict[str, Any]] = []
     stale: list[dict[str, Any]] = []
@@ -1429,6 +1434,10 @@ def _active_conflicts(
             base_branch = record.get("base_branch")
             is_stale = bool(base_branch) and _is_stale(record, repo_root, base_branch)
             (stale if is_stale else live).append(entry)
+    else:
+        warnings.append(
+            f"{repo_dir} does not exist -- no run records were scanned for this repo"
+        )
     return {"live": live, "stale": stale, "warnings": warnings}
 
 
@@ -1490,12 +1499,17 @@ def cmd_active_conflicts(args: argparse.Namespace) -> int:
 
     Prints the `{"live": [...], "stale": [...]}` partition from
     `_active_conflicts()`.
+
+    Exits 1 when the records root does not exist -- the scan could not look,
+    and `_active_conflicts()` says so in `warnings` -- and 0 otherwise. The
+    exit code comes from the filesystem predicate, never from `warnings`
+    being non-empty: a malformed record skipped on an existing root exits 0.
     """
     repo = Path(args.repo).resolve()
     repo_dir = Path(args.dir).expanduser() / repo.name
     exclude = Path(args.exclude).resolve() if args.exclude else None
     print(json.dumps(_active_conflicts(repo_dir, repo, args.specification, exclude)))
-    return 0
+    return 0 if repo_dir.is_dir() else 1
 
 
 def cmd_reconcile(args: argparse.Namespace) -> int:
