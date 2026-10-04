@@ -3067,8 +3067,11 @@ def _worktree_pr_close(
     to `queue/` (`release()`) and returns `status="error"` with the `branch`
     name it would have used, so a caller can diagnose or retry without the
     queue and the target repo disagreeing about what happened. Once a PR URL
-    exists, closes the brief (`done(..., triaged_to=pr_url)`), with rollback
-    (`release()`) on `done()` failure. The local worktree is cleaned up
+    exists, closes the brief (`done(..., triaged_to=pr_url)`); a rejected
+    closure is reported with `rolled_back: False` and the brief stays claimed
+    in `picked/` -- the PR exists, so the stalled-in-flight resume path closes
+    it against that PR rather than a release re-queueing work the PR already
+    captures. The local worktree is cleaned up
     in a `finally` except on `code_defect` or `review_threads_blocking` outcomes
     where it is left on disk for manual review, otherwise it is always
     removed regardless of outcome. The local branch is deleted too when no PR
@@ -3323,13 +3326,15 @@ def _worktree_pr_close(
     done_res = done(v.brief_id, note=v.evidence, triaged_to=pr_url)
     if done_res["status"] != "done":
         detail = done_res.get("error")
-        release_res = release(v.brief_id)
+        # The brief stays claimed in `picked/`: a PR exists, so there is no
+        # work to re-queue. Releasing here would race the stalled-in-flight
+        # resume path, which closes the brief against this PR.
         return {
             **result,
             "status": "error",
             "path": done_res.get("path"),
             "error": f"done: {done_res['status']}" + (f" ({detail})" if detail else ""),
-            "rolled_back": release_res["status"] == "released",
+            "rolled_back": False,
             "branch": branch,
             "pr_url": pr_url,
             "landing": landing_dict,
