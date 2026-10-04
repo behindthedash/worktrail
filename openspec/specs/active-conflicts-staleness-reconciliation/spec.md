@@ -22,6 +22,15 @@ SHALL carry the record's own `specification` value (null or absent when the reco
 alongside the fields it already carries. `cmd_active_conflicts` SHALL accept `--specification` as
 optional and SHALL print `{"live": [...], "stale": [...]}` instead of a flat array.
 
+When the records root `<dir>/<repo.name>` does not exist, the scan SHALL NOT return a silent
+all-clear: both partitions SHALL be empty and `warnings` SHALL carry an entry naming that
+unresolved records root (the exact `<dir>/<repo.name>` path), so an in-process caller can
+distinguish "scanned and found nothing" from "never scanned". `cmd_active_conflicts` SHALL print
+that JSON -- the warning included, so machine-readable consumers still see the diagnostic -- and
+then exit nonzero on the same condition rather than reporting success. When the records root
+exists, the scan's result and exit status SHALL be unchanged: an existing root with no matching
+records remains a successful, warning-free empty result.
+
 #### Scenario: Worktree gone and files merged
 
 - **WHEN** a non-terminal record's `worktree` path does not exist on disk, and every
@@ -59,6 +68,27 @@ optional and SHALL print `{"live": [...], "stale": [...]}` instead of a flat arr
 - **WHEN** `active-conflicts --specification spec-a` runs
 - **THEN** only records whose `specification` is `spec-a` are classified, exactly as before
   this change, and every entry still carries that `specification` value
+
+#### Scenario: Unresolved records root is reported, never a silent all-clear
+
+- **WHEN** `_active_conflicts()` scans a records root `<dir>/<repo.name>` that does not exist
+- **THEN** both `live` and `stale` are empty and `warnings` contains an entry naming that exact
+  `<dir>/<repo.name>` path -- the call returns normally (no exception), so every in-process
+  caller (the claim-time scan, the same-repo live-run detection, the quarantine-sweep conflict
+  check) sees the unresolved root through the same `warnings` field it already reads
+
+#### Scenario: CLI fails loud on an unresolved records root
+
+- **WHEN** `cmd_active_conflicts`'s records root `<dir>/<repo.name>` does not exist
+- **THEN** the command still prints the partitions and the unresolved-root warning as JSON, and
+  exits with a nonzero status instead of 0
+
+#### Scenario: Existing records root keeps today's result and exit status
+
+- **WHEN** the records root exists -- including as an existing empty directory with no matching
+  records
+- **THEN** the partitions, the absence of an unresolved-root warning, and the exit status are
+  exactly as before this change (a clean empty result, exit 0)
 
 ### Requirement: The active-conflicts hard stop blocks only on live conflicts
 `#active-conflicts-scan` (and any other caller that treats a non-empty scan result
