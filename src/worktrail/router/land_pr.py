@@ -824,8 +824,12 @@ def _run_record_main(argv: list[str]) -> tuple[int, str, str]:
     caller can act on, never an uncaught exception that skips the outcome
     classification entirely (Requirement: run record is completed with a
     real state). A string `SystemExit` code (how `run_record` reports e.g.
-    a scope-completeness gate refusal) is kept as `detail`; otherwise
-    `detail` is whatever was written to stderr."""
+    a scope-completeness gate refusal) is kept as `detail`; otherwise the
+    detail is the captured stderr, falling back to the captured stdout when
+    stderr is empty. `run_record` writes the common failure reason to
+    stderr, so a stdout-only capture would lose it -- but it is free to
+    write its failure to stdout, and a plain nonzero return reaches the
+    same expression, so a failed write carries its message either way."""
     out = io.StringIO()
     err = io.StringIO()
     detail = ""
@@ -840,7 +844,11 @@ def _run_record_main(argv: list[str]) -> tuple[int, str, str]:
             detail = str(exc.code)
         else:
             exit_code = 0
-    return exit_code, out.getvalue(), detail or err.getvalue().strip()
+    return (
+        exit_code,
+        out.getvalue(),
+        detail or err.getvalue().strip() or out.getvalue().strip(),
+    )
 
 
 def _ensure_run_record(

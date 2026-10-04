@@ -470,6 +470,60 @@ class RunPreflightAndLabelsTests(unittest.TestCase):
         self.assertIsNone(detail)
 
 
+class RunRecordMainCaptureTests(unittest.TestCase):
+    """`_run_record_main()` must carry the run-record tool's own failure
+    message into `detail`, whichever stream it wrote it to -- the same
+    stdout-fallback composition `_preflight_main()` already has."""
+
+    def _capture(self, behavior) -> tuple[int, str, str]:
+        with mock.patch.object(land_pr.run_record_module, "main", side_effect=behavior):
+            return land_pr._run_record_main(["finish", "runs/x.yaml"])
+
+    def test_systemexit_after_stdout_message_keeps_that_message(self) -> None:
+        def fail(_argv) -> int:
+            print("run-record finish failed")
+            raise SystemExit(1)
+
+        exit_code, stdout, detail = self._capture(fail)
+        self.assertEqual(exit_code, 1)
+        self.assertIn("run-record finish failed", stdout)
+        self.assertEqual(detail, "run-record finish failed")
+
+    def test_string_systemexit_code_is_the_detail_verbatim(self) -> None:
+        def fail(_argv) -> int:
+            raise SystemExit("scope_completeness_gate: scope review incomplete")
+
+        exit_code, _stdout, detail = self._capture(fail)
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(detail, "scope_completeness_gate: scope review incomplete")
+
+    def test_systemexit_zero_with_no_output_yields_empty_detail(self) -> None:
+        def clean(_argv) -> int:
+            raise SystemExit(0)
+
+        self.assertEqual(self._capture(clean), (0, "", ""))
+
+    def test_stderr_message_keeps_preference_over_stdout(self) -> None:
+        def fail(_argv) -> int:
+            print("stdout noise")
+            print("run-record finish failed", file=sys.stderr)
+            raise SystemExit(1)
+
+        exit_code, _stdout, detail = self._capture(fail)
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(detail, "run-record finish failed")
+
+    def test_nonzero_return_after_stdout_message_keeps_that_message(self) -> None:
+        def fail(_argv) -> int:
+            print("run-record finish failed")
+            return 1
+
+        exit_code, stdout, detail = self._capture(fail)
+        self.assertEqual(exit_code, 1)
+        self.assertIn("run-record finish failed", stdout)
+        self.assertEqual(detail, "run-record finish failed")
+
+
 class RealPreflightDenialTests(unittest.TestCase):
     """`_run_preflight_and_labels()` with the REAL preflight gate (nothing
     mocked on the failing path) against a worktree whose pre-PR gate denies
