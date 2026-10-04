@@ -51,7 +51,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [e2e] Run the targeted suites (`PYTHONPATH=src python3.14 -m pytest -q
+- [x] 2.1 [e2e] Run the targeted suites (`PYTHONPATH=src python3.14 -m pytest -q
       tests/orchestrator/test_spawnlib.py tests/router/test_spawn_readiness.py`), then the full
       `PYTHONPATH=src python3.14 -m pytest -q` and the golden regression
       `PYTHONPATH=src python3.14 -m worktrail.orchestrator.orchestrate check`. Lint through the
