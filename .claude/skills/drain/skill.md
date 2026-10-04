@@ -51,15 +51,28 @@ construction — nothing accumulates across iterations.
   (`agent_capacity.classify_failure`: auth/billing, the latter also covering "usage limit"/
   "session limit"/"weekly limit"/"fable limit" wording — the last confirmed live 2026-09-07
   against Claude Fable's "You've reached your Fable limit..." refusal, which previously fell
-  through to "transport" and tripped the circuit breaker after only two hits) is `blocked`, not
-  `failed` — it does not count toward `circuit_breaker`, and persists a bare-agent-keyed capacity
-  gate with a `retry_after` parsed from the notice when present, else the class's generic
+  through to "transport" and tripped the circuit breaker after only two hits — plus
+  "insufficient balance", the DeepSeek-compatible cell's 402 account-exhaustion wording,
+  confirmed live 2026-10-03 after an unrelated stderr line landed it in "startup" and two 16s
+  fast-fail iterations tripped the circuit breaker) is `blocked`, not `failed` — it does not
+  count toward `circuit_breaker`, and persists a capacity gate (keyed as described below) with a
+  `retry_after` parsed from the notice when present, else the class's generic
   cooldown (the Fable notice carries no reset timestamp, so it always falls back to the generic
   billing cooldown).
 - **Agent selection re-runs every iteration** in fixed priority order (`[--agent] +
-  --fallback-agent...`, `select_available_agent`) — a gated primary is skipped in favor of a
+  --fallback-agent...`, `select_available_agent`, which returns the chosen cell's harness, model,
+  effort, and the routing target it came from) — a gated primary is skipped in favor of a
   fallback automatically and picked back up automatically once its gate expires. Only
   `capacity_gated` (every configured agent gated at once) actually stops the drain.
+- **A blocked iteration's capacity gate is keyed by its routing target, not the harness name**
+  (`record_capacity_gate`'s `gate_key`, passed as `active_target or active_agent`): under
+  routing, `select_available_agent`'s per-cell capacity check queries `provider_key(target,
+  model)`, and `capacity_gated()` honors a bare target entry for every model of that target —
+  so a harness-keyed gate ("claude") is invisible to a target-keyed query
+  ("claude-deepseek:deepseek-flash[1m]") and the same exhausted cell gets re-selected. Confirmed
+  live 2026-10-03 (`drain-logs/2026-10-03T09-17-01Z.json`): two blocked iterations advanced to
+  the circuit breaker instead of failing over to the next target. Without routing the selection
+  unit is the bare harness name, so the harness name is the key then.
 - **Applies the same `go:risk-*` PR label correction as the interactive path**
   (`pr_labels.ensure_pr_risk_label`) after a spawned one-shot's own `gh pr create`, since neither
   Codex/OpenCode nor a headless `claude -p` session reliably runs the interactive PreToutUse
@@ -88,4 +101,4 @@ construction — nothing accumulates across iterations.
   fallback selection, and `_land_remediation_pr` (the single `land_pr` seam for remediation PRs)
 
 ---
-**Last Updated:** 2026-09-15
+**Last Updated:** 2026-10-04
