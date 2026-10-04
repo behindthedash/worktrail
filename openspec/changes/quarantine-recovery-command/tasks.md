@@ -78,3 +78,10 @@
       `openspec validate quarantine-recovery-command --strict` and `worktrail-compile
       openspec/changes/quarantine-recovery-command`.
       depends: 1.1, 1.2, 2.1
+
+## 4. Folded from 20261003-191621-quarantine-journal-never-cleared
+
+Triage evidence for this fold is in `proposal.md`'s `## Folded from 20261003-191621-quarantine-journal-never-cleared` section.
+
+- [ ] 4.1 worktrail's quarantine selfcheck re-files the same stale-group briefs after earlier ones are closed with archival-only prose, because closing a quarantine brief never clears its journal record.
+      files: src/worktrail/router/quarantine_selfcheck.py, ../run-built-artifact-packaging-parity-gate.json, ../run-openspec-validate-ci-gate.json, openspec/changes/quarantine-recovery-command/proposal.md, tests/router/test_quarantine_selfcheck.py
