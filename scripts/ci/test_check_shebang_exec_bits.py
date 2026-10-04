@@ -32,10 +32,13 @@ def repo(tmp_path: Path) -> Path:
     return r
 
 
-def _add(repo: Path, rel: str, body: str, *, executable: bool) -> None:
+def _add(repo: Path, rel: str, body: str | bytes, *, executable: bool) -> None:
     path = repo / rel
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(body)
+    if isinstance(body, bytes):
+        path.write_bytes(body)
+    else:
+        path.write_text(body)
     _git(repo, "add", rel)
     _git(repo, "update-index", f"--chmod={'+' if executable else '-'}x", rel)
 
@@ -185,6 +188,43 @@ def test_pep758_lookalikes_in_comments_and_strings_are_not_violations(
         "x = 1\n"
     )
     _add(repo, "a.py", body, executable=True)
+    assert _run(repo).returncode == 0
+
+
+def test_non_utf8_pep263_source_is_judged_as_written(repo: Path) -> None:
+    """A declared latin-1 file is valid Python; decoding its bytes as UTF-8
+    would turn `caf\xe9` into a replacement character, making the tree
+    unparseable and hiding the very handler this rule exists to find."""
+    body = (
+        "#!/usr/bin/env python3\n"
+        "# -*- coding: latin-1 -*-\n"
+        "caf\xe9 = 1\n"
+        "try:\n"
+        "    pass\n"
+        "except ValueError, TypeError:\n"
+        "    pass\n"
+    ).encode("latin-1")
+    _add(repo, "pkg/mod.py", body, executable=True)
+    result = _run(repo)
+    assert result.returncode == 1
+    assert "pkg/mod.py: PEP 758" in result.stderr
+
+
+def test_non_utf8_pep263_source_with_parenthesized_handler_passes(
+    repo: Path,
+) -> None:
+    """The compliant control for the case above: same declared encoding, a
+    handler every python3 parses, judged from the same decoded bytes."""
+    body = (
+        "#!/usr/bin/env python3\n"
+        "# -*- coding: latin-1 -*-\n"
+        "caf\xe9 = 1\n"
+        "try:\n"
+        "    pass\n"
+        "except (ValueError, TypeError):\n"
+        "    pass\n"
+    ).encode("latin-1")
+    _add(repo, "pkg/mod.py", body, executable=True)
     assert _run(repo).returncode == 0
 
 

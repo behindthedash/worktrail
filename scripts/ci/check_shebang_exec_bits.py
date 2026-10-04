@@ -82,6 +82,13 @@ def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _git_bytes(repo: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
+    """`_git` without text decoding: blobs are judged as the bytes that ship."""
+    return subprocess.run(
+        ["git", "-C", str(repo), *args], capture_output=True, check=False
+    )
+
+
 def tracked_modes(repo: Path) -> list[tuple[str, str]]:
     """`(mode, path)` for every tracked file, straight from the index."""
     result = _git(repo, "ls-files", "-s")
@@ -97,13 +104,15 @@ def tracked_modes(repo: Path) -> list[tuple[str, str]]:
     return rows
 
 
-def indexed_content(repo: Path, path: str) -> str | None:
+def indexed_content(repo: Path, path: str) -> bytes | None:
     """The INDEXED content of `path`, or None when the index has no such blob.
 
     Read from the index rather than the worktree so an uncommitted local edit
-    can never make this disagree with what CI will lint.
+    can never make this disagree with what CI will lint. The bytes are handed
+    back undecoded: a PEP 263 source file need not be UTF-8, and decoding it
+    here would inspect a lossy mutation of the file rather than the file.
     """
-    result = _git(repo, "show", f":{path}")
+    result = _git_bytes(repo, "show", f":{path}")
     if result.returncode != 0:
         return None
     return result.stdout
@@ -146,27 +155,48 @@ def opens_with_matching_parens(span: str) -> bool:
     return False
 
 
-def has_unparenthesized_multi_except(source: str) -> bool:
+def decoded_source(content: bytes) -> str | None:
+    """`content` decoded by Python's own PEP 263 rules, for source slicing.
+
+    `ast.parse` takes the indexed bytes directly, but `ast.get_source_segment`
+    needs decoded text; both must agree on the encoding, so this applies the
+    same declaration the parser did instead of assuming UTF-8. None when the
+    declaration cannot be honored (unknown encoding, undecodable bytes, a
+    malformed cookie) -- the parser itself refused too, so nothing is judged.
+    """
+    try:
+        encoding, _ = tokenize.detect_encoding(io.BytesIO(content).readline)
+        return content.decode(encoding)
+    except SyntaxError, UnicodeDecodeError, LookupError:
+        return None
+
+
+def has_unparenthesized_multi_except(source: bytes) -> bool:
     """Whether `source` contains a PEP 758 unparenthesized multi-exception handler.
 
     PEP 758 (Python 3.14) accepts `except Foo, Bar:` in place of
     `except (Foo, Bar):`, so a file using it cannot even be parsed by an older
     `python3`. Detection parses the source with the interpreter running this
-    check -- 3.14 in CI and in the policy's own command -- and inspects the
-    handler's own source span, so `except (Foo, Bar):` (valid everywhere) is
-    not reported and neither is `except Foo, Bar:` quoted in a comment or
-    string literal. Source this interpreter cannot parse is not judged.
+    check -- 3.14 in CI and in the policy's own command -- passing the indexed
+    bytes so Python applies its own PEP 263 rules and a declared non-UTF-8
+    file is judged as written. The handler's own source span is then
+    inspected, so `except (Foo, Bar):` (valid everywhere) is not reported and
+    neither is `except Foo, Bar:` quoted in a comment or string literal.
+    Source this interpreter cannot parse is not judged.
     """
     try:
         tree = ast.parse(source)
     except SyntaxError, ValueError:
+        return False
+    text = decoded_source(source)
+    if text is None:
         return False
     for node in ast.walk(tree):
         if not isinstance(node, ast.ExceptHandler) or not isinstance(
             node.type, ast.Tuple
         ):
             continue
-        span = ast.get_source_segment(source, node.type)
+        span = ast.get_source_segment(text, node.type)
         if span is None:
             continue  # no position info: do not report what cannot be verified
         stripped = span.strip()
@@ -176,10 +206,10 @@ def has_unparenthesized_multi_except(source: str) -> bool:
     return False
 
 
-def generic_interpreter_pep758_mismatch(content: str) -> bool:
+def generic_interpreter_pep758_mismatch(content: bytes) -> bool:
     """Whether indexed `content` pairs a generic `python3` shebang with PEP 758."""
     lines = content.splitlines()
-    if not lines or lines[0] != _GENERIC_PYTHON_SHEBANG:
+    if not lines or lines[0] != _GENERIC_PYTHON_SHEBANG.encode("ascii"):
         return False
     return has_unparenthesized_multi_except(content)
 
@@ -203,7 +233,7 @@ def find_violations(repo: Path) -> list[str]:
         content = indexed_content(repo, path)
         if content is None:
             continue
-        shebang = content.startswith("#!")
+        shebang = content.startswith(b"#!")
         if ruff_linted and shebang and mode == _MODE_PLAIN:
             problems.append(
                 f"{path}: EXE001 shebang present but the file is not executable. "
