@@ -1718,13 +1718,100 @@ class TestActiveConflicts(unittest.TestCase):
         self.assertEqual(results, {"live": [], "stale": [], "warnings": []})
 
     def test_missing_run_record_directory_returns_empty_list(self):
+        """A records root that does not exist is not silently clean: the scan
+        reports the exact `<dir>/<repo.name>` it could not read in `warnings`,
+        and the CLI still prints the partitions + warning as JSON while
+        exiting 1. Before the fix both partitions were empty with no trace and
+        rc 0, so "could not look" was indistinguishable from "no conflicts".
+        """
         empty_dir = tempfile.mkdtemp()
+        missing_repo_dir = Path(empty_dir) / "never-seen-repo"
 
-        results = _active_conflicts(
-            empty_dir, repo="/tmp/never-seen-repo", specification="spec-a"
+        out = StringIO()
+        with patch("sys.stdout", out):
+            rc = main(
+                [
+                    "active-conflicts",
+                    "--dir",
+                    empty_dir,
+                    "--repo",
+                    "/tmp/never-seen-repo",
+                    "--specification",
+                    "spec-a",
+                ]
+            )
+
+        results = json.loads(out.getvalue())
+        self.assertEqual(results["live"], [])
+        self.assertEqual(results["stale"], [])
+        self.assertEqual(len(results["warnings"]), 1)
+        self.assertTrue(results["warnings"][0].startswith(str(missing_repo_dir)))
+        self.assertEqual(rc, 1)
+
+    def test_existing_empty_run_record_directory_is_clean_and_exits_zero(self):
+        """Unchanged behavior: a records root that exists but holds no records
+        is a genuine clean scan -- no warnings, exit 0. The exit-1 path is
+        reserved for a root that does not exist, never for an empty one.
+        """
+        repo_dir = Path(self.tmp) / "fake-repo"
+        repo_dir.mkdir()
+
+        out = StringIO()
+        with patch("sys.stdout", out):
+            rc = main(
+                [
+                    "active-conflicts",
+                    "--dir",
+                    self.tmp,
+                    "--repo",
+                    "/tmp/fake-repo",
+                    "--specification",
+                    "spec-a",
+                ]
+            )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            {"live": [], "stale": [], "warnings": []},
         )
 
-        self.assertEqual(results, {"live": [], "stale": [], "warnings": []})
+    def test_existing_root_with_malformed_sibling_still_exits_zero(self):
+        """Unchanged behavior: the missing-root exit 1 is derived from the
+        filesystem predicate alone, never from `warnings` being non-empty --
+        a malformed record skipped on an existing root keeps exit 0, and the
+        only warning is the malformed-record one (no missing-root warning
+        leaks in).
+        """
+        active = _start(self.tmp, request="active run")
+        main(["set", active["path"], "specification", "spec-a"])
+        corrupted = Path(self.tmp) / "fake-repo" / "go-corrupted.yaml"
+        corrupted.write_text(
+            "run_id: go-corrupted\n"
+            "request_summary: fix the thing across a line that\n"
+            "  wraps unexpectedly without quoting\n"
+        )
+
+        out = StringIO()
+        with patch("sys.stdout", out):
+            rc = main(
+                [
+                    "active-conflicts",
+                    "--dir",
+                    self.tmp,
+                    "--repo",
+                    "/tmp/fake-repo",
+                    "--specification",
+                    "spec-a",
+                ]
+            )
+
+        results = json.loads(out.getvalue())
+        self.assertEqual(rc, 0)
+        self.assertEqual({e["run_id"] for e in results["live"]}, {active["run_id"]})
+        self.assertEqual(results["stale"], [])
+        self.assertEqual(len(results["warnings"]), 1)
+        self.assertIn(str(corrupted), results["warnings"][0])
 
     def test_malformed_sibling_record_is_skipped_not_fatal(self):
         """Regression for the field incident this fix addresses: a hand-edited
@@ -1883,11 +1970,17 @@ class TestActiveConflictsPartitioning(unittest.TestCase):
         self.assertEqual(result, {"live": [], "stale": [], "warnings": []})
 
     def test_missing_run_record_directory_returns_empty_partitions(self):
-        result = _active_conflicts_impl(
-            Path(self.tmp) / "never-created", self.repo_root, "spec-a", None
-        )
+        """Direct impl counterpart of the CLI regression: a missing records
+        root yields empty partitions plus a warning naming that exact path
+        (never a silent clean scan)."""
+        missing = Path(self.tmp) / "never-created"
 
-        self.assertEqual(result, {"live": [], "stale": [], "warnings": []})
+        result = _active_conflicts_impl(missing, self.repo_root, "spec-a", None)
+
+        self.assertEqual(result["live"], [])
+        self.assertEqual(result["stale"], [])
+        self.assertEqual(len(result["warnings"]), 1)
+        self.assertTrue(result["warnings"][0].startswith(str(missing)))
 
     def test_malformed_record_is_skipped_not_fatal(self):
         """A hand-edited/generic-YAML record must never abort the scan for
