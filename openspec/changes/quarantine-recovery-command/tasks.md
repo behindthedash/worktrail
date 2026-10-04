@@ -85,3 +85,10 @@ Triage evidence for this fold is in `proposal.md`'s `## Folded from 20261003-191
 
 - [ ] 4.1 worktrail's quarantine selfcheck re-files the same stale-group briefs after earlier ones are closed with archival-only prose, because closing a quarantine brief never clears its journal record.
       files: src/worktrail/router/quarantine_selfcheck.py, ../run-built-artifact-packaging-parity-gate.json, ../run-openspec-validate-ci-gate.json, openspec/changes/quarantine-recovery-command/proposal.md, tests/router/test_quarantine_selfcheck.py
+
+## 5. Folded from 20260930-112541-worktrail-has-orchestrator-groups-stuck
+
+Triage evidence for this fold is in `proposal.md`'s `## Folded from 20260930-112541-worktrail-has-orchestrator-groups-stuck` section.
+
+- [ ] 5.1 worktrail has orchestrator groups stuck in QUARANTINED for spec `built-artifact-packaging-parity-gate` (worktrail-quarantine-selfcheck): tail-3.5 (merge_conflict, 31d); tail-4.2 (merge_conflict, 31d) Triage each group: repair and resume it, or discard it if the work already landed or is no longer wanted. worktrail-selfcheck-fleet-sweep: quarantine worktrail built-artifact-packaging-parity-gate
+      files: ../run-built-artifact-packaging-parity-gate.json
