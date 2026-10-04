@@ -756,6 +756,7 @@ def _apply_env_profile(
     cell: Cell,
     env: dict[str, str],
     env_profiles: Mapping[str, Mapping[str, Any]],
+    declared_env_profiles: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> None:
     """Merge *cell*'s declared env profile into *env*, in place.
 
@@ -765,9 +766,19 @@ def _apply_env_profile(
     that lane removes to keep an ambient key from silently billing the API, and
     the documented guarantee would be defeated by config.
 
-    Every failure is `OperatorConfigError`: a profile that cannot be resolved
-    is operator configuration, and a worker launched without its endpoint makes
-    no API call while still exiting 0.
+    Every failure is `OperatorConfigError`, and a worker launched without its
+    endpoint makes no API call while still exiting 0 -- but only a *populated*
+    `env_profiles` table missing the declared name is operator configuration.
+    An empty/absent resolved table is attributed to the resolver/caller
+    instead: the table the cell was selected from is the one that failed to
+    carry a profile the routing file may well declare, so instructing the
+    operator to edit that file would name the wrong party.
+
+    *declared_env_profiles* is the loader's (`load_policy`'s) validated view of
+    the winning routing source, consulted for **membership only** -- it never
+    influences resolution, which reads `env_profiles` alone. When it declares
+    the named profile, the empty-table error says so, so the operator learns
+    the routing file is innocent.
     """
     name = _profile_name(cell)
     if name is None:
@@ -778,6 +789,26 @@ def _apply_env_profile(
             f"routing target {cell.target!r} declares both auth.env and "
             f"auth.profile -- they name two sources for one auth lane; remove "
             f"one from its routing.targets entry in {resolved_routing_file_path()}"
+        )
+    if not env_profiles:
+        # The resolved table carries nothing, so the routing file cannot be
+        # blamed for this cell: report the fault where it is observable.
+        declares_name = (
+            isinstance(declared_env_profiles, Mapping) and name in declared_env_profiles
+        )
+        raise OperatorConfigError(
+            f"routing target {cell.target!r} declares auth.profile {name!r}, but "
+            "the resolved routing table (resolved from "
+            f"{resolved_routing_file_path()}) carries no env_profiles table, so "
+            "no profile can resolve from it -- this is a resolver/caller fault "
+            "(the table was dropped before spawn or never threaded into the "
+            "spawn)"
+            + (
+                f"; the routing file does declare {name!r}, which the resolved "
+                "table dropped"
+                if declares_name
+                else ""
+            )
         )
     profile = env_profiles.get(name)
     if not isinstance(profile, Mapping):
@@ -802,6 +833,7 @@ def build_child_env(
     base_env: Mapping[str, str],
     *,
     env_profiles: Mapping[str, Mapping[str, Any]] | None = None,
+    declared_env_profiles: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, str]:
     """The auth lane *cell*'s harness/pool draws from (design D6), layered onto
     a copy of *base_env*.
@@ -818,9 +850,16 @@ def build_child_env(
     than spawning an unauthenticated worker. Every other harness/pool
     combination returns *base_env* unchanged -- opencode/codex auth is
     unaffected by pool (D6), though a profile on those harnesses still applies.
+
+    *declared_env_profiles* is **attribution-only**: the loader's view of the
+    winning routing source, forwarded to `_apply_env_profile` so an empty
+    resolved table can say whether the routing file declares the profile. It
+    is never consulted for resolution -- `env_profiles or {}` normalizes the
+    resolved table (None and `{}` are the same empty-table case) and is the
+    only table a profile resolves from.
     """
     env = dict(base_env)
-    _apply_env_profile(cell, env, env_profiles or {})
+    _apply_env_profile(cell, env, env_profiles or {}, declared_env_profiles)
     if cell.harness != "claude":
         return env
     if cell.pool == "subscription":
@@ -1293,7 +1332,14 @@ def spawn_agent(
     Raises `subprocess.TimeoutExpired` on a wall-clock timeout.
     """
     _ensure_agent_memory_ignored(cwd, log)
-    routing = resolve_routing(load_policy(worktrail_home()))
+    policy = load_policy(worktrail_home())
+    routing = resolve_routing(policy)
+    # The loader's own view of the winning routing source, carried only so an
+    # empty resolved table's error can say whether the file declares the
+    # profile (attribution, never resolution -- see `build_child_env`). The
+    # single load is hoisted: a second read could diverge from the table that
+    # chose this cell, and it would repeat the I/O on every hop.
+    declared_env_profiles = (policy.get("routing") or {}).get("env_profiles")
 
     def _select() -> Cell:
         return select_cell(
@@ -1383,6 +1429,7 @@ def spawn_agent(
                 current_cell,
                 env,
                 env_profiles=routing.get("env_profiles") or {},
+                declared_env_profiles=declared_env_profiles,
             ),
             oc_data_dir,
         )
