@@ -354,6 +354,16 @@ agents or writes task files — that is `orchestrator/`'s job.
   (`different purpose:` / `user approved:`). `cmd_scope_review` rejects any other reason at write
   time with `SystemExit`, and `scope_review_failures()` re-checks the same tuple at gate time so a
   hand-edited record is still caught. Extend the tuple, never the two call sites separately.
+- **`set-list PATH KEY [VALUE ...]` is the only invocation that writes a list field, and the repair
+  path for a list-typed field left holding a scalar.** `set` stores its VALUE verbatim, so
+  `set PATH handoffs_consumed '["a","b"]'` writes the **string** `'["a","b"]'`, and every appender
+  into that field — `append`, `intervention` (`interventions`), and `record_decision_event`
+  (`pending_decisions`) — then refuses to touch it (brief 20261003-204455, where the documented
+  recovery from `append` was itself a dead end). `cmd_set_list` writes `list(VALUES)` (no values
+  produces `[]`, so an emptied field is expressible) and rejects `status`, which is a phase, not
+  a list, with `SystemExit` naming `set`. All three append refusals share
+  `_scalar_list_field_hint(key)`, which names `set-list` — the old `append` message said "use
+  `set`", a command that cannot perform the repair.
 - **`capacity-gate --retry-after` is validated as ISO-8601 and stored verbatim, never slug-sanitized.**
   `cmd_capacity_gate` runs it through `_iso_retry_after` (a `datetime.fromisoformat` check that
   raises `SystemExit` on a non-ISO value) rather than `_safe_provider`, which is a slug sanitizer
@@ -534,7 +544,9 @@ agents or writes task files — that is `orchestrator/`'s job.
   validator must never open a profile file — reads belong at spawn and `--check` time.
 - `router/run_record.py` — `finish()`'s ten-state enforcement and its two code-enforced gates;
   `cmd_scope_review` write-time reason validation and `OUT_OF_SCOPE_REASON_PREFIXES`;
-  `cmd_capacity_gate`'s `_iso_retry_after` timestamp validation; `_load_lenient()`, the
+  `cmd_capacity_gate`'s `_iso_retry_after` timestamp validation; `cmd_set_list`'s list write
+  (and its `status` refusal) plus `_scalar_list_field_hint()`, the refusal all three
+  list-appenders raise through; `_load_lenient()`, the
   skip-and-warn wrapper around the raising `_load()` that every directory-wide scan (including
   `reconcile_pr_labels.load_run_index()`, `check_deferred_work_handoff.py`, and
   `check_durable_artifact_capture_gate.py`) should use instead of the raising loader
@@ -583,4 +595,4 @@ agents or writes task files — that is `orchestrator/`'s job.
   best-effort writers that never affect what they record
 
 ---
-**Last Updated:** 2026-10-03
+**Last Updated:** 2026-10-04

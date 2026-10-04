@@ -24,6 +24,10 @@ Subcommands:
          [--routing-decision JSON] [--gates "gate_a,gate_b"]
                                                -> prints {run_id, path}
   set    PATH KEY VALUE                       -> set/replace a top-level field
+  set-list PATH KEY [VALUE ...]               -> set/replace a field with a list
+                                               (the only way to write a list, and
+                                               the repair path for a list-typed
+                                               field left holding a scalar)
   append PATH KEY VALUE                       -> append VALUE to a list field
   intervention PATH --category C --minutes N --tokens N --note "..."
          -> log a manual rescue (process-friction telemetry for retros)
@@ -545,12 +549,34 @@ def cmd_start(args: argparse.Namespace) -> int:
     return 0
 
 
+def _scalar_list_field_hint(key: str) -> str:
+    """Refusal for appending to a scalar-holding list field, naming the real repair.
+
+    `set` stores its VALUE verbatim, so it cannot produce a list -- `set-list` is
+    the only invocation that replaces a scalar with a list. The old "use `set`"
+    message pointed at a command that could not do the job (worktrail brief
+    20261003-204455: `set PATH handoffs_consumed '["a","b"]'` stored a string, and
+    the documented recovery from `append` was a dead end).
+    """
+    return f"field '{key}' is scalar; use `set-list` to replace it with a list"
+
+
 def cmd_set(args: argparse.Namespace) -> int:
     path = Path(args.path)
     record = _load(path)
     if args.key == "status" and args.value not in PHASES:
         raise SystemExit(f"invalid phase '{args.value}'; allowed: {PHASES}")
     record[args.key] = args.value
+    _save(path, record)
+    return 0
+
+
+def cmd_set_list(args: argparse.Namespace) -> int:
+    path = Path(args.path)
+    record = _load(path)
+    if args.key == "status":
+        raise SystemExit("field 'status' is a phase, not a list; use `set`")
+    record[args.key] = list(args.values)
     _save(path, record)
     return 0
 
@@ -564,7 +590,7 @@ def cmd_append(args: argparse.Namespace) -> int:
     elif isinstance(cur, list):
         cur.append(args.value)
     else:
-        raise SystemExit(f"field '{args.key}' is scalar; use `set`")
+        raise SystemExit(_scalar_list_field_hint(args.key))
     _save(path, record)
     return 0
 
@@ -644,7 +670,7 @@ def cmd_intervention(args: argparse.Namespace) -> int:
     elif isinstance(cur, list):
         cur.append(entry)
     else:
-        raise SystemExit("field 'interventions' is scalar; cannot append")
+        raise SystemExit(_scalar_list_field_hint("interventions"))
     _save(path, record)
     print(json.dumps({"logged": entry}))
     return 0
@@ -952,7 +978,7 @@ def record_decision_event(
     if entries is None:
         entries = record["pending_decisions"] = []
     elif not isinstance(entries, list):
-        raise SystemExit("field 'pending_decisions' is scalar; cannot append")
+        raise SystemExit(_scalar_list_field_hint("pending_decisions"))
     for entry in entries:
         if _decision_entry_matches(entry, event, decision_id):
             return {
@@ -2467,6 +2493,12 @@ def main(argv=None) -> int:
     s.add_argument("key")
     s.add_argument("value")
     s.set_defaults(func=cmd_set)
+
+    s = sub.add_parser("set-list")
+    s.add_argument("path")
+    s.add_argument("key")
+    s.add_argument("values", nargs="*")
+    s.set_defaults(func=cmd_set_list)
 
     s = sub.add_parser("append")
     s.add_argument("path")
