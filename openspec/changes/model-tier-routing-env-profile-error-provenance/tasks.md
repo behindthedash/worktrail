@@ -1,6 +1,6 @@
 ## 1. Fix the attribution and pin it with regression tests
 
-- [ ] 1.1 (Requirements: A worker environment can be supplied from a declared profile without
+- [x] 1.1 (Requirements: A worker environment can be supplied from a declared profile without
       storing values) Implement design D1-D3 in
       `src/worktrail/orchestrator/spawnlib.py` and pin the contract in
       `tests/orchestrator/test_spawnlib.py` and `tests/router/test_spawn_readiness.py`.
