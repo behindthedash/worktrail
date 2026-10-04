@@ -290,40 +290,32 @@ def render_pr_body(
     )
 
 
-def _append_git_failure_detail(
-    detail_out: list[str] | None,
-    subcommand: str,
-    result: subprocess.CompletedProcess[str],
-) -> None:
-    """Append `<subcommand> failed: <output>` to `detail_out` when the caller
-    supplied one, quoting the failing subcommand's stderr (falling back to
-    stdout) -- the composition `_push()` already uses for its own refusal
-    detail. A failed subcommand that printed nothing still contributes a
-    non-empty, cause-identifying detail, so all four `_commit_pending()`
-    refusal causes stay distinguishable in `LandOutcome.detail`."""
-    if detail_out is None:
-        return
+def _git_failure_detail(
+    subcommand: str, result: subprocess.CompletedProcess[str]
+) -> str:
+    """`<subcommand> failed: <output>` -- quoting the failing subcommand's
+    stderr (falling back to stdout), the composition `_push()` already uses
+    for its own refusal detail. A failed subcommand that printed nothing
+    still contributes a non-empty, cause-identifying detail, so all four
+    `_commit_pending()` refusal causes stay distinguishable in
+    `LandOutcome.detail`."""
     output = (result.stderr or result.stdout or "").strip()
-    detail_out.append(f"{subcommand} failed: {output or '(no output)'}")
+    return f"{subcommand} failed: {output or '(no output)'}"
 
 
 def _commit_pending(
-    repo: Path,
-    commit_message: str | None,
-    runner: Runner,
-    detail_out: list[str] | None = None,
-) -> str | None:
-    """Commit a dirty tree, or refuse (`"dirty_tree"`) when no
+    repo: Path, commit_message: str | None, runner: Runner
+) -> tuple[str | None, str | None]:
+    """Commit a dirty tree, or refuse (`("dirty_tree", detail)`) when no
     `commit_message` was supplied -- see module docstring step 1. Never
-    touches a clean tree. Returns the refused-step name, or None on success.
+    touches a clean tree. Returns `(refused_step, detail)`, mirroring
+    `_ensure_compile_markers`; `(None, None)` on success.
 
     All four refusal causes -- a failed `git status`, no `commit_message`
     supplied, a failed `git add`, a failed `git commit` -- keep the one
-    documented `"dirty_tree"` step name and are told apart by the
-    cause-specific text appended to `detail_out` when the caller supplies one
-    (the same out-param `_push()` uses, so every existing caller/mock of this
-    signature keeps working unchanged); the three git failures quote the
-    failing subcommand's stderr, falling back to stdout.
+    documented `"dirty_tree"` step name and are told apart by the returned
+    detail: the three git failures quote the failing subcommand's stderr,
+    falling back to stdout, and a missing message names itself.
 
     Fails closed on a `git status` failure (transient `index.lock`
     contention, unreadable index, ...), matching `_ensure_compile_markers`'s
@@ -333,27 +325,24 @@ def _commit_pending(
     exists to close)."""
     status = _git(repo, runner, "status", "--porcelain")
     if status.returncode != 0:
-        _append_git_failure_detail(detail_out, "git status --porcelain", status)
-        return "dirty_tree"
+        return "dirty_tree", _git_failure_detail("git status --porcelain", status)
     if not status.stdout.strip():
-        return None
+        return None, None
     if not commit_message:
-        if detail_out is not None:
-            detail_out.append(
-                "tree has uncommitted changes but no commit_message was "
-                "supplied -- pass one so the pipeline commits them before "
-                "pushing"
-            )
-        return "dirty_tree"
+        return (
+            "dirty_tree",
+            (
+                "tree has uncommitted changes but no commit_message was supplied "
+                "-- pass one so the pipeline commits them before pushing"
+            ),
+        )
     add = _git(repo, runner, "add", "-A")
     if add.returncode != 0:
-        _append_git_failure_detail(detail_out, "git add -A", add)
-        return "dirty_tree"
+        return "dirty_tree", _git_failure_detail("git add -A", add)
     commit = _git(repo, runner, "commit", "-m", commit_message)
     if commit.returncode != 0:
-        _append_git_failure_detail(detail_out, "git commit -m", commit)
-        return "dirty_tree"
-    return None
+        return "dirty_tree", _git_failure_detail("git commit -m", commit)
+    return None, None
 
 
 def _ensure_compile_markers(
@@ -567,9 +556,11 @@ def _push(
     outcome that promises an untouched remote. On a genuine `"push"`
     refusal, git's own stderr (falling back to stdout) is appended to
     `detail_out` when the caller supplies one, so the caller never surfaces
-    a bare `null` for a failure git already explained -- kept as an
-    out-param rather than widening the return type so every existing
-    caller/mock of this signature keeps working unchanged.
+    a bare `null` for a failure git already explained. A non-zero exit with
+    nothing on either stream still appends a cause-identifying detail --
+    a real `git push` can fail silently, and that must not degrade back to
+    `detail=None`. Kept as an out-param rather than widening the return type
+    so every existing caller/mock of this signature keeps working unchanged.
 
     Always pushes with an explicit `HEAD:<branch>` refspec rather than a
     bare `push`/`push -u remote branch`: a branch created via
@@ -587,8 +578,7 @@ def _push(
         return None
     if detail_out is not None:
         detail = (result.stderr or result.stdout or "").strip()
-        if detail:
-            detail_out.append(detail)
+        detail_out.append(detail or f"git push to {remote} failed: (no output)")
     return "push"
 
 
@@ -1532,14 +1522,9 @@ def land_pr(request: LandRequest) -> LandOutcome:
             "(resumed run); the gate ran before that push"
         )
     else:
-        commit_detail: list[str] = []
-        refused = _commit_pending(repo, request.commit_message, runner, commit_detail)
+        refused, detail = _commit_pending(repo, request.commit_message, runner)
         if refused:
-            return LandOutcome(
-                outcome="refused",
-                refused_step=refused,
-                detail=commit_detail[0] if commit_detail else None,
-            )
+            return LandOutcome(outcome="refused", refused_step=refused, detail=detail)
 
         refused, detail = _ensure_compile_markers(repo, request.base_branch, runner)
         if refused:
@@ -1599,7 +1584,9 @@ def land_pr(request: LandRequest) -> LandOutcome:
             return LandOutcome(
                 outcome="refused",
                 refused_step=refused,
-                detail=push_detail[0] if push_detail else None,
+                detail=push_detail[0]
+                if push_detail
+                else f"git push to {push_remote} failed: (no output)",
             )
         gate_evidence = "worktrail-preflight run: PASS"
 

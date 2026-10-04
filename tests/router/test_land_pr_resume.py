@@ -163,7 +163,7 @@ class LandPrResumeTests(unittest.TestCase):
             mock.patch.object(land_pr, "load_policy", return_value={}),
             mock.patch.object(land_pr, "preflight") as preflight_mock,
             mock.patch.object(
-                land_pr, "_commit_pending", return_value=None
+                land_pr, "_commit_pending", return_value=(None, None)
             ) as commit_mock,
             mock.patch.object(land_pr, "_push", return_value=None) as push_mock,
             mock.patch.object(

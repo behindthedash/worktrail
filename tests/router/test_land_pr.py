@@ -144,17 +144,17 @@ class RenderPrBodyTests(unittest.TestCase):
 class CommitPendingTests(unittest.TestCase):
     def test_dirty_tree_without_commit_message_refuses(self) -> None:
         runner = FakeRun().script("git", "status", "--porcelain", stdout="M f.py\n")
-        detail: list[str] = []
-        result = land_pr._commit_pending(Path("/repo"), None, runner, detail)
-        self.assertEqual(result, "dirty_tree")
+        refused, detail = land_pr._commit_pending(Path("/repo"), None, runner)
+        self.assertEqual(refused, "dirty_tree")
         self.assertFalse(runner.called_with_prefix("git", "commit"))
         self.assertTrue(detail)
-        self.assertIn("commit_message", detail[0])
+        self.assertIn("commit_message", detail)
 
     def test_clean_tree_never_touches_commit(self) -> None:
         runner = FakeRun().script("git", "status", "--porcelain", stdout="")
-        result = land_pr._commit_pending(Path("/repo"), "msg", runner)
-        self.assertIsNone(result)
+        refused, detail = land_pr._commit_pending(Path("/repo"), "msg", runner)
+        self.assertIsNone(refused)
+        self.assertIsNone(detail)
         self.assertFalse(runner.called_with_prefix("git", "add"))
 
     def test_dirty_tree_with_commit_message_commits(self) -> None:
@@ -164,19 +164,30 @@ class CommitPendingTests(unittest.TestCase):
             .script("git", "add", "-A")
             .script("git", "commit", "-m")
         )
-        result = land_pr._commit_pending(Path("/repo"), "chore: commit", runner)
-        self.assertIsNone(result)
+        refused, detail = land_pr._commit_pending(
+            Path("/repo"), "chore: commit", runner
+        )
+        self.assertIsNone(refused)
+        self.assertIsNone(detail)
         self.assertTrue(runner.called_with_prefix("git", "commit", "-m"))
 
     def test_failed_git_status_fails_closed(self) -> None:
         runner = FakeRun().script(
             "git", "status", "--porcelain", returncode=1, stderr="index.lock"
         )
-        detail: list[str] = []
-        result = land_pr._commit_pending(Path("/repo"), "msg", runner, detail)
-        self.assertEqual(result, "dirty_tree")
-        self.assertIn("git status --porcelain", detail[0])
-        self.assertIn("index.lock", detail[0])
+        refused, detail = land_pr._commit_pending(Path("/repo"), "msg", runner)
+        self.assertEqual(refused, "dirty_tree")
+        self.assertIn("git status --porcelain", detail)
+        self.assertIn("index.lock", detail)
+
+    def test_git_failure_with_no_output_still_names_the_subcommand(self) -> None:
+        """A git process that exits non-zero without printing anything must
+        still produce a non-empty, cause-identifying detail."""
+        runner = FakeRun().script("git", "status", "--porcelain", returncode=1)
+        refused, detail = land_pr._commit_pending(Path("/repo"), "msg", runner)
+        self.assertEqual(refused, "dirty_tree")
+        self.assertIn("git status --porcelain", detail)
+        self.assertIn("(no output)", detail)
 
     def test_four_refusal_causes_have_distinguishable_details(self) -> None:
         """The four causes keep the one documented `"dirty_tree"` step name,
@@ -219,15 +230,14 @@ class CommitPendingTests(unittest.TestCase):
         details: dict[str, str] = {}
         for cause, (runner, message, expected) in cases.items():
             with self.subTest(cause=cause):
-                detail: list[str] = []
-                self.assertEqual(
-                    land_pr._commit_pending(Path("/repo"), message, runner, detail),
-                    "dirty_tree",
+                refused, detail = land_pr._commit_pending(
+                    Path("/repo"), message, runner
                 )
+                self.assertEqual(refused, "dirty_tree")
                 self.assertTrue(detail, "refusal carried no detail")
                 for fragment in expected:
-                    self.assertIn(fragment, detail[0])
-                details[cause] = detail[0]
+                    self.assertIn(fragment, detail)
+                details[cause] = detail
         self.assertEqual(len(set(details.values())), len(cases), details)
 
 
@@ -886,7 +896,7 @@ class LandPrOrchestrationTests(unittest.TestCase):
 
     def _patched(self, **overrides):
         defaults = {
-            "_commit_pending": None,
+            "_commit_pending": (None, None),
             "_ensure_compile_markers": (None, None),
             "_run_preflight_and_labels": (None, ["go:risk-low"], None),
             "_current_branch": "feature",
@@ -910,8 +920,8 @@ class LandPrOrchestrationTests(unittest.TestCase):
         }
         defaults.update(overrides)
         # An `_UNPATCHED` override means "do not patch this here" -- the
-        # test supplies its own outer patch for that seam (`None` is a real
-        # return value for e.g. `_commit_pending`).
+        # test supplies its own outer patch for that seam (`(None, None)` is
+        # a real return value for e.g. `_commit_pending`).
         patchers = [
             mock.patch.object(land_pr, name, return_value=value)
             for name, value in defaults.items()
@@ -934,7 +944,7 @@ class LandPrOrchestrationTests(unittest.TestCase):
 
     def test_invalid_route_refuses_before_touching_anything(self) -> None:
         request = _land_request(route="Z")
-        outcome, spy = self._run(request, _commit_pending=None)
+        outcome, spy = self._run(request, _commit_pending=(None, None))
         self.assertEqual(outcome.outcome, "refused")
         self.assertEqual(outcome.refused_step, "route")
         self.assertEqual(spy.calls, [])
@@ -942,9 +952,12 @@ class LandPrOrchestrationTests(unittest.TestCase):
     def test_dirty_tree_refuses_and_never_pushes(self) -> None:
         request = _land_request()
         with mock.patch.object(land_pr, "_push") as push_mock:
-            outcome, _ = self._run(request, _commit_pending="dirty_tree")
+            outcome, _ = self._run(
+                request, _commit_pending=("dirty_tree", "mock dirty-tree detail")
+            )
         self.assertEqual(outcome.outcome, "refused")
         self.assertEqual(outcome.refused_step, "dirty_tree")
+        self.assertEqual(outcome.detail, "mock dirty-tree detail")
         push_mock.assert_not_called()
 
     def test_dirty_tree_refusal_through_real_commit_pending_carries_detail(
