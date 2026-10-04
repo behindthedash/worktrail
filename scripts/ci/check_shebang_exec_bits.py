@@ -70,20 +70,14 @@ _GENERIC_PYTHON_SHEBANG = "#!/usr/bin/env python3"
 _PINNED_PYTHON_SHEBANG = "#!/usr/bin/env python3.14"
 
 
-def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", "-C", str(repo), *args],
-        capture_output=True,
-        text=True,
-        # Executables include binaries; replacement characters keep a blob that
-        # is not text from crashing the scan (and it can never be a match).
-        errors="replace",
-        check=False,
-    )
-
-
 def _git_bytes(repo: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
-    """`_git` without text decoding: blobs are judged as the bytes that ship."""
+    """`git` output as raw bytes.
+
+    Used for both the index listing and blob reads, and deliberately never
+    text-decoded here: `-z` keeps every path verbatim, and a blob is judged as
+    the bytes that ship (executables include binaries, and a PEP 263 source
+    need not be UTF-8).
+    """
     return subprocess.run(
         ["git", "-C", str(repo), *args], capture_output=True, check=False
     )
@@ -91,13 +85,21 @@ def _git_bytes(repo: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
 
 def tracked_modes(repo: Path) -> list[tuple[str, str]]:
     """`(mode, path)` for every tracked file, straight from the index."""
-    result = _git(repo, "ls-files", "-s")
+    result = _git_bytes(repo, "ls-files", "-s", "-z")
     if result.returncode != 0:
-        raise RuntimeError(f"git ls-files failed in {repo}: {result.stderr.strip()}")
+        raise RuntimeError(
+            "git ls-files failed in "
+            f"{repo}: {result.stderr.decode(errors='replace').strip()}"
+        )
+    # `-z` rather than line output: line output C-quotes a path that is not
+    # plain ASCII (`"caf\303\251.py"`), and the quoted spelling resolves to no
+    # blob -- every such file would be silently skipped. NUL-separated paths
+    # are verbatim; surrogateescape keeps any byte sequence round-trippable.
+    text = result.stdout.decode("utf-8", errors="surrogateescape")
     rows: list[tuple[str, str]] = []
-    for line in result.stdout.splitlines():
+    for entry in text.split("\0"):
         # "<mode> <sha> <stage>\t<path>"
-        meta, _, path = line.partition("\t")
+        meta, _, path = entry.partition("\t")
         if not path:
             continue
         rows.append((meta.split()[0], path))

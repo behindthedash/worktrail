@@ -228,6 +228,16 @@ def test_non_utf8_pep263_source_with_parenthesized_handler_passes(
     assert _run(repo).returncode == 0
 
 
+def test_non_ascii_path_is_scanned(repo: Path) -> None:
+    """`git ls-files` C-quotes a non-ASCII path in line output (`"caf\\303\\251.py"`),
+    and the quoted spelling resolves to no blob -- the index must be read
+    NUL-separated (`-z`, verbatim paths) or the file is silently skipped."""
+    _add(repo, "pkg/caf\xe9.py", _PEP758_BODY, executable=True)
+    result = _run(repo)
+    assert result.returncode == 1
+    assert "pkg/caf\xe9.py: PEP 758" in result.stderr
+
+
 def test_nested_pep758_handler_is_found(repo: Path) -> None:
     body = (
         "#!/usr/bin/env python3\n"
