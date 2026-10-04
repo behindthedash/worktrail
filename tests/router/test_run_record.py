@@ -397,6 +397,62 @@ class TestLifecycle(unittest.TestCase):
         with self.assertRaises(SystemExit):
             main(["set", res["path"], "status", "almost-done"])
 
+    def test_set_list_replaces_a_scalar_with_a_real_list(self):
+        # `set` writes its VALUE verbatim, so a list-typed field holding a scalar
+        # (e.g. a JSON blob written by `set handoffs_consumed '["a","b"]'`) had no
+        # repair path; `set-list` is that path.
+        res = _start(self.tmp)
+        main(["set", res["path"], "handoffs_consumed", '["a","b"]'])
+        self.assertEqual(_load(Path(res["path"]))["handoffs_consumed"], '["a","b"]')
+        main(["set-list", res["path"], "handoffs_consumed", "a", "b"])
+        self.assertEqual(_load(Path(res["path"]))["handoffs_consumed"], ["a", "b"])
+        # Append works against the repaired field; the old refusal was a dead end.
+        main(["append", res["path"], "handoffs_consumed", "c"])
+        self.assertEqual(_load(Path(res["path"]))["handoffs_consumed"], ["a", "b", "c"])
+
+    def test_set_list_with_no_values_writes_an_empty_list(self):
+        res = _start(self.tmp)
+        main(["set", res["path"], "handoffs_consumed", "[]"])
+        main(["set-list", res["path"], "handoffs_consumed"])
+        self.assertEqual(_load(Path(res["path"]))["handoffs_consumed"], [])
+
+    def test_set_list_rejects_the_status_phase_field(self):
+        res = _start(self.tmp)
+        with self.assertRaises(SystemExit) as ctx:
+            main(["set-list", res["path"], "status", "executing"])
+        self.assertIn("phase", str(ctx.exception))
+
+    def test_append_scalar_refusal_names_set_list(self):
+        res = _start(self.tmp)
+        main(["set", res["path"], "handoffs_consumed", "one"])
+        with self.assertRaises(SystemExit) as ctx:
+            main(["append", res["path"], "handoffs_consumed", "two"])
+        self.assertIn("set-list", str(ctx.exception))
+
+    def test_sibling_appenders_name_set_list_on_a_scalar_field(self):
+        res = _start(self.tmp)
+        main(["set", res["path"], "pending_decisions", "not-a-list"])
+        with self.assertRaises(SystemExit) as ctx:
+            record_decision_event(res["path"], "asked", "dec-1")
+        self.assertIn("set-list", str(ctx.exception))
+        main(["set", res["path"], "interventions", "not-a-list"])
+        with self.assertRaises(SystemExit) as ctx:
+            main(
+                [
+                    "intervention",
+                    res["path"],
+                    "--category",
+                    "other",
+                    "--minutes",
+                    "1",
+                    "--tokens",
+                    "1",
+                    "--note",
+                    "worked around a defect",
+                ]
+            )
+        self.assertIn("set-list", str(ctx.exception))
+
     def test_finish_requires_explicit_completion_state(self):
         res = _start(self.tmp)
         with self.assertRaises(SystemExit):
