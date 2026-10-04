@@ -20,6 +20,7 @@ import io
 import json
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from worktrail.orchestrator import live
@@ -232,6 +233,44 @@ class PlanPinSurvivesJournalRewrite(unittest.TestCase):
             rebuilt3: dict = {"spec_id": "x"}
             live._preserve_plan_pin(nonobj, rebuilt3)
             self.assertEqual(rebuilt3, {"spec_id": "x"})
+
+    def test_pin_keys_survive_through_the_generalized_helper(self):
+        """The carry-forward is now a declared-key operation: this is the
+        mechanism the rest of the class guards, exercised directly with the
+        pin-only tuple -- and nothing outside it."""
+        with tempfile.TemporaryDirectory() as td:
+            jp = Path(td) / "run-x.json"
+            jp.write_text(
+                json.dumps(
+                    {
+                        "plan_fingerprint": "a" * 64,
+                        "plan_fingerprints": ["a" * 64],
+                        "groups": {"base": {"state": "QUARANTINED"}},
+                        "integrate_complete": True,
+                    }
+                )
+            )
+            rebuilt = {"spec_id": "x", "entries": []}
+            live._carry_forward_keys(jp, rebuilt, live.PLAN_PIN_KEYS)
+            self.assertEqual(rebuilt["plan_fingerprint"], "a" * 64)
+            self.assertEqual(rebuilt["plan_fingerprints"], ["a" * 64])
+            self.assertNotIn("groups", rebuilt)
+            self.assertNotIn("integrate_complete", rebuilt)
+
+    def test_preserve_plan_pin_delegates_to_the_generalized_helper(self):
+        """`_preserve_plan_pin` keeps its name and pin-only contract for its
+        existing callers (the pipeline scheduler's `_record()`), wired through
+        `_carry_forward_keys` rather than a second copy of the loop."""
+        with tempfile.TemporaryDirectory() as td:
+            jp = Path(td) / "run-x.json"
+            jp.write_text(json.dumps({"plan_fingerprint": "a" * 64}))
+            rebuilt: dict = {"spec_id": "x"}
+            with unittest.mock.patch.object(
+                live, "_carry_forward_keys", wraps=live._carry_forward_keys
+            ) as spy:
+                live._preserve_plan_pin(jp, rebuilt)
+            spy.assert_called_once_with(jp, rebuilt, live.PLAN_PIN_KEYS)
+            self.assertEqual(rebuilt["plan_fingerprint"], "a" * 64)
 
     def test_no_unrelated_stale_keys_are_resurrected(self):
         """Only the pin keys carry over -- a general merge would resurrect state
