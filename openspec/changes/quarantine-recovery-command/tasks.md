@@ -92,3 +92,10 @@ Triage evidence for this fold is in `proposal.md`'s `## Folded from 20260930-112
 
 - [ ] 5.1 worktrail has orchestrator groups stuck in QUARANTINED for spec `built-artifact-packaging-parity-gate` (worktrail-quarantine-selfcheck): tail-3.5 (merge_conflict, 31d); tail-4.2 (merge_conflict, 31d) Triage each group: repair and resume it, or discard it if the work already landed or is no longer wanted. worktrail-selfcheck-fleet-sweep: quarantine worktrail built-artifact-packaging-parity-gate
       files: ../run-built-artifact-packaging-parity-gate.json
+
+## 6. Folded from 20260930-112546-worktrail-has-orchestrator-groups-stuck
+
+Triage evidence for this fold is in `proposal.md`'s `## Folded from 20260930-112546-worktrail-has-orchestrator-groups-stuck` section.
+
+- [ ] 6.1 worktrail has orchestrator groups stuck in QUARANTINED for spec `openspec-validate-ci-gate` (worktrail-quarantine-selfcheck): base/dropped (task_failure, 38d); tail-4.1 (merge_conflict, 38d) Triage each group: repair and resume it, or discard it if the work already landed or is no longer wanted. worktrail-selfcheck-fleet-sweep: quarantine worktrail openspec-validate-ci-gate
+      files: ../run-openspec-validate-ci-gate.json
