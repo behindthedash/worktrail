@@ -88,15 +88,12 @@
 
 ## 8. Verification
 
-- [ ] 8.1 [e2e] Run the focused WorkTrail unit tests, then `PYTHONPATH=src pytest -q`,
+- [x] 8.1 [e2e] Run the focused WorkTrail unit tests, then `PYTHONPATH=src pytest -q`,
       `ruff check .` and `ruff format --check .`, and
       `openspec validate pullhook-handoff-ingress --strict`.
-      Blocked: the full-suite run stalls in the unrelated existing test
-      `ResumeValidatesAfterReconcile::test_resume_does_not_abort_on_files_less_completed_task`.
-      A faulthandler trace shows it waiting in `spawnlib.spawn_agent()` while
-      `live_run_real()` compiles the run plan; this test's injected fake spawn is not
-      passed to that compile call. The focused ingress tests, Ruff checks, and strict
-      OpenSpec validation pass.
+      Evidence: focused workqueue run 102 passed; full `PYTHONPATH=src python3.14 -m pytest -q`
+      7175 passed, 2 skipped, 417 subtests passed in 17:49; `ruff check .` and
+      `ruff format --check .` clean (1702 files); `openspec validate ... --strict` valid.
 
 - [x] 8.2 [e2e] Against a test PullHook channel and a temporary git-backed queue, publish
       one Datalena fixture, run ingress, and verify one canonical brief + one materialization
