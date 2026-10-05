@@ -1621,6 +1621,39 @@ def test_gate_snapshot_reports_a_model_cell_gated_by_a_bare_target_entry(tmp_pat
     assert snapshot["retry_after"] == retry_after.isoformat()
 
 
+def test_gate_snapshot_resolves_the_callers_key_verbatim(tmp_path):
+    # _safe_identifier is display-only: a model name it rewrites must still
+    # resolve its own exact cache entry, or a cell gated by a model-qualified
+    # entry (no bare target entry in sight) is reported as having capacity.
+    path = tmp_path / "capacity.json"
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
+    retry_after = now + timedelta(hours=1)
+    agent_capacity.record(
+        "claude-deepseek",
+        "deepseek-flash[1m]",
+        outcome="unavailable",
+        failure_class="billing",
+        retry_after=retry_after,
+        path=path,
+        now=now,
+    )
+
+    snapshot = agent_capacity.gate_snapshot(
+        ["claude-deepseek:deepseek-flash[1m]"], path=path, now=now
+    )
+
+    assert snapshot["configured"] == ["claude-deepseek:deepseek-flash_1m_"]
+    assert snapshot["gated"] == [
+        {
+            "provider": "claude-deepseek:deepseek-flash_1m_",
+            "failure_class": "billing",
+            "retry_after": retry_after.isoformat(),
+        }
+    ]
+    assert snapshot["all_gated"] is True
+    assert snapshot["retry_after"] == retry_after.isoformat()
+
+
 def test_gate_snapshot_bare_target_entry_stops_gating_once_expired(tmp_path):
     path = tmp_path / "capacity.json"
     now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)

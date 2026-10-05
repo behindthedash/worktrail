@@ -248,18 +248,20 @@ def gate_snapshot(
     ``providers`` is the caller-supplied provider-key set to evaluate (e.g. the
     routing-derived set); a stale ``configured_providers`` key left in an
     existing cache file is never read. Each key is resolved through
-    `gate_entry()`, so a bare target entry gates every ``<target>:*`` key the
-    caller passes -- including a timeless one, which is reported with
+    `gate_entry()` *verbatim* -- ``_safe_identifier`` sanitization is an output
+    concern, applied to the reported labels but never to the cache lookup, or a
+    key it rewrites (e.g. ``deepseek-flash[1m]``) would miss its own exact
+    entry. So a bare target entry gates every ``<target>:*`` key the caller
+    passes -- including a timeless one, which is reported with
     ``retry_after: None`` (it stays gated until cleared, so dropping it here
     would report the cell it blocks as having capacity).
     """
     now = now or _now()
     data = load(path)
-    configured = sorted(
-        {_safe_identifier(value) for value in providers if isinstance(value, str)}
-    )
-    gated = []
-    for key in configured:
+    keys = sorted({value for value in providers if isinstance(value, str)})
+    configured = sorted({_safe_identifier(value) for value in keys})
+    gated: dict[str, dict] = {}
+    for key in keys:
         resolved = gate_entry(key, data=data, now=now)
         if resolved is None:
             continue
@@ -267,21 +269,26 @@ def gate_snapshot(
         retry_at = _parse_time(state.get("retry_after")) or _parse_time(
             state.get("reset_at")
         )
-        gated.append(
+        # Labels live in `configured`'s sanitized namespace, so a gated entry is
+        # reported once per label even if two raw keys sanitize to the same one.
+        label = _safe_identifier(key)
+        gated.setdefault(
+            label,
             {
-                "provider": key,
+                "provider": label,
                 "failure_class": _safe_identifier(
                     state.get("failure_class") or "unknown"
                 ),
                 "retry_after": retry_at.isoformat() if retry_at else None,
-            }
+            },
         )
+    gated_items = [gated[label] for label in sorted(gated)]
     return {
         "configured": configured,
-        "gated": gated,
-        "all_gated": bool(configured) and len(gated) == len(configured),
+        "gated": gated_items,
+        "all_gated": bool(configured) and len(gated_items) == len(configured),
         "retry_after": min(
-            (item["retry_after"] for item in gated if item["retry_after"]),
+            (item["retry_after"] for item in gated_items if item["retry_after"]),
             default=None,
         ),
     }
