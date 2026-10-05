@@ -396,3 +396,103 @@ def test_rooted_path_line_needle_keeps_line_count_detail(repo: Path) -> None:
     assert result["detail"] == (
         "path exists: src/worktrail/drain/drain.py (3 lines, line 2 present)"
     )
+
+
+@pytest.mark.parametrize("candidate", ["claude/codex/opencode", "stub/disable"])
+def test_non_filename_shaped_missing_candidate_produces_no_row(
+    repo: Path, candidate: str
+) -> None:
+    """Slash-bearing prose survives extraction but gets no verdict here."""
+    focus = f"See `{candidate}` for the retry loop."
+
+    assert any(
+        n.needle == candidate for n in extract_needles(focus) if n.kind == "path"
+    )
+    results = run_premise_check(focus, repo)
+    assert not [r for r in results if r["kind"] == "path"]
+
+
+def test_non_filename_shaped_candidate_in_absence_window_produces_no_row(
+    repo: Path,
+) -> None:
+    focus = "wake-up-sooner has no `claude/codex/opencode` in its tree."
+
+    needle = next(n for n in extract_needles(focus) if n.kind == "path")
+    assert needle.polarity == "absence"
+
+    results = run_premise_check(focus, repo)
+    assert not [r for r in results if r["kind"] == "path"]
+
+
+def test_existing_directory_path_still_confirms(repo: Path) -> None:
+    _add(repo, "src/worktrail/drain/drain.py", "x = 1\n")
+    focus = "See `src/worktrail/drain` for the retry loop."
+
+    result = next(r for r in run_premise_check(focus, repo) if r["kind"] == "path")
+    assert result["confirmed"] is True
+    assert result["detail"] == "path exists: src/worktrail/drain"
+
+
+def test_only_filename_shaped_missing_candidates_get_a_verdict_row(repo: Path) -> None:
+    focus = (
+        "See `stub/disable` and `src/worktrail/does_not_exist.py` for the retry loop."
+    )
+
+    path_results = [r for r in run_premise_check(focus, repo) if r["kind"] == "path"]
+
+    assert [r["needle"] for r in path_results] == ["src/worktrail/does_not_exist.py"]
+    assert path_results[0]["confirmed"] is False
+    assert path_results[0]["detail"] == (
+        "path does not exist: src/worktrail/does_not_exist.py"
+    )
+
+
+def test_line_needle_keeps_line_count_detail(repo: Path) -> None:
+    _add(repo, "src/drain.py", "line1\nline2\n")
+    focus = "Check `src/drain.py:2` for the retry loop."
+
+    result = next(r for r in run_premise_check(focus, repo) if r["kind"] == "path")
+    assert result["confirmed"] is True
+    assert result["detail"] == "path exists: src/drain.py (2 lines, line 2 present)"
+
+
+def test_missing_file_line_needle_is_shape_checked_by_its_file_portion(
+    repo: Path,
+) -> None:
+    """The `:LINE` suffix is stripped before the filename-shape test."""
+    focus = "Check `src/worktrail/does_not_exist.py:42` for the retry loop."
+
+    result = next(r for r in run_premise_check(focus, repo) if r["kind"] == "path")
+    assert result["confirmed"] is False
+    assert result["detail"] == "path does not exist: src/worktrail/does_not_exist.py"
+
+
+def test_node_id_needle_confirms_against_its_file(repo: Path) -> None:
+    _add(repo, "tests/router/test_brief_probes.py", "line1\nline2\n")
+    focus = (
+        "See `tests/router/test_brief_probes.py::test_node_id` for the failing test."
+    )
+
+    result = next(r for r in run_premise_check(focus, repo) if r["kind"] == "path")
+    assert result["needle"] == "tests/router/test_brief_probes.py"
+    assert result["confirmed"] is True
+    assert result["detail"] == "path exists: tests/router/test_brief_probes.py"
+
+
+def test_quoted_and_command_rows_unaffected_by_path_skip(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _add(repo, "logs/output.txt", "a very specific error message here\n")
+    _git_only_run(monkeypatch)
+    focus = (
+        "Install for `claude/codex/opencode`; the log said "
+        "'a very specific error message here'. Reproduce with `npm test`."
+    )
+
+    results = run_premise_check(focus, repo)
+
+    # Only the skipped path row is gone; both quoted needles (the harness list
+    # and the log line) and the command row still appear.
+    assert [r["kind"] for r in results] == ["quoted", "quoted", "command"]
+    assert results[1]["confirmed"] is True
+    assert results[2]["needle"] == "npm test"
