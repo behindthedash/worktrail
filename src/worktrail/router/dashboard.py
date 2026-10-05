@@ -68,7 +68,7 @@ import os
 import re
 import subprocess
 import sys
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -153,6 +153,7 @@ from .journal_selfcheck import check_repo as _journal_check_repo
 # to derive the provider set fed to the capacity gate snapshot below.
 from .policy import DEFAULTS as _POLICY_DEFAULTS
 from .policy import load_policy as _load_policy
+from .policy import machine_wide_exclude_repos as _machine_wide_exclude_repos
 from .policy import resolve_routing as _resolve_routing
 
 # policy_drift_selfcheck is a sibling module (route:A go-policy-drift-guard).
@@ -2283,6 +2284,7 @@ def auto_pick_brief(
     queue_briefs: list[dict[str, Any]],
     repo_filter: str | None = None,
     repos_root: Any | None = None,
+    exclude_repos: Collection[str] = (),
 ) -> dict[str, Any]:
     """Deterministically pick the next brief for /go auto (spec 017 REQ-002/003).
 
@@ -2301,8 +2303,17 @@ def auto_pick_brief(
     was released back to the queue within the last 20 minutes (another live
     session's claim/release race or a considered not-yet-actionable judgment —
     see work_queue.py's `_recently_released_info`), its repo is busy/missing/
-    absent (_repo_busy_reason), or it doesn't match repo_filter. repo_filter
-    matches the brief's repo by full path or basename.
+    absent (_repo_busy_reason), it doesn't match repo_filter, or its repo is
+    excluded from unattended draining (`exclude_repos`, the machine-wide
+    `routing.drain.exclude_repos` list — see policy.py's
+    `machine_wide_exclude_repos()`, reason `repo-excluded`). repo_filter
+    matches the brief's repo by full path or basename; `exclude_repos` matches
+    by basename only (`Path(str(repo)).name`), so a brief carrying an absolute
+    path, a bare name, or an `owner/name` value for an excluded repo all match.
+
+    An explicit `repo_filter` naming an excluded repo overrides the exclusion
+    for that call: `--auto-repo R` still picks R's briefs, since a named repo
+    is operator intent for this invocation beating the standing list.
 
     `repos_root`, when given, is also where a bare or `owner/name`-style
     `repo:` value (e.g. 'devops', 'behindthedash/devops') resolves by
@@ -2321,6 +2332,13 @@ def auto_pick_brief(
     skipped: list[dict[str, str]] = []
     _TRIAGE_RANK = {"blocker": 0, None: 1, "deferred": 2}
     policy_cache: dict[str, dict[str, Any] | None] = {}
+    excluded_names = {
+        Path(str(name).rstrip("/")).name for name in exclude_repos if str(name).strip()
+    }
+    if repo_filter:
+        # Explicit scope wins: --auto-repo R must still pick R's briefs even
+        # when R is on the machine-wide exclusion list.
+        excluded_names.discard(Path(str(repo_filter).rstrip("/")).name)
 
     def _release_gate_for(repo: Any) -> str | None:
         resolved = _resolve_repo_dir(repo, repos_root)
@@ -2377,6 +2395,9 @@ def auto_pick_brief(
             if r != rf and Path(r).name != Path(rf).name:
                 skipped.append({"id": stem, "reason": "repo-filter"})
                 continue
+        if repo and Path(str(repo)).name in excluded_names:
+            skipped.append({"id": stem, "reason": "repo-excluded"})
+            continue
         gate = _release_gate_for(repo)
         if gate and b.get("triage") != "blocker":
             skipped.append({"id": stem, "reason": f"release-gate:{gate}"})
@@ -3976,8 +3997,21 @@ def main(argv=None) -> int:
     # was scored as "no active specs, empty queue" regardless of reality.
     unblocked_queue_total = sum(1 for b in queue_briefs if not b.get("blocked"))
 
-    auto_pick = (
-        auto_pick_brief(
+    auto_pick = None
+    if args.auto:
+        # Machine-wide repo exclusion, read once. Best-effort: a malformed
+        # routing file is the drain's own startup failure to report loudly, so
+        # here it degrades to "no exclusions" with a warning rather than
+        # breaking the dashboard render (same posture as _load_dashboard_policy).
+        exclude_repos: list[str] = []
+        try:
+            exclude_repos = _machine_wide_exclude_repos()
+        except Exception as exc:  # noqa: BLE001 — dashboard render is best-effort
+            print(
+                f"worktrail-dashboard: ignoring routing.drain.exclude_repos: {exc}",
+                file=sys.stderr,
+            )
+        auto_pick = auto_pick_brief(
             queue_briefs,
             repo_filter=args.auto_repo,
             # Bare/`owner/name` repo: values (create_handoff.py writes them
@@ -3985,10 +4019,8 @@ def main(argv=None) -> int:
             # dir. --repos when given; otherwise the same ~/projects default
             # the /go front door itself uses for multi-repo resolution.
             repos_root=args.repos or str(Path.home() / "projects"),
+            exclude_repos=exclude_repos,
         )
-        if args.auto
-        else None
-    )
     if auto_pick is not None:
         log_auto_pick_miss(auto_pick, len(queue_briefs), repo_filter=args.auto_repo)
 
