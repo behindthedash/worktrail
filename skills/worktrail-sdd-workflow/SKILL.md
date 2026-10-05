@@ -132,8 +132,8 @@ Read **only** the selected playbook section in `../worktrail-go/references/route
 | C feature-planning | routes.md §C | `new` pipeline (pipeline-details.md#new-pipeline), then explicit C→D transition |
 | D implementation | routes.md §D | `new`/`implement` pipelines (pipeline-details.md) |
 | E continue/resume | routes.md §E | state restore + re-entry (incl. PR/CI repair) |
-| F defect-repair | routes.md §F | `modify` pipeline (pipeline-details.md#modify-pipeline), change-spec bugfix |
-| G spec-change | routes.md §G | `modify` pipeline (pipeline-details.md#modify-pipeline), change-spec delta |
+| F defect-repair | routes.md §F | `modify` pipeline (pipeline-details.md#modify-pipeline), change-spec bugfix; 1-task mechanical changes ride the direct branch (`worktrail-modify-direct-gate`) |
+| G spec-change | routes.md §G | `modify` pipeline (pipeline-details.md#modify-pipeline), change-spec delta; 1-task mechanical changes ride the direct branch (`worktrail-modify-direct-gate`) |
 | H refactor/debt | routes.md §H | characterization tests → narrow implement |
 | I investigation | routes.md §I | evidence only → recommended next route |
 | J workflow-evolution | routes.md §J | this repo, cassette-gated |
