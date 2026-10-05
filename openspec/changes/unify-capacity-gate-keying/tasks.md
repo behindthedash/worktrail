@@ -113,7 +113,7 @@
 
 ## 5. Document the capacity-cache command surface's keys
 
-- [ ] 5.1 In `skills/worktrail-go/SKILL.md`'s capacity-cache command block (`:929-941`), state
+- [x] 5.1 In `skills/worktrail-go/SKILL.md`'s capacity-cache command block (`:929-941`), state
       that the provider keys `status` prints are exactly the keys `clear` accepts -- including a
       bare target key written by the drain, which clears that target for every model -- and that
       the key a skipped or blocked cell is reported by (the attempt list, and the blocked note
