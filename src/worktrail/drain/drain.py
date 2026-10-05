@@ -115,7 +115,7 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Collection, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -296,14 +296,41 @@ def build_agent_environment(home: Path | None = None) -> dict[str, str]:
     return env
 
 
-def repo_sandbox_roots(repos_root: Path, go_repo: str | None = None) -> list[Path]:
+def scoped_repo_names(
+    repos_root: Path,
+    go_repo: str | None = None,
+    exclude_repos: Collection[str] = (),
+) -> list[str]:
+    """`discover_repo_names()` restricted to `go_repo` (when given), then with
+    `exclude_repos` dropped -- the one place the drain applies
+    `routing.drain.exclude_repos`, so every repo sweep (the codex sandbox's
+    writable roots, the remediation-table finders, the backlog seeder's
+    callers) can never scan an excluded repo by accident.
+
+    The explicit-scope rule lives one level up, in `drain()`: an explicit
+    `--go-repo` naming an excluded repo is dropped from the run's
+    `exclude_repos` before it ever reaches here, so it stays in scope.
+    """
+    names = discover_repo_names(repos_root)
+    if go_repo:
+        names = [n for n in names if n == go_repo]
+    if exclude_repos:
+        excluded = set(exclude_repos)
+        names = [n for n in names if n not in excluded]
+    return names
+
+
+def repo_sandbox_roots(
+    repos_root: Path,
+    go_repo: str | None = None,
+    exclude_repos: Collection[str] = (),
+) -> list[Path]:
     """Writable roots a drain one-shot needs per git checkout under
     `repos_root` (or just `go_repo` when given): the checkout's `.git` and its
     `<name>-worktrees` sibling -- never the checkout itself, so a one-shot
-    can only write inside the worktrees it creates."""
-    names = discover_repo_names(repos_root)
-    if go_repo is not None:
-        names = [n for n in names if n == go_repo]
+    can only write inside the worktrees it creates. Excluded repos contribute
+    no roots, so a one-shot has no standing grant to write inside them."""
+    names = scoped_repo_names(repos_root, go_repo, exclude_repos)
     roots: list[Path] = []
     for name in names:
         roots.append(repos_root / name / ".git")
@@ -340,10 +367,26 @@ def validate_agent_runtime(
 # Queue state
 
 
-def count_ready_briefs(queue_json: dict) -> int:
-    """Ready = not blocked and not deferred by next-check-after backoff."""
+def count_ready_briefs(queue_json: dict, exclude_repos: Collection[str] = ()) -> int:
+    """Ready = not blocked and not deferred by next-check-after backoff, and
+    not for a repo excluded from unattended draining.
+
+    A brief's `repo` is matched by basename (`Path(...).name`), so an absolute
+    path, a bare name, and an `owner/name` form all match the same entry; a
+    brief with no `repo` at all is never excluded. With the default empty
+    list this is exactly the pre-exclusion count.
+    """
+    excluded = {str(name) for name in exclude_repos}
     briefs = queue_json.get("briefs") or []
-    return sum(1 for b in briefs if not b.get("blocked") and not b.get("not_yet_due"))
+    ready = 0
+    for b in briefs:
+        if b.get("blocked") or b.get("not_yet_due"):
+            continue
+        repo = b.get("repo")
+        if excluded and repo and Path(str(repo)).name in excluded:
+            continue
+        ready += 1
+    return ready
 
 
 def _queue_filenames(queue_json: dict) -> set:
@@ -810,15 +853,16 @@ def resolve_spec_rel(repo: Path, spec_id: str) -> str | None:
 
 
 def find_resumable_quarantines(
-    repos_root: Path, go_repo: str | None = None
+    repos_root: Path,
+    go_repo: str | None = None,
+    exclude_repos: Collection[str] = (),
 ) -> list[dict[str, Any]]:
     """Every (repo, spec) pair with a QUARANTINED/budget_exhausted group, across
     every repo under `repos_root` (or just `go_repo` when given). One entry per
     spec even when multiple groups in its journal are resumable -- a single
-    full-real re-run covers the whole journal."""
-    names = discover_repo_names(repos_root)
-    if go_repo:
-        names = [n for n in names if n == go_repo]
+    full-real re-run covers the whole journal. `exclude_repos` drops repos from
+    the scan entirely (see `scoped_repo_names`)."""
+    names = scoped_repo_names(repos_root, go_repo, exclude_repos)
     found: list[dict[str, Any]] = []
     seen: set = set()
     for name in names:
@@ -845,16 +889,17 @@ def find_resumable_quarantines(
 
 
 def find_verify_pending_specs(
-    repos_root: Path, go_repo: str | None = None
+    repos_root: Path,
+    go_repo: str | None = None,
+    exclude_repos: Collection[str] = (),
 ) -> list[dict[str, Any]]:
     """Every (repo, spec) pair currently in the `verify-pending` stage, across
     every repo under `repos_root` (or just `go_repo` when given). These are
     invisible to `worktrail-go auto` the same way budget_exhausted quarantines
     are -- auto mode only claims work-queue briefs -- so without this sweep
-    they sit until a human notices the dashboard's stage."""
-    names = discover_repo_names(repos_root)
-    if go_repo:
-        names = [n for n in names if n == go_repo]
+    they sit until a human notices the dashboard's stage. `exclude_repos` drops
+    repos from the scan entirely (see `scoped_repo_names`)."""
+    names = scoped_repo_names(repos_root, go_repo, exclude_repos)
     found: list[dict[str, Any]] = []
     for name in names:
         repo_path = repos_root / name
@@ -880,16 +925,17 @@ def find_verify_pending_specs(
 
 
 def find_sync_pending_specs(
-    repos_root: Path, go_repo: str | None = None
+    repos_root: Path,
+    go_repo: str | None = None,
+    exclude_repos: Collection[str] = (),
 ) -> list[dict[str, Any]]:
     """Every (repo, spec) pair currently in the `sync-pending` stage, across
     every repo under `repos_root` (or just `go_repo` when given). These are
     invisible to `worktrail-go auto` the same way verify-pending specs are --
     auto mode only claims work-queue briefs -- so without this sweep they sit
-    until a human notices the dashboard's stage."""
-    names = discover_repo_names(repos_root)
-    if go_repo:
-        names = [n for n in names if n == go_repo]
+    until a human notices the dashboard's stage. `exclude_repos` drops repos
+    from the scan entirely (see `scoped_repo_names`)."""
+    names = scoped_repo_names(repos_root, go_repo, exclude_repos)
     found: list[dict[str, Any]] = []
     for name in names:
         repo_path = repos_root / name
@@ -915,17 +961,18 @@ def find_sync_pending_specs(
 
 
 def find_stale_bookkeeping_specs(
-    repos_root: Path, go_repo: str | None = None
+    repos_root: Path,
+    go_repo: str | None = None,
+    exclude_repos: Collection[str] = (),
 ) -> list[dict[str, Any]]:
     """Every (repo, spec) pair currently in the `stale-bookkeeping` stage with
     at least one stale task id, across every repo under `repos_root` (or just
     `go_repo` when given). These are invisible to `worktrail-go auto` the same
     way verify-pending specs are -- auto mode only claims work-queue briefs --
     so without this sweep they sit until a human notices the dashboard's
-    stage."""
-    names = discover_repo_names(repos_root)
-    if go_repo:
-        names = [n for n in names if n == go_repo]
+    stage. `exclude_repos` drops repos from the scan entirely (see
+    `scoped_repo_names`)."""
+    names = scoped_repo_names(repos_root, go_repo, exclude_repos)
     found: list[dict[str, Any]] = []
     for name in names:
         repo_path = repos_root / name
@@ -956,17 +1003,18 @@ def find_stale_bookkeeping_specs(
 
 
 def find_complete_openspec_changes(
-    repos_root: Path, go_repo: str | None = None
+    repos_root: Path,
+    go_repo: str | None = None,
+    exclude_repos: Collection[str] = (),
 ) -> list[dict[str, Any]]:
     """Every (repo, spec) pair currently at OpenSpec's `complete` stage, across
     every repo under `repos_root` (or just `go_repo` when given). `complete`
     is OpenSpec-only -- the devkit format has no equivalent terminal stage --
     so unlike the other finders this filters on `format == "openspec"` too,
     the critical scope guard that keeps a devkit spec from ever being routed
-    into `openspec archive`."""
-    names = discover_repo_names(repos_root)
-    if go_repo:
-        names = [n for n in names if n == go_repo]
+    into `openspec archive`. `exclude_repos` drops repos from the scan entirely
+    (see `scoped_repo_names`)."""
+    names = scoped_repo_names(repos_root, go_repo, exclude_repos)
     found: list[dict[str, Any]] = []
     for name in names:
         repo_path = repos_root / name
@@ -1327,15 +1375,16 @@ def _run_git(cwd: Path, *args: str, timeout: int) -> None:
 
 
 def find_stale_branches(
-    repos_root: Path, go_repo: str | None = None
+    repos_root: Path,
+    go_repo: str | None = None,
+    exclude_repos: Collection[str] = (),
 ) -> list[dict[str, Any]]:
     """Every locally merged, prunable branch across every repo under
     `repos_root` (or just `go_repo` when given), flattened to one finding
     per branch -- `branch_selfcheck.sweep`'s per-repo `prunable` lists merged
-    into drain's usual one-finding-per-remediable-item shape."""
-    names = discover_repo_names(repos_root)
-    if go_repo:
-        names = [n for n in names if n == go_repo]
+    into drain's usual one-finding-per-remediable-item shape. `exclude_repos`
+    drops repos from the scan entirely (see `scoped_repo_names`)."""
+    names = scoped_repo_names(repos_root, go_repo, exclude_repos)
     found: list[dict[str, Any]] = []
     for name in names:
         repo_path = repos_root / name
@@ -1803,15 +1852,15 @@ def archive_openspec_change(
 
 @dataclass(frozen=True)
 class StageRemediation:
-    """One row of the remediation-sweep table. `finder(repos_root, go_repo)`
-    returns findings for this stage; `action(finding, agent, timeout, spawner,
-    log)` remediates a single finding and returns a result dict, raising on
-    failure so the sweep engine can catch and log per-finding without
-    aborting the rest of the sweep."""
+    """One row of the remediation-sweep table.
+    `finder(repos_root, go_repo, exclude_repos)` returns findings for this
+    stage; `action(finding, agent, timeout, spawner, log)` remediates a single
+    finding and returns a result dict, raising on failure so the sweep engine
+    can catch and log per-finding without aborting the rest of the sweep."""
 
     key: str
     label: str
-    finder: Callable[[Path, str | None], list[dict[str, Any]]]
+    finder: Callable[[Path, str | None, Collection[str]], list[dict[str, Any]]]
     action: Callable[
         [
             dict[str, Any],
@@ -1904,6 +1953,7 @@ def sweep_remediations(
     log: Callable[[str], None],
     keys: Iterable[str] | None = None,
     routing: dict[str, Any] | None = None,
+    exclude_repos: Collection[str] = (),
 ) -> dict[str, list[dict[str, Any]]]:
     """Run every `REMEDIATION_TABLE` row's finder + action (or only the rows
     whose `key` is in `keys`, when given), one result dict per remediated
@@ -1923,7 +1973,11 @@ def sweep_remediations(
     A finding's action raising is caught and logged (`{label} error: ...`)
     without aborting the rest of that row's findings or the other rows --
     the same best-effort guarantee `resume_quarantined_budget_exhausted` and
-    `resume_verify_pending` already documented individually."""
+    `resume_verify_pending` already documented individually.
+
+    `exclude_repos` is handed to every row's finder, so a repo excluded from
+    unattended draining contributes no findings for any stage and no
+    remediation action is ever launched against it."""
     wanted = None if keys is None else set(keys)
     selected = (
         REMEDIATION_TABLE
@@ -1934,7 +1988,7 @@ def sweep_remediations(
     current_agent: str | None = None
     for remediation in selected:
         applied: list[dict[str, Any]] = []
-        for finding in remediation.finder(repos_root, go_repo):
+        for finding in remediation.finder(repos_root, go_repo, exclude_repos):
             try:
                 claimed = _spec_claimed_by_active_run(finding)
             except Exception as exc:  # noqa: BLE001 — same one-finding-must-
@@ -1988,15 +2042,15 @@ def sweep_remediations(
 
 @dataclass(frozen=True)
 class StageRemediation:
-    """One row of the remediation-sweep table. `finder(repos_root, go_repo)`
-    returns findings for this stage; `action(finding, agent, timeout, spawner,
-    log)` remediates a single finding and returns a result dict, raising on
-    failure so the sweep engine can catch and log per-finding without
-    aborting the rest of the sweep."""
+    """One row of the remediation-sweep table.
+    `finder(repos_root, go_repo, exclude_repos)` returns findings for this
+    stage; `action(finding, agent, timeout, spawner, log)` remediates a single
+    finding and returns a result dict, raising on failure so the sweep engine
+    can catch and log per-finding without aborting the rest of the sweep."""
 
     key: str
     label: str
-    finder: Callable[[Path, str | None], list[dict[str, Any]]]
+    finder: Callable[[Path, str | None, Collection[str]], list[dict[str, Any]]]
     action: Callable[
         [
             dict[str, Any],
@@ -2252,6 +2306,7 @@ class DrainConfig:
     max_workers: int = 1
     stuck_threshold: int = 3
     stuck_history_path: Path | None = None
+    exclude_repos: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -2322,6 +2377,7 @@ def run_intake_triage_prepass(
     queue_dir: Path | None,
     log: Callable[[str], None],
     dry_run: bool = False,
+    exclude_repos: Collection[str] = (),
 ) -> dict[str, Any]:
     """`--intake-triage`'s pre-loop pass: run `queue_triage`'s `evaluate` over
     every queued intake brief, then `apply --confirm` the resulting verdicts,
@@ -2347,6 +2403,10 @@ def run_intake_triage_prepass(
     seed-backlog pre-pass below: an intake-triage failure must never abort an
     otherwise-healthy drain run.
 
+    `exclude_repos` is forwarded to `evaluate --exclude-repo NAME` (one flag
+    per entry) and to the dry-run `inventory()` call, so an excluded repo is
+    never evaluated -- and never spawns an evaluator -- in either mode.
+
     A real (non-dry-run) result carries `briefs_evaluated`, `verdict_counts`
     (by verdict type), `pull_requests_opened`, and `briefs_held_by_cap` --
     the `intake_triage` summary block's contract (see
@@ -2360,7 +2420,9 @@ def run_intake_triage_prepass(
         os.environ["WORK_QUEUE_DIR"] = str(queue_dir)
     try:
         if dry_run:
-            groups, skipped = queue_triage_mod.inventory(within_days=25)
+            groups, skipped, _escalate, _inferred, _unresolvable = (
+                queue_triage_mod.inventory(within_days=25, exclude_repos=exclude_repos)
+            )
             log(
                 f"intake-triage: dry-run preview -- {len(groups)} repo group(s), "
                 f"{len(skipped)} brief(s) already triaged/skipped, no agent spawned"
@@ -2372,7 +2434,12 @@ def run_intake_triage_prepass(
             }
         out_dir = _intake_triage_out_dir()
         log(f"intake-triage: evaluating queued briefs (out-dir={out_dir})")
-        exit_code = queue_triage_mod.main(["evaluate", "--out-dir", str(out_dir)])
+        exclude_argv = [
+            flag for name in exclude_repos for flag in ("--exclude-repo", str(name))
+        ]
+        exit_code = queue_triage_mod.main(
+            ["evaluate", "--out-dir", str(out_dir), *exclude_argv]
+        )
         verdict_file = out_dir / "verdict.json"
         if exit_code != 0:
             # `cmd_evaluate()` exits non-zero for a *partial* success too: one
@@ -2436,13 +2503,39 @@ def drain(
             "detail": f"another drain owns {config.lock_file}",
             "iterations": [],
         }
+    # `routing.drain.exclude_repos`, normalized once for the whole run. An
+    # explicit `--go-repo` names a repo the operator wants worked, so it beats
+    # the machine-wide list for this run (the same explicit-scope rule
+    # `--auto-repo` gets in automatic brief selection). Reported here, before
+    # anything can spawn -- including under `--dry-run` -- so an operator sees
+    # exactly which list this run applied and which entries matched nothing;
+    # an unmatched entry is inert and never changes the exit status.
+    exclude_repos = list(config.exclude_repos)
+    if config.go_repo and config.go_repo in exclude_repos:
+        exclude_repos = [name for name in exclude_repos if name != config.go_repo]
+        log(
+            f"drain: --go-repo {config.go_repo} overrides "
+            "routing.drain.exclude_repos for this run"
+        )
+    if exclude_repos:
+        log(
+            "drain: excluding repos from unattended sweeps: " + ", ".join(exclude_repos)
+        )
+        if config.repos_root is not None and config.repos_root.is_dir():
+            known = set(discover_repo_names(config.repos_root))
+            unmatched = [name for name in exclude_repos if name not in known]
+            if unmatched:
+                log(
+                    "drain: exclude_repos entries matching no repo under "
+                    f"{config.repos_root}: " + ", ".join(unmatched)
+                )
     scratch_dir = worker_scratch_dir(slot)
     scratch_dir.mkdir(parents=True, exist_ok=True)
     if uses_builtin_spawner:
         spawner = functools.partial(run_one_shot, env=agent_env, cwd=scratch_dir)
     sandbox_args = codex_sandbox_args(
         scratch_dir,
-        extra_roots=repo_sandbox_roots(config.repos_root, config.go_repo)
+        extra_roots=repo_sandbox_roots(config.repos_root, config.go_repo, exclude_repos)
         if config.repos_root is not None
         else (),
     )
@@ -2499,7 +2592,10 @@ def drain(
             # "launch nothing" contract (task intake-to-spec-triage 5.2).
             try:
                 intake_triage_result = run_intake_triage_prepass(
-                    config.queue_dir, log, dry_run=config.dry_run
+                    config.queue_dir,
+                    log,
+                    dry_run=config.dry_run,
+                    exclude_repos=exclude_repos,
                 )
             except Exception as exc:  # noqa: BLE001
                 log(f"intake-triage error: {exc}")
@@ -2514,6 +2610,7 @@ def drain(
                 spawner,
                 log,
                 routing=routing,
+                exclude_repos=exclude_repos,
             )
             if config.seed_backlog or config.seed_backlog_pass:
                 # Top the queue up from backlog invisible to auto mode
@@ -2536,6 +2633,7 @@ def drain(
                         config.go_repo,
                         queue_base=config.queue_dir,
                         log=log,
+                        exclude_repos=exclude_repos,
                     )
                 except Exception as exc:  # noqa: BLE001
                     log(f"seed-backlog error: {exc}")
@@ -2564,6 +2662,7 @@ def drain(
                     queue_base=config.queue_dir,
                     log=log,
                     dry_run=True,
+                    exclude_repos=exclude_repos,
                 )
             except Exception as exc:  # noqa: BLE001
                 log(f"seed-backlog error: {exc}")
@@ -2607,7 +2706,7 @@ def drain(
         )
         while True:
             queue = list_queue(config.work_queue_py, config.queue_dir)
-            state.ready_count = count_ready_briefs(queue)
+            state.ready_count = count_ready_briefs(queue, exclude_repos)
             cache = read_capacity_cache(config.capacity_cache)
             # A templated --agent-cmd has no per-agent identity to switch, so
             # fallback selection only applies to the named-agent shapes.
@@ -2665,7 +2764,7 @@ def drain(
             spawned = spawner(cmd, config.iteration_timeout)
             exit_code = spawned.exit_code
             queue_after = list_queue(config.work_queue_py, config.queue_dir)
-            ready_after = count_ready_briefs(queue_after)
+            ready_after = count_ready_briefs(queue_after, exclude_repos)
             claimed_delta = max(0, ready_before - ready_after)
             claimed_briefs = claimed_brief_ids(queue, queue_after)
             # A single claimed brief pins the run-record lookup to that
@@ -2845,6 +2944,7 @@ def drain(
                 config.iteration_timeout,
                 spawner,
                 log,
+                exclude_repos=exclude_repos,
             )
             for key, findings in post.items():
                 resumed.setdefault(key, []).extend(findings)
@@ -3166,6 +3266,12 @@ def main(argv: list[str] | None = None) -> int:
         max_workers=max_workers,
         stuck_threshold=args.stuck_threshold,
         stuck_history_path=stuck_remediation.history_path(),
+        # Machine-wide operator policy, resolved here from the routing table
+        # `_resolve_routing()` already validated: a malformed
+        # `routing.drain.exclude_repos` raised OperatorConfigError above and
+        # exited 2 before this point. No CLI flag by design -- a per-run
+        # override would let a drain script silently widen what it touches.
+        exclude_repos=list(routing_drain.get("exclude_repos") or []),
     )
     try:
         summary = drain(config)

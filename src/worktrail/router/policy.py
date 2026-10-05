@@ -748,15 +748,21 @@ def _validate_routing_agents(
 
 
 def _validate_routing_drain(raw: Any, meta: dict[str, Any]) -> dict[str, Any]:
-    """`routing.drain`: `{agent: str, fallback_agents: [str], max_workers: int>=1}` —
-    the machine-wide drain defaults formerly read from `config.json` by
-    `shared/operator_config.py::drain_config()`, consolidated into
-    `routing.yaml`. Ports that function's field-level shape checks, messages,
-    and loud-failure semantics verbatim: a malformed `drain` section is stated
-    operator intent, so it raises `OperatorConfigError` rather than warning
-    and falling back — unlike the sibling `_validate_routing_*` validators,
-    which drop-and-warn. Agent literal validity (is it a supported agent?)
-    stays the drain CLI's own check, same as `drain_config()`."""
+    """`routing.drain`: `{agent: str, fallback_agents: [str], max_workers: int>=1,
+    exclude_repos: [str]}` — the machine-wide drain defaults formerly read from
+    `config.json` by `shared/operator_config.py::drain_config()`, consolidated
+    into `routing.yaml`. Ports that function's field-level shape checks,
+    messages, and loud-failure semantics verbatim: a malformed `drain` section
+    is stated operator intent, so it raises `OperatorConfigError` rather than
+    warning and falling back — unlike the sibling `_validate_routing_*`
+    validators, which drop-and-warn. Agent literal validity (is it a supported
+    agent?) stays the drain CLI's own check, same as `drain_config()`.
+
+    `exclude_repos` is the machine-wide list of repo names unattended draining
+    must skip (absent/`None` -> `[]`); each entry is normalized to its stripped
+    form, and a non-list or a non-string/blank entry raises like `max_workers`
+    does, since a malformed exclusion list is stated operator intent that must
+    never silently widen what the drain touches."""
     if raw is None:
         return {}
     if not isinstance(raw, dict):
@@ -782,10 +788,22 @@ def _validate_routing_drain(raw: Any, meta: dict[str, Any]) -> dict[str, Any]:
         raise OperatorConfigError(
             "routing.drain.max_workers must be a positive integer"
         )
+    exclude_repos = raw.get("exclude_repos")
+    if exclude_repos is None:
+        exclude_repos = []
+    elif not isinstance(exclude_repos, list) or any(
+        not isinstance(name, str) or not name.strip() for name in exclude_repos
+    ):
+        raise OperatorConfigError(
+            "routing.drain.exclude_repos must be a list of non-empty repo names"
+        )
+    else:
+        exclude_repos = [name.strip() for name in exclude_repos]
     return {
         "agent": agent,
         "fallback_agents": list(fallback_agents),
         "max_workers": max_workers,
+        "exclude_repos": exclude_repos,
     }
 
 
@@ -1270,6 +1288,43 @@ def resolved_routing_file_path() -> Path:
     return Path(override).expanduser() if override else default_routing_file()
 
 
+def machine_wide_exclude_repos(meta: dict[str, Any] | None = None) -> list[str]:
+    """`routing.drain.exclude_repos` from the machine-wide routing file only.
+
+    Read straight from `resolved_routing_file_path()`, never through
+    `_resolve_routing()`'s repo-local branch: the exclusion list is machine-wide
+    operator policy, so a governed repo's own `routing:` block can neither
+    shadow nor extend it (a repo-local copy is warned about by
+    `_resolve_routing()` and otherwise ignored).
+
+    Returns `[]` for an absent, unreadable, or non-mapping routing file --
+    there is simply nothing to exclude when no machine-wide policy exists. A
+    malformed `drain:` section is the one exception: `_validate_routing_drain()`
+    raises `OperatorConfigError` for it, and that propagates to the caller
+    (the drain's startup is the loud gate for a bad machine-wide file; a
+    caller that must degrade, like the dashboard, catches it itself).
+
+    `meta`, when given, receives the validator's `warnings` entries the same
+    way `load_policy()`'s would.
+    """
+    routing_path = resolved_routing_file_path()
+    if not routing_path.is_file():
+        return []
+    try:
+        text = routing_path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    raw = _load_yaml_mapping(text)
+    if raw is None:
+        return []
+    routing_meta = meta if meta is not None else {"warnings": []}
+    routing_meta.setdefault("warnings", [])
+    validated = _validate_routing(raw, routing_meta)
+    if validated is None:
+        return []
+    return list((validated.get("drain") or {}).get("exclude_repos") or [])
+
+
 def _resolve_routing(
     repo: Path, parsed_local: dict[str, Any], meta: dict[str, Any]
 ) -> dict[str, Any] | None:
@@ -1284,6 +1339,11 @@ def _resolve_routing(
     local_raw = parsed_local.get("routing") if isinstance(parsed_local, dict) else None
     validated = _validate_routing(local_raw, meta)
     if validated is not None:
+        if (validated.get("drain") or {}).get("exclude_repos"):
+            meta["warnings"].append(
+                "routing.drain.exclude_repos is machine-wide only (set it in the "
+                "machine-wide routing file); the repo-local copy is not honored"
+            )
         return validated
     routing_path = resolved_routing_file_path()
     if not routing_path.is_file():
@@ -1337,9 +1397,11 @@ def resolve_routing(
                                           # from the table `select_cell`
                                           # served from) -- dropping it made
                                           # every profile-bearing cell raise.
-          "drain": {"max_workers": int}, # routing.drain, the machine-wide
-                                          # drain defaults (D1); {} when absent.
-                                          # `agent`/`fallback_agents` are
+          "drain": {"max_workers": int,     # routing.drain, the machine-wide
+                    "exclude_repos": [str]},# drain defaults (D1); {} when
+                                          # absent, and a missing
+                                          # `exclude_repos` key means the empty
+                                          # list. `agent`/`fallback_agents` are
                                           # retired keys `_reject_legacy_
                                           # routing_keys()` already rejects if
                                           # present, so `_validate_routing_
@@ -1362,9 +1424,10 @@ def resolve_routing(
             "drain": {},
         }
     drain_raw = routing.get("drain") or {}
-    drain = (
-        {"max_workers": drain_raw["max_workers"]} if "max_workers" in drain_raw else {}
-    )
+    drain: dict[str, Any] = {}
+    for key in ("max_workers", "exclude_repos"):
+        if key in drain_raw:
+            drain[key] = drain_raw[key]
     return {
         "targets": routing.get("targets") or {},
         "tiers": routing.get("tiers") or {},
