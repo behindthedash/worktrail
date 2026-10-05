@@ -2526,6 +2526,27 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
         )
         self.assertNotIn("files:", tasks_text)
 
+    def test_task_never_declares_the_change_docs_the_fold_itself_writes(self):
+        """Brief 20260930-112548: the fold appends its own section to the target
+        change's `proposal.md` and its task group to `tasks.md` before that task
+        can ever run, so every fold's evidence cites both as the record of where
+        it landed -- while the task edits neither. Declaring them made every
+        fold a declarer of the change's own `proposal.md`, and compile's
+        same-file chain rule (`parallelism.py`) then hard-failed the third fold
+        into any one change (`same-file chain ... (3 > 2)`), capping fold depth
+        at two per change."""
+        tasks_text = self._fold_with_evidence(
+            "Folded into openspec/changes/widget-export-pipeline/proposal.md and "
+            "openspec/changes/widget-export-pipeline/tasks.md, whose 1.1 is still "
+            "open; the repair itself changes src/widgets/export.py.",
+            seed_files=["src/widgets/export.py"],
+        )
+        lines = tasks_text.splitlines()
+        task_index = next(
+            i for i, line in enumerate(lines) if line.startswith("- [ ] 2.1 ")
+        )
+        self.assertEqual(lines[task_index + 1], "      files: src/widgets/export.py")
+
     def test_pr_creation_failure_leaves_brief_untouched_and_reports_branch(self):
         run = self._dispatcher()
         land_outcome = LandOutcome(
