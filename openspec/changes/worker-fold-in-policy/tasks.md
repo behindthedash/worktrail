@@ -1,6 +1,6 @@
 ## 1. Worker clause, report-back schema, and code-enforced validation
 
-- [ ] 1.1 In `src/worktrail/orchestrator/dispatch.py`: (a) extend the `_ROLE_ACTION` text for
+- [x] 1.1 In `src/worktrail/orchestrator/dispatch.py`: (a) extend the `_ROLE_ACTION` text for
       `ROLE_IMPLEMENT` and `ROLE_FIX` with the fold-in clause — a defect in a file already
       named in Scope that is verified (reproduced or directly evidenced, never a hypothesis or
       a "while I'm here" cleanup), mechanical to fix (restores documented/established intent;
@@ -45,7 +45,7 @@
 
 ## 2. Reviewer validation duty and gate
 
-- [ ] 2.1 In `src/worktrail/orchestrator/live.py`, extend `_REVIEWER_SYSTEM_PROMPT` (applied to
+- [x] 2.1 In `src/worktrail/orchestrator/live.py`, extend `_REVIEWER_SYSTEM_PROMPT` (applied to
       review-role spawns on both harness branches) with the fold-in duty: validate each
       declared fold-in — the file is inside the task's declared scope, the change is
       mechanical (restores documented/established intent; no new design, API, or behavior
@@ -64,7 +64,7 @@
 
 ## 3. Authoring doctrine and PR declaration
 
-- [ ] 3.1 In `skills/worktrail-sdd-workflow/SKILL.md`, add the three-tier defect doctrine: tier
+- [x] 3.1 In `skills/worktrail-sdd-workflow/SKILL.md`, add the three-tier defect doctrine: tier
       1 fold in (same change, same PR — the verified / in-scope / mechanical conditions, the
       caps of 2 fold-ins and ~20 changed lines, the separate-commit and `fold_ins` declaration
       requirements, and the PR's `## Fold-in Fixes` section as the public declaration); tier 2
@@ -87,7 +87,7 @@
 
 ## 4. Verification
 
-- [ ] 4.1 [e2e] Run `PYTHONPATH=src python3.14 -m pytest -q` (full suite, including
+- [x] 4.1 [e2e] Run `PYTHONPATH=src python3.14 -m pytest -q` (full suite, including
       `tests/test_plugin_surface.py` and the updated prompt/journal/PR-body tests), then
       `python3.14 -m worktrail.orchestrator.orchestrate check`, then `python3.14
       scripts/ci/ruff_pinned.py check .`, `python3.14 scripts/ci/ruff_pinned.py format --check
