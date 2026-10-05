@@ -176,6 +176,10 @@ _EXIT_REFUSED = 2
 _EXIT_CODE_DEFECT = 3
 _EXIT_CEILING = 4
 
+# Cap on the detail quoted in `_refusal_line`'s one stderr line. The full detail
+# stays in the JSON payload; this is the operator's first glance.
+_MAX_REFUSAL_DETAIL_CHARS = 200
+
 
 @dataclass(frozen=True)
 class LandRequest:
@@ -2105,6 +2109,27 @@ def _outcome_exit_code(outcome: str) -> int:
     }.get(outcome, 1)
 
 
+def _refusal_line(outcome: LandOutcome) -> str:
+    """One human-readable line for a refused outcome, written to stderr.
+
+    The JSON payload on stdout stays the machine contract (`--json` is
+    required); this line is for the operator reading the terminal, who
+    otherwise gets a JSON blob and has to read this module to interpret it --
+    the shape two live refusals in run go-20261003-153531 (PR #1402) each
+    required, and the refusal is the single most common landing failure
+    (brief 20261003-204324).
+    """
+    line = f"REFUSED at {outcome.refused_step}"
+    detail = next(
+        (ln.strip() for ln in (outcome.detail or "").splitlines() if ln.strip()), ""
+    )
+    if not detail:
+        return line
+    if len(detail) > _MAX_REFUSAL_DETAIL_CHARS:
+        detail = detail[:_MAX_REFUSAL_DETAIL_CHARS].rstrip() + "..."
+    return f"{line}: {detail}"
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--repo", required=True)
@@ -2163,6 +2188,8 @@ def main(argv: list[str] | None = None) -> int:
         fold_ins=args.fold_ins,
     )
     outcome = land_pr(request)
+    if outcome.outcome == "refused":
+        print(_refusal_line(outcome), file=sys.stderr)
     payload = {
         "outcome": outcome.outcome,
         "pr_url": outcome.pr_url,
