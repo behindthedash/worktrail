@@ -1,6 +1,6 @@
 ## 1. The exclusion list: the key and automatic selection
 
-- [ ] 1.1 [impl] Teach the routing policy and the automatic pick about
+- [x] 1.1 [impl] Teach the routing policy and the automatic pick about
       `routing.drain.exclude_repos`.
       (a) In `src/worktrail/router/policy.py`, extend the `drain:` block's validator
       (`_validate_routing_drain`, `:750`) with the new `exclude_repos` key: absent/`None`
@@ -53,7 +53,7 @@
 
 ## 2. The drain honors the exclusion list end to end
 
-- [ ] 2.1 [impl] Make every unattended path the drain drives drop excluded repos, from
+- [x] 2.1 [impl] Make every unattended path the drain drives drop excluded repos, from
       discovery through the ready count and the pre-passes.
       (a) In `src/worktrail/workqueue/seed_backlog.py`, give the three finders --
       `find_needs_tasks_specs` (`:84`), `find_ready_specs` (`:121`), `find_epic_gaps`
