@@ -15,6 +15,9 @@ Run: python3 test_live_tail_reconciliation.py
 
 from __future__ import annotations
 
+import contextlib
+import io
+import re
 import sys
 import tempfile
 import unittest
@@ -131,6 +134,109 @@ class PipelineSchedulerReconciliationTest(unittest.TestCase):
                 "no findings must still clear any stale journal entry, "
                 f"got {record_mock.call_args.args[1]!r}",
             )
+
+    def _run_scheduler_capturing_output(self, detected, reconciled):
+        """Drive `_pipeline_scheduler` with `detected` as
+        `detect_unreconciled_evidence`'s findings and `reconciled` as
+        `reconcile_unreconciled_tail_evidence`'s enriched return, capturing
+        stdout (journal write patched out)."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            repo = _init_repo(Path(tmp))
+            integrate_one, _ = _make_integrate_one()
+            buf = io.StringIO()
+            with (
+                unittest.mock.patch.object(
+                    integrate, "detect_unreconciled_evidence", return_value=detected
+                ),
+                unittest.mock.patch.object(
+                    integrate,
+                    "reconcile_unreconciled_tail_evidence",
+                    return_value=reconciled,
+                ),
+                unittest.mock.patch.object(
+                    integrate, "_record_unreconciled_tail_evidence"
+                ),
+                contextlib.redirect_stdout(buf),
+            ):
+                _run_pipeline_scheduler(
+                    repo, tmp, PipelineFakeSpawn(), integrate_one, FakeVerifier()
+                )
+            return buf.getvalue()
+
+    def test_merged_finding_prints_no_unreconciled_evidence_warning(self):
+        """Run `go-20261004-093132`'s shape: the tail finding was reconciled
+        (commits merged onto base), so the loud manual-reconcile warning must
+        not be printed at all."""
+        enriched = {
+            **_finding(),
+            "reconcile_state": "merged",
+            "reconcile_pr_url": "https://example.test/pr/4",
+        }
+        output = self._run_scheduler_capturing_output([_finding()], [enriched])
+        offending = [ln for ln in output.splitlines() if "unreconciled evidence" in ln]
+        self.assertEqual(
+            offending,
+            [],
+            f"a reconciled (merged) tail finding must not warn; stdout was {output!r}",
+        )
+
+    def test_quarantined_finding_still_prints_the_manual_warning(self):
+        """Companion to the merged case: the warning was narrowed, not
+        silenced -- a quarantined reconciliation still emits the `!!` line."""
+        enriched = {
+            **_finding(),
+            "reconcile_state": "quarantined",
+            "reconcile_pr_url": "",
+        }
+        output = self._run_scheduler_capturing_output([_finding()], [enriched])
+        warnings = [
+            ln
+            for ln in output.splitlines()
+            if "!! 1 tail task(s) completed with unreconciled evidence" in ln
+            and "commits never merged onto base -- reconcile before worktree cleanup"
+            in ln
+        ]
+        self.assertEqual(
+            len(warnings),
+            1,
+            f"the `!!` manual-reconcile warning was silenced; stdout was {output!r}",
+        )
+
+    def test_each_note_line_carries_its_own_timestamp(self):
+        """The manual `!!` line and the awaiting-merge line are separate
+        prints, so both carry a `[HH:MM:SS]` prefix."""
+        opened = {
+            **_finding("TASK-OPEN"),
+            "reconcile_state": "opened",
+            "reconcile_pr_url": "https://example.test/pr/9",
+        }
+        quarantined = {
+            **_finding("TASK-STUCK"),
+            "reconcile_state": "quarantined",
+            "reconcile_pr_url": "",
+        }
+        output = self._run_scheduler_capturing_output(
+            [_finding("TASK-OPEN"), _finding("TASK-STUCK")], [opened, quarantined]
+        )
+        note_lines = [
+            ln
+            for ln in output.splitlines()
+            if "unreconciled evidence" in ln
+            or "auto-reconciliation PR(s) awaiting merge" in ln
+        ]
+        self.assertEqual(
+            len(note_lines),
+            2,
+            f"expected a manual line and an awaiting line: {output!r}",
+        )
+        for line in note_lines:
+            self.assertRegex(
+                line,
+                re.compile(r"^\[\d{2}:\d{2}:\d{2}\] "),
+                "each emitted note line must carry its own timestamp",
+            )
+        self.assertTrue(note_lines[0].startswith("[") and "!!" in note_lines[0])
+        self.assertNotIn("!!", note_lines[1])
 
 
 class ReconcileTailEvidenceVerifyOneTest(unittest.TestCase):
