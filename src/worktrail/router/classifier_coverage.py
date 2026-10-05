@@ -187,28 +187,72 @@ def load_briefs(queue_root: Path) -> list[dict[str, Any]]:
 # --------------------------------------------------------------------------- #
 
 
-def _consumed_ids(value: Any) -> list[str]:
-    """Normalize ``handoffs_consumed`` — written as both a string and a list."""
+def _consumed_ids(value: Any) -> tuple[list[str], list[str]]:
+    """Normalize ``handoffs_consumed`` into brief ids, plus malformed-shape diagnostics.
+
+    Two shapes are genuine: a list of id strings (what every current writer
+    produces), and a single plain id string — the older ``set`` form, still
+    present on disk (3 records verified 2026-10-05), so it is kept.
+
+    Two shapes are data corruption and are NOT consumed ids: a JSON-encoded
+    array stored as a string (``'["a","b"]'`` — the ``set PATH
+    handoffs_consumed '["a","b"]'`` footgun, brief 20261003-204455), and a
+    comma-joined id list stored as a string. Treating either as one id maps a
+    brief id that cannot exist, so the run's real attribution is silently
+    absent from the join and this audit never saw the corruption (brief
+    20261003-221534). They are reported instead, never parsed and never split
+    — recovering the real ids is a separate judgment about what those records
+    meant. Same for a non-list, non-string value, and for a list entry that is
+    not a string.
+    """
     if not value:
-        return []
+        return [], []
     if isinstance(value, str):
-        return [value.strip()]
+        text = value.strip()
+        if not text:
+            return [], []
+        if text[:1] in "[{":
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, list):
+                return [], ["JSON-encoded array stored as a string"]
+            if isinstance(parsed, dict):
+                return [], ["JSON-encoded object stored as a string"]
+        if "," in text:
+            return [], ["comma-joined ids stored as a string"]
+        return [text], []
     if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item or "").strip()]
-    return []
+        ids: list[str] = []
+        diagnostics: list[str] = []
+        for item in value:
+            if not isinstance(item, str):
+                diagnostics.append(f"non-string entry {item!r}")
+                continue
+            if item.strip():
+                ids.append(item.strip())
+        return ids, diagnostics
+    return [], [f"{type(value).__name__} value, not a list or string"]
 
 
-def load_actual_routes(runs_root: Path) -> dict[str, str]:
-    """Map ``brief_id -> selected_route`` from run records that consumed it.
+def load_actual_routes_with_diagnostics(runs_root: Path) -> dict[str, Any]:
+    """``{"routes": {brief_id: route}, "malformed": [...]}`` from the run records.
 
-    Run records live at ``<runs_root>/<repo-name>/<run-id>.yaml``. When more
-    than one run consumed the same brief, the newest run id wins — a later
-    dispatch supersedes an earlier abandoned one.
+    ``routes`` maps ``brief_id -> selected_route`` for records that consumed
+    the brief; when more than one run consumed the same brief, the newest run
+    id wins — a later dispatch supersedes an earlier abandoned one.
+
+    ``malformed`` names every record whose ``handoffs_consumed`` is not a
+    shape this module can read as ids (see ``_consumed_ids``), so the audit
+    can surface them instead of silently attributing nothing. Run records live
+    at ``<runs_root>/<repo-name>/<run-id>.yaml``.
     """
     if not runs_root.is_dir():
-        return {}
+        return {"routes": {}, "malformed": []}
 
     newest: dict[str, tuple[str, str]] = {}
+    malformed: list[dict[str, str]] = []
     for path in sorted(runs_root.glob("*/*.yaml")):
         try:
             record = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -216,15 +260,32 @@ def load_actual_routes(runs_root: Path) -> dict[str, str]:
             continue
         if not isinstance(record, dict):
             continue
+        ids, diagnostics = _consumed_ids(record.get("handoffs_consumed"))
+        for reason in diagnostics:
+            malformed.append(
+                {
+                    "record": str(path),
+                    "reason": reason,
+                    "value": repr(record.get("handoffs_consumed"))[:200],
+                }
+            )
         route = _normalize_route(record.get("selected_route"))
         if not route:
             continue
         run_id = str(record.get("run_id") or path.stem)
-        for brief_id in _consumed_ids(record.get("handoffs_consumed")):
+        for brief_id in ids:
             previous = newest.get(brief_id)
             if previous is None or run_id > previous[0]:
                 newest[brief_id] = (run_id, route)
-    return {brief_id: route for brief_id, (_, route) in newest.items()}
+    return {
+        "routes": {brief_id: route for brief_id, (_, route) in newest.items()},
+        "malformed": malformed,
+    }
+
+
+def load_actual_routes(runs_root: Path) -> dict[str, str]:
+    """``load_actual_routes_with_diagnostics()``'s ``routes`` projection."""
+    return load_actual_routes_with_diagnostics(runs_root)["routes"]
 
 
 # --------------------------------------------------------------------------- #
@@ -243,7 +304,8 @@ def audit_coverage(
     """Replay the classifier over the brief corpus and cluster disagreements."""
     replay_state = REPLAY_STATE if state is None else state
     briefs = load_briefs(queue_root)
-    actual_routes = load_actual_routes(runs_root)
+    attribution = load_actual_routes_with_diagnostics(runs_root)
+    actual_routes = attribution["routes"]
 
     if since:
         briefs = [b for b in briefs if b["created"] and b["created"][:10] >= since]
@@ -303,6 +365,7 @@ def audit_coverage(
             "limit": limit,
             "since": since,
             "skipped": dict(sorted(skipped.items())),
+            "malformed_consumed_records": attribution["malformed"],
         },
         "replay": {
             "state": replay_state,
@@ -456,6 +519,14 @@ def render_report(report: dict[str, Any]) -> str:
         lines.append(f"  since {corpus['since']}")
     for reason, count in corpus["skipped"].items():
         lines.append(f"  skipped {count}: {reason}")
+    malformed = corpus.get("malformed_consumed_records") or []
+    if malformed:
+        lines.append(
+            f"  malformed handoffs_consumed: {len(malformed)} record(s) -- a run's "
+            "brief attribution is missing from the join for these, so the "
+            "`actual` source below is blind to them (records in --json's "
+            "corpus.malformed_consumed_records)"
+        )
 
     resumable = replay["resumable_state"]
     resumable_label = "unknown" if resumable is None else str(resumable).lower()

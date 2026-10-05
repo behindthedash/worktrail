@@ -3938,6 +3938,17 @@ def _require_spec_at_fanout_refs(
     (`dependency_start_ref`), so a spec missing there is a warning naming that
     consequence -- a spec committed locally but not yet pushed is legitimate
     and common.
+
+    An OpenSpec change (`--spec openspec/changes/<id>`, the Route F/G modify
+    pipeline) is the one case that warning is wrong for, and it fired on every
+    such run (brief 20261003-221246, run go-20261003-211918): the change's
+    commit deliberately lives on its own `chg/<change-id>` branch and must NOT
+    be on `<remote>/<base>` before the orchestrator runs, so the "push the spec
+    commit" remediation is the one action a reader must not take, while the
+    worktree it warned about was in fact based on that change commit and
+    carried the change directory. A task worktree that does start without its
+    task file is caught at dispatch time by `_require_task_file`, so skipping
+    the warning here loses no guard.
     """
     spec_path = spec_rel.strip("/")
     if _git(repo, "cat-file", "-e", f"HEAD:{spec_path}", check=False).returncode != 0:
@@ -3948,6 +3959,8 @@ def _require_spec_at_fanout_refs(
             "checkout's branch, or point --repo at the checkout that has them, "
             "before launching the run."
         )
+    if spec_path.startswith("openspec/changes/"):
+        return
     base_ref = f"{remote}/{base}"
     if (
         _git(repo, "rev-parse", "--verify", "-q", base_ref, check=False).returncode == 0
