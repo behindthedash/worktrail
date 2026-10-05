@@ -1,8 +1,9 @@
 """Small, machine-local capacity cache for headless agent providers.
 
 The cache is deliberately outside project repositories.  It is advisory state:
-malformed or stale data is ignored, and a provider is never treated as
-unavailable without an explicit future timestamp.
+malformed or stale data is ignored, and a gate holds only while its recorded
+retry window is open -- a gated status with no timestamp at all holds until
+explicitly cleared, matching the drain's long-standing reading.
 """
 
 from __future__ import annotations
@@ -165,6 +166,80 @@ def write_lock(path: Path) -> Iterator[None]:
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
+# Statuses that mean "this provider is gated"; the drain's predicate and every
+# reader in this module share the set.
+_GATED_STATUSES = frozenset({"unavailable", "gated", "blocked"})
+
+
+def entry_gated(state: dict, now: datetime | None = None) -> bool:
+    """True when `state` carries a gated status whose retry_after/reset_at has
+    not passed yet. A gated status with no timestamp at all is treated as
+    gated indefinitely (until cleared) -- unchanged from prior behavior. A
+    gated status with a timestamp that has already passed is NOT gated: the
+    whole point of persisting retry_after is so a reader picks the provider
+    back up automatically once its cooldown expires (see record()/retry_time()),
+    which requires comparing it to now.
+    """
+    now = now or _now()
+    if str(state.get("status", "")).lower() not in _GATED_STATUSES:
+        return False
+    retry_at = _parse_time(state.get("retry_after")) or _parse_time(
+        state.get("reset_at")
+    )
+    if retry_at is None:
+        return True
+    return retry_at > now
+
+
+def gate_entry(
+    query: str,
+    *,
+    data: dict | None = None,
+    path: Path | None = None,
+    now: datetime | None = None,
+) -> tuple[str, dict] | None:
+    """Resolve the first cached entry that gates `query`, as ``(entry_key,
+    state)`` -- the single reader every capacity check routes through.
+
+    `query` is a provider key: a ``target:model`` cell key or a bare
+    ``target``. A ``target:model`` query honours a bare ``target`` entry first
+    (a provider-wide gate -- account rate limit, billing block -- outranks any
+    per-model entry, and is never weakened by one), then the exact ``query``
+    entry. A bare ``query`` is decided by its own entry when one exists; with
+    no bare entry it is gated only when every ``<query>:*`` entry is gated, so
+    one un-gated model still gives the target capacity. Read from `data` when
+    given, else `load(path)`; both a full cache dict and a bare providers
+    mapping are accepted, exactly as the drain's own reader was.
+    """
+    now = now or _now()
+    raw = data if data is not None else load(path)
+    if not isinstance(raw, dict):
+        return None
+    providers = raw.get("providers")
+    if not isinstance(providers, dict):
+        providers = raw
+    if ":" in query:
+        bare_key = query.split(":", 1)[0]
+        bare = providers.get(bare_key)
+        if isinstance(bare, dict) and entry_gated(bare, now):
+            return bare_key, bare
+        exact = providers.get(query)
+        if isinstance(exact, dict) and entry_gated(exact, now):
+            return query, exact
+        return None
+    exact = providers.get(query)
+    if isinstance(exact, dict):
+        return (query, exact) if entry_gated(exact, now) else None
+    matched = [
+        (key, state)
+        for key, state in providers.items()
+        if isinstance(state, dict) and str(key).startswith(query + ":")
+    ]
+    if matched and all(entry_gated(state, now) for _, state in matched):
+        return matched[0]
+    return None
+
+
 def gate_snapshot(
     providers: Iterable[str], path: Path | None = None, now: datetime | None = None
 ) -> dict:
@@ -172,7 +247,10 @@ def gate_snapshot(
 
     ``providers`` is the caller-supplied provider-key set to evaluate (e.g. the
     routing-derived set); a stale ``configured_providers`` key left in an
-    existing cache file is never read.
+    existing cache file is never read. Each key is resolved through
+    `gate_entry()`, so a bare target entry gates every ``<target>:*`` key the
+    caller passes. Only a gate carrying an explicit future retry window is
+    reported, keeping every reported ``retry_after`` a string.
     """
     now = now or _now()
     data = load(path)
@@ -181,22 +259,24 @@ def gate_snapshot(
     )
     gated = []
     for key in configured:
-        state = data.get("providers", {}).get(key)
-        if not isinstance(state, dict) or state.get("status") != "unavailable":
+        resolved = gate_entry(key, data=data, now=now)
+        if resolved is None:
             continue
+        state = resolved[1]
         retry_at = _parse_time(state.get("retry_after")) or _parse_time(
             state.get("reset_at")
         )
-        if retry_at and retry_at > now:
-            gated.append(
-                {
-                    "provider": key,
-                    "failure_class": _safe_identifier(
-                        state.get("failure_class") or "unknown"
-                    ),
-                    "retry_after": retry_at.isoformat(),
-                }
-            )
+        if retry_at is None:
+            continue
+        gated.append(
+            {
+                "provider": key,
+                "failure_class": _safe_identifier(
+                    state.get("failure_class") or "unknown"
+                ),
+                "retry_after": retry_at.isoformat(),
+            }
+        )
     return {
         "configured": configured,
         "gated": gated,
@@ -219,21 +299,24 @@ def _probeable(state: dict, now: datetime) -> bool:
 def check(
     target: str, model: str, path: Path | None = None, now: datetime | None = None
 ) -> None:
+    """Raise `ProviderUnavailable` when the cell ``target:model`` is gated.
+
+    Resolution goes through `gate_entry()`, so a bare target-wide entry gates
+    every model of that target -- the same reading `select_cell`, the drain and
+    `check-agent` use. A cooldown-derived gate is re-probed once per
+    `PROBE_INTERVAL_S`; the probe stamps ``probe_at`` on the entry that actually
+    gated the cell, which may be the bare target entry.
+    """
     now = now or _now()
     path = path or cache_path()
-    key = provider_key(target, model)
-    state = load(path).get("providers", {}).get(key)
-    if not isinstance(state, dict):
+    resolved = gate_entry(provider_key(target, model), path=path, now=now)
+    if resolved is None:
         return
-    retry_at = _parse_time(state.get("retry_after")) or _parse_time(
-        state.get("reset_at")
-    )
-    if not retry_at or retry_at <= now:
-        return
+    entry_key, state = resolved
     if _probeable(state, now):
         with write_lock(path):
             data = load(path)
-            fresh = data.get("providers", {}).get(key)
+            fresh = data.get("providers", {}).get(entry_key)
             if isinstance(fresh, dict):
                 fresh_retry_at = _parse_time(fresh.get("retry_after")) or _parse_time(
                     fresh.get("reset_at")
@@ -243,9 +326,9 @@ def check(
                         fresh["probe_at"] = now.isoformat()
                         save(data, path)
                         return
-                    raise ProviderUnavailable(key, fresh)
+                    raise ProviderUnavailable(entry_key, fresh)
         return
-    raise ProviderUnavailable(key, state)
+    raise ProviderUnavailable(entry_key, state)
 
 
 def gate_for_agent(
@@ -262,7 +345,10 @@ def gate_for_agent(
 
     Finds the routing target(s) whose ``harness`` matches ``agent`` in the
     resolved tier row (``tier`` or ``routing["default_tier"]``) and checks
-    each with `check()`. Returns ``None`` when nothing is gated -- including
+    each with `check()` -- the same `gate_entry()` resolution every other
+    reader uses, so a bare target-wide entry (e.g. one
+    `drain.record_capacity_gate()` wrote) gates this one resolved agent.
+    Returns ``None`` when nothing is gated -- including
     when routing has no target for this agent at all, which degrades to
     "nothing to check, proceed" rather than blocking a repo with no routing
     configured. Returns the first gate's state dict (plus its target name)
@@ -539,9 +625,6 @@ def _add_audit(
     )
     if len(data["audit"]) > MAX_AUDIT_ENTRIES:
         data["audit"] = data["audit"][-MAX_AUDIT_ENTRIES:]
-
-
-_GATED_STATUSES = frozenset({"unavailable", "gated", "blocked"})
 
 
 def _gate_retry_at(state: object) -> datetime | None:
