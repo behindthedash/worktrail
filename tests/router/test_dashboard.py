@@ -1778,6 +1778,51 @@ class ReposScan(unittest.TestCase):
             out,
         )
 
+    def test_render_dashboard_reports_a_timeless_bare_target_gate(self):
+        # A drain entry with no retry window is gated until cleared, so the
+        # capacity line must still name the cell the bare target key blocks.
+        now = datetime.datetime(2026, 7, 20, 20, 0, tzinfo=datetime.UTC)
+        policy = {
+            "routing": {
+                "targets": {
+                    "claude-deepseek": {
+                        "harness": "claude",
+                        "pool": "api",
+                        "api_opt_in": True,
+                    },
+                },
+                "tiers": {
+                    "t2-build": {"claude-deepseek": {"model": "deepseek-flash[1m]"}},
+                },
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "capacity.json"
+            cache.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "providers": {
+                            "claude-deepseek": {
+                                "status": "blocked",
+                                "failure_class": "billing",
+                                "checked_at": now.isoformat(),
+                                "source": "drain",
+                            }
+                        },
+                    }
+                )
+            )
+            keys = dashboard._routing_configured_providers(policy)
+            capacity = agent_capacity.gate_snapshot(keys, path=cache, now=now)
+
+        out = dashboard.render_dashboard([], None, [], [], capacity=capacity)
+
+        self.assertTrue(capacity["all_gated"])
+        self.assertIsNone(capacity["retry_after"])
+        self.assertIn("Headless capacity blocked", out)
+        self.assertIn("claude-deepseek:deepseek-flash_1m_ (billing", out)
+
     def test_routing_configured_providers_derives_from_routing_candidates(self):
         policy = {
             "routing": {

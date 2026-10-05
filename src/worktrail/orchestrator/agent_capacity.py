@@ -249,8 +249,9 @@ def gate_snapshot(
     routing-derived set); a stale ``configured_providers`` key left in an
     existing cache file is never read. Each key is resolved through
     `gate_entry()`, so a bare target entry gates every ``<target>:*`` key the
-    caller passes. Only a gate carrying an explicit future retry window is
-    reported, keeping every reported ``retry_after`` a string.
+    caller passes -- including a timeless one, which is reported with
+    ``retry_after: None`` (it stays gated until cleared, so dropping it here
+    would report the cell it blocks as having capacity).
     """
     now = now or _now()
     data = load(path)
@@ -266,29 +267,42 @@ def gate_snapshot(
         retry_at = _parse_time(state.get("retry_after")) or _parse_time(
             state.get("reset_at")
         )
-        if retry_at is None:
-            continue
         gated.append(
             {
                 "provider": key,
                 "failure_class": _safe_identifier(
                     state.get("failure_class") or "unknown"
                 ),
-                "retry_after": retry_at.isoformat(),
+                "retry_after": retry_at.isoformat() if retry_at else None,
             }
         )
     return {
         "configured": configured,
         "gated": gated,
         "all_gated": bool(configured) and len(gated) == len(configured),
-        "retry_after": min((item["retry_after"] for item in gated), default=None),
+        "retry_after": min(
+            (item["retry_after"] for item in gated if item["retry_after"]),
+            default=None,
+        ),
     }
 
 
 def _probeable(state: dict, now: datetime) -> bool:
+    """True when this gated entry is due for a cooldown re-probe.
+
+    Probing re-tests a *cooldown-derived* window, so an entry with no retry
+    window at all is never probeable: a timeless gate does not self-heal, and
+    letting a probe through would run the cell against a gate that still says
+    it is blocked.
+    """
     if state.get("reset_source") == "provider":
         return False
     if state.get("failure_class") in NEVER_PROBE_CLASSES:
+        return False
+    retry_at = _parse_time(state.get("retry_after")) or _parse_time(
+        state.get("reset_at")
+    )
+    if retry_at is None:
         return False
     last = _parse_time(state.get("probe_at")) or _parse_time(state.get("checked_at"))
     if last is None:
@@ -305,7 +319,9 @@ def check(
     every model of that target -- the same reading `select_cell`, the drain and
     `check-agent` use. A cooldown-derived gate is re-probed once per
     `PROBE_INTERVAL_S`; the probe stamps ``probe_at`` on the entry that actually
-    gated the cell, which may be the bare target entry.
+    gated the cell, which may be the bare target entry. A gate with no retry
+    window is not a cooldown: it stays gated until explicitly cleared and is
+    never probed through.
     """
     now = now or _now()
     path = path or cache_path()
@@ -313,22 +329,19 @@ def check(
     if resolved is None:
         return
     entry_key, state = resolved
-    if _probeable(state, now):
-        with write_lock(path):
-            data = load(path)
-            fresh = data.get("providers", {}).get(entry_key)
-            if isinstance(fresh, dict):
-                fresh_retry_at = _parse_time(fresh.get("retry_after")) or _parse_time(
-                    fresh.get("reset_at")
-                )
-                if fresh_retry_at and fresh_retry_at > now:
-                    if _probeable(fresh, now):
-                        fresh["probe_at"] = now.isoformat()
-                        save(data, path)
-                        return
-                    raise ProviderUnavailable(entry_key, fresh)
-        return
-    raise ProviderUnavailable(entry_key, state)
+    if not _probeable(state, now):
+        raise ProviderUnavailable(entry_key, state)
+    with write_lock(path):
+        data = load(path)
+        fresh = data.get("providers", {}).get(entry_key)
+        if not isinstance(fresh, dict) or not entry_gated(fresh, now):
+            # Cleared or expired while this caller waited for the lock.
+            return
+        if not _probeable(fresh, now):
+            # Still gated, but no longer probe-eligible: keep gating.
+            raise ProviderUnavailable(entry_key, fresh)
+        fresh["probe_at"] = now.isoformat()
+        save(data, path)
 
 
 def gate_for_agent(

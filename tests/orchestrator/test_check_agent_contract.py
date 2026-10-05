@@ -241,6 +241,36 @@ class CheckAgentCapacityGate(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(out, {"gated": False})
 
+    def test_timeless_bare_target_entry_keeps_reporting_the_agent_gated(self):
+        # No retry window means gated until cleared -- an old checked_at must
+        # not turn it into a probe-eligible cooldown for the CLI reader.
+        now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "capacity.json"
+            cache.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "providers": {
+                            "claude-deepseek": {
+                                "status": "blocked",
+                                "failure_class": "billing",
+                                "checked_at": (now - timedelta(minutes=20)).isoformat(),
+                                "source": "drain",
+                            }
+                        },
+                    }
+                )
+            )
+
+            rc, out = self._check_agent(cache, now)
+
+        self.assertEqual(rc, 1)
+        self.assertTrue(out["gated"])
+        self.assertEqual(out["target"], "claude-deepseek")
+        self.assertEqual(out["failure_class"], "billing")
+        self.assertIsNone(out["retry_after"])
+
 
 if __name__ == "__main__":
     unittest.main()
