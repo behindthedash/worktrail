@@ -20,7 +20,7 @@ import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -846,7 +846,9 @@ def escalate(
 
 
 def inventory(
-    within_days: int, repos_root: str | Path | None = None
+    within_days: int,
+    repos_root: str | Path | None = None,
+    exclude_repos: Collection[str] = (),
 ) -> tuple[
     dict[str, list[Path]],
     list[Path],
@@ -877,12 +879,22 @@ def inventory(
     Returns `(groups, skipped, escalate_without_evaluator, inferred, unresolvable)`
     -- the last two passed straight through from `group_queue_by_repo()`'s own
     repo-inference/decision-consumption pre-pass.
+
+    `exclude_repos` names repos the operator has excluded from unattended
+    draining (`routing.drain.exclude_repos`); every group whose repo key
+    matches one by basename is dropped outright, so the drain's triage pre-pass
+    never spawns an evaluator against a repo it must not touch. `NO_REPO_KEY`
+    is not a repo and is never matched, and a group left empty is dropped by
+    the existing filter below regardless.
     """
     skipped: list[Path] = []
     groups: dict[str, list[Path]] = {}
     escalate_without_evaluator: list[Path] = []
     all_groups, inferred, unresolvable = group_queue_by_repo(repos_root)
+    excluded = {str(name) for name in exclude_repos}
     for key, paths in all_groups.items():
+        if key != NO_REPO_KEY and excluded and Path(key).name in excluded:
+            continue
         kept: list[Path] = []
         for path in paths:
             due = escalation_due(path, None if key == NO_REPO_KEY else key) is not None
@@ -4185,6 +4197,10 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
     briefs (due, `NO_REPO_KEY` briefs with no evaluator group to spawn) are
     verdicted directly via the escalation matrix (`escalate()`), never spawning
     an evaluator for a brief that can only ever resolve to `needs-decision`.
+
+    `--exclude-repo NAME` (repeatable) is forwarded to `inventory()` so the
+    drain's pre-pass can scope the evaluation to repos that are not excluded
+    from unattended draining, without re-implementing the grouping here.
     """
     repos_root = args.repos_root or str(Path.home() / "projects")
     previous_queue_dir = os.environ.get("WORK_QUEUE_DIR")
@@ -4192,7 +4208,11 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         os.environ["WORK_QUEUE_DIR"] = str(args.queue_dir)
     try:
         groups, skipped, escalate_without_evaluator, inferred, _unresolvable = (
-            inventory(args.skip_if_triaged_within_days, repos_root)
+            inventory(
+                args.skip_if_triaged_within_days,
+                repos_root,
+                exclude_repos=args.exclude_repo or [],
+            )
         )
     finally:
         if args.queue_dir:
@@ -4402,6 +4422,16 @@ def main(argv: list[str] | None = None) -> int:
         help="directory of sibling repo checkouts consulted by repo inference, "
         "decision consumption, the escalation matrix, and a repo-less group's "
         "known-repo list for propose-change (default ~/projects)",
+    )
+    evaluate_parser.add_argument(
+        "--exclude-repo",
+        action="append",
+        default=None,
+        dest="exclude_repo",
+        metavar="NAME",
+        help="repo name to drop from the evaluation set entirely (repeatable; "
+        "the drain passes routing.drain.exclude_repos here so an excluded repo "
+        "is never evaluated)",
     )
 
     apply_parser = subparsers.add_parser(

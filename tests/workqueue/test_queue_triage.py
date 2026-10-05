@@ -7406,3 +7406,87 @@ class TestPromptAllowsWorkDirectlyCorrection(unittest.TestCase):
             "`judgment_reason` stays `needs-update`-only",
             qt.EVALUATOR_PROMPT_TEMPLATE,
         )
+
+
+class TestEvaluateExcludeRepoFlag(QueueTriageTestBase):
+    """`evaluate --exclude-repo NAME` (repeatable) is the drain's intake-triage
+    pre-pass scoping handle: the flag is collected and threaded straight into
+    `inventory()`, where excluded repo groups are dropped before any evaluator
+    is spawned."""
+
+    def test_repeated_flags_thread_into_inventory(self):
+        seen = []
+
+        def fake_inventory(within_days, repos_root=None, exclude_repos=()):
+            seen.append(
+                {
+                    "within_days": within_days,
+                    "repos_root": repos_root,
+                    "exclude_repos": list(exclude_repos),
+                }
+            )
+            return {}, [], [], [], []
+
+        with mock.patch(
+            "worktrail.workqueue.queue_triage.inventory",
+            side_effect=fake_inventory,
+        ):
+            exit_code = qt.main(
+                [
+                    "evaluate",
+                    "--out-dir",
+                    str(self.base / "out-exclude"),
+                    "--exclude-repo",
+                    "repo-b",
+                    "--exclude-repo",
+                    "repo-c",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0]["exclude_repos"], ["repo-b", "repo-c"])
+
+    def test_no_flags_passes_an_empty_list(self):
+        seen = []
+
+        def fake_inventory(within_days, repos_root=None, exclude_repos=()):
+            seen.append(list(exclude_repos))
+            return {}, [], [], [], []
+
+        with mock.patch(
+            "worktrail.workqueue.queue_triage.inventory",
+            side_effect=fake_inventory,
+        ):
+            exit_code = qt.main(["evaluate", "--out-dir", str(self.base / "out-none")])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(seen, [[]])
+
+    def test_flag_reaches_a_real_inventory_and_drops_the_group(self):
+        """End-to-end through the real `inventory()`: the excluded repo's group
+        is absent from the evaluation set the CLI is about to fan out over."""
+        repo_b = self.base / "repo-b"
+        repo_b.mkdir()
+        (self.base / "repo-a").mkdir()
+        self.write("b.md", repo=str(repo_b))
+        self.write("a.md", repo="repo-a")
+
+        out_dir = self.base / "out-real"
+        with mock.patch.object(qt, "evaluate_group", return_value=[]) as mock_eval:
+            exit_code = qt.main(
+                [
+                    "evaluate",
+                    "--out-dir",
+                    str(out_dir),
+                    "--repos-root",
+                    str(self.base),
+                    "--exclude-repo",
+                    "repo-b",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        evaluated = {call.args[0] for call in mock_eval.call_args_list}
+        self.assertNotIn(str(repo_b), evaluated)
+        self.assertIn("repo-a", evaluated)
