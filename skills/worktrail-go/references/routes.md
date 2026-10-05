@@ -99,7 +99,8 @@ criteria.
 
 **After spec-to-tasks and its scope-check gate pass (always):** run
 `worktrail-land-pr --repo "$WT" --base "$BASE" --run "$RUN" --route C --risk
-low --checkpoint` so the spec artifact is durable across sessions. This pushes
+low --checkpoint --commit-message "chore($SPEC_ID): add spec artifacts"` so the
+spec artifact is durable across sessions. This pushes
 `spec/$SPEC_ID`, opens the docs-only PR (→ `$BASE`), and CI-watches it to a
 terminal outcome — merged, or `completed_pr_open` with auto-merge armed —
 before asking the implementation-intent question below. The scope-check
@@ -176,7 +177,12 @@ Existing work is the controlling artifact. **Reconstruct before acting:**
    repository state — never repeat earlier work.
 4. **CI/PR repair sub-mode** (secondary F): reproduce the failing check
    locally, fix on the same branch, re-run affected validation, push. Quarantined
-   orchestrator groups: see `#worktree-lifecycle` quarantine handling.
+   orchestrator groups: see `#worktree-lifecycle` quarantine handling — fix the
+   task branch first, then clear the group with `worktrail-resume-group --repo
+   <repo> --spec <spec> --group <name>` (or `--all-resumable` for
+   budget-exhausted quarantines) and re-run `worktrail-live full-real --repo
+   <repo> --spec <spec> --resume`, rather than hand-landing the PR and
+   hand-running checkbox-sync.
 5. Re-enter the owning route at the detected stage (the dashboard's
    `next_action` is the entry point).
 

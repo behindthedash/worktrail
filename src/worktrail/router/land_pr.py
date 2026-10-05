@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """The one shared PR-landing pipeline: commit, compile-marker gate, preflight
 gate + labels, push, create/update the PR, watch CI to a terminal outcome,
 and finish (or checkpoint) the run record.
@@ -32,9 +31,10 @@ itself is an uncommitted file until step 1 commits it):
    changed relative to `base_branch`, compile it in-process and require a
    fresh `.compile-ok` marker (PR #902's root cause: a stale/missing marker
    reached `gh pr create` undetected).
-3. `_run_preflight_and_labels` -- run the pre-PR gate in-process; labels are
-   read back from the pass marker so they are byte-identical to what the
-   PreToolUse hook will independently check.
+3. `_run_preflight_and_labels` -- run the pre-PR gate in-process, capturing
+   its stdout/stderr so a denial carries the gate's own failure text in
+   `LandOutcome.detail`; labels are read back from the pass marker so they
+   are byte-identical to what the PreToolUse hook will independently check.
 4. `_push` -- push the (now clean, gate-passed) branch.
 5. `open_or_update_pull_request` -- find or create the PR; ensure labels on
    an existing OPEN PR rather than re-creating it (idempotent re-invocation).
@@ -122,6 +122,34 @@ MERGE_STATE_RERUN_MAX = 2
 _NO_CHECKS_STDERR_MARKER = "no checks reported"
 _NO_CHECKS_GRACE_ATTEMPTS = 3
 _NO_CHECKS_POLL_INTERVAL_S = 3
+
+
+def _no_checks_grace_attempts(watch_timeout_s: int) -> int:
+    """Registration-grace probe count for a run whose watch budget is
+    `watch_timeout_s`. A fixed three probes (~9s) is far shorter than the
+    registration race it exists to absorb on a run that was given a long
+    watch budget, so the count scales with that budget -- capped at one
+    `watch_timeout_s` window of grace (floor division already guarantees
+    `attempts * _NO_CHECKS_POLL_INTERVAL_S <= watch_timeout_s`) and floored
+    at `_NO_CHECKS_GRACE_ATTEMPTS` so a very short `--watch-timeout` keeps
+    today's behaviour.
+    """
+    return max(_NO_CHECKS_GRACE_ATTEMPTS, watch_timeout_s // _NO_CHECKS_POLL_INTERVAL_S)
+
+
+# A `statusCheckRollup` entry with no `conclusion` and one of these `state`
+# values has not reported yet. GitHub reports `mergeStateStatus: BLOCKED`
+# both for "a required check failed" and for "a required check has not
+# reported yet", so classifying BLOCKED as a product decision without first
+# checking that every required context is terminal turns a still-running
+# required check into a permanent `blocked_product_decision`.
+_NONTERMINAL_CHECK_STATES = frozenset(
+    {"PENDING", "QUEUED", "IN_PROGRESS", "WAITING", "REQUESTED", "EXPECTED"}
+)
+
+# How many times the BLOCKED branch re-enters `_merge_state_guard` waiting
+# for the required contexts to report before giving up as a ceiling.
+BLOCKED_REQUIRED_CONTEXT_POLL_MAX = 20
 
 # `ci_patch_iterations` value at which a new code defect becomes a ceiling
 # (`failed_recoverable`) instead of another `code_defect` outcome.
@@ -262,12 +290,32 @@ def render_pr_body(
     )
 
 
+def _git_failure_detail(
+    subcommand: str, result: subprocess.CompletedProcess[str]
+) -> str:
+    """`<subcommand> failed: <output>` -- quoting the failing subcommand's
+    stderr (falling back to stdout), the composition `_push()` already uses
+    for its own refusal detail. A failed subcommand that printed nothing
+    still contributes a non-empty, cause-identifying detail, so all four
+    `_commit_pending()` refusal causes stay distinguishable in
+    `LandOutcome.detail`."""
+    output = (result.stderr or result.stdout or "").strip()
+    return f"{subcommand} failed: {output or '(no output)'}"
+
+
 def _commit_pending(
     repo: Path, commit_message: str | None, runner: Runner
-) -> str | None:
-    """Commit a dirty tree, or refuse (`"dirty_tree"`) when no
+) -> tuple[str | None, str | None]:
+    """Commit a dirty tree, or refuse (`("dirty_tree", detail)`) when no
     `commit_message` was supplied -- see module docstring step 1. Never
-    touches a clean tree. Returns the refused-step name, or None on success.
+    touches a clean tree. Returns `(refused_step, detail)`, mirroring
+    `_ensure_compile_markers`; `(None, None)` on success.
+
+    All four refusal causes -- a failed `git status`, no `commit_message`
+    supplied, a failed `git add`, a failed `git commit` -- keep the one
+    documented `"dirty_tree"` step name and are told apart by the returned
+    detail: the three git failures quote the failing subcommand's stderr,
+    falling back to stdout, and a missing message names itself.
 
     Fails closed on a `git status` failure (transient `index.lock`
     contention, unreadable index, ...), matching `_ensure_compile_markers`'s
@@ -277,18 +325,24 @@ def _commit_pending(
     exists to close)."""
     status = _git(repo, runner, "status", "--porcelain")
     if status.returncode != 0:
-        return "dirty_tree"
+        return "dirty_tree", _git_failure_detail("git status --porcelain", status)
     if not status.stdout.strip():
-        return None
+        return None, None
     if not commit_message:
-        return "dirty_tree"
+        return (
+            "dirty_tree",
+            (
+                "tree has uncommitted changes but no commit_message was supplied "
+                "-- pass one so the pipeline commits them before pushing"
+            ),
+        )
     add = _git(repo, runner, "add", "-A")
     if add.returncode != 0:
-        return "dirty_tree"
+        return "dirty_tree", _git_failure_detail("git add -A", add)
     commit = _git(repo, runner, "commit", "-m", commit_message)
     if commit.returncode != 0:
-        return "dirty_tree"
-    return None
+        return "dirty_tree", _git_failure_detail("git commit -m", commit)
+    return None, None
 
 
 def _ensure_compile_markers(
@@ -352,6 +406,37 @@ def _ensure_compile_markers(
     return None, None
 
 
+def _preflight_main(argv: list[str]) -> tuple[int, str]:
+    """`preflight.main(argv)`, capturing whatever it printed to stdout and
+    stderr. Returns `(exit_code, detail)`.
+
+    `preflight.main()` can raise `SystemExit` rather than returning a code
+    (argparse reports an invalid `--risk` choice that way) -- caught here,
+    mirroring `_run_record_main`'s shape, so an invalid risk refuses cleanly
+    instead of escaping as an uncaught `SystemExit` into
+    `land_pr(LandRequest(...))`'s caller or `main()`'s exit-code/JSON
+    contract. A string `SystemExit` code is kept as the detail; otherwise the
+    detail is the captured stderr, falling back to the captured stdout when
+    stderr is empty. The gate writes the common denial reason to stderr, so a
+    stdout-only capture would lose it -- but a gate is free to write its
+    failure to stdout, and a denial must carry it either way."""
+    out = io.StringIO()
+    err = io.StringIO()
+    detail = ""
+    try:
+        with redirect_stdout(out), redirect_stderr(err):
+            exit_code = preflight.main(argv)
+    except SystemExit as exc:
+        if isinstance(exc.code, int):
+            exit_code = exc.code
+        elif exc.code:
+            exit_code = 1
+            detail = str(exc.code)
+        else:
+            exit_code = 0
+    return exit_code, detail or err.getvalue().strip() or out.getvalue().strip()
+
+
 def _run_preflight_and_labels(
     repo: Path,
     base_branch: str,
@@ -359,10 +444,12 @@ def _run_preflight_and_labels(
     gates: Sequence[str],
     route: str,
     run_path: str | None,
-) -> tuple[str | None, list[str]]:
+) -> tuple[str | None, list[str], str | None]:
     """Preflight gate + labels -- see module docstring step 3. Returns
-    `(refused_step, labels)`; labels are only meaningful when
-    `refused_step` is None.
+    `(refused_step, labels, detail)`, mirroring `_ensure_compile_markers`;
+    labels are only meaningful when `refused_step` is None, and `detail`
+    (None on success) carries the gate's own failure output on a refusal --
+    whether the gate wrote it to stdout or to stderr.
 
     A `preflight.main()` exit of 0 does not guarantee a marker was written --
     `preflight._run()` has a real success path where tree state can't be
@@ -378,14 +465,13 @@ def _run_preflight_and_labels(
     marker left on disk from an earlier preflight run in the same worktree
     (the normal condition after any prior run) is adopted verbatim -- the
     same stale-artifact shape step 2 already refuses for a stale *compile*
-    marker, left open here for the *preflight* one.
+    marker, left open here for the *preflight* one. A refusal at either
+    marker check carries its own cause-specific `detail`.
 
-    `preflight.main()`'s own argparse constrains `--risk` to a fixed choice
-    set and raises `SystemExit` on an invalid value -- caught here (mirroring
-    `_run_record_main`'s identical guard) so an out-of-range `risk` refuses
-    cleanly instead of escaping as an uncaught `SystemExit` into
-    `land_pr(LandRequest(...))`'s caller or `main()`'s exit-code/JSON
-    contract."""
+    The gate runs through `_preflight_main()`, whose in-process capture
+    covers both streams and a `SystemExit` (argparse's invalid-`--risk`
+    refusal) so the refusal detail is the gate's own output, never a bare
+    `null`."""
     argv = ["run", "--repo", str(repo), "--risk", risk, "--target-branch", base_branch]
     if gates:
         argv += ["--gates", ",".join(gates)]
@@ -393,20 +479,31 @@ def _run_preflight_and_labels(
         argv += ["--route", route]
     if run_path:
         argv += ["--run", run_path]
-    try:
-        exit_code = preflight.main(argv)
-    except SystemExit:
-        return "preflight", []
+    exit_code, detail = _preflight_main(argv)
     if exit_code != 0:
-        return "preflight", []
+        return "preflight", [], detail
     marker = preflight.read_marker(repo)
     if marker is None:
-        return "preflight", []
+        return (
+            "preflight",
+            [],
+            (
+                "preflight gate passed but wrote no readable pass marker; cannot "
+                "read back its labels"
+            ),
+        )
     state = preflight.tree_state(repo)
     if state is None or marker.get("state") != state:
-        return "preflight", []
+        return (
+            "preflight",
+            [],
+            (
+                f"preflight pass marker is stale: marker state "
+                f"{marker.get('state')!r} does not match current tree state {state!r}"
+            ),
+        )
     labels = list(marker.get("labels") or [])
-    return None, labels
+    return None, labels, None
 
 
 _GITHUB_SLUG_RE = re.compile(r"github\.com[:/]([^/\s]+/[^/\s]+?)(?:\.git)?/?$")
@@ -459,9 +556,11 @@ def _push(
     outcome that promises an untouched remote. On a genuine `"push"`
     refusal, git's own stderr (falling back to stdout) is appended to
     `detail_out` when the caller supplies one, so the caller never surfaces
-    a bare `null` for a failure git already explained -- kept as an
-    out-param rather than widening the return type so every existing
-    caller/mock of this signature keeps working unchanged.
+    a bare `null` for a failure git already explained. A non-zero exit with
+    nothing on either stream still appends a cause-identifying detail --
+    a real `git push` can fail silently, and that must not degrade back to
+    `detail=None`. Kept as an out-param rather than widening the return type
+    so every existing caller/mock of this signature keeps working unchanged.
 
     Always pushes with an explicit `HEAD:<branch>` refspec rather than a
     bare `push`/`push -u remote branch`: a branch created via
@@ -473,14 +572,13 @@ def _push(
     cmd = ["git", "-C", str(repo), "push", "-u", remote, f"HEAD:{branch}"]
     try:
         result = runner(cmd, capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return "push_ambiguous"
     if result.returncode == 0:
         return None
     if detail_out is not None:
         detail = (result.stderr or result.stdout or "").strip()
-        if detail:
-            detail_out.append(detail)
+        detail_out.append(detail or f"git push to {remote} failed: (no output)")
     return "push"
 
 
@@ -726,8 +824,12 @@ def _run_record_main(argv: list[str]) -> tuple[int, str, str]:
     caller can act on, never an uncaught exception that skips the outcome
     classification entirely (Requirement: run record is completed with a
     real state). A string `SystemExit` code (how `run_record` reports e.g.
-    a scope-completeness gate refusal) is kept as `detail`; otherwise
-    `detail` is whatever was written to stderr."""
+    a scope-completeness gate refusal) is kept as `detail`; otherwise the
+    detail is the captured stderr, falling back to the captured stdout when
+    stderr is empty. `run_record` writes the common failure reason to
+    stderr, so a stdout-only capture would lose it -- but it is free to
+    write its failure to stdout, and a plain nonzero return reaches the
+    same expression, so a failed write carries its message either way."""
     out = io.StringIO()
     err = io.StringIO()
     detail = ""
@@ -742,7 +844,11 @@ def _run_record_main(argv: list[str]) -> tuple[int, str, str]:
             detail = str(exc.code)
         else:
             exit_code = 0
-    return exit_code, out.getvalue(), detail or err.getvalue().strip()
+    return (
+        exit_code,
+        out.getvalue(),
+        detail or err.getvalue().strip() or out.getvalue().strip(),
+    )
 
 
 def _ensure_run_record(
@@ -773,7 +879,7 @@ def _ensure_run_record(
         return None
     try:
         return json.loads(out.strip().splitlines()[-1]).get("path")
-    except (json.JSONDecodeError, IndexError):
+    except json.JSONDecodeError, IndexError:
         return None
 
 
@@ -859,12 +965,14 @@ def _watch_ci(
     module docstring step 7 / design.md D7). Returns `{"settled": bool,
     "failing_checks": [...], "log_excerpt": str, "budget_exhausted": bool}`.
 
-    Gives "no checks reported yet" a short, separate grace period before
-    entering the main watch loop below -- see `_NO_CHECKS_STDERR_MARKER`'s
-    module-level comment. If checks still haven't registered once that grace
-    period is spent, this is reported as `budget_exhausted` (-> `ceiling`,
-    needs reconciliation), exactly like the main watch loop's own budget
-    exhaustion below -- NOT `settled: True`. Checks that are merely slow to
+    Gives "no checks reported yet" a separate grace period before entering
+    the main watch loop below -- see `_NO_CHECKS_STDERR_MARKER`'s
+    module-level comment. Its length scales with `watch_timeout_s` via
+    `_no_checks_grace_attempts`. If checks still haven't registered once that
+    grace period is spent, this is reported as `budget_exhausted` (->
+    `ceiling`, needs reconciliation) -- NOT `settled: True` -- carrying an
+    extra `"checks_unregistered": True` marker so the caller can tell it
+    apart from the main watch loop's own budget exhaustion. Checks that are merely slow to
     register (a real, common race right after `gh pr create`) are
     indistinguishable from a genuinely CI-less repo/branch from inside this
     function; reporting the former as a clean pass would land a PR whose CI
@@ -884,7 +992,7 @@ def _watch_ci(
         "budget_exhausted": False,
     }
 
-    for _ in range(_NO_CHECKS_GRACE_ATTEMPTS):
+    for _ in range(_no_checks_grace_attempts(watch_timeout_s)):
         if heartbeat:
             heartbeat()
         if _pr_is_merged(repo, pr_number, runner, base_slug):
@@ -901,6 +1009,7 @@ def _watch_ci(
             "failing_checks": [],
             "log_excerpt": "",
             "budget_exhausted": True,
+            "checks_unregistered": True,
         }
 
     reruns = 0
@@ -1033,6 +1142,48 @@ def _pr_is_merged(
     except json.JSONDecodeError:
         return False
     return data.get("state") == "MERGED"
+
+
+def _outstanding_required_contexts(
+    status: dict[str, Any], required_contexts: list[str] | None
+) -> list[str]:
+    """The required contexts that have not reached a terminal result in
+    `status["statusCheckRollup"]` yet -- either absent from the rollup, or
+    present with no `conclusion` and a pending/queued/in-progress `state`.
+    Names are normalised the way `_merge_state_guard` normalises them
+    (`name` falling back to `context`)."""
+    if not required_contexts:
+        return []
+    terminal: set[str] = set()
+    nonterminal: set[str] = set()
+    for entry in status.get("statusCheckRollup") or []:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name") or entry.get("context")
+        if not name:
+            continue
+        conclusion = entry.get("conclusion")
+        state = entry.get("state")
+        if conclusion or (
+            state and str(state).upper() not in _NONTERMINAL_CHECK_STATES
+        ):
+            terminal.add(name)
+        else:
+            nonterminal.add(name)
+    # Duplicate names do occur -- `_merge_state_guard`'s CANCELLED/SUCCESS
+    # rerun handling leaves a stale terminal entry beside the queued re-run
+    # it triggered -- so a name counts as reported only when EVERY entry
+    # carrying it is terminal.
+    return [c for c in required_contexts if c not in terminal or c in nonterminal]
+
+
+def _required_contexts_reported(
+    status: dict[str, Any], required_contexts: list[str] | None
+) -> bool:
+    """Whether every required context has reported a terminal result.
+    Vacuously `True` when there are no required contexts (None or empty):
+    nothing is being waited on, so BLOCKED is classified as before."""
+    return not _outstanding_required_contexts(status, required_contexts)
 
 
 def _merge_state_guard(
@@ -1215,14 +1366,14 @@ def _ledger_heartbeat(pr_url: str) -> None:
     (deduplicated) recovery brief early; it never changes the outcome."""
     try:
         pr_ledger.heartbeat(pr_url)
-    except (pr_ledger.LedgerError, OSError):
+    except pr_ledger.LedgerError, OSError:
         pass
 
 
 def _ledger_unwatch(pr_url: str) -> None:
     try:
         pr_ledger.unwatch(pr_url)
-    except (pr_ledger.LedgerError, OSError):
+    except pr_ledger.LedgerError, OSError:
         pass
 
 
@@ -1379,15 +1530,15 @@ def land_pr(request: LandRequest) -> LandOutcome:
             "(resumed run); the gate ran before that push"
         )
     else:
-        refused = _commit_pending(repo, request.commit_message, runner)
+        refused, detail = _commit_pending(repo, request.commit_message, runner)
         if refused:
-            return LandOutcome(outcome="refused", refused_step=refused)
+            return LandOutcome(outcome="refused", refused_step=refused, detail=detail)
 
         refused, detail = _ensure_compile_markers(repo, request.base_branch, runner)
         if refused:
             return LandOutcome(outcome="refused", refused_step=refused, detail=detail)
 
-        refused, labels = _run_preflight_and_labels(
+        refused, labels, detail = _run_preflight_and_labels(
             repo,
             request.base_branch,
             request.risk,
@@ -1396,7 +1547,7 @@ def land_pr(request: LandRequest) -> LandOutcome:
             request.run,
         )
         if refused:
-            return LandOutcome(outcome="refused", refused_step=refused)
+            return LandOutcome(outcome="refused", refused_step=refused, detail=detail)
 
         branch = _current_branch(repo, runner)
         if not branch:
@@ -1441,7 +1592,9 @@ def land_pr(request: LandRequest) -> LandOutcome:
             return LandOutcome(
                 outcome="refused",
                 refused_step=refused,
-                detail=push_detail[0] if push_detail else None,
+                detail=push_detail[0]
+                if push_detail
+                else f"git push to {push_remote} failed: (no output)",
             )
         gate_evidence = "worktrail-preflight run: PASS"
 
@@ -1637,6 +1790,11 @@ def land_pr(request: LandRequest) -> LandOutcome:
         }
 
     if watch["budget_exhausted"]:
+        budget_merge_result = (
+            "required checks never registered at watch budget"
+            if watch.get("checks_unregistered")
+            else "checks still pending at watch budget"
+        )
         if run_path:
             _run_record_main(
                 [
@@ -1647,7 +1805,7 @@ def land_pr(request: LandRequest) -> LandOutcome:
                     "--pr",
                     pr_url or "",
                     "--merge-result",
-                    "checks still pending at watch budget",
+                    budget_merge_result,
                 ]
             )
         return LandOutcome(
@@ -1657,7 +1815,7 @@ def land_pr(request: LandRequest) -> LandOutcome:
             labels=labels,
             run=run_path,
             final_status="failed_recoverable",
-            merge_result="checks still pending at watch budget",
+            merge_result=budget_merge_result,
         )
 
     if not watch["settled"]:
@@ -1712,6 +1870,44 @@ def land_pr(request: LandRequest) -> LandOutcome:
         )
 
     status = _merge_state_guard(repo, pr_number, runner, base_slug)
+
+    # A BLOCKED merge state means "a required check failed" OR "a required
+    # check has not reported yet". Only the first is a product decision, so
+    # re-poll the guard while the required contexts are still outstanding.
+    blocked_polls = 0
+    while status.get(
+        "mergeStateStatus"
+    ) == "BLOCKED" and not _required_contexts_reported(status, required_contexts):
+        if blocked_polls >= BLOCKED_REQUIRED_CONTEXT_POLL_MAX:
+            outstanding = _outstanding_required_contexts(status, required_contexts)
+            merge_result = (
+                "merge state BLOCKED with required contexts still unreported after "
+                f"{BLOCKED_REQUIRED_CONTEXT_POLL_MAX} polls: " + ", ".join(outstanding)
+            )
+            _run_record_main(
+                [
+                    "finish",
+                    run_path,
+                    "--status",
+                    "failed_recoverable",
+                    "--pr",
+                    pr_url or "",
+                    "--merge-result",
+                    merge_result,
+                ]
+            )
+            return LandOutcome(
+                outcome="ceiling",
+                pr_url=pr_url,
+                pr_number=pr_number,
+                labels=labels,
+                run=run_path,
+                final_status="failed_recoverable",
+                merge_result=merge_result,
+            )
+        time.sleep(_NO_CHECKS_POLL_INTERVAL_S)
+        status = _merge_state_guard(repo, pr_number, runner, base_slug)
+        blocked_polls += 1
 
     if not status:
         # `_merge_state_guard()` returns `{}` when `gh pr view` failed or

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """
 `sdd-workflow` conductor -- target-repo resolver.
 
@@ -53,7 +53,7 @@ def _canonical_repo_from_worktree(dot_git_file: Path) -> Path | None:
     Follow that pointer to the canonical repo root."""
     try:
         first_line = dot_git_file.read_text().splitlines()[0]
-    except (OSError, IndexError):
+    except OSError, IndexError:
         return None
     if not first_line.startswith("gitdir:"):
         return None

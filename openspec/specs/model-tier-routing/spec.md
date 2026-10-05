@@ -309,21 +309,124 @@ selector SHALL consult the cell key and its bare-target key.
 - **THEN** a `t1-deep` selection SHALL return `claude-api:opus` (after any earlier ungated
   targets)
 
+### Requirement: A worker environment can be supplied from a declared profile without storing values
+
+The routing table SHALL accept an `env_profiles` section mapping a profile name to
+`{from, keys, expect?}`, where `from` names a JSON file containing an `env` object, `keys` lists
+the key names to copy from that object, and `expect` optionally maps a key name to the literal
+value it must equal. A profile SHALL NOT store any value.
+
+A target MAY name a profile through `auth.profile`. Before launching a worker the system SHALL
+resolve that profile, assert every `expect` entry against the file, and copy every `keys` entry
+into the child environment — before the harness/pool branch, so the claude `subscription` lane's
+key removal still applies. It SHALL do so using the same resolved routing table the cell was
+selected from, without re-reading policy.
+
+When the resolved table cannot supply the named profile, the system SHALL distinguish two cases.
+A populated `env_profiles` table that does not declare the profile is an operator-config error
+naming the target, the profile and the routing file. A resolved table that carries no
+`env_profiles` at all is a resolver/caller fault: the error SHALL name the target, the profile
+and the resolved routing source, SHALL attribute the failure to the resolved table, and SHALL NOT
+instruct the operator to add an entry to the routing file; when the raw policy declares the named
+profile, the error SHALL say so.
+
+The system SHALL raise an operator-config error naming the target, the profile, the resolved file
+and the offending key when the file is missing or unreadable, is not valid JSON, has no `env`
+object, omits a declared key, has an empty or non-string value for one, or fails an `expect`
+assertion. An error message SHALL NOT contain a value for any key not named in `expect`. The
+system SHALL NOT launch a process when any of these fail.
+
+`keys` and `expect` SHALL be independent: a key MAY be asserted without being copied, and copied
+without being asserted.
+
+#### Scenario: Declared keys reach the child environment
+
+- **WHEN** a target declares `auth.profile: deepseek` and `env_profiles.deepseek` names a
+  readable file with `keys: [ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN]`
+- **THEN** the child environment SHALL contain both keys with the file's values
+
+#### Scenario: A configured endpoint is proven before launch
+
+- **WHEN** `env_profiles.deepseek.expect` asserts `ANTHROPIC_BASE_URL` and the file holds a
+  different value
+- **THEN** the spawn SHALL raise an operator-config error naming the key, the expected value and
+  the file's actual value, before any process is launched
+
+#### Scenario: A missing key fails loud
+
+- **WHEN** a profile lists a key under `keys` that the source file's `env` object does not
+  contain
+- **THEN** the spawn SHALL raise an operator-config error naming the key and the file, before
+  any process is launched
+
+#### Scenario: A secret outside expect is never printed
+
+- **WHEN** a profile's source file holds a credential under a key not named in `expect` and any
+  resolution failure occurs
+- **THEN** the raised error's message SHALL NOT contain that value
+
+#### Scenario: An undeclared profile is a configuration error
+
+- **WHEN** a target names an `auth.profile` that a populated resolved `env_profiles` table does
+  not declare
+- **THEN** the spawn SHALL raise an operator-config error naming the target, the profile and the
+  routing file, before any process is launched
+
+#### Scenario: A resolved table that lost env_profiles is a resolver/caller fault
+
+- **WHEN** the routing file declares `env_profiles` including the profile a target's
+  `auth.profile` names, but the resolved routing table carries no `env_profiles` at all
+- **THEN** the spawn SHALL raise an operator-config error naming the target, the profile and the
+  resolved routing source, SHALL attribute the failure to the resolved table (a resolver/caller
+  fault) rather than to the routing file, SHALL say that the routing file does declare the
+  profile, and SHALL NOT instruct the operator to add an entry to the routing file — all before
+  any process is launched
+
+#### Scenario: A profile applies to any harness
+
+- **WHEN** a non-claude target declares `auth.profile`
+- **THEN** its declared keys SHALL still be copied into the child environment
+
+### Requirement: Profile and named-variable auth are mutually exclusive alternatives
+A target's `auth` SHALL supply at most one of `env` and `profile`. When both are declared the
+spawn SHALL raise an operator-config error before launching, and the routing table validator
+SHALL surface a warning naming the target. `auth.codex_home` SHALL NOT be treated as conflicting
+with `profile`, since it selects a home rather than supplying credentials.
+
+A profile MAY be declared on a `subscription` target, but the routing validator SHALL warn,
+because that lane removes `ANTHROPIC_API_KEY` after injection and a profile-supplied key
+therefore does not survive.
+
+#### Scenario: Both lanes declared fails loud
+- **WHEN** a target declares `auth: {env: ANTHROPIC_API_KEY, profile: deepseek}`
+- **THEN** the spawn SHALL raise an operator-config error naming the target, before any process
+  is launched
+
+#### Scenario: A profile supplies the api lane's credentials alone
+- **WHEN** a claude `api` target declares `auth.profile` and no `auth.env`
+- **THEN** the spawn SHALL NOT require `auth.env`, and SHALL NOT raise for its absence
+
+#### Scenario: The profile is applied before the subscription key removal
+- **WHEN** a `subscription` target's profile declares `ANTHROPIC_API_KEY`
+- **THEN** the child environment SHALL NOT contain `ANTHROPIC_API_KEY`
+
 ### Requirement: Harness auth follows the target's pool
 `build_cmd` and the child environment SHALL be built from the selected cell. For a claude
-`subscription` target the spawn SHALL omit `--bare` and SHALL remove `ANTHROPIC_API_KEY` from
-the child environment; for a claude `api` target the spawn SHALL pass `--bare` and copy the
-env var named in `auth.env` into the child environment, failing loud before launch when it
-is unset. For a codex `subscription` target the spawn SHALL use the existing isolated
-Worktrail Codex home with the operator's ChatGPT login inherited, unchanged. For a codex
-`api` target the spawn SHALL set `CODEX_HOME` to the path named in `auth.codex_home` — a
-home the operator provisioned with `codex login --with-api-key` — and SHALL NOT inherit the
-parent home's ChatGPT auth; it SHALL fail loud before launch when `auth.codex_home` is
-undeclared or the declared home contains no `auth.json` (checked by existence only, never
-read). This supersedes the interim rule that a codex `api` target be rejected by the
-loader: its per-spawn auth selection is live-verified (routing-target-selector task 3.6,
-codex-cli 0.149.1 — env-var and config-field selectors are inert; `CODEX_HOME` isolation
-is the working mechanism).
+`subscription` target the spawn SHALL omit `--bare` and SHALL remove every provider-redirect
+variable from the child environment (see "A subscription spawn cannot be redirected by an ambient
+provider environment"); for a claude `api` target the spawn SHALL pass `--bare` unless the target
+declares `auth.profile`, and SHALL obtain its credentials from either the env var named in
+`auth.env` or the profile named in `auth.profile`, failing loud before launch when neither is
+configured or the declared one cannot be resolved. For a codex `subscription` target the spawn
+SHALL use the existing isolated Worktrail Codex home with the operator's ChatGPT login inherited,
+unchanged. For a codex `api` target the spawn SHALL set `CODEX_HOME` to the path named in
+`auth.codex_home` — a home the operator provisioned with `codex login --with-api-key` — and SHALL
+NOT inherit the parent home's ChatGPT auth; it SHALL fail loud before launch when
+`auth.codex_home` is undeclared or the declared home contains no `auth.json` (checked by
+existence only, never read). This supersedes the interim rule that a codex `api` target be
+rejected by the loader: its per-spawn auth selection is live-verified (routing-target-selector
+task 3.6, codex-cli 0.149.1 — env-var and config-field selectors are inert; `CODEX_HOME`
+isolation is the working mechanism).
 
 #### Scenario: Ambient API key never bills a subscription lane
 - **WHEN** the operator's shell exports `ANTHROPIC_API_KEY` and a `claude-sub` cell is spawned
@@ -331,8 +434,20 @@ is the working mechanism).
   command SHALL NOT include `--bare`
 
 #### Scenario: API lane forces key auth
-- **WHEN** a `claude-api` cell with `auth: {env: ANTHROPIC_API_KEY}` is spawned
+- **WHEN** a `claude-api` cell with `auth: {env: ANTHROPIC_API_KEY}` and no `auth.profile` is
+  spawned
 - **THEN** the command SHALL include `--bare` and the child environment SHALL carry the key
+
+#### Scenario: API lane resolves a profile
+- **WHEN** a `claude-api` cell with `auth: {profile: deepseek}` is spawned and that profile
+  resolves
+- **THEN** the command SHALL omit `--bare` and the child environment SHALL carry the profile's
+  declared keys
+
+#### Scenario: API lane with neither auth source fails loud
+- **WHEN** a claude cell with `pool: api` declares neither `auth.env` nor `auth.profile`
+- **THEN** the spawn SHALL raise an operator-config error naming the target and both remedies,
+  before any process is launched
 
 #### Scenario: Codex api lane spawns in its declared home without ChatGPT auth
 - **WHEN** a codex cell with `pool: api` and `auth: {codex_home: <provisioned path>}` is
@@ -355,6 +470,58 @@ is the working mechanism).
 - **WHEN** a codex cell with `pool: subscription` is spawned
 - **THEN** the child environment SHALL be prepared exactly as before this change (isolated
   Worktrail home, ChatGPT auth inherited)
+
+### Requirement: A subscription spawn cannot be redirected by an ambient provider environment
+A claude `subscription` spawn SHALL remove every variable that would redirect it to a different
+endpoint, token, or model than the subscription it was selected for — not only
+`ANTHROPIC_API_KEY` but also `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_MODEL`, the
+`ANTHROPIC_DEFAULT_*_MODEL` aliases, and `CLAUDE_CODE_SUBAGENT_MODEL`. Worker environments are
+built from the spawning process's environment, and an interactive session carries exactly those,
+so a subscription cell selected because its tier wanted Anthropic would otherwise be silently
+sent to the ambient endpoint instead.
+
+#### Scenario: An ambient base URL does not hijack a subscription cell
+- **WHEN** the spawning process's environment carries `ANTHROPIC_BASE_URL` and
+  `ANTHROPIC_AUTH_TOKEN` and a `claude-sub` cell is spawned
+- **THEN** the child environment SHALL contain neither
+
+#### Scenario: Unrelated ambient variables survive
+- **WHEN** a `claude-sub` cell is spawned from an environment carrying unrelated variables
+- **THEN** those SHALL be preserved in the child environment
+
+### Requirement: A profile-backed api cell keeps its settings-injected hooks
+A claude `api` cell that declares `auth.profile` SHALL NOT be spawned with `--bare`. `--bare`
+skips hooks defined in settings, which includes the worktree guard injected through `--settings`;
+the profile's injected credentials already pin the endpoint and auth, which is the only purpose
+`--bare` serves for that lane. An `api` cell without a profile SHALL continue to receive
+`--bare`.
+
+#### Scenario: Profile-backed api cell omits bare and keeps its guard
+- **WHEN** a claude `api` cell declaring `auth.profile` is spawned
+- **THEN** the command SHALL NOT include `--bare` and SHALL include `--settings`
+
+#### Scenario: An api cell without a profile is unchanged
+- **WHEN** a claude `api` cell declares `auth.env` and no `auth.profile` is spawned
+- **THEN** the command SHALL include `--bare`
+
+### Requirement: An explicit override reproduces the target's whole definition
+The temporary routing file an explicit model or effort override writes SHALL reproduce the
+selected target's complete definition — its harness, pool, `api_opt_in`, `auth`, and the one
+`env_profiles` entry that `auth.profile` names. That file replaces the operator's routing file
+for the duration of the override, so anything it omits is absent downstream rather than
+inherited; omitting any of these makes an api- or profile-backed target unreachable through the
+explicit-override path. The file SHALL continue to contain only paths and key names, never a
+value.
+
+#### Scenario: An api target survives an explicit model override
+- **WHEN** an explicit override names a target whose `pool` is `api` with `api_opt_in` and
+  `auth.profile` declared
+- **THEN** the temporary routing file SHALL carry `api_opt_in`, the `auth` mapping, and the
+  referenced `env_profiles` entry, and the target SHALL remain selectable
+
+#### Scenario: A bracketed model id round-trips
+- **WHEN** an explicit override requests a model id containing YAML flow indicators
+- **THEN** the temporary routing file SHALL parse back to that exact model id
 
 ### Requirement: A retired model gates its own cell with a distinct failure class
 `agent_capacity` SHALL support the failure class `model_unavailable` with a 24-hour default
@@ -529,4 +696,150 @@ class cooldown. `status` SHALL print a `probed:` line for an entry carrying `pro
   limit ... try again at Aug 8th, 2026 2:17 AM."
 - **THEN** the recorded gate's `retry_after` is that timestamp (UTC) and `reset_source` is
   `provider`
+
+### Requirement: A zero-API-call result is classified as an infra failure, not a completed run
+
+A spawn whose worker process exits 0 but made no API call SHALL NOT be recorded as a completed
+run. The spawn's infra-failure classification (`is_infra_failure`) SHALL recognize the claude
+runtime's zero-API-call result shape — a stream-json `result` event carrying `duration_api_ms:
+0`, `num_turns: 0`, and zero `input_tokens`/`output_tokens`/cache-token counts — and classify
+it as an infra failure, so the existing retry-then-hop path (bounded retries on the same cell,
+then same-row re-selection) runs before any capacity gate is recorded or any success is
+reported. The detection SHALL read the parsed usage dict, so `_parse_stream_json` SHALL retain
+`duration_api_ms` from the result event.
+
+The detection SHALL be specific to the zero-work shape. A legitimate completed result — any
+result event with `num_turns >= 1` or a non-zero token count — SHALL remain a healthy spawn and
+SHALL be recorded `available` exactly as before this change. A stream that carries no claude
+`result` event (the opencode-synthesized usage dict, codex's plain last-message text) SHALL
+never satisfy the detection.
+
+#### Scenario: A zero-API-call result is an infra failure
+- **WHEN** a spawned claude cell exits 0 with a result event reading `duration_api_ms: 0`,
+  `num_turns: 0`, and every token count 0
+- **THEN** `is_infra_failure(0, <that output>)` SHALL return True, the cell SHALL be retried
+  rather than recorded `available`, and no successful run SHALL be returned for it
+
+#### Scenario: A real completed turn is still classified healthy
+- **WHEN** a result event carries a non-zero `duration_api_ms` and/or `num_turns >= 1` with
+  non-zero `input_tokens`
+- **THEN** the existing classification SHALL return False, the cell SHALL be recorded
+  `available`, and the run SHALL be returned exactly as before this change
+
+#### Scenario: An empty-but-real turn is not a no-op
+- **WHEN** a completed turn reports no output text but carries `num_turns >= 1`
+- **THEN** the spawn SHALL NOT be classified as a zero-API-call failure
+
+### Requirement: An exhausted zero-API-call spawn gates its cell with a short-cooldown class
+
+When the zero-API-call shape recurs through the served cell's whole retry budget, `spawn_agent`
+SHALL record that cell's gate with the short-cooldown `startup` failure class (default cooldown
+60 seconds) and continue through the existing same-row hop to the next ungated cell. It SHALL
+NOT record `auth` (24-hour cooldown, gates without retry) or `model_unavailable` (24-hour
+cooldown, never probed) for this shape, and no failure class's existing cooldown value SHALL
+change. When the row has no servable cell left, the spawn SHALL return an exhausted result
+carrying `failure_class: startup` rather than a successful-but-empty run.
+
+#### Scenario: No-op exhausts its budget and the row hops to a healthy cell
+- **WHEN** the first cell of a row returns the zero-API-call shape for every attempt, its
+  retry budget is exhausted, and a later cell in the row is ungated
+- **THEN** the same spawn call SHALL complete on the later cell, and the first cell's recorded
+  gate SHALL carry `failure_class: startup`
+
+#### Scenario: No alternate cell is left
+- **WHEN** every attempt on the row's only servable cell returned the zero-API-call shape
+- **THEN** `spawn_agent` SHALL return an exhausted result with `failure_class: startup`, which
+  a caller that fails closed on exhausted results treats as a failed spawn rather than a
+  completed empty run
+
+#### Scenario: A coerced auth classification never gates the cell
+- **WHEN** a zero-API-call result is exhausted through its retry budget and the exhausted
+  classification runs
+- **THEN** the recorded gate's class SHALL be `startup` (60-second default), never `auth` or
+  `model_unavailable`, so the cell remains reachable within the same run instead of being
+  sidelined for a day
+
+### Requirement: The routing check proves spawn readiness against the resolved table
+
+`worktrail-routing --check` SHALL decide a tier cell's status from the **resolved** routing
+table — `load_policy()` followed by `resolve_routing()`, the same values `select_cell()` and
+`build_child_env()` consume — and never from the raw routing mapping the loader validated. For
+every tier cell whose target is declared, the check SHALL construct that cell's spawn: its
+launcher command and its child environment, built with the resolved table's `env_profiles`,
+against the checking process's own environment.
+
+A cell whose construction raises, or whose target the selector can never serve, SHALL be
+reported `FAIL` with the raised message and SHALL flip the exit code. As with an unresolvable
+env profile, a readiness `FAIL` SHALL NOT be recorded as an `agent_capacity` gate.
+
+The check SHALL report `FAIL` for an `api`-pool target that declares a tier cell but no
+`api_opt_in`, naming the target and the remedy, because the selector drops such a target from
+every row it appears in.
+
+A claude `api` cell whose `auth.env` variable is unset in the checking process's environment
+SHALL be reported as unready rather than `ok`: no spawn built from that environment can
+authenticate it.
+
+#### Scenario: A key the resolver drops is caught even though the file declares it
+
+- **WHEN** the routing file declares `env_profiles` and a target whose `auth.profile` names one
+  of them, but the resolved table omits `env_profiles`
+- **THEN** `--check` SHALL report that target's cells `FAIL`, naming the target and the profile,
+  and SHALL exit non-zero
+
+#### Scenario: An api target that can never be selected is caught
+
+- **WHEN** a target declares `pool: api` and a tier cell but no `api_opt_in`
+- **THEN** `--check` SHALL report that cell `FAIL`, naming the target, the `api_opt_in` key and
+  the routing file, and SHALL exit non-zero
+
+#### Scenario: A named auth variable that is unset is caught
+
+- **WHEN** a claude `api` cell declares `auth.env: ANTHROPIC_API_KEY` and the checking
+  process's environment does not set it
+- **THEN** `--check` SHALL report that cell unready and exit non-zero, rather than `ok`
+
+#### Scenario: A codex api home check matches the spawn path
+
+- **WHEN** a codex `api` cell declares an `auth.codex_home` whose directory has no `auth.json`
+- **THEN** `--check` SHALL report that cell `FAIL` with the same remedy the spawn path raises,
+  and SHALL exit non-zero
+
+#### Scenario: A readiness failure is not a capacity gate
+
+- **WHEN** a cell fails the readiness construction
+- **THEN** the capacity cache SHALL contain no entry for that cell, so no later spawn can be
+  silently routed past it
+
+#### Scenario: A servable table still reports ok
+
+- **WHEN** every declared cell's spawn construction succeeds
+- **THEN** `--check` SHALL report every cell `ok` and exit zero
+
+### Requirement: Explicit overrides retain the routing table that selected their target
+When a live orchestrator spawn applies an explicit model or reasoning-effort
+override, the temporary routing configuration SHALL reuse the target definition
+from the resolved routing table that selected that target. The override path
+SHALL NOT independently resolve repository or machine-wide policy to find that
+target. If the selected-routing table does not declare the requested target,
+the system SHALL fail with an actionable configuration error and SHALL NOT
+launch a worker.
+
+#### Scenario: Repository-local target survives an explicit model override
+- **WHEN** a repository-local routing table selects a target that is absent from
+  the machine-wide routing table and a live spawn has an explicit model override
+- **THEN** the worker receives a temporary one-cell routing configuration for
+  the repository-local target and dispatch proceeds using the override
+
+#### Scenario: Explicit effort override preserves the selected target
+- **WHEN** a live spawn selects a target and applies an explicit reasoning-effort
+  override
+- **THEN** the temporary one-cell routing configuration retains that target's
+  declared harness and pool while applying the requested effort
+
+#### Scenario: Selected-routing target is absent
+- **WHEN** an explicit override requests a target absent from the routing table
+  supplied for that spawn
+- **THEN** dispatch fails before launching a worker and the configuration error
+  identifies the missing target
 

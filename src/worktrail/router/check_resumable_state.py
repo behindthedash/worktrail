@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """
 Mechanical pre-check for Route E (continue/resume) on a brief-sourced dispatch.
 
@@ -79,7 +79,7 @@ def _run_gh(
             timeout=timeout,
             cwd=str(repo),
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
 
 

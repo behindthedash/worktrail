@@ -3,6 +3,7 @@ import io
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -360,7 +361,7 @@ def _install_check_deferred_work_handoff_shim(tmp_path: Path, monkeypatch) -> No
     bin_dir.mkdir(exist_ok=True)
     shim = bin_dir / "worktrail-check-deferred-work-handoff"
     shim.write_text(
-        "#!/usr/bin/env python3\n"
+        f"#!{sys.executable}\n"
         "import sys\n"
         f"sys.path.insert(0, {str(repo_src)!r})\n"
         "from worktrail.router.check_deferred_work_handoff import main\n"
@@ -643,7 +644,7 @@ def _install_check_durable_artifact_capture_gate_shim(
     bin_dir.mkdir(exist_ok=True)
     shim = bin_dir / "worktrail-check-durable-artifact-capture-gate"
     shim.write_text(
-        "#!/usr/bin/env python3\n"
+        f"#!{sys.executable}\n"
         "import sys\n"
         f"sys.path.insert(0, {str(repo_src)!r})\n"
         "from worktrail.router.check_durable_artifact_capture_gate import main\n"
@@ -652,6 +653,40 @@ def _install_check_durable_artifact_capture_gate_shim(
     )
     shim.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+
+
+def test_installed_shims_run_under_the_test_interpreter_not_path_python3(
+    tmp_path, monkeypatch
+):
+    """The shims installed on `PATH` run under the same interpreter as the
+    test session (`sys.executable`), never under whatever a bare `python3`
+    PATH lookup resolves to. This repo's floor is Python 3.14 and the checker
+    modules use PEP 758 syntax, so on a host whose `python3` is 3.12 an `env
+    python3` shim shebang kills the checker with a SyntaxError, the hook fails
+    open to zero hits, and the dedup-gate tests in this file fail locally
+    while CI (where `python3` is 3.14) stays green -- briefs 20260930-190934 /
+    20261002-192748. The decoy `python3` placed first on `PATH` shadows any
+    real one and records whether a shim resolved through `PATH` at all.
+    """
+    decoy_dir = tmp_path / "decoy-bin"
+    decoy_dir.mkdir()
+    marker = tmp_path / "decoy-python3-invoked"
+    decoy = decoy_dir / "python3"
+    decoy.write_text(
+        f"#!/bin/sh\ntouch '{marker}'\nexit 1\n",
+        encoding="utf-8",
+    )
+    decoy.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{decoy_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+
+    _install_check_durable_artifact_capture_gate_shim(tmp_path, monkeypatch)
+    spec_path = "/repo/docs/specs/001-task/design.md"
+    assert hook.check_dedup_gate([spec_path], [], []) == [
+        {"kind": "session_touched_durable_artifact", "path": spec_path}
+    ]
+    assert not marker.exists(), (
+        "the shim executed PATH's python3 instead of sys.executable"
+    )
 
 
 def test_main_no_hit_output_byte_identical_to_pre_gate_instruction(
@@ -987,7 +1022,7 @@ def _install_pr_ledger_fake(
     fake = bin_dir / "worktrail-pr-ledger"
     body = "garbage" if entries is None else json.dumps(entries, indent=2)
     fake.write_text(
-        "#!/usr/bin/env python3\n"
+        f"#!{sys.executable}\n"
         "import json, sys\n"
         f"open({str(argv_log)!r}, 'w').write(json.dumps(sys.argv[1:]))\n"
         f"sys.stdout.write({body!r})\n"

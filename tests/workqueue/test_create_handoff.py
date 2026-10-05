@@ -23,6 +23,16 @@ from worktrail.workqueue.create_handoff import (
 from worktrail.workqueue.work_queue import brief_kind
 
 
+@pytest.fixture(autouse=True)
+def _isolate_semantic_slug_summary(monkeypatch):
+    # Capture/overlap tests must not launch a provider to name their brief.
+    # Provider-backed summary behavior is covered by test_handoff_slug_exhaustion.
+    monkeypatch.setattr(
+        "worktrail.workqueue.create_handoff._semantic_slug_summary",
+        lambda focus, repo: None,
+    )
+
+
 def test_create_handoff_writes_valid_brief_and_classifies(tmp_path: Path):
     result = create_handoff(
         "Fix the broken handoff dashboard",

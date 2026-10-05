@@ -132,7 +132,7 @@ def estimate_minutes(prof: Profile, journals: Iterable[Path] = ()) -> tuple[floa
     for jp in journals:
         try:
             journal = json.loads(Path(jp).read_text())
-        except (OSError, ValueError):
+        except OSError, ValueError:
             continue
         entries = journal.get("entries") if isinstance(journal, dict) else None
         for e in entries or []:

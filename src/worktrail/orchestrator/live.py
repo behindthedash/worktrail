@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """
 Parallel SDD Orchestrator -- live spawn via a headless agent CLI.
 
@@ -263,6 +263,30 @@ def _default_model_for_agent(agent: str) -> str:
     )
 
 
+def _first_target_for_harness(routing: dict, harness: str) -> str | None:
+    """The first declared `routing.targets` entry whose harness matches --
+    the target-name form `select_cell()`'s `prefer` takes. None when the
+    routing table declares no target for *harness* (a spawn then resolves
+    that row's own order instead of a preferred target)."""
+    for name, declared in (routing.get("targets") or {}).items():
+        if isinstance(declared, dict) and declared.get("harness") == harness:
+            return name
+    return None
+
+
+def _default_tier_and_prefer(agent: str) -> tuple[str | None, str | None]:
+    """The `(tier, prefer)` pair a caller with no explicit routing should
+    spawn under: the routing file's `default_tier` row, plus the first
+    declared target whose harness matches *agent*. Resolved fresh per call,
+    matching `_default_model_for_agent()`'s contract (an operator edit to
+    routing.yaml takes effect on the very next spawn)."""
+    from ..router.policy import load_policy, resolve_routing
+    from ..shared.homedir import worktrail_home
+
+    routing = resolve_routing(load_policy(worktrail_home()))
+    return routing.get("default_tier"), _first_target_for_harness(routing, agent)
+
+
 # Every codex role defaults to the SAME model (_default_model_for_agent
 # resolved fresh per call, not a frozen snapshot -- a stale frozen copy of
 # the default here is exactly the staleness bug the function itself avoids;
@@ -386,7 +410,7 @@ class RunLock:
                 import fcntl
 
                 fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
-            except (ImportError, OSError):
+            except ImportError, OSError:
                 pass
             self._fh.close()
             self._fh = None
@@ -530,11 +554,49 @@ def _pinned_plan_fingerprint(repo: Path, spec_rel: str) -> str | None:
             return None
         fp = journal.get("plan_fingerprint")
         return fp if isinstance(fp, str) and fp else None
-    except (OSError, ValueError, TypeError):
+    except OSError, ValueError, TypeError:
         return None
 
 
 PLAN_PIN_KEYS = ("plan_fingerprint", "plan_fingerprints")
+
+# Journal keys the pipeline phase owns and writes itself: `groups` via the
+# pipeline scheduler's `_record()`/`_record_group_fn`, `integrate_complete`
+# via `integrate._mark_integrate_complete_if_terminal`. `live_run_real`'s
+# `record()` -- the writer the tail phase reaches through
+# `_dispatch_pending_tail`'s `out_cassette=journal_path` call -- has no
+# in-memory copy of either, so without an explicit carry-forward its wholesale
+# rewrite erases the group records the pipeline phase persisted (including the
+# QUARANTINED ones `worktrail-resume-group` exists to clear) and
+# `_mark_integrate_complete_if_terminal`'s later read of `journal["groups"]`
+# sees an empty map.
+PIPELINE_PHASE_KEYS = ("groups", "integrate_complete")
+
+
+def _carry_forward_keys(path: str | Path, jdict: dict, keys: tuple[str, ...]) -> dict:
+    """Carry an explicitly declared tuple of keys across a wholesale journal rewrite.
+
+    Both schedulers' `record()` build their journal dict from scratch and write
+    it with `atomic_write_text`, so anything written to the journal by a
+    *different* writer is destroyed on the next write. This copies just the
+    declared `keys` from the journal on disk into `jdict`, leaving a key already
+    set in `jdict` (i.e. the rebuilding writer's own value) untouched.
+
+    Deliberately not a general merge of the on-disk journal: each caller
+    declares exactly the keys a different writer owns, so state the rebuild
+    intends to drop is never resurrected. Best-effort: journal I/O never takes
+    a run down (a missing, unreadable, or non-object journal is a no-op).
+    """
+    try:
+        existing = json.loads(Path(path).read_text())
+    except OSError, ValueError, TypeError:
+        return jdict
+    if not isinstance(existing, dict):
+        return jdict
+    for key in keys:
+        if key in existing and key not in jdict:
+            jdict[key] = existing[key]
+    return jdict
 
 
 def _preserve_plan_pin(path: str | Path, jdict: dict) -> dict:
@@ -558,18 +620,11 @@ def _preserve_plan_pin(path: str | Path, jdict: dict) -> dict:
 
     Only the pin keys are carried over -- this is deliberately not a general
     merge of the on-disk journal, which would resurrect stale state the
-    rebuilding writer intends to drop.
+    rebuilding writer intends to drop. The pipeline scheduler's `_record()`
+    keeps calling this (not the generalized helper with the union) because it
+    owns and writes `groups` itself.
     """
-    try:
-        existing = json.loads(Path(path).read_text())
-    except (OSError, ValueError, TypeError):
-        return jdict
-    if not isinstance(existing, dict):
-        return jdict
-    for key in PLAN_PIN_KEYS:
-        if key in existing and key not in jdict:
-            jdict[key] = existing[key]
-    return jdict
+    return _carry_forward_keys(path, jdict, PLAN_PIN_KEYS)
 
 
 def _record_plan_fingerprint(repo: Path, spec_rel: str, plan) -> None:
@@ -631,7 +686,7 @@ def _print_usage_report(journal_path: str | Path) -> None:
     """Print the per-role token + cost report and tools/skills footprint (best-effort)."""
     try:
         journal = json.loads(Path(journal_path).read_text())
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return
     print(progress.render_usage(journal))
     print(progress.render_tools_used(journal))
@@ -991,7 +1046,7 @@ def reconcile_from_journal(tasks: list, journal: dict) -> list:
             continue
         try:
             dispatch.apply_report(tasks, report, e.get("role"))
-        except (ValueError, KeyError):
+        except ValueError, KeyError:
             # entry references a task outside this spec slice, or is malformed --
             # reconciliation is best-effort and must never block a resume.
             continue
@@ -1227,7 +1282,7 @@ def _fanout_failed_status(repo: Path, spec_rel: str) -> dict | None:
             return None
         status = json.loads(status_path.read_text())
         return status if status.get("phase") == "fanout_failed" else None
-    except (OSError, json.JSONDecodeError, TypeError, AttributeError):
+    except OSError, json.JSONDecodeError, TypeError, AttributeError:
         return None
 
 
@@ -2539,7 +2594,7 @@ def _add_stacked_worktree_kwargs(target, kwargs: dict) -> dict:
     fn = getattr(target, "side_effect", None) or target
     try:
         params = inspect.signature(fn).parameters
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return kwargs
     if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
         return kwargs
@@ -2654,6 +2709,11 @@ def run_research_session(
     4. Run a single agent session with those files as context.
     5. Return the session_id from SpawnResult so workers can fork from it.
     """
+    # `model`/`effort` are compatibility-only: spawn_agent accepts neither (the
+    # served cell's model/effort come from whichever routing cell the tier row
+    # serves). The line below is kept for its fail-fast value -- the same
+    # contract LiveSpawn.__init__ documents for its own `model` -- and the
+    # `effort` parameter stays on the public signature for existing callers.
     model = model or _default_model_for_agent(agent)
     # --- collect spec content ---
     spec_lines: list[str] = []
@@ -2714,12 +2774,12 @@ def run_research_session(
     # this call bypassed LiveSpawn.__call__ entirely. No --tools restriction:
     # this is a read-only context pre-load, not a worker that edits/commits.
     extra_args = ["--setting-sources", "project,local"] if agent == "claude" else []
+    tier, prefer = _default_tier_and_prefer(agent)
     result = spawnlib.spawn_agent(
         prompt,
         spec_folder.parent.parent,
-        agent=agent,
-        model=model,
-        effort=effort,
+        tier=tier,
+        prefer=prefer,
         timeout=timeout,
         extra_args=extra_args,
         log=print,
@@ -2907,7 +2967,7 @@ class LiveSpawn:
         probe = "\x00TASKID\x00"
         try:
             path, anchor = taskformats.task_brief_ref_for(self.spec_folder_rel, probe)
-        except (OSError, ValueError, AttributeError):
+        except OSError, ValueError, AttributeError:
             return {}
         return {
             "path_fmt": path.replace(probe, "{task_id}"),
@@ -2991,17 +3051,13 @@ class LiveSpawn:
         # further back to the run's own --agent (self.agent) when neither
         # names one -- the pre-spec "every role defaults to the run agent"
         # parity every construction site that never configures roles/
-        # role_agents at all still depends on.
-        def _target_for_harness(harness: str) -> str | None:
-            for name, declared in (self._routing.get("targets") or {}).items():
-                if isinstance(declared, dict) and declared.get("harness") == harness:
-                    return name
-            return None
-
+        # role_agents at all still depends on. Resolved against the routing
+        # table snapshotted once per instance (self._routing), the same table
+        # tier_for() read above and the peek/selection below serve from.
         if prefer is None and role in self.role_agents:
-            prefer = _target_for_harness(self.role_agents[role])
+            prefer = _first_target_for_harness(self._routing, self.role_agents[role])
         if prefer is None:
-            prefer = _target_for_harness(self.agent)
+            prefer = _first_target_for_harness(self._routing, self.agent)
         # independent=True (review's default, or an explicit routing.roles.review.
         # independent: true) excludes the harness that most recently served THIS
         # instance -- in the drive loop's implement -> review sequence for one
@@ -3523,7 +3579,7 @@ def _would_land_terminal(task: dict, role: str, report: dict) -> bool:
     """True when applying `report` would drive `task` to `failed`/`escalated`."""
     try:
         new, _ = dispatch.transition(role, report, task.get("retry_count", 0))
-    except (ValueError, KeyError):
+    except ValueError, KeyError:
         return False
     return new in ("failed", "escalated")
 
@@ -3849,7 +3905,7 @@ def _task_file_in_worktree(wt: Path, spec_rel: str, task_id: str) -> Path:
     base = wt / spec_rel.strip("/")
     try:
         cand = Path(wt) / taskformats.task_brief_ref_for(base, task_id)[0]
-    except (OSError, ValueError, AttributeError):
+    except OSError, ValueError, AttributeError:
         cand = base / "tasks" / f"{task_id}.md"
     if cand.exists():
         return cand
@@ -4528,28 +4584,90 @@ def _apply_skip_review_commit(
     return old, "cleaning"
 
 
-def _resolve_max_workers(repo: Path, tasks: list, requested: int | None) -> int:
+def _same_repo_live_runs(repo: Path, spec_id: str) -> list:
+    """Live run-record entries for this repo under a specification OTHER than
+    `spec_id`.
+
+    The per-spec `RunLock` (acquired before the scheduler runs) already aborts
+    a second run for the SAME spec; it cannot see a concurrent run for a
+    different specification on the same repo -- those share the repo's
+    worktrees/files but not its lock. Records are resolved the way the
+    pipeline's other readers do (the policy's `run_record_dir` when set, else
+    `worktrail_home()/runs`; see `release_gate._runs_dir`), then
+    `<root>/<repo.name>` is scanned repo-wide via `_active_conflicts()` and
+    reduced to its `live` partition -- `_is_stale()` already drops records
+    whose worktree is gone and whose work already landed on the base branch.
+    """
+    from ..router.policy import default_run_record_dir, load_policy
+    from ..router.run_record import _active_conflicts
+
+    runs_dir = (
+        Path(
+            str(load_policy(repo).get("run_record_dir") or default_run_record_dir())
+        ).expanduser()
+        / repo.name
+    )
+    conflicts = _active_conflicts(runs_dir, repo, None, None)
+    return [
+        entry for entry in conflicts["live"] if entry.get("specification") != spec_id
+    ]
+
+
+def _same_repo_width_note(
+    repo: Path, width: int, same_repo_live: int
+) -> tuple[int, str]:
+    """Halve `width` once when other specifications have live runs on this repo.
+
+    Returns `(effective_width, note)`; with no other live run the width is
+    unchanged and the note is empty, so callers print exactly their
+    pre-existing line. The cap applies once regardless of the count --
+    `max(1, width // 2)` -- so a concurrent run slows the fan-out without
+    serializing it outright, and the effective width never drops below one.
+    """
+    if same_repo_live <= 0:
+        return width, ""
+    return max(1, width // 2), (
+        f" (halved for same-repo concurrency: {same_repo_live} other live "
+        f"run(s) on {repo.name})"
+    )
+
+
+def _resolve_max_workers(
+    repo: Path, tasks: list, requested: int | None, *, same_repo_live: int = 0
+) -> int:
     """Effective fan-out width. An explicit invocation value wins; else the repo
     policy's `max_workers`; else the plan's own width capped by the policy's
     `max_parallel_workers` (default 6). A fixed default of 3 silently ran a
     width-7 plan as three serial ticks (run orchestrator-throughput, 2026-09-02);
-    the effective value is printed next to the plan so the cap is visible."""
+    the effective value is printed next to the plan so the cap is visible.
+
+    `same_repo_live` is the count of other live runs on this repo under a
+    different specification (`_same_repo_live_runs()`); when it is positive the
+    width resolved by the rules above is halved once (`_same_repo_width_note()`
+    caps at `max(1, width // 2)`) and the printed width line names the count and
+    the same-repo concurrency reason. With the default 0, both the width and the
+    printed line are exactly what they were before this parameter existed.
+    """
     if requested is not None:
-        return max(1, int(requested))
+        n, note = _same_repo_width_note(repo, max(1, int(requested)), same_repo_live)
+        if note:
+            print(f"{_ts()} fan-out workers: {n}{note}")
+        return n
     from ..conductor import parallelism
     from ..router.policy import load_policy
 
     policy = load_policy(repo)
     configured = policy.get("max_workers")
     if configured:
-        n = max(1, int(configured))
-        print(f"{_ts()} fan-out workers: {n} (policy max_workers)")
+        n, note = _same_repo_width_note(repo, max(1, int(configured)), same_repo_live)
+        print(f"{_ts()} fan-out workers: {n} (policy max_workers){note}")
         return n
     width = parallelism.profile(tasks).width
     cap = max(1, int(policy.get("max_parallel_workers") or 6))
-    n = max(1, min(width, cap))
+    n, note = _same_repo_width_note(repo, max(1, min(width, cap)), same_repo_live)
     print(
-        f"{_ts()} fan-out workers: {n} (plan width {width}, max_parallel_workers {cap})"
+        f"{_ts()} fan-out workers: {n} (plan width {width}, "
+        f"max_parallel_workers {cap}){note}"
     )
     return n
 
@@ -4837,7 +4955,14 @@ def live_run_real(
                 journal_dict["run_id"] = run_id
             if _budget_stopped_at[0] is not None:
                 journal_dict["budget_stopped_at"] = _budget_stopped_at[0]
-            _preserve_plan_pin(out_cassette, journal_dict)
+            # This closure is also the tail phase's writer (reached through
+            # `_dispatch_pending_tail`'s `out_cassette=journal_path` call), and
+            # the tail phase has no in-memory copy of the pipeline phase's
+            # group records -- carry them (plus the plan pin) across the
+            # rebuild, or they are erased mid-run.
+            _carry_forward_keys(
+                out_cassette, journal_dict, PLAN_PIN_KEYS + PIPELINE_PHASE_KEYS
+            )
             progress.atomic_write_text(
                 out_cassette, json.dumps(journal_dict, indent=2, sort_keys=True) + "\n"
             )
@@ -5734,8 +5859,25 @@ def _pipeline_scheduler(
     gitnexus_capability = gitnexus_check(repo)
     role_models = _effective_role_models(agent, role_models)
     spec_id, tasks = taskformats.load_spec(str(repo / spec_rel))
+    # Detect other live same-repo runs before apply_run_plan(): an unscoped
+    # OpenSpec change compiles its plan here (possibly model-backed), and a
+    # launch that is going to be width-capped should report the concurrent
+    # run before doing that work, not after.
+    same_repo_live = _same_repo_live_runs(repo, spec_id)
+    if same_repo_live:
+        print(
+            f"{_ts()} WARN same-repo concurrency: {len(same_repo_live)} other live "
+            f"run(s) on {repo.name}"
+        )
+        for entry in same_repo_live:
+            print(
+                f"{_ts()} WARN same-repo concurrency: run {entry['run_id']} "
+                f"(specification {entry['specification']}) -- {entry['path']}"
+            )
     tasks = apply_run_plan(repo, spec_rel, spec_id, tasks)
-    max_workers = _resolve_max_workers(repo, tasks, max_workers)
+    max_workers = _resolve_max_workers(
+        repo, tasks, max_workers, same_repo_live=len(same_repo_live)
+    )
     pre_only_done = {t["id"] for t in tasks if t.get("status") in coordinator.DONE}
     if only and resume and Path(journal_path).exists():
         # A task can be genuinely already-done purely via a PRIOR run's journal
@@ -5751,7 +5893,7 @@ def _pipeline_scheduler(
             pre_only_done |= {
                 t["id"] for t in _peek_tasks if t.get("status") in coordinator.DONE
             }
-        except (OSError, json.JSONDecodeError):
+        except OSError, json.JSONDecodeError:
             pass  # best-effort; the real resume block's own error handling still applies
     for t in tasks:
         t.setdefault("retry_count", 0)
@@ -6177,7 +6319,7 @@ def _pipeline_scheduler(
     if re_integrate and Path(journal_path).exists():
         try:
             _reset_journal = json.loads(Path(journal_path).read_text())
-        except (OSError, json.JSONDecodeError):
+        except OSError, json.JSONDecodeError:
             _reset_journal = {}
         if _clear_integration_state(_reset_journal):
             progress.atomic_write_text(
@@ -6873,7 +7015,7 @@ def _record_verify_outcomes(
 
     try:
         groups_j = json.loads(Path(journal_path).read_text()).get("groups", {})
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         groups_j = {}
 
     def _stamp(name: str, state: str) -> None:
@@ -7016,7 +7158,7 @@ def _full_real_inner(
     if resume and Path(journal_path).exists():
         try:
             _resume_journal = json.loads(Path(journal_path).read_text())
-        except (OSError, json.JSONDecodeError):
+        except OSError, json.JSONDecodeError:
             _resume_journal = None
         if _resume_journal is not None:
             _, _resume_tasks = taskformats.load_spec(str(repo / spec_rel))
@@ -7230,12 +7372,16 @@ def _full_real_inner(
 
 
 def smoke(agent: str = DEFAULT_AGENT, model: str | None = None) -> bool:
+    # `model` is compatibility-only (spawn_agent accepts no such kwarg; the
+    # model comes from the served cell) -- kept, with its fail-fast resolution,
+    # for the same reason as LiveSpawn.__init__'s own `model`.
     model = model or _default_model_for_agent(agent)
+    tier, prefer = _default_tier_and_prefer(agent)
     result = spawnlib.spawn_agent(
         "Reply with exactly: PONG",
         Path.cwd(),
-        agent=agent,
-        model=model,
+        tier=tier,
+        prefer=prefer,
         timeout=120,
         retries=0,
     )
@@ -7361,6 +7507,18 @@ def _effective_role_models(agent: str, role_models: dict | None) -> dict | None:
     return None
 
 
+# Subcommands whose tail-resolved --model/--role-model values are consumed
+# downstream: they thread into live_run/full/live_run_real/full_real, or
+# straight into smoke(). Every other subcommand (precheck, skip, clear-task,
+# status, usage, instantiate, spawn-one) never spawns, so resolving a
+# default model for it is a pure config read that can only fail -- reproduced:
+# `worktrail-live precheck` raised `OperatorConfigError: no default model
+# configured for agent 'claude'` before its DAG check on a routing table with
+# no claude target, and the role-model line below crashes the same way with a
+# codex host on a table with no codex target.
+_SPAWNING_SUBCOMMANDS = ("smoke", "live-run", "full", "live-run-real", "full-real")
+
+
 def main(argv=None) -> int:
     # full-real runs in the background with stdout redirected to a log file. A
     # redirected (non-TTY) stdout is block-buffered by default, so progress
@@ -7370,7 +7528,7 @@ def main(argv=None) -> int:
     try:
         sys.stdout.reconfigure(line_buffering=True)
         sys.stderr.reconfigure(line_buffering=True)
-    except (AttributeError, ValueError):
+    except AttributeError, ValueError:
         pass
     p = argparse.ArgumentParser(description="Live spawn via a headless agent CLI")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -7766,12 +7924,18 @@ def main(argv=None) -> int:
     ct.add_argument("--tasks", required=True, help="Comma-separated task IDs to clear")
 
     args = p.parse_args(argv)
-    if getattr(args, "model", None) is None:
-        args.model = _default_model_for_agent(getattr(args, "agent", DEFAULT_AGENT))
-    role_models = _effective_role_models(
-        getattr(args, "agent", DEFAULT_AGENT),
-        _parse_model_map(getattr(args, "model_map", None)),
-    )
+    # Only a spawning subcommand consumes the resolved model/role-models; a
+    # non-spawning one (precheck above all) must not be blocked by a routing
+    # table that simply declares no target for this host's harness -- see
+    # _SPAWNING_SUBCOMMANDS.
+    role_models = None
+    if args.cmd in _SPAWNING_SUBCOMMANDS:
+        if getattr(args, "model", None) is None:
+            args.model = _default_model_for_agent(getattr(args, "agent", DEFAULT_AGENT))
+        role_models = _effective_role_models(
+            getattr(args, "agent", DEFAULT_AGENT),
+            _parse_model_map(getattr(args, "model_map", None)),
+        )
     role_agents = _parse_model_map(getattr(args, "role_agent_map", None))
     tier_map = _parse_tier_map(getattr(args, "tier_map", None))
     # {purpose: tier} is a plain string-to-string map, the same "key=value,..." shape

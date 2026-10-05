@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """Spec sync drift guard.
 
 Shared SDD tooling invoked by pre_pr_gate.py against any consuming repo's
@@ -266,7 +266,7 @@ def _git_tracked(repo: Path, paths: list[str]) -> set[str]:
             text=True,
             timeout=10,
         )
-    except (subprocess.SubprocessError, OSError):
+    except subprocess.SubprocessError, OSError:
         return set(paths)
     if result.returncode != 0:
         return set(paths)

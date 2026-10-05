@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """
 Work-queue lifecycle owner -- the single, atomic implementation of claiming and
 releasing handoff briefs, shared by every consumer (the `handoff` skill's Consume
@@ -182,7 +182,16 @@ _FM_RE = re.compile(r"^---\r?\n(.*?)\n---\r?\n", re.DOTALL)
 # ("disproven", "re-verified", "no longer flags", ...) rather than merely
 # described ("duplicate of X", "out of scope") -- the latter carry no
 # re-verification claim and are unaffected by `_reverification_claim_missing_evidence`.
+#
+# A cue inside a negation asserts the OPPOSITE of a re-verification result, so it
+# must not count. queue_triage hands the evaluator's raw evidence prose to
+# `done(..., note=...)`, and that prose reports a *refuted* premise as
+# "Not already fixed: <command> is empty" -- reading that as a claim rolled the
+# brief back to `queue/` after its PR had already merged (brief 20261002-221651,
+# observed live 2026-10-02 on brief 20261002-203443). One fixed-width lookbehind
+# per negation word: `re` has no variable-width lookbehind.
 _REVERIFICATION_CLAIM_RE = re.compile(
+    r"(?<!\bnot )(?<!\bnever )(?<!\bno )"
     r"\b(disproven|re-?verified|no longer (?:flags?|triggers?|applies)|"
     r"corrected (?:detector|check|script)|already fixed)\b",
     re.IGNORECASE,
@@ -349,7 +358,7 @@ def _run_record_implementation_evidence_missing(run_path: str) -> str | None:
                 timeout=30,
                 check=False,
             )
-        except (OSError, subprocess.SubprocessError):
+        except OSError, subprocess.SubprocessError:
             status = None
         if status is not None and status.returncode == 0 and status.stdout.strip():
             return f"worktree {worktree} still has uncommitted changes"
@@ -1177,7 +1186,7 @@ def claim_liveness(path: Path) -> str:
     """
     try:
         fm = _read_frontmatter(path)
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return "unknown"
     pid_raw = fm.get("claimed-by-pid")
     host = fm.get("claimed-by-host")
@@ -1444,7 +1453,7 @@ def claim_batch(
     if claimed_stems:
         try:
             _set_fm_list_field(primary_path, "batch", claimed_stems)
-        except (OSError, ValueError):
+        except OSError, ValueError:
             pass  # grouping stamp is best-effort; the claims themselves hold
 
     return {

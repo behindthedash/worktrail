@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """
 Cluster signal extraction and pairwise Signal Match computation for the go
 skill's Consume-time cluster detection (see the `duplicate-brief-detection`
@@ -572,7 +572,7 @@ def _verify_same_work(
             text=True,
             timeout=_VERIFY_TIMEOUT_SECONDS,
         )
-    except (OSError, ValueError, subprocess.TimeoutExpired):
+    except OSError, ValueError, subprocess.TimeoutExpired:
         return None
     if proc.returncode != 0:
         return None

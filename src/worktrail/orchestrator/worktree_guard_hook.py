@@ -59,7 +59,7 @@ def _canonical_root(cwd: str) -> str | None:
             text=True,
             timeout=3,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
     if r.returncode != 0 or not r.stdout.strip():
         return None

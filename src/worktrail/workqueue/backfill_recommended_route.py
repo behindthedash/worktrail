@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """
 Backfill `recommended-route:` onto existing queued handoff briefs that
 predate Step 2.5's creation-time stamping (SKILL.md Step 2.5, PR #323).
@@ -77,7 +77,7 @@ def classify_focus(
             timeout=30,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
     if proc.returncode != 0:
         return None

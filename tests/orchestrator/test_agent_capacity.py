@@ -2,7 +2,7 @@ import contextlib
 import json
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from worktrail.orchestrator import agent_capacity, spawnlib
 from worktrail.runtime.selection import NoExecutionTarget
@@ -46,7 +46,7 @@ def test_malformed_cache_recovers(tmp_path):
 
 def test_expired_cooldown_allows_provider(tmp_path):
     path = tmp_path / "capacity.json"
-    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
     agent_capacity.record(
         "claude",
         "sonnet",
@@ -62,7 +62,7 @@ def test_expired_cooldown_allows_provider(tmp_path):
 
 def test_active_cooldown_blocks_provider(tmp_path):
     path = tmp_path / "capacity.json"
-    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
     state = agent_capacity.record(
         "claude",
         "sonnet",
@@ -152,6 +152,30 @@ def test_fable_limit_wording_also_classifies_as_billing():
     )
 
 
+def test_insufficient_balance_wording_classifies_as_billing():
+    # Live reproduction 2026-10-03 (worktrail-drain, drain-logs/
+    # 2026-10-03T09-17-01Z.json, iteration 1): the claude-deepseek API cell
+    # answered "API Error: 402 Insufficient Balance", which matched no
+    # billing token -- the unrelated "the rest of the command" wording in the
+    # accompanying stderr landed it in "startup" instead (the bare line alone
+    # classified as "transport"), so two 16s fast-fail iterations tripped the
+    # drain's circuit breaker instead of gating the provider as a capacity
+    # issue.
+    stdout = (
+        "API Error: 402 Insufficient Balance "
+        "(request_id: fb85b25d-6bc3-43de-9efe-c0be0b3ade87)"
+    )
+    stderr = (
+        "Permission allow rule (../../../.claude/settings.json): Bash(claude * "
+        "--permission-mode bypassPermissions *) has a wildcard before the rest "
+        "of the command, so it also matches any options inserted at that "
+        "position and approves them without a prompt.\n"
+        '[claude-code:unrecognized_model] {"model":"deepseek-flash[1m]",'
+        '"query_source":"sdk"}'
+    )
+    assert agent_capacity.classify_failure(1, stdout, stderr) == "billing"
+
+
 def test_parse_explicit_reset_extracts_codex_notice():
     stdout = (
         "ERROR: You've hit your usage limit. Upgrade to Pro "
@@ -163,7 +187,7 @@ def test_parse_explicit_reset_extracts_codex_notice():
     assert reset is not None
     assert (reset.year, reset.month, reset.day) == (2026, 8, 8)
     local_naive = datetime(2026, 8, 8, 2, 17)  # noqa: DTZ001
-    assert reset == local_naive.astimezone(timezone.utc)
+    assert reset == local_naive.astimezone(UTC)
 
 
 def test_parse_explicit_reset_accepts_full_month_name_no_ordinal():
@@ -227,7 +251,7 @@ def test_opencode_error_event_is_recognized_as_infra_failure():
 
 def test_gate_snapshot_reports_retry_class_and_all_gated(tmp_path):
     path = tmp_path / "capacity.json"
-    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
     for agent, model, failure_class in (
         ("claude", "sonnet", "transport"),
         ("opencode", "safe/model", "auth"),
@@ -261,7 +285,7 @@ def test_gate_snapshot_reports_retry_class_and_all_gated(tmp_path):
 
 def test_gate_snapshot_reports_model_unavailable_failure_class(tmp_path):
     path = tmp_path / "capacity.json"
-    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
     agent_capacity.record(
         "claude-heavy",
         "retired-model",
@@ -292,7 +316,7 @@ def test_record_and_check_key_on_target_names(tmp_path):
     # harness/agent names -- two different targets sharing the same model
     # must not collide.
     path = tmp_path / "capacity.json"
-    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
     agent_capacity.record(
         "claude-heavy",
         "sonnet",
@@ -320,7 +344,7 @@ def test_gate_snapshot_ignores_stale_configured_providers_key(tmp_path):
     # ungate anything -- only the caller's explicit routing-derived
     # `providers` argument decides what gate_snapshot evaluates.
     path = tmp_path / "capacity.json"
-    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
     agent_capacity.record(
         "claude",
         "sonnet",
@@ -349,7 +373,7 @@ def test_gate_snapshot_ignores_stale_configured_providers_key(tmp_path):
 
 def test_preflight_uses_fallback_when_primary_is_gated(tmp_path, monkeypatch):
     path = tmp_path / "capacity.json"
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     agent_capacity.record(
         "claude",
         "sonnet",
@@ -393,7 +417,7 @@ def test_status_reads_empty_cache(tmp_path):
 
 def test_status_lists_all_recorded_providers(tmp_path):
     path = tmp_path / "capacity.json"
-    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
     agent_capacity.record(
         "claude",
         "sonnet",
@@ -454,7 +478,7 @@ def test_clear_refuses_blank_reason(tmp_path):
 
 def test_clear_targeted_removes_exactly_one_provider(tmp_path):
     path = tmp_path / "capacity.json"
-    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
     agent_capacity.record(
         "claude",
         "sonnet",
@@ -484,7 +508,7 @@ def test_clear_targeted_removes_exactly_one_provider(tmp_path):
 
 def test_clear_all_removes_all_gates(tmp_path):
     path = tmp_path / "capacity.json"
-    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
     agent_capacity.record(
         "claude",
         "sonnet",
@@ -526,7 +550,7 @@ def test_clear_rejects_all_without_explicit_flag(tmp_path):
 
 def test_clear_writes_audit_entry(tmp_path):
     path = tmp_path / "capacity.json"
-    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
     agent_capacity.record(
         "claude",
         "sonnet",
@@ -550,7 +574,7 @@ def test_clear_writes_audit_entry(tmp_path):
 
 def test_clear_all_writes_audit_entry(tmp_path):
     path = tmp_path / "capacity.json"
-    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
     agent_capacity.record(
         "claude",
         "sonnet",
@@ -579,7 +603,7 @@ def test_clear_all_writes_audit_entry(tmp_path):
 def test_audit_bounds_at_max_entries(tmp_path):
     path = tmp_path / "capacity.json"
     path.write_text('{"version":1,"providers":{},"configured_providers":[]}')
-    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
     for i in range(agent_capacity.MAX_AUDIT_ENTRIES + 10):
         agent_capacity.record(
             "claude",
@@ -612,7 +636,7 @@ def test_main_status_via_cli(tmp_path):
 
 def test_main_clear_targeted_via_cli(tmp_path):
     path = tmp_path / "capacity.json"
-    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
     agent_capacity.record(
         "claude",
         "sonnet",
@@ -633,7 +657,7 @@ def test_main_clear_targeted_via_cli(tmp_path):
 
 def test_main_clear_all_via_cli(tmp_path):
     path = tmp_path / "capacity.json"
-    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
     agent_capacity.record(
         "claude",
         "sonnet",
@@ -713,7 +737,7 @@ def test_concurrent_record_calls_both_survive(tmp_path, monkeypatch):
     # both load the same snapshot and the second os.replace silently dropped
     # the first worker's capacity-gate write.
     path = tmp_path / "capacity.json"
-    now = datetime(2026, 8, 12, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 12, 20, 0, tzinfo=UTC)
     _run_racing_writers(
         tmp_path,
         monkeypatch,
@@ -745,7 +769,7 @@ def test_concurrent_record_and_clear_both_survive(tmp_path, monkeypatch):
     # from different entry points; without the shared lock either save can
     # clobber the other's.
     path = tmp_path / "capacity.json"
-    now = datetime(2026, 8, 12, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 12, 20, 0, tzinfo=UTC)
     agent_capacity.record(
         "codex",
         "gpt",
@@ -785,7 +809,7 @@ def test_concurrent_record_capacity_gate_calls_both_survive(tmp_path, monkeypatc
     # Real clock: record_capacity_gate prunes drain-owned entries whose
     # retry window has already passed, so a fixed past date would let the
     # second writer legitimately drop the first writer's expired gate.
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     _run_racing_writers(
         tmp_path,
         monkeypatch,
@@ -806,7 +830,7 @@ def test_concurrent_record_capacity_gate_calls_both_survive(tmp_path, monkeypatc
 
 def test_preflight_reports_all_providers_gated_without_spawning(tmp_path, monkeypatch):
     path = tmp_path / "capacity.json"
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     for target, model in (
         ("claude", "sonnet"),
         ("opencode", "opencode/deepseek-v4-flash-free"),
@@ -863,7 +887,7 @@ def test_gate_for_agent_returns_none_when_available(tmp_path):
 
 def test_gate_for_agent_returns_gate_when_resolved_target_is_unavailable(tmp_path):
     path = tmp_path / "capacity.json"
-    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
     agent_capacity.record(
         "claude-sub",
         "sonnet",
@@ -885,7 +909,7 @@ def test_gate_for_agent_never_substitutes_a_different_target(tmp_path):
     """codex-sub sitting healthy must never mask claude-sub's own gate --
     this check answers "is claude gated," not "is anything available"."""
     path = tmp_path / "capacity.json"
-    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
     agent_capacity.record(
         "claude-sub",
         "sonnet",
@@ -928,7 +952,7 @@ def test_check_agent_cli_exits_zero_when_available(tmp_path):
 
 def test_check_agent_cli_exits_one_when_gated(tmp_path, capsys):
     path = tmp_path / "capacity.json"
-    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
     agent_capacity.record(
         "claude-sub",
         "sonnet",
@@ -981,7 +1005,7 @@ def _seed_gate(path, key, retry_at, source="drain", status="unavailable"):
 
 def test_status_labels_expired_and_active_gates(tmp_path, capsys):
     path = tmp_path / "capacity.json"
-    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
     _seed_gate(path, "claude", now - timedelta(minutes=5))
     _seed_gate(path, "claude-sub:opus", now + timedelta(minutes=5), source="spawn")
     before = path.read_bytes()
@@ -995,7 +1019,7 @@ def test_status_labels_expired_and_active_gates(tmp_path, capsys):
 
 def test_clear_expired_removes_only_expired_gates(tmp_path, capsys):
     path = tmp_path / "capacity.json"
-    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
     _seed_gate(path, "claude", now - timedelta(minutes=5))
     _seed_gate(path, "codex", now + timedelta(minutes=5))
     agent_capacity.record("opencode", "model", outcome="available", path=path, now=now)
@@ -1012,7 +1036,7 @@ def test_clear_expired_removes_only_expired_gates(tmp_path, capsys):
 
 def test_clear_expired_noop_when_nothing_expired(tmp_path):
     path = tmp_path / "capacity.json"
-    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
     _seed_gate(path, "codex", now + timedelta(minutes=5))
     before = path.read_bytes()
     rc = agent_capacity.cmd_clear("--expired", "hygiene", path=path, now=now)
@@ -1037,7 +1061,7 @@ def test_main_clear_expired_requires_reason_and_rejects_all(tmp_path):
 
 def test_probe_lets_first_check_through_after_probe_interval(tmp_path):
     path = tmp_path / "capacity.json"
-    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
     checked_at = now - timedelta(minutes=20)
     agent_capacity.record(
         "claude",
@@ -1068,7 +1092,7 @@ def test_probe_lets_first_check_through_after_probe_interval(tmp_path):
 def test_check_resolves_default_path_through_probe_branch(tmp_path, monkeypatch):
     path = tmp_path / "capacity.json"
     monkeypatch.setenv("WORKTRAIL_AGENT_CAPACITY_CACHE", str(path))
-    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
     checked_at = now - timedelta(minutes=20)
     agent_capacity.record(
         "claude",
@@ -1089,7 +1113,7 @@ def test_check_resolves_default_path_through_probe_branch(tmp_path, monkeypatch)
 
 def test_probe_does_not_fire_before_the_interval_elapses(tmp_path):
     path = tmp_path / "capacity.json"
-    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
     checked_at = now - timedelta(minutes=5)
     agent_capacity.record(
         "claude",
@@ -1114,7 +1138,7 @@ def test_probe_does_not_fire_before_the_interval_elapses(tmp_path):
 
 def test_provider_reset_source_is_never_probed(tmp_path):
     path = tmp_path / "capacity.json"
-    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
     checked_at = now - timedelta(minutes=20)
     agent_capacity.record(
         "claude",
@@ -1140,7 +1164,7 @@ def test_provider_reset_source_is_never_probed(tmp_path):
 
 def test_model_unavailable_is_never_probed(tmp_path):
     path = tmp_path / "capacity.json"
-    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
     checked_at = now - timedelta(minutes=20)
     agent_capacity.record(
         "claude",
@@ -1165,7 +1189,7 @@ def test_model_unavailable_is_never_probed(tmp_path):
 
 def test_entry_without_reset_source_field_is_probeable(tmp_path):
     path = tmp_path / "capacity.json"
-    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
     checked_at = now - timedelta(minutes=20)
     agent_capacity.record(
         "claude",
@@ -1188,7 +1212,7 @@ def test_entry_without_reset_source_field_is_probeable(tmp_path):
 
 def test_record_stores_reset_source_and_defaults_to_cooldown(tmp_path):
     path = tmp_path / "capacity.json"
-    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
     state = agent_capacity.record(
         "claude",
         "sonnet",
@@ -1215,7 +1239,7 @@ def test_record_stores_reset_source_and_defaults_to_cooldown(tmp_path):
 
 def test_cmd_status_prints_probed_for_entry_with_probe_at(tmp_path, capsys):
     path = tmp_path / "capacity.json"
-    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
     checked_at = now - timedelta(minutes=20)
     agent_capacity.record(
         "claude",
@@ -1237,7 +1261,7 @@ def test_cmd_status_prints_probed_for_entry_with_probe_at(tmp_path, capsys):
 def test_probe_interval_env_var_overrides_cadence(tmp_path, monkeypatch):
     monkeypatch.setattr(agent_capacity, "PROBE_INTERVAL_S", 60)
     path = tmp_path / "capacity.json"
-    now = datetime(2026, 7, 20, 20, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
     checked_at = now - timedelta(seconds=61)
     agent_capacity.record(
         "claude",
@@ -1283,7 +1307,7 @@ def test_lenient_reset_resolves_next_occurrence_in_stated_zone():
     reset = agent_capacity.parse_explicit_reset(_WEEKLY_NOTICE, now)
 
     assert reset is not None and reset.tzinfo is not None
-    assert reset == datetime(2026, 8, 5, 14, 0, tzinfo=tz).astimezone(timezone.utc)
+    assert reset == datetime(2026, 8, 5, 14, 0, tzinfo=tz).astimezone(UTC)
 
 
 def test_lenient_reset_rolls_to_tomorrow_when_time_has_passed():
@@ -1292,11 +1316,11 @@ def test_lenient_reset_rolls_to_tomorrow_when_time_has_passed():
 
     reset = agent_capacity.parse_explicit_reset(_WEEKLY_NOTICE, now)
 
-    assert reset == datetime(2026, 8, 6, 14, 0, tzinfo=tz).astimezone(timezone.utc)
+    assert reset == datetime(2026, 8, 6, 14, 0, tzinfo=tz).astimezone(UTC)
 
 
 def test_lenient_reset_accepts_at_and_minute_and_spaced_meridiem():
-    now = datetime(2026, 8, 5, 9, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 5, 9, 0, tzinfo=UTC)
 
     a = agent_capacity.parse_explicit_reset("resets at 3:00pm", now)
     b = agent_capacity.parse_explicit_reset("resets 3:00 PM", now)
@@ -1306,7 +1330,7 @@ def test_lenient_reset_accepts_at_and_minute_and_spaced_meridiem():
     expected = local_now.replace(hour=15, minute=0, second=0, microsecond=0)
     if expected <= local_now:
         expected += timedelta(days=1)
-    assert a == expected.astimezone(timezone.utc)
+    assert a == expected.astimezone(UTC)
 
 
 def test_lenient_reset_matches_capitalised_wording():
@@ -1315,14 +1339,14 @@ def test_lenient_reset_matches_capitalised_wording():
 
     assert agent_capacity.parse_explicit_reset(
         "Resets 2pm (America/Los_Angeles)", now
-    ) == datetime(2026, 8, 5, 14, 0, tzinfo=tz).astimezone(timezone.utc)
+    ) == datetime(2026, 8, 5, 14, 0, tzinfo=tz).astimezone(UTC)
     assert agent_capacity.parse_explicit_reset(
         "RESETS AT 3:00PM (America/Los_Angeles)", now
-    ) == datetime(2026, 8, 5, 15, 0, tzinfo=tz).astimezone(timezone.utc)
+    ) == datetime(2026, 8, 5, 15, 0, tzinfo=tz).astimezone(UTC)
 
 
 def test_lenient_reset_falls_back_to_local_time_without_usable_zone():
-    now = datetime(2026, 8, 5, 9, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 5, 9, 0, tzinfo=UTC)
 
     unresolvable = agent_capacity.parse_explicit_reset("resets 2pm (PT)", now)
     zoneless = agent_capacity.parse_explicit_reset("resets 2pm", now)
@@ -1333,7 +1357,7 @@ def test_lenient_reset_falls_back_to_local_time_without_usable_zone():
     expected = local_now.replace(hour=14, minute=0, second=0, microsecond=0)
     if expected <= local_now:
         expected += timedelta(days=1)
-    assert zoneless == expected.astimezone(timezone.utc)
+    assert zoneless == expected.astimezone(UTC)
 
 
 def test_lenient_reset_is_ignored_in_text_longer_than_notice_bound():
@@ -1351,7 +1375,7 @@ def test_dated_reset_still_parses_in_long_text_and_wins_over_lenient():
     both = agent_capacity.parse_explicit_reset(
         f"{_WEEKLY_NOTICE} try again at Aug 8th, 2026 2:17 AM."
     )
-    assert both == datetime(2026, 8, 8, 2, 17).astimezone(timezone.utc)
+    assert both == datetime(2026, 8, 8, 2, 17).astimezone(UTC)
 
 
 def test_weekly_limit_spawn_records_provider_derived_gate(tmp_path, monkeypatch):
@@ -1378,5 +1402,5 @@ def test_weekly_limit_spawn_records_provider_derived_gate(tmp_path, monkeypatch)
     assert state["reset_source"] == "provider"
     retry_after = datetime.fromisoformat(state["retry_after"])
     # The billing cooldown is 1h; a parsed 2pm-Pacific reset is not that.
-    assert retry_after > datetime.now(timezone.utc)
+    assert retry_after > datetime.now(UTC)
     assert retry_after.astimezone(_pacific()).hour == 14

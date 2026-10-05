@@ -4,7 +4,7 @@ import json
 import os
 import subprocess
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from io import StringIO
 from pathlib import Path
 from unittest import mock
@@ -673,7 +673,7 @@ def test_capacity_gated_expired_retry_after_is_not_gated():
     # drain picks the agent back up once its cooldown expires (see
     # select_available_agent's docstring), which requires comparing
     # retry_after to "now" instead of only reading the stale "status" field.
-    now = datetime(2026, 8, 22, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 22, tzinfo=UTC)
     cache = {
         "providers": {
             "claude": {
@@ -686,7 +686,7 @@ def test_capacity_gated_expired_retry_after_is_not_gated():
 
 
 def test_capacity_gated_unexpired_retry_after_still_gated():
-    now = datetime(2026, 8, 22, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 22, tzinfo=UTC)
     cache = {
         "providers": {
             "claude": {
@@ -699,7 +699,7 @@ def test_capacity_gated_unexpired_retry_after_still_gated():
 
 
 def test_capacity_gated_expired_reset_at_falls_back_and_is_not_gated():
-    now = datetime(2026, 8, 22, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 22, tzinfo=UTC)
     cache = {
         "providers": {
             "codex": {
@@ -714,12 +714,12 @@ def test_capacity_gated_expired_reset_at_falls_back_and_is_not_gated():
 def test_capacity_gated_gated_status_without_timestamp_stays_gated():
     # No retry_after/reset_at at all -- unchanged prior behavior: gated
     # indefinitely until explicitly cleared.
-    now = datetime(2026, 8, 22, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 22, tzinfo=UTC)
     assert capacity_gated({"claude": {"status": "gated"}}, "claude", now=now) is True
 
 
 def test_capacity_gated_expired_gate_all_models_matched_ungates_agent():
-    now = datetime(2026, 8, 22, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 22, tzinfo=UTC)
     cache = {
         "providers": {
             "claude:opus": {
@@ -736,7 +736,7 @@ def test_capacity_gated_expired_gate_all_models_matched_ungates_agent():
 
 
 def test_select_available_agent_picks_agent_back_up_after_retry_after_expires():
-    now = datetime(2026, 8, 22, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 22, tzinfo=UTC)
     cache = {
         "providers": {
             "claude": {
@@ -757,6 +757,7 @@ def test_select_available_agent_picks_agent_back_up_after_retry_after_expires():
         "claude",
         None,
         None,
+        None,
     )
 
 
@@ -766,12 +767,22 @@ def test_select_available_agent_picks_agent_back_up_after_retry_after_expires():
 
 def test_select_available_agent_prefers_primary_when_ungated():
     cache = {"providers": {"claude": {"status": "gated"}}}
-    assert select_available_agent(cache, ["codex", "claude"]) == ("codex", None, None)
+    assert select_available_agent(cache, ["codex", "claude"]) == (
+        "codex",
+        None,
+        None,
+        None,
+    )
 
 
 def test_select_available_agent_skips_gated_primary_for_fallback():
     cache = {"providers": {"codex": {"status": "unavailable"}}}
-    assert select_available_agent(cache, ["codex", "claude"]) == ("claude", None, None)
+    assert select_available_agent(cache, ["codex", "claude"]) == (
+        "claude",
+        None,
+        None,
+        None,
+    )
 
 
 def test_select_available_agent_none_when_every_candidate_gated():
@@ -785,7 +796,12 @@ def test_select_available_agent_none_when_every_candidate_gated():
 
 
 def test_select_available_agent_never_tried_counts_as_available():
-    assert select_available_agent({}, ["codex", "claude"]) == ("codex", None, None)
+    assert select_available_agent({}, ["codex", "claude"]) == (
+        "codex",
+        None,
+        None,
+        None,
+    )
 
 
 def test_select_available_agent_single_candidate_no_fallback_configured():
@@ -828,14 +844,14 @@ def test_select_available_agent_returns_the_cells_effort_too():
     cache = {}
     assert select_available_agent(
         cache, ["claude"], routing=_ROUTING_TWO_CLAUDE_MODELS
-    ) == ("claude", "sonnet", "medium")
+    ) == ("claude", "sonnet", "medium", "claude-sub")
 
 
 def test_select_available_agent_per_target_gate_falls_through_same_tier_row():
     cache = {"providers": {"claude-sub:sonnet": {"status": "gated"}}}
     assert select_available_agent(
         cache, ["claude", "codex"], routing=_ROUTING_TWO_CLAUDE_MODELS
-    ) == ("codex", "gpt-5", None)
+    ) == ("codex", "gpt-5", None, "codex-sub")
 
 
 def test_select_available_agent_never_consults_a_row_other_than_default_tier():
@@ -921,7 +937,7 @@ def test_write_iteration_transcript_bounded_retention(tmp_path):
             Outcome("no_pick"),
             f"out-{i}",
             "",
-            now=datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=i),
+            now=datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=i),
         )
     remaining = sorted(out_dir.glob("*.log"))
     assert len(remaining) == MAX_TRANSCRIPT_FILES
@@ -1676,6 +1692,44 @@ def test_drain_routing_all_configured_models_gated_still_capacity_gates(
     assert summary["stopped"].startswith("capacity_gated")
 
 
+def test_drain_routing_blocked_gate_is_keyed_by_target_and_fails_over(
+    tmp_path, monkeypatch
+):
+    """Live reproduction 2026-10-03 (worktrail-drain, drain-logs/
+    2026-10-03T09-17-01Z.json, transcript 20261003T092437Z-iter1-claude.log):
+    with routing configured, a blocked iteration's gate was written under the
+    bare harness name while select_available_agent()'s own per-cell check
+    queries provider_key(target, model) -- the gate was invisible, the same
+    exhausted cell was re-selected, and the second blocked iteration advanced
+    to the circuit breaker instead of failing over to the next target and
+    stopping capacity_gated (the shape behind the bridge-health-guard
+    drain_circuit_breaker findings)."""
+    fake = FakeQueue([2, 2, 2, 2, 0])
+    install_fake_queue(monkeypatch, fake)
+    monkeypatch.setattr(
+        drain, "machine_wide_routing", lambda: _ROUTING_TWO_CLAUDE_MODELS
+    )
+    config = make_config(tmp_path, agent="claude", fallback_agents=["codex"])
+    seen_models = []
+
+    def spawner(cmd, timeout):
+        seen_models.append(cmd[cmd.index("--model") + 1] if "--model" in cmd else None)
+        return SpawnOutcome(1, "API Error: 402 Insufficient Balance", "")
+
+    summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
+
+    # Failover: each target in the row ran once -- the blocked cell's gate
+    # sent the next iteration to the next target instead of re-picking the
+    # same exhausted cell.
+    assert seen_models == ["sonnet", "gpt-5"]
+    assert [item["kind"] for item in summary["iterations"]] == ["blocked", "blocked"]
+    assert summary["stopped"].startswith("capacity_gated")
+    cache = json.loads(config.capacity_cache.read_text())
+    for key in ("claude-sub", "codex-sub"):
+        assert cache["providers"][key]["status"] == "unavailable"
+        assert cache["providers"][key]["failure_class"] == "billing"
+
+
 def test_drain_usage_limit_output_becomes_blocked_and_persists_gate(
     tmp_path, monkeypatch
 ):
@@ -1692,7 +1746,7 @@ def test_drain_usage_limit_output_becomes_blocked_and_persists_gate(
     # own "still gated for iteration 2" premise requires a fixed clock rather
     # than depending on wall-clock date never reaching Aug 8, 2026.
     monkeypatch.setattr(
-        agent_capacity, "_now", lambda: datetime(2026, 8, 8, 0, 0, tzinfo=timezone.utc)
+        agent_capacity, "_now", lambda: datetime(2026, 8, 8, 0, 0, tzinfo=UTC)
     )
     fake = FakeQueue([3, 3])
     install_fake_queue(monkeypatch, fake)
@@ -1916,7 +1970,7 @@ def test_drain_capacity_blocked_iteration_with_no_brief_records_empty_attributio
     # the stable empty attribution values alongside the populated
     # failure_class diagnostic that explains WHY the agent was blocked.
     monkeypatch.setattr(
-        agent_capacity, "_now", lambda: datetime(2026, 8, 25, tzinfo=timezone.utc)
+        agent_capacity, "_now", lambda: datetime(2026, 8, 25, tzinfo=UTC)
     )
     fake = FakeQueue([3, 3])
     install_fake_queue(monkeypatch, fake)
@@ -2171,6 +2225,176 @@ def test_drain_routing_liveness_check_error_never_aborts_drain(tmp_path, monkeyp
     summary = drain.drain(config, log=logs.append)
     assert summary["stopped"] == "dry_run"
     assert any("routing liveness check error: boom" in line for line in logs)
+
+
+# ---------------------------------------------------------------------------
+# Spawn-readiness refusal (task 6.1)
+
+
+_READY_TWO_TARGET_ROUTING = (
+    "targets:\n"
+    "  claude-sub:\n"
+    "    harness: claude\n"
+    "    pool: subscription\n"
+    "  codex-sub:\n"
+    "    harness: codex\n"
+    "    pool: subscription\n"
+    "tiers:\n"
+    "  t2-build:\n"
+    "    claude-sub:\n"
+    "      model: sonnet\n"
+    "    codex-sub:\n"
+    "      model: gpt-5.4-mini\n"
+    "default_tier: t2-build\n"
+)
+
+# An `api`-pool target with no `api_opt_in` -- the selector skips it as
+# ineligible, so the spawn path can never reach the cell
+# (spawn_readiness.readiness_problems' own unready class).
+_UNREADY_ROUTING = (
+    "targets:\n"
+    "  claude-api:\n"
+    "    harness: claude\n"
+    "    pool: api\n"
+    "tiers:\n"
+    "  t2-build:\n"
+    "    claude-api:\n"
+    "      model: sonnet\n"
+    "default_tier: t2-build\n"
+)
+
+
+def _write_routing_file(tmp_path, monkeypatch, payload):
+    """Point the machine-wide routing resolution at a per-test file.
+
+    tests/drain/conftest.py deliberately leaves GO_ROUTING_FILE at a
+    nonexistent path, so a drain test that needs the resolution path (not
+    `machine_wide_routing()`, which those capacity-gate tests monkeypatch)
+    to see a real table must set WORKTRAIL_ROUTING_FILE itself -- the current
+    env name wins over the legacy GO_ synonym.
+    """
+    routing_file = tmp_path / "routing.yaml"
+    routing_file.write_text(payload, encoding="utf-8")
+    monkeypatch.setenv("WORKTRAIL_ROUTING_FILE", str(routing_file))
+    return routing_file
+
+
+def test_drain_refuses_unready_routing_before_the_intake_triage_prepass(
+    tmp_path, monkeypatch
+):
+    """task 6.1: an unready cell refuses the whole drain, and the refusal is
+    ordered ahead of the intake-triage pre-pass -- that pre-pass spawns its
+    own evaluator agent, so a readiness failure must land before it rather
+    than after a wasted spawn. The message names every unready cell and the
+    routing file, and nothing at all is launched."""
+    fake = FakeQueue([3])
+    install_fake_queue(monkeypatch, fake)
+    routing_file = _write_routing_file(tmp_path, monkeypatch, _UNREADY_ROUTING)
+    prepass_calls = []
+    monkeypatch.setattr(
+        drain,
+        "run_intake_triage_prepass",
+        lambda *a, **k: prepass_calls.append(k) or {},
+    )
+    config = make_config(tmp_path, intake_triage=True)
+    spawned = []
+
+    def spawner(cmd, timeout):
+        spawned.append(list(cmd))
+        return SpawnOutcome(0)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        drain.drain(config, spawner=spawner, log=lambda _l: None)
+
+    message = str(excinfo.value)
+    assert "t2-build/claude-api" in message
+    assert "api_opt_in" in message
+    assert str(routing_file) in message
+    assert prepass_calls == []
+    assert spawned == []
+    # The lock is released on the way out, so a refused drain does not wedge
+    # the next one.
+    assert not config.lock_file.exists()
+
+
+def test_drain_capacity_gated_cell_still_lets_the_run_proceed(tmp_path, monkeypatch):
+    """A capacity gate is a waitable runtime condition, not an unready cell:
+    the readiness preflight must not fold gating into refusal. The primary's
+    only default-tier cell is gated, so the selector walks past it to the
+    fallback agent and the run still spawns."""
+    fake = FakeQueue([1, 0])
+    install_fake_queue(monkeypatch, fake)
+    _write_routing_file(tmp_path, monkeypatch, _READY_TWO_TARGET_ROUTING)
+    config = make_config(tmp_path, agent="claude", fallback_agents=["codex"])
+    config.capacity_cache.write_text(
+        json.dumps({"providers": {"claude-sub:sonnet": {"status": "gated"}}}),
+        encoding="utf-8",
+    )
+    cmds = []
+
+    def spawner(cmd, timeout):
+        cmds.append(list(cmd))
+        write_run_record(
+            config.runs_dir, "go-1", "completed_pr_open", pr="https://pr/1"
+        )
+        return SpawnOutcome(0)
+
+    summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
+
+    assert [i["kind"] for i in summary["iterations"]] == ["success"]
+    assert len(cmds) == 1
+    assert cmds[0][:2] == ["codex", "exec"]
+
+
+def test_drain_ready_routing_starts_normally(tmp_path, monkeypatch):
+    """task 6.1: a table every builder accepts starts the drain exactly as
+    before -- the refusal is scoped to cells the spawn path itself rejects,
+    not to routing being configured at all."""
+    fake = FakeQueue([1, 0])
+    install_fake_queue(monkeypatch, fake)
+    _write_routing_file(tmp_path, monkeypatch, _READY_TWO_TARGET_ROUTING)
+    config = make_config(tmp_path, agent="claude")
+    cmds = []
+
+    def spawner(cmd, timeout):
+        cmds.append(list(cmd))
+        write_run_record(
+            config.runs_dir, "go-1", "completed_pr_open", pr="https://pr/1"
+        )
+        return SpawnOutcome(0)
+
+    summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
+
+    assert summary["stopped"].startswith("queue_empty")
+    assert len(cmds) == 1
+    assert cmds[0][:2] == ["claude", "-p"]
+
+
+def test_main_exits_2_naming_the_cell_and_routing_file_when_unready(
+    tmp_path, monkeypatch, capsys
+):
+    """task 6.1: the refusal surfaces through main() as exit 2 with the cell
+    and the routing file on stderr -- never a logged-and-continued run."""
+    routing_file = _write_routing_file(tmp_path, monkeypatch, _UNREADY_ROUTING)
+    wq = tmp_path / "work_queue.py"
+    wq.write_text("# placeholder\n", encoding="utf-8")
+
+    rc = drain.main(
+        [
+            "--work-queue-py",
+            str(wq),
+            "--repos-root",
+            str(tmp_path / "projects"),
+            "--queue-dir",
+            str(tmp_path / "queue"),
+        ]
+    )
+
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "error:" in err
+    assert "t2-build/claude-api" in err
+    assert str(routing_file) in err
 
 
 def test_main_accepts_routing_target_name_for_agent_flag(tmp_path, monkeypatch):
@@ -5716,7 +5940,7 @@ def _seed_capacity_cache(path: Path, providers: dict) -> None:
 
 def test_record_capacity_gate_prunes_expired_drain_entries(tmp_path):
     cache_path = tmp_path / "agent-capacity.json"
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     _seed_capacity_cache(
         cache_path,
         {
@@ -5738,7 +5962,7 @@ def test_record_capacity_gate_prunes_expired_drain_entries(tmp_path):
 
 def test_record_capacity_gate_keeps_foreign_and_active_entries(tmp_path):
     cache_path = tmp_path / "agent-capacity.json"
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     _seed_capacity_cache(
         cache_path,
         {

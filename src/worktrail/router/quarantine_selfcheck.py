@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """quarantine_selfcheck.py — cross-repo QUARANTINED-group detector.
 
 The orchestrator's `integrate.py` marks a group `QUARANTINED` in its run
@@ -44,7 +44,7 @@ def _runplan_tasks(repo: Path, spec_id: str) -> list[dict[str, Any]] | None:
     newest = max(matches, key=lambda p: p.stat().st_mtime)
     try:
         payload = json.loads(newest.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return None
     tasks = payload.get("tasks") if isinstance(payload, dict) else None
     if not isinstance(tasks, list):
@@ -150,7 +150,7 @@ def _merged_pr_matching(repo: Path, files: list[str]) -> str | None:
             timeout=30,
             cwd=str(repo),
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
     if result.returncode != 0:
         return None
@@ -244,7 +244,7 @@ def check_repo(repo: Path) -> dict[str, Any]:
     for journal_path in _iter_journal_files(worktrees_dir):
         try:
             journal = json.loads(journal_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except OSError, json.JSONDecodeError:
             continue
         if not isinstance(journal, dict):
             continue
@@ -317,17 +317,31 @@ def main(argv: list[str] | None = None) -> int:
                 f"quarantine_selfcheck: {len(results)} repo(s) checked, no QUARANTINED groups"
             )
         for r in flagged:
-            print(f"{r['repo']}:")
+            print(
+                f"{r['repo']}: needs human triage -- fix the task branch, then clear "
+                f"the group with worktrail-resume-group --group <name>:"
+            )
             for f in r["findings"]:
                 print(
                     f"  spec={f['spec_id']} group={f['group']} pr_url={f['pr_url']} "
                     f"age_days={f['age_days']:.1f}"
                 )
+                print(
+                    f"    worktrail-resume-group --repo {r['path']} "
+                    f"--spec {f['spec_id']} --group {f['group']}"
+                )
         for r in resumable_repos:
-            print(f"{r['repo']} (resumable, no action needed -- re-run full-real):")
+            print(
+                f"{r['repo']} (resumable -- clear with worktrail-resume-group "
+                f"--all-resumable, then re-run full-real --resume):"
+            )
             for f in r["resumable"]:
                 print(
                     f"  spec={f['spec_id']} group={f['group']} age_days={f['age_days']:.1f}"
+                )
+                print(
+                    f"    worktrail-resume-group --repo {r['path']} "
+                    f"--spec {f['spec_id']} --all-resumable"
                 )
     return 1 if flagged else 0
 

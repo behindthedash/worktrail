@@ -72,6 +72,17 @@ triggers:
     - target_branches
     - inline flow sequence
     - parse_policy_yaml
+    - POLICY_KEY_TYPES
+    - _sweep_key_types
+    - _SWEEP_SKIP
+    - _TYPE_SWEEP_EXEMPT
+    - env_profiles
+    - auth.profile
+    - resolve_env_profile
+    - env_profile.py
+    - resolve_routing
+    - _CONSUMER_MENTION_J_LABELS
+    - _CONSUMER_BY_PHRASE_RE
 ---
 
 You are working on **worktrail's GO v2 front door**: loading repo policy, classifying free-text
@@ -209,6 +220,18 @@ agents or writes task files — that is `orchestrator/`'s job.
   CI/config phrase is quoted evidence, not the report's own change target, so it must not
   trigger the damp. Scoped narrowly to these two evidence-confirmed labels — do not widen
   `_MENTION_ONLY_J_LABELS` without its own confirmed false-positive.
+- **A J score built entirely from `_CONSUMER_MENTION_J_LABELS` (`go-skill`, `front-door`) whose
+  only occurrence is a consumer by-phrase (`_CONSUMER_BY_PHRASE_RE`: a consumption cue —
+  `consumed`/`used`/`read`/`called`/`drives`/… — followed by `by` and then the front door) is
+  also damped to zero** — that shape names the front door as a *consumer* of the result under
+  discussion, which cannot be the change target (live incident 2026-10-03, brief 20261003-204443:
+  the bare clause "the machine-readable surface consumed programmatically by drain, queue-triage,
+  and the go front door" scored J=7 at high confidence with every other route at 0). The by-phrase
+  frame is what separates the two shapes, so no citation carve-out is needed: "add a guard to the
+  go front door so it stops misrouting consumer mentions" still routes J. Damping is scoped to a J
+  score built *entirely* from these two labels — a request that also carries another J signal
+  (e.g. `cassette`) still wins on it. Do not widen `_CONSUMER_MENTION_J_LABELS` without its own
+  confirmed false-positive.
 - **The parser translates into the executor's vocabulary, not the user's.** `worktrail-sdd-workflow`
   still speaks `handoff:<id>`, `route:<X>`, and the v1 intent words (`V1_INTENTS`); so `spec
   explore` yields `intent: brainstorm`, and `spec fix` yields `route: F` (the executor has no `fix`
@@ -232,6 +255,64 @@ agents or writes task files — that is `orchestrator/`'s job.
   never widens autonomy. `automerge.max_risk`, `agent_cli`, `fallback_agent_cli`, `agent_model`,
   `max_workers`, `pr_pacing_wait_s`, and `max_parallel_workers` are all validated/clamped the same
   way in `load_policy`.
+- **`routing.env_profiles` names *where* a target's environment comes from and stores no values.**
+  `_validate_routing_env_profiles` (never-raise warn-and-drop, like its sibling
+  `_validate_routing_*` validators; resolved *before* `targets` and returned in the resolved
+  routing dict, because a target's `auth.profile` is validated against it) accepts
+  `{name: {from, keys, expect?}}` — `from` is a path to a JSON file with an `env` object, `keys`
+  lists which of that object's names to copy, and `expect` maps a name to the literal it must
+  equal before a worker may launch. `keys` and `expect` are deliberately independent: a key may
+  be asserted without being copied (provenance checking) or copied without being asserted (so
+  its value is never printable). A malformed `expect` drops the **whole profile**, not just the
+  assertion — a silently-dropped assertion is indistinguishable from a passing one, which would
+  defeat the only thing `expect` exists for.
+  `resolve_routing()` must carry this table into the resolved `{targets, tiers, roles, purposes,
+  default_tier, env_profiles, drain}` dict it returns: `spawnlib` reads the profile table off
+  *that* dict (never a second policy read, which could diverge from the table `select_cell`
+  served from), so dropping the key made every profile-bearing cell raise `OperatorConfigError`
+  ("not declared in routing.env_profiles") at launch even when the profile was declared —
+  confirmed live 2026-10-02, the drain's intake-triage spawn died on a `claude-deepseek` cell
+  whose `deepseek` profile was declared in `routing.yaml` all along.
+- **`auth.profile` and `auth.env` are mutually exclusive alternatives for one auth lane, and a
+  profile on a `subscription` target is a warning.** `_validate_routing_targets` warns on a
+  non-mapping `auth`, on both `env` and `profile` declared together (the spawn hard-fails; the
+  target is still kept so it appears in `--check`), and on `auth.profile` on a `subscription`
+  target, because that lane strips `ANTHROPIC_API_KEY` *after* profile injection — a
+  profile-supplied key cannot survive there, though the target is still valid for non-key
+  variables. `auth.codex_home` alongside a profile is not a conflict (it selects a home, not
+  credentials). `_warn_undeclared_env_profiles` warns when an `auth.profile` names a profile
+  `env_profiles` does not declare; the target is kept (mirroring "`pool: api` without
+  `api_opt_in` is kept but ineligible") and the authoritative failure is at spawn.
+- **`worktrail-routing --check` resolves every `auth.profile` cell against the real file**,
+  marking the cell `FAIL`, printing the full `OperatorConfigError` to stderr, and exiting 1 —
+  but deliberately NOT recording an `agent_capacity` gate. A recorded gate is skipped *silently*
+  by `select_cell` on the next spawn, which would turn a loud configuration error into an
+  invisible fallback to the next rung — precisely the failure class env profiles exist to
+  remove. Gates model provider conditions; this is operator config, and its `auth` cooldown
+  would outlive the fix.
+- **`load_policy()` runs a coarse type sweep (`_sweep_key_types`) before the per-key checks; the
+  two layers are deliberately separate.** `POLICY_KEY_TYPES` declares an expected type (or tuple)
+  for every flat `DEFAULTS` key, and a wrong-typed value is replaced by its `DEFAULTS` entry with
+  one `meta["warnings"]` line (`<key> must be <type>[ or null]; got <value!r> — using default
+  <default!r>`) — e.g. `protected_paths: migrations/` becomes `[]`, `pre_pr_cmd: true` becomes
+  `None`. A key whose default is `None` also accepts `None`, and a YAML `true` never satisfies an
+  integer key (`bool` is an `int` subclass). The per-key checks further down `load_policy` still
+  run last, unchanged, and own value-level rules (allowed literals, integer minimums, per-entry
+  cleaning). `routing`/`add_ons` are exempt (`_TYPE_SWEEP_EXEMPT`; their own resolvers run first),
+  and every key that already has a stricter per-key check is declared in `POLICY_KEY_TYPES` but
+  listed in `_SWEEP_SKIP` so the sweep never swallows a value before that check's own warning text
+  (which callers assert on) can fire — the sweep effectively covers the keys that had no
+  value-level check at all. `run_record_dir` restores its lazily-resolved
+  `default_run_record_dir()`, not `None`.
+- **A bare string under `require_human_routes` or `automerge.target_branches` is NOT a type error.**
+  Both are declared `(list, str)`: `automerge_eligible()` tests `route in require_human_routes`, so
+  a single-route `require_human_routes: B` is a working gate that sweeping it to `[]` would silently
+  open, and it already normalizes a bare `target_branches: dev` to a one-branch list. Only a value
+  that is neither (e.g. `target_branches: 7`) falls back to `[]` with a warning naming
+  `automerge.target_branches`. The sweep reaches `automerge.target_branches` separately because it
+  is a flat key living one level down. A policy key added to `DEFAULTS` with no `POLICY_KEY_TYPES`
+  entry (and not in `_TYPE_SWEEP_EXEMPT`) fails
+  `tests/router/test_policy_key_types.py::test_every_defaults_key_has_a_declared_type_or_is_exempt`.
 - **`automerge.target_branches` empty means "base branch only", and a scalar is one branch, not a
   substring.** `automerge_eligible()` treats `target_branches: []` (and unset) as no filter; a
   non-empty list rejects any PR whose target branch is not in it (`target branch <b> not in
@@ -287,6 +368,16 @@ agents or writes task files — that is `orchestrator/`'s job.
   (`different purpose:` / `user approved:`). `cmd_scope_review` rejects any other reason at write
   time with `SystemExit`, and `scope_review_failures()` re-checks the same tuple at gate time so a
   hand-edited record is still caught. Extend the tuple, never the two call sites separately.
+- **`set-list PATH KEY [VALUE ...]` is the only invocation that writes a list field, and the repair
+  path for a list-typed field left holding a scalar.** `set` stores its VALUE verbatim, so
+  `set PATH handoffs_consumed '["a","b"]'` writes the **string** `'["a","b"]'`, and every appender
+  into that field — `append`, `intervention` (`interventions`), and `record_decision_event`
+  (`pending_decisions`) — then refuses to touch it (brief 20261003-204455, where the documented
+  recovery from `append` was itself a dead end). `cmd_set_list` writes `list(VALUES)` (no values
+  produces `[]`, so an emptied field is expressible) and rejects `status`, which is a phase, not
+  a list, with `SystemExit` naming `set`. All three append refusals share
+  `_scalar_list_field_hint(key)`, which names `set-list` — the old `append` message said "use
+  `set`", a command that cannot perform the repair.
 - **`capacity-gate --retry-after` is validated as ISO-8601 and stored verbatim, never slug-sanitized.**
   `cmd_capacity_gate` runs it through `_iso_retry_after` (a `datetime.fromisoformat` check that
   raises `SystemExit` on a non-ISO value) rather than `_safe_provider`, which is a slug sanitizer
@@ -431,8 +522,9 @@ agents or writes task files — that is `orchestrator/`'s job.
   `work_queue.resolve()` so nothing here becomes a second implementation
 - `router/classify.py` — `classify_risk()` and the `RISK_SIGNALS` table (the `authz` pattern's
   `(?<![-@])` compound-token guard lives here, now inside the extracted
-  `_classify_risk_by_keyword()`); also `classify()`'s J-damping guard
-  (`_MENTION_ONLY_J_LABELS`, `_CI_CONFIG_RE`, `_CITED_AS_EXAMPLE_RE`) and the default-off
+  `_classify_risk_by_keyword()`); also `classify()`'s two J-damping guards
+  (`_MENTION_ONLY_J_LABELS`, `_CI_CONFIG_RE`, `_CITED_AS_EXAMPLE_RE`; and
+  `_CONSUMER_MENTION_J_LABELS`, `_CONSUMER_BY_PHRASE_RE`) and the default-off
   `risk_judgment_enabled` flag that `main()` is the only caller to enable
 - `router/typesafe.py` — the one client both judgment backends share: `API_URL`/`MODEL`/
   `API_KEY_ENV`/`TIMEOUT_S`, `is_configured()`, `post(state, questions)`, the strict `noul()`
@@ -450,11 +542,26 @@ agents or writes task files — that is `orchestrator/`'s job.
   seam), and `judge_pairs()`'s order-preserving concurrent batch (`MAX_CONCURRENCY`); the edge
   rule lives in `should_edge()`, never in the service's answer
 - `router/policy.py` — `load_policy()`; the single source of truth for a repo's resolved GO policy;
-  also `parse_policy_yaml`/`_parse_scalar` (the flat parser and its inline-flow-sequence handling)
-  and `automerge_eligible()` (including the `target_branches` scalar coercion)
+  also `parse_policy_yaml`/`_parse_scalar` (the flat parser and its inline-flow-sequence handling),
+  `POLICY_KEY_TYPES`/`_SWEEP_SKIP`/`_TYPE_SWEEP_EXEMPT`/`_sweep_key_types()` (the coarse type sweep
+  that runs ahead of the per-key checks; covered by `tests/router/test_policy_key_types.py`) and
+  `automerge_eligible()` (including the `target_branches` scalar coercion)
+- `router/env_profile.py` — `resolve_env_profile()`: expands `from`, requires an absolute path
+  (refused rather than resolved relative to the routing file, because `explicit_cell_override`
+  points `WORKTRAIL_ROUTING_FILE` at a mkstemp file under /tmp), JSON-parses the file, requires
+  a mapping `env` object, asserts every `expect` entry, then copies every `keys` entry; refuses
+  a missing/empty/non-string key. Every failure raises `OperatorConfigError` naming target,
+  profile, file and key, and **no message ever contains a value for a key not named in
+  `expect`** (the operator declared that key non-secret by asserting on it, and only that key).
+  Deliberately not in `spawnlib`/`routing_cli`/`policy`: `routing_cli` imports
+  `..orchestrator.agent_capacity` and `spawnlib` imports `..router.routing_cli`, so a
+  module-level `routing_cli → spawnlib` edge would be an import cycle, and `policy.py`'s
+  validator must never open a profile file — reads belong at spawn and `--check` time.
 - `router/run_record.py` — `finish()`'s ten-state enforcement and its two code-enforced gates;
   `cmd_scope_review` write-time reason validation and `OUT_OF_SCOPE_REASON_PREFIXES`;
-  `cmd_capacity_gate`'s `_iso_retry_after` timestamp validation; `_load_lenient()`, the
+  `cmd_capacity_gate`'s `_iso_retry_after` timestamp validation; `cmd_set_list`'s list write
+  (and its `status` refusal) plus `_scalar_list_field_hint()`, the refusal all three
+  list-appenders raise through; `_load_lenient()`, the
   skip-and-warn wrapper around the raising `_load()` that every directory-wide scan (including
   `reconcile_pr_labels.load_run_index()`, `check_deferred_work_handoff.py`, and
   `check_durable_artifact_capture_gate.py`) should use instead of the raising loader
@@ -503,4 +610,4 @@ agents or writes task files — that is `orchestrator/`'s job.
   best-effort writers that never affect what they record
 
 ---
-**Last Updated:** 2026-09-20
+**Last Updated:** 2026-10-04

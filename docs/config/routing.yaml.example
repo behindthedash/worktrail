@@ -19,6 +19,48 @@
 # skipped with a warning at selection time (AC-005) -- it bypasses the
 # per-subscription capacity system entirely, so it never fires silently.
 
+# `worktrail-routing --check` is a spawn-readiness probe, not a schema
+# linter. Schema validity is only its floor: after parsing and
+# `_validate_routing()`'s warnings, it resolves the table through
+# `resolve_routing()` -- the same function a spawn reads its configuration
+# from -- and runs a readiness stage over every declared
+# `tiers.<row>.<target>` cell: it builds the cell's launcher argv the way
+# `build_cmd()` does and constructs/validates its child environment the way
+# `build_child_env()` does, under the environment of the shell running the
+# check. `ok` is a pre-launch configuration guarantee -- launcher argv
+# buildable, harness supported, auth lane resolvable in this shell -- not a
+# promise that a spawn would start: it does not show the harness CLI is on
+# PATH, starts successfully, authenticates successfully, or reaches its
+# provider, and the readiness stage spawns no worker and records no
+# `agent_capacity` gate. Anything that would leave the worker silently
+# useless is `FAIL`: an unresolvable `auth.profile`, a claude `api` cell
+# whose `auth.env` variable is unset here, an `api` target without
+# `api_opt_in`, a harness outside claude/codex/opencode, or a codex `api`
+# home that has no auth.json.
+#
+# Running the probe against the RESOLVED table -- never this file -- is the
+# point of the stage: a resolver that drops a key the file declares fails
+# its cells here instead of at spawn time (the 2026-10-02 `env_profiles`
+# regression, where every profile-backed cell raised at spawn while this
+# check said `ok`).
+#
+# A readiness `FAIL` records NO `agent_capacity` gate, deliberately: a gate
+# is skipped silently by the next `select_cell()`, converting a loud
+# configuration error into an invisible fallback to the next rung. Gates
+# model provider conditions a later iteration can route around; a `FAIL` is
+# operator configuration that no retry clears. That gate-free guarantee
+# covers the readiness failures above only -- the check's separate
+# opencode-model stage IS stateful: a declared model absent from
+# `opencode models` is recorded as a `model_unavailable` gate and reported
+# `GATED`. `--check` exits non-zero while any cell is `FAIL`, and a drain
+# refuses to start on that verdict rather than routing around it -- whereas
+# a capacity-`GATED` cell is still walked past.
+#
+# The check is environment-sensitive: the same file can report `ok` in one
+# shell and `FAIL` in another. For a claude `api` cell, the variable named
+# by `auth.env` (ANTHROPIC_API_KEY in the example below) must be set and
+# non-empty in the shell that runs `--check`.
+
 # routing.targets: an ORDERED mapping of execution target -> {harness, pool,
 # api_opt_in?, auth?}. Order is preference: select_cell() walks targets in
 # this file order (unless a role's `prefer` moves one to the front) and
@@ -73,7 +115,38 @@ targets:
   #   pool: api
   #   api_opt_in: true
   #   auth:
-  #     env: ANTHROPIC_API_KEY
+  #     env: ANTHROPIC_API_KEY   # must be exported in the shell that runs
+  #                              # `--check`, or this cell reports FAIL
+  #
+  # `auth.profile` is the other way to supply an api lane's credentials, for a
+  # provider configured in a file rather than an exported variable. A profile
+  # names WHERE the values live and WHICH to copy -- it never stores a value:
+  # env_profiles:
+  #   claude-deepseek:
+  #     from: ~/.claude/settings.json     # JSON with an "env" object
+  #     keys:                             # copied into the worker's env
+  #       - ANTHROPIC_BASE_URL
+  #       - ANTHROPIC_AUTH_TOKEN
+  #     expect:                           # asserted BEFORE launch; a mismatch
+  #       ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
+  # claude-deepseek:          # must be declared under `targets:` with a cell
+  #   harness: claude         # in the tier row you want it to serve
+  #   pool: api
+  #   api_opt_in: true
+  #   auth:
+  #     profile: claude-deepseek
+  #
+  # Why this exists: workers are spawned with
+  # `--setting-sources project,local`, which excludes the operator's
+  # USER-level settings file -- deliberately, so a user-level Stop hook cannot
+  # corrupt the report-back JSON. That exclusion also drops the file's `env`
+  # block, and a worker with no endpoint makes NO API call while still exiting
+  # 0. A profile puts the environment back, and `expect` turns a misconfigured
+  # one into a loud pre-launch failure instead of a silent no-op -- `--check`
+  # resolves it from the same resolved table a spawn uses, so it fails there
+  # too rather than surfacing first at spawn time. `keys` and `expect` are
+  # independent: assert a key without copying it, or copy one without ever
+  # making its value printable.
 
 # routing.default_tier: the tier row consulted whenever nothing more
 # specific (a task's own tier, a role, or a purpose) pins one -- replaces

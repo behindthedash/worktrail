@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """Live progress for the orchestrator: per-step timing + an on-demand checklist.
 
 The live fan-out spawns each worker as a single BLOCKING `claude -p` subprocess
@@ -91,7 +91,7 @@ def _pid_alive(pid: int | None) -> bool:
         return False
     try:
         os.kill(int(pid), 0)
-    except (OSError, ValueError, TypeError):
+    except OSError, ValueError, TypeError:
         return False
     return True
 
@@ -99,7 +99,7 @@ def _pid_alive(pid: int | None) -> bool:
 def _safe_load(path: str | Path) -> dict[str, Any]:
     try:
         return json.loads(Path(path).read_text())
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return {}
 
 

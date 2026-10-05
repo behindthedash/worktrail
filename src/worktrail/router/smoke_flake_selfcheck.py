@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """smoke_flake_selfcheck.py — recurring-smoke-flake detector.
 
 When `integrate_smoke_retries` is enabled, a smoke suite that fails once and
@@ -32,7 +32,7 @@ def _load_smoke_flakes(journal_file: Path) -> dict[str, str] | None:
     unreadable, does not parse, is not an object, or the map is malformed."""
     try:
         journal = json.loads(journal_file.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return None
     if not isinstance(journal, dict):
         return None

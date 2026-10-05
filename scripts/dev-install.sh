@@ -42,11 +42,11 @@ cd "$REPO_ROOT"
 # passing a flag that pip itself rejects inside a venv.
 install_log="$(mktemp)"
 trap 'rm -f "$install_log"' EXIT
-if pip install -e ".[dev]" >"$install_log" 2>&1; then
+if python3.14 -m pip install -e ".[dev]" >"$install_log" 2>&1; then
   cat "$install_log"
 elif grep -q "externally-managed-environment" "$install_log"; then
   echo "note: externally-managed environment detected, retrying with --break-system-packages --user" >&2
-  pip install -e ".[dev]" --break-system-packages --user
+  python3.14 -m pip install -e ".[dev]" --break-system-packages --user
 else
   cat "$install_log" >&2
   exit 1
@@ -55,4 +55,4 @@ fi
 # Fail immediately if pip left stale entry-point metadata behind, or if the
 # package and Codex plugin versions were not bumped together. Source tests read
 # pyproject.toml directly; this post-install check owns installed-state freshness.
-python3 scripts/check_packaging_metadata.py --repo "$REPO_ROOT"
+python3.14 scripts/check_packaging_metadata.py --repo "$REPO_ROOT"

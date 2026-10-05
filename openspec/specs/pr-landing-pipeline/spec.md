@@ -217,19 +217,24 @@ record the pipeline started itself, the pipeline SHALL also record the scope rev
 summary and whose evidence names the pushed commit, branch, and pull request URL -- before
 finishing with an implementation-completion state; a caller-supplied run record SHALL NOT have
 a scope-review entry added on its behalf. When the run record cannot be finished, the landing
-result SHALL carry the run-record tool's own failure message as its detail.
+result SHALL carry the run-record tool's own failure message as its detail, whether the tool
+wrote that message to stdout or to stderr; a failure whose message was printed on either
+stream SHALL never surface as an empty detail.
 
 #### Scenario: Caller supplies a run record
+
 - **WHEN** a landing is invoked with an existing run record
 - **THEN** that record gains the pull request URL and merge result and is finished with the
   classified state, and no scope-review entry is appended by the pipeline
 
 #### Scenario: Caller has no run record
+
 - **WHEN** a landing is invoked without a run record
 - **THEN** the pipeline starts one for the caller's repository and route before landing, and
   the result names its path
 
 #### Scenario: Pipeline-started record finishes with a real state
+
 - **WHEN** a landing is invoked without a run record and the pull request reaches an all-pass,
   merged, or branch-protection-blocked outcome
 - **THEN** the pipeline appends one `complete` scope-review entry for the request summary,
@@ -238,29 +243,52 @@ result SHALL carry the run-record tool's own failure message as its detail.
   rather than being reported as a ceiling with `failed_recoverable`
 
 #### Scenario: Checkpoint mode
+
 - **WHEN** a landing is invoked in checkpoint mode and the outcome is all-pass
 - **THEN** the run record gains a decision entry describing the outcome and is not finished,
   and no scope-review entry is appended
 
 #### Scenario: Run record cannot be finished
+
 - **WHEN** finishing the run record fails for any reason
 - **THEN** the landing is reported as a ceiling with `failed_recoverable`, its merge result
   still reads "... but run record could not be completed", and its detail contains the
-  run-record tool's failure message
+  run-record tool's failure message, whether the tool wrote it to stdout or to stderr
 
 ### Requirement: Refusal leaves the remote untouched
 
 Whenever the pipeline refuses — a dirty tree it was not asked to commit, a missing or stale
 compile marker after the compile attempt, or a preflight denial — it SHALL make no push and
-create no pull request, SHALL return a refused outcome naming the failed step and its
-output, and SHALL leave any run record it started in a non-terminal state that names the
-refusal.
+create no pull request, SHALL return a refused outcome naming the failed step together with a
+detail that identifies the cause and quotes the step's own output where the step produced any,
+and SHALL leave any run record it started in a non-terminal state that names the refusal.
+
+Every refusal path SHALL populate that detail. A step name alone does not satisfy this: a
+refusal whose cause cannot be told apart from the step name alone — an uncommittable dirty
+tree, or a preflight denial — SHALL report the distinguishing cause and, for a denial, the
+gate's own output, in the detail.
 
 #### Scenario: Refusal after a local commit
 - **WHEN** the pipeline has committed the caller's changes and the compile marker step then
   refuses
 - **THEN** the head branch has no remote counterpart, no pull request exists, and the
   refused result names the compile step
+
+#### Scenario: Preflight denial quotes the gate's output
+- **WHEN** the pre-PR gate exits non-zero for the committed head
+- **THEN** nothing is pushed, no pull request is created, and the refused result names the
+  preflight step and carries the gate's own failure output as its detail, whether the gate
+  wrote that output to stdout or to stderr
+
+#### Scenario: Dirty-tree refusal reports the cause
+- **WHEN** the pipeline refuses a dirty tree it was not asked to commit, whether because no
+  commit message was supplied or because a git operation along the way failed
+- **THEN** the refused result names the dirty-tree step and its detail identifies which of
+  those causes fired, quoting the failing git operation's own stderr when there is one
+
+#### Scenario: Every refusal carries a detail
+- **WHEN** the pipeline returns a refused outcome for any locally-checkable failure
+- **THEN** the refused result's detail is populated, never left empty
 
 ### Requirement: Risk-label correction survives a torn-down landing repository
 

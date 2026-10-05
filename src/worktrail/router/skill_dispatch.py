@@ -693,20 +693,25 @@ def default_worktrail_codex_home() -> str:
 
 
 def select_codex_home(codex_home_override: str | None) -> tuple[str, bool]:
-    """Choose a child home without inheriting a read-only parent home.
+    """Choose a distinct automatic child home unless the caller overrides it.
 
-    Explicit overrides remain fail-closed.  An inherited ``CODEX_HOME`` is
-    retained when writable, but a sandboxed parent commonly exposes a read-only
-    value; in that case Worktrail uses its own persistent home automatically.
-    The boolean identifies an automatic choice for diagnostics and tests.
+    Explicit overrides remain fail-closed. Automatic children always use a
+    Worktrail home so a writable inherited ``CODEX_HOME`` is not reused. If the
+    normal Worktrail home resolves to the parent home, select a distinct sibling
+    before preparing authentication. The boolean identifies an automatic choice
+    for diagnostics and tests.
     """
     explicit = codex_home_override or os.environ.get("WORKTRAIL_CODEX_HOME")
     if explicit:
         return explicit, False
-    inherited = os.environ.get("CODEX_HOME")
-    if inherited and codex_home_write_remediation(inherited) is None:
-        return inherited, False
-    return default_worktrail_codex_home(), True
+
+    parent_home = resolve_parent_codex_home().resolve()
+    child_home = Path(default_worktrail_codex_home()).expanduser()
+    if child_home.resolve() == parent_home:
+        child_home = child_home.with_name(f"{child_home.name}-nested")
+        while child_home.resolve() == parent_home:
+            child_home = child_home.with_name(f"{child_home.name}-nested")
+    return str(child_home), True
 
 
 def ensure_codex_home(path: str) -> None:

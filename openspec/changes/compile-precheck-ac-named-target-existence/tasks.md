@@ -1,16 +1,16 @@
 ## 1. The precheck module
 
-- [ ] 1.1 Add `src/worktrail/conductor/ac_targets.py` exposing
+- [x] 1.1 Add `src/worktrail/conductor/ac_targets.py` exposing
       `find_missing_ac_targets(spec_dir, repo) -> list[str]`, shaped after
       `conductor/req_coverage.py` (same signature style, same "return `[]` when nothing applies"
       contract, module docstring stating the narrow extraction rule and why an absent path is not
       reported here). For each task loaded from the change directory, split its text into sentences
-      and report a finding only when one sentence contains an update-verb (`update`, `modify`,
-      `amend`, `extend`, `replace`, `rename`, `remove`, `fix`, `correct`), at least one backticked
-      needle, and a backticked repo-relative path whose file exists under `repo`; the finding fires
-      when that file's text does not contain the needle. Where a sentence carries several backticked
-      tokens, the path is the token that resolves to an existing file and the needle is any other
-      token. Return findings as display strings naming the task id, the needle and the path.
+      and report a finding only when one sentence contains an update verb (`update`, `modify`,
+      `amend`, `extend`, `replace`, `rename`, `remove`, `fix`, `correct`) whose direct object is a
+      backticked entity needle that is not itself an existing file path, plus a distinct backticked
+      repo-relative path whose file exists under `repo`; the finding fires when exactly one such
+      path is possible and its text does not contain the needle. Other backticked tokens never
+      count as needles. Return findings as display strings naming the task id, the needle and path.
       Add `tests/conductor/test_ac_targets.py` covering: the
       `canonical-checkout-drift-sweep.sh` / `scripts/README.md` case from decision
       `dec-openspec-changes-canonical-checkout-unbo-925c3e395fc2` reporting a finding; the same text
@@ -24,7 +24,7 @@
 
 ## 2. Compile gate wiring
 
-- [ ] 2.1 In `src/worktrail/conductor/compile.py`, import `ac_targets` alongside
+- [x] 2.1 In `src/worktrail/conductor/compile.py`, import `ac_targets` alongside
       `req_coverage` and call `find_missing_ac_targets(spec_dir, repo)` in `main()` next to the
       existing `uncovered` call. Fold its findings into the same three decisions the other gates
       already drive: the `.compile-ok` marker is only written when no gate reports anything, the

@@ -18,11 +18,14 @@ from collections import namedtuple
 from pathlib import Path
 from unittest.mock import patch
 
+import yaml
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from typing import ClassVar
 
 from worktrail.orchestrator import spawnlib
+from worktrail.router import skill_dispatch
 from worktrail.shared import codex_sandbox
 
 os.environ.setdefault(
@@ -58,15 +61,16 @@ def _target(harness, pool="subscription", api_opt_in=False, auth=None):
 
 def _routing(targets, tiers, default_tier=None):
     """A `resolve_routing()`-shaped dict (`{targets, tiers, roles, purposes,
-    default_tier, drain}`) for patching `spawnlib.resolve_routing` in a
-    `spawn_agent`/`spawn_claude_p` test -- mirrors `tests/runtime/test_selection.py`'s
-    own `_routing`/`_target` helpers."""
+    default_tier, env_profiles, drain}`) for patching `spawnlib.resolve_routing`
+    in a `spawn_agent`/`spawn_claude_p` test -- mirrors
+    `tests/runtime/test_selection.py`'s own `_routing`/`_target` helpers."""
     return {
         "targets": targets,
         "tiers": tiers,
         "roles": {},
         "purposes": {},
         "default_tier": default_tier,
+        "env_profiles": {},
         "drain": {},
     }
 
@@ -125,6 +129,20 @@ SINGLE_OPENCODE_ROUTING = _routing(
     default_tier="t2-build",
 )
 
+# Two claude cells in one row: exercises the intra-harness hop when the first
+# cell's zero-API-call result exhausts its retry budget. The scripted argv
+# distinguishes them by `--model` (sonnet vs haiku).
+TWO_CLAUDE_ROUTING = _routing(
+    {"claude-a": _target("claude"), "claude-b": _target("claude")},
+    {
+        "t2-build": {
+            "claude-a": {"model": "sonnet", "effort": None},
+            "claude-b": {"model": "haiku", "effort": None},
+        }
+    },
+    default_tier="t2-build",
+)
+
 
 def _patch_routing(routing):
     """Context manager/decorator making `spawnlib.resolve_routing(...)` return
@@ -132,6 +150,59 @@ def _patch_routing(routing):
     called with, so `spawn_agent`/`spawn_claude_p` resolve a deterministic
     `Cell` without a real routing.yaml on disk."""
     return patch.object(spawnlib, "resolve_routing", return_value=routing)
+
+
+def _noop_result_stream(**overrides) -> str:
+    """A synthesized claude `result` event for a spawn that made zero API calls.
+
+    Synthesized to the documented measured shape -- no live recording of a real
+    no-op run exists on this machine. The event is an ordinary success envelope
+    (`subtype: success`, `is_error` false, `stop_reason: stop_sequence`) whose
+    own diagnostics prove the API was never reached: `duration_api_ms: 0`,
+    `num_turns: 0`, and all four token counters 0. The CLI exits 0 and prints
+    this, so the exit-code/empty-output check alone sees a clean success.
+    """
+    event = {
+        "type": "result",
+        "subtype": "success",
+        "is_error": False,
+        "stop_reason": "stop_sequence",
+        "result": "",
+        "duration_api_ms": 0,
+        "num_turns": 0,
+        "total_cost_usd": 0.0,
+        "usage": {
+            "input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "output_tokens": 0,
+        },
+    }
+    event.update(overrides)
+    return json.dumps(event)
+
+
+def _completed_result_stream(result="real answer") -> str:
+    """The ordinary claude `result` event of a real completed turn: non-zero
+    `duration_api_ms`, `num_turns >= 1`, and non-zero token counters."""
+    return json.dumps(
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "stop_reason": "end_turn",
+            "result": result,
+            "duration_api_ms": 4321,
+            "num_turns": 3,
+            "total_cost_usd": 0.02,
+            "usage": {
+                "input_tokens": 120,
+                "cache_creation_input_tokens": 10,
+                "cache_read_input_tokens": 40,
+                "output_tokens": 8,
+            },
+        }
+    )
 
 
 # Claude-only argv tokens (spec spawnlib-cross-hop-argv-invariant): every
@@ -826,7 +897,7 @@ class SpawnAgentSelection(unittest.TestCase):
             "opencode/deepseek-v4-flash-free",
             outcome="unavailable",
             failure_class="billing",
-            retry_after=datetime.datetime.now(datetime.timezone.utc)
+            retry_after=datetime.datetime.now(datetime.UTC)
             + datetime.timedelta(seconds=300),
         )
         captured = {}
@@ -861,7 +932,7 @@ class SpawnAgentSelection(unittest.TestCase):
             "sonnet",
             outcome="unavailable",
             failure_class="billing",
-            retry_after=datetime.datetime.now(datetime.timezone.utc)
+            retry_after=datetime.datetime.now(datetime.UTC)
             + datetime.timedelta(seconds=300),
         )
         captured = {}
@@ -931,7 +1002,7 @@ class SpawnAgentSelection(unittest.TestCase):
             "sonnet",
             outcome="unavailable",
             failure_class="billing",
-            retry_after=datetime.datetime.now(datetime.timezone.utc)
+            retry_after=datetime.datetime.now(datetime.UTC)
             + datetime.timedelta(seconds=300),
         )
         calls = []
@@ -1351,6 +1422,99 @@ class OpenCodeErrorEvent(unittest.TestCase):
         self.assertFalse(spawnlib.is_infra_failure(0, line))
 
 
+class ZeroApiCallResultDetection(unittest.TestCase):
+    """A result event whose own diagnostics prove zero API calls
+    (`duration_api_ms: 0`, `num_turns: 0`, all four token counters 0) is an
+    infra failure, not a task verdict: the worker process started, exited 0,
+    and never reached the API. Fixture synthesized to the documented measured
+    shape -- no live recording of a real no-op run exists on this machine
+    (see `_noop_result_stream`)."""
+
+    def test_parsed_usage_retains_duration_api_ms(self):
+        _, usage, *_ = spawnlib._parse_stream_json(_noop_result_stream())
+        self.assertEqual(usage["duration_api_ms"], 0)
+        self.assertEqual(usage["subtype"], "success")
+        self.assertEqual(usage["is_error"], False)
+        self.assertEqual(usage["stop_reason"], "stop_sequence")
+        self.assertEqual(usage["num_turns"], 0)
+
+    def test_opencode_synthesized_usage_has_no_duration_api_ms(self):
+        raw = json.dumps(
+            {
+                "type": "step_finish",
+                "sessionID": "ses_1",
+                "part": {
+                    "type": "step-finish",
+                    "tokens": {
+                        "total": 10,
+                        "input": 6,
+                        "output": 4,
+                        "reasoning": 0,
+                        "cache": {"write": 0, "read": 0},
+                    },
+                    "cost": 0.0,
+                },
+            }
+        )
+        _, usage, *_ = spawnlib._parse_stream_json(raw)
+        self.assertNotIn("duration_api_ms", usage)
+
+    def test_predicate_requires_presence_and_all_zeros(self):
+        usage = spawnlib._parse_stream_json(_noop_result_stream())[1]
+        self.assertTrue(spawnlib._zero_api_call_result(usage))
+        # An absent key -- the opencode-synthesized shape also carries
+        # `num_turns: 0` and all-zero counters -- must never be mistaken for a
+        # claude no-op.
+        self.assertFalse(spawnlib._zero_api_call_result({}))
+        self.assertFalse(spawnlib._zero_api_call_result(None))
+        self.assertFalse(
+            spawnlib._zero_api_call_result(
+                {k: v for k, v in usage.items() if k != "duration_api_ms"}
+            )
+        )
+        # One real API call disproves the shape, however short.
+        self.assertFalse(
+            spawnlib._zero_api_call_result({**usage, "duration_api_ms": 5})
+        )
+
+    def test_noop_result_is_an_infra_failure(self):
+        self.assertTrue(spawnlib.is_infra_failure(0, _noop_result_stream()))
+
+    def test_real_completed_turn_is_not_an_infra_failure(self):
+        self.assertFalse(spawnlib.is_infra_failure(0, _completed_result_stream()))
+
+    def test_zero_token_turn_with_one_turn_is_not_a_noop(self):
+        # A genuine API round trip can still bill 0 tokens on a cached turn;
+        # num_turns >= 1 is proof the API was reached.
+        self.assertFalse(spawnlib.is_infra_failure(0, _noop_result_stream(num_turns=1)))
+
+    def test_opencode_permission_denial_stream_is_not_a_noop(self):
+        # Denial-only stream: the synthesized opencode usage has num_turns 0 and
+        # all-zero counters, so only the missing `duration_api_ms` key keeps it
+        # out of the no-op classification.
+        raw = json.dumps(
+            {
+                "type": "tool_use",
+                "sessionID": "ses_deny",
+                "part": {
+                    "type": "tool",
+                    "tool": "bash",
+                    "callID": "call_1",
+                    "state": {
+                        "status": "error",
+                        "input": {"command": "echo hi"},
+                        "error": "The user rejected permission to use this "
+                        "specific tool call.",
+                    },
+                },
+            }
+        )
+        self.assertFalse(spawnlib.is_infra_failure(0, raw))
+
+    def test_plain_text_output_is_not_a_noop(self):
+        self.assertFalse(spawnlib.is_infra_failure(0, "ordinary worker text"))
+
+
 class CodexSpawn(unittest.TestCase):
     def setUp(self):
         self._orig = spawnlib.subprocess.run
@@ -1383,32 +1547,52 @@ class CodexSpawn(unittest.TestCase):
 
     def test_codex_worker_uses_prepared_child_home(self):
         seen = {}
-        child_env = {"CODEX_HOME": "/tmp/worktrail-codex-child"}
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp) / "parent-home"
+            child = Path(tmp) / "worktrail-home"
+            parent.mkdir(mode=0o700)
+            auth = parent / "auth.json"
+            auth.write_text("{}")
+            auth.chmod(0o600)
 
-        def fake_run(cmd, **kwargs):
-            seen["env"] = kwargs["env"]
-            out_path = cmd[cmd.index("--output-last-message") + 1]
-            with open(out_path, "w") as f:
-                f.write("codex final report")
-            return Proc(0, '{"type":"event"}\n', "")
+            def fake_run(cmd, **kwargs):
+                if cmd == ["codex", "login", "status"]:
+                    self.assertEqual(kwargs["env"]["CODEX_HOME"], str(parent))
+                    return subprocess.CompletedProcess(
+                        cmd, 0, "Logged in using ChatGPT\n", ""
+                    )
+                seen["env"] = kwargs["env"]
+                out_path = cmd[cmd.index("--output-last-message") + 1]
+                with open(out_path, "w") as f:
+                    f.write("codex final report")
+                return Proc(0, '{"type":"event"}\n', "")
 
-        spawnlib.subprocess.run = fake_run
-        with (
-            _patch_routing(SINGLE_CODEX_ROUTING),
-            patch.object(
-                spawnlib,
-                "prepare_codex_child_environment",
-                return_value=(child_env.copy(), child_env["CODEX_HOME"], False),
-            ) as prepare,
-        ):
-            spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build")
+            spawnlib.subprocess.run = fake_run
+            with (
+                _patch_routing(SINGLE_CODEX_ROUTING),
+                patch.dict(
+                    os.environ,
+                    {"CODEX_HOME": str(parent), "WORKTRAIL_CODEX_HOME": ""},
+                ),
+                patch.object(
+                    skill_dispatch,
+                    "default_worktrail_codex_home",
+                    return_value=str(child),
+                ),
+                patch.object(
+                    spawnlib,
+                    "prepare_codex_child_environment",
+                    wraps=skill_dispatch.prepare_codex_child_environment,
+                ) as prepare,
+            ):
+                out = spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build")
 
-        # Subscription lane: default home selection, ChatGPT auth inherited --
-        # same contract as before the codex-api-auth-lane change, now passed
-        # explicitly so the auth lane always matches the served cell's pool.
-        prepare.assert_called_once_with(None, inherit_auth=True)
-        self.assertEqual(seen["env"]["CODEX_HOME"], child_env["CODEX_HOME"])
-        self.assertEqual(seen["env"]["CC_HEADLESS"], "1")
+            self.assertEqual(out.text, "codex final report")
+            prepare.assert_called_once_with(None, inherit_auth=True)
+            self.assertEqual(seen["env"]["CODEX_HOME"], str(child))
+            self.assertEqual(seen["env"]["CC_HEADLESS"], "1")
+            self.assertTrue((child / "auth.json").is_symlink())
+            self.assertEqual((child / "auth.json").readlink(), auth)
 
     def _api_routing(self, codex_home):
         return _routing(
@@ -1474,6 +1658,97 @@ class CodexSpawn(unittest.TestCase):
         self.assertIn("auth.json", str(ctx.exception))
         self.assertIn("--with-api-key", str(ctx.exception))
         self.assertEqual(launched, [])
+
+
+class CodexApiHomeHelper(unittest.TestCase):
+    """`spawnlib.codex_api_home` -- the two codex `api` home validations
+    extracted out of `_prepare_child_env` so the readiness probe
+    (`router.spawn_readiness`) and the spawn path ask the same question."""
+
+    def setUp(self):
+        self._orig = spawnlib.subprocess.run
+
+    def tearDown(self):
+        spawnlib.subprocess.run = self._orig
+
+    def _cell(self, *, pool="api", auth=None, target="codex-api"):
+        return _cell(harness="codex", pool=pool, auth=auth, target=target)
+
+    def test_returns_the_declared_home_for_a_codex_api_cell(self):
+        with tempfile.TemporaryDirectory() as home:
+            (Path(home) / "auth.json").write_text("{}")
+            self.assertEqual(
+                spawnlib.codex_api_home(self._cell(auth={"codex_home": home})), home
+            )
+
+    def test_returns_none_for_every_other_cell(self):
+        """Only a codex `api` cell is this helper's business -- a subscription
+        codex cell inherits the parent login, and another harness's `api` pool
+        has nothing to do with CODEX_HOME. Neither may raise for a missing
+        codex home it was never supposed to have."""
+        self.assertIsNone(spawnlib.codex_api_home(self._cell(pool="subscription")))
+        self.assertIsNone(
+            spawnlib.codex_api_home(
+                _cell(
+                    harness="claude",
+                    pool="api",
+                    auth={"codex_home": "/nonexistent-codex-home"},
+                    target="claude-api",
+                )
+            )
+        )
+        self.assertIsNone(
+            spawnlib.codex_api_home(
+                _cell(harness="opencode", pool="api", target="opencode-api")
+            )
+        )
+
+    def test_a_missing_home_names_the_target_and_the_fix(self):
+        with self.assertRaises(spawnlib.OperatorConfigError) as ctx:
+            spawnlib.codex_api_home(self._cell())
+        message = str(ctx.exception)
+        self.assertIn("codex-api", message)
+        self.assertIn("auth.codex_home", message)
+        self.assertIn("--with-api-key", message)
+
+    def test_an_unprovisioned_home_is_refused_and_never_created(self):
+        with tempfile.TemporaryDirectory() as home:
+            with self.assertRaises(spawnlib.OperatorConfigError) as ctx:
+                spawnlib.codex_api_home(self._cell(auth={"codex_home": home}))
+            self.assertIn("auth.json", str(ctx.exception))
+            self.assertIn(home, str(ctx.exception))
+            self.assertFalse((Path(home) / "auth.json").exists())
+
+    def test_the_spawn_path_validates_through_the_shared_helper(self):
+        """Not an inlined copy: `_prepare_child_env` must reach the same helper
+        the readiness probe calls, or the check can drift from the path it
+        guards."""
+        with tempfile.TemporaryDirectory() as home:
+            (Path(home) / "auth.json").write_text("{}")
+            routing = _routing(
+                {
+                    "codex-api": _target(
+                        "codex", pool="api", api_opt_in=True, auth={"codex_home": home}
+                    )
+                },
+                {"t2-build": {"codex-api": {"model": "gpt-5.3-codex"}}},
+                default_tier="t2-build",
+            )
+            spawnlib.subprocess.run = lambda *a, **k: Proc(0, '{"type":"event"}\n', "")
+            with (
+                _patch_routing(routing),
+                patch.object(
+                    spawnlib,
+                    "prepare_codex_child_environment",
+                    return_value=({"CODEX_HOME": home}, home, False),
+                ),
+                patch.object(
+                    spawnlib, "codex_api_home", wraps=spawnlib.codex_api_home
+                ) as helper,
+            ):
+                spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build")
+        helper.assert_called_once()
+        self.assertEqual(helper.call_args.args[0].target, "codex-api")
 
 
 class OpenCodeSpawn(unittest.TestCase):
@@ -2302,22 +2577,20 @@ class InfraFailureFallback(unittest.TestCase):
         self.assertEqual(gate["reset_source"], "cooldown")
         self.assertGreater(
             datetime.datetime.fromisoformat(gate["retry_after"]),
-            datetime.datetime.now(datetime.timezone.utc),
+            datetime.datetime.now(datetime.UTC),
         )
 
     def test_successful_spawn_on_a_probeable_gate_clears_it(self):
         """The probe branch is only useful if the spawn it lets through can
         actually lift the gate: a success records `available`, so the next
         `check()` passes instead of raising."""
-        stale = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
-            minutes=30
-        )
+        stale = datetime.datetime.now(datetime.UTC) - datetime.timedelta(minutes=30)
         spawnlib.agent_capacity.record(
             "codex-sub",
             "gpt-5.3-codex",
             outcome="unavailable",
             failure_class="billing",
-            retry_after=datetime.datetime.now(datetime.timezone.utc)
+            retry_after=datetime.datetime.now(datetime.UTC)
             + datetime.timedelta(hours=1),
             now=stale,
         )
@@ -2350,6 +2623,102 @@ class InfraFailureFallback(unittest.TestCase):
         gate = spawnlib.agent_capacity.load()["providers"]["codex-sub:gpt-5.3-codex"]
         self.assertEqual(gate["status"], "available")
         spawnlib.agent_capacity.check("codex-sub", "gpt-5.3-codex")
+
+
+class ZeroApiCallSpawnFallback(unittest.TestCase):
+    """A zero-API-call result must be handled by spawn_agent's own loop: retried
+    as an infra failure (never recorded `available`), and once the retry budget
+    is exhausted, gated with the short-cooldown `startup` class before the loop
+    hops to the next cell in the row -- never returned as a successful empty
+    run, and never gated as the `transport` text fallthrough or a 24h
+    `auth`/`model_unavailable` class."""
+
+    def setUp(self):
+        spawnlib.agent_capacity.save({"version": 1, "providers": {}})
+        self._orig = spawnlib.subprocess.run
+
+    def tearDown(self):
+        spawnlib.subprocess.run = self._orig
+
+    def test_non_final_noop_attempt_is_retried_and_never_records_available(self):
+        fr = FakeRun(
+            [
+                Proc(0, _noop_result_stream(), ""),
+                Proc(0, _completed_result_stream(), ""),
+            ]
+        )
+        spawnlib.subprocess.run = fr
+        recorded = []
+        real_record = spawnlib.agent_capacity.record
+
+        def spy(*args, **kwargs):
+            recorded.append(kwargs.get("outcome"))
+            return real_record(*args, **kwargs)
+
+        with (
+            tempfile.TemporaryDirectory() as cwd,
+            _patch_routing(SINGLE_CLAUDE_ROUTING),
+            patch.object(spawnlib.agent_capacity, "record", side_effect=spy),
+        ):
+            out = spawnlib.spawn_agent(
+                "prompt", cwd, tier="t2-build", retries=1, sleep=lambda *_: None
+            )
+        self.assertEqual(fr.calls, 2)  # the no-op was retried, not returned
+        self.assertEqual(out.text, "real answer")
+        self.assertFalse(out.exhausted)
+        # Only the completed retry recorded anything, and it recorded
+        # `available`; the no-op attempt must never be recorded as a success.
+        self.assertEqual(recorded, ["available"])
+
+    def test_noop_exhaustion_gates_cell_startup_then_hops_to_healthy_cell(self):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            model = cmd[cmd.index("--model") + 1] if "--model" in cmd else ""
+            if model == "sonnet":
+                return Proc(0, _noop_result_stream(), "")
+            return Proc(0, _completed_result_stream("b answer"), "")
+
+        spawnlib.subprocess.run = fake_run
+        with (
+            tempfile.TemporaryDirectory() as cwd,
+            _patch_routing(TWO_CLAUDE_ROUTING),
+        ):
+            out = spawnlib.spawn_agent(
+                "prompt", cwd, tier="t2-build", retries=1, sleep=lambda *_: None
+            )
+        self.assertEqual(out.text, "b answer")
+        self.assertFalse(out.exhausted)
+        self.assertEqual(
+            [c[c.index("--model") + 1] for c in calls], ["sonnet", "sonnet", "haiku"]
+        )
+        providers = spawnlib.agent_capacity.load()["providers"]
+        gate = providers["claude-a:sonnet"]
+        self.assertEqual(gate["status"], "unavailable")
+        self.assertEqual(gate["failure_class"], "startup")
+        # Short-cooldown window: the startup class (60s), not transport's 30s
+        # and not the 24h auth/model_unavailable cooldowns.
+        window = datetime.datetime.fromisoformat(
+            gate["retry_after"]
+        ) - datetime.datetime.fromisoformat(gate["checked_at"])
+        self.assertAlmostEqual(window.total_seconds(), 60, delta=1)
+        self.assertEqual(providers["claude-b:haiku"]["status"], "available")
+
+    def test_only_cell_noop_returns_exhausted_with_startup_class(self):
+        spawnlib.subprocess.run = FakeRun([Proc(0, _noop_result_stream(), "")])
+        with (
+            tempfile.TemporaryDirectory() as cwd,
+            _patch_routing(SINGLE_CLAUDE_ROUTING),
+        ):
+            out = spawnlib.spawn_agent(
+                "prompt", cwd, tier="t2-build", retries=0, sleep=lambda *_: None
+            )
+        self.assertTrue(out.exhausted)
+        self.assertEqual(out.failure_class, "startup")
+        gate = spawnlib.agent_capacity.load()["providers"]["claude-sub:sonnet"]
+        self.assertEqual(gate["status"], "unavailable")
+        self.assertEqual(gate["failure_class"], "startup")
 
 
 class SpawnClaudePFallback(unittest.TestCase):
@@ -2801,6 +3170,311 @@ class BuildChildEnv(unittest.TestCase):
             with self.subTest(pool=pool):
                 env = spawnlib.build_child_env(_cell(harness="codex", pool=pool), base)
                 self.assertEqual(env, base)
+
+    # -- env profiles (auth.profile / routing.env_profiles) ----------------- #
+    #
+    # A profile exists because `--setting-sources project,local` excludes the
+    # user-level settings file that would otherwise carry a worker's endpoint.
+    # Without injection a claude worker makes no API call and still exits 0.
+
+    def _profile_file(self, env_mapping):
+        """Write a settings-shaped JSON file and return a profile entry
+        pointing at it."""
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "settings.json"
+        path.write_text(json.dumps({"env": env_mapping}), encoding="utf-8")
+        return {"from": str(path), "keys": list(env_mapping)}
+
+    def test_env_profile_injects_declared_keys(self):
+        profile = self._profile_file({"ANTHROPIC_BASE_URL": "https://deepseek.test"})
+        cell = _cell(pool="api", auth={"profile": "deepseek"}, target="claude-deepseek")
+        env = spawnlib.build_child_env(
+            cell, {"PATH": "/usr/bin"}, env_profiles={"deepseek": profile}
+        )
+        self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://deepseek.test")
+        self.assertEqual(env["PATH"], "/usr/bin")
+
+    def test_env_profile_does_not_mutate_base_env(self):
+        profile = self._profile_file({"INJECTED": "yes"})
+        base = {"PATH": "/usr/bin"}
+        cell = _cell(pool="api", auth={"profile": "p"}, target="claude-deepseek")
+        spawnlib.build_child_env(cell, base, env_profiles={"p": profile})
+        self.assertNotIn("INJECTED", base)
+
+    def test_env_profile_overrides_an_ambient_value(self):
+        profile = self._profile_file({"ANTHROPIC_BASE_URL": "https://deepseek.test"})
+        cell = _cell(pool="api", auth={"profile": "p"}, target="claude-deepseek")
+        env = spawnlib.build_child_env(
+            cell,
+            {"ANTHROPIC_BASE_URL": "https://api.anthropic.com"},
+            env_profiles={"p": profile},
+        )
+        self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://deepseek.test")
+
+    def test_env_profile_is_harness_generic(self):
+        """Applied before the harness branch, so a future codex/opencode env
+        lane needs no reworking."""
+        profile = self._profile_file({"INJECTED": "yes"})
+        for harness in ("codex", "opencode"):
+            with self.subTest(harness=harness):
+                cell = _cell(
+                    harness=harness, pool="subscription", auth={"profile": "p"}
+                )
+                env = spawnlib.build_child_env(cell, {}, env_profiles={"p": profile})
+                self.assertEqual(env["INJECTED"], "yes")
+
+    def test_undeclared_profile_fails_loud(self):
+        """The populated-table case: the operator's own table is missing the
+        name, so the message names the routing file and the entry to add."""
+        cell = _cell(pool="api", auth={"profile": "ghost"}, target="claude-deepseek")
+        with self.assertRaises(spawnlib.OperatorConfigError) as ctx:
+            spawnlib.build_child_env(
+                cell, {}, env_profiles={"other": {"from": "/x", "keys": ["A"]}}
+            )
+        message = str(ctx.exception)
+        self.assertIn("claude-deepseek", message)
+        self.assertIn("ghost", message)
+        self.assertIn("not declared in routing.env_profiles", message)
+        self.assertIn("-- add an", message)
+
+    def test_empty_resolved_table_blames_the_resolver_not_the_operator(self):
+        """The #1380 shape at the raise site: the table the cell was selected
+        from carries no env_profiles at all. The raise names the target, the
+        profile and the resolved source, attributes the fault to the table
+        (resolver/caller), and carries none of the operator-instruction
+        markers -- the table, not the routing file, dropped the profile."""
+        cell = _cell(pool="api", auth={"profile": "ghost"}, target="claude-deepseek")
+        for table in (None, {}):
+            with self.subTest(table=table):
+                with self.assertRaises(spawnlib.OperatorConfigError) as ctx:
+                    spawnlib.build_child_env(cell, {}, env_profiles=table)
+                message = str(ctx.exception)
+                self.assertIn("claude-deepseek", message)
+                self.assertIn("ghost", message)
+                self.assertIn("resolved from", message)
+                self.assertIn("resolver/caller", message)
+                self.assertNotIn("not declared in routing.env_profiles", message)
+                self.assertNotIn("-- add an", message)
+
+    def test_empty_table_notes_the_files_innocence_only_when_the_loader_declares_it(
+        self,
+    ):
+        """`declared_env_profiles` is the loader's view, consulted for this one
+        clause: it appears iff supplied AND declaring the name, so an operator
+        can tell a resolver drop from a genuine omission."""
+        cell = _cell(pool="api", auth={"profile": "deepseek"}, target="claude-deepseek")
+        declaring = {"deepseek": {"from": "/x", "keys": ["A"]}}
+        not_declaring = {"other": {"from": "/y", "keys": ["B"]}}
+        for label, kwargs, expected in (
+            ("declaring", {"declared_env_profiles": declaring}, True),
+            ("not declaring", {"declared_env_profiles": not_declaring}, False),
+            ("omitted", {}, False),
+        ):
+            with self.subTest(case=label):
+                with self.assertRaises(spawnlib.OperatorConfigError) as ctx:
+                    spawnlib.build_child_env(cell, {}, env_profiles={}, **kwargs)
+                message = str(ctx.exception)
+                self.assertEqual("does declare" in message, expected)
+                self.assertIn("resolver/caller", message)
+                self.assertNotIn("not declared in routing.env_profiles", message)
+                self.assertNotIn("-- add an", message)
+
+    def test_spawn_agent_threads_the_loaders_view_for_attribution(self):
+        """End to end through `spawn_agent`: the loader's policy declares the
+        profile while the resolved table has no `env_profiles` at all, so the
+        raise before launch carries the innocence clause. A regression here
+        means the loader's table never reached `build_child_env` and the
+        operator would be told to edit a file that declares the entry."""
+        profile = self._profile_file({"ANTHROPIC_AUTH_TOKEN": "sk-x"})
+        routing = _routing(
+            {
+                "claude-deepseek": _target(
+                    "claude", pool="api", api_opt_in=True, auth={"profile": "deepseek"}
+                )
+            },
+            {"t2-build": {"claude-deepseek": {"model": "sonnet", "effort": None}}},
+            default_tier="t2-build",
+        )
+        del routing["env_profiles"]  # the resolver dropped the key
+        policy = {"routing": {"env_profiles": {"deepseek": profile}}}
+        with (
+            patch.object(spawnlib, "load_policy", return_value=policy),
+            _patch_routing(routing),
+            patch.object(
+                spawnlib.subprocess,
+                "run",
+                side_effect=AssertionError("nothing may launch on this raise"),
+            ),
+            self.assertRaises(spawnlib.OperatorConfigError) as ctx,
+        ):
+            spawnlib.spawn_agent("prompt", "/tmp", tier="t2-build")
+        message = str(ctx.exception)
+        self.assertIn("does declare", message)
+        self.assertIn("resolver/caller", message)
+
+    def test_auth_env_and_auth_profile_together_fail_loud(self):
+        profile = self._profile_file({"INJECTED": "yes"})
+        cell = _cell(
+            pool="api",
+            auth={"env": "SOME_KEY", "profile": "p"},
+            target="claude-deepseek",
+        )
+        with self.assertRaises(spawnlib.OperatorConfigError) as ctx:
+            spawnlib.build_child_env(
+                cell, {"SOME_KEY": "sk-x"}, env_profiles={"p": profile}
+            )
+        self.assertIn("two sources", str(ctx.exception))
+
+    def test_claude_api_with_profile_needs_no_auth_env(self):
+        """The profile IS the credential source; requiring auth.env on top
+        would demand a second, conflicting one."""
+        profile = self._profile_file({"ANTHROPIC_AUTH_TOKEN": "sk-from-profile"})
+        cell = _cell(pool="api", auth={"profile": "p"}, target="claude-deepseek")
+        env = spawnlib.build_child_env(cell, {}, env_profiles={"p": profile})
+        self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], "sk-from-profile")
+
+    def test_claude_api_without_profile_still_requires_auth_env(self):
+        """Regression guard: the profile lane must not weaken the existing
+        auth.env requirement for ordinary api cells."""
+        cell = _cell(pool="api", auth=None, target="claude-api")
+        with self.assertRaises(spawnlib.OperatorConfigError) as ctx:
+            spawnlib.build_child_env(cell, {"ANTHROPIC_API_KEY": "sk-x"})
+        self.assertIn("auth.env", str(ctx.exception))
+
+    def test_claude_subscription_strips_every_provider_redirect(self):
+        """Symmetric to the bug env profiles fix. The subscription branch used
+        to pop only ANTHROPIC_API_KEY, leaving the base URL and token an
+        interactive session carries in its ambient env -- so a subscription
+        worker, selected because the tier wanted Anthropic, would silently be
+        sent to whatever endpoint was ambient instead."""
+        base = {
+            "ANTHROPIC_API_KEY": "sk-ambient",
+            "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+            "ANTHROPIC_AUTH_TOKEN": "sk-deepseek",
+            "ANTHROPIC_MODEL": "deepseek-flash[1m]",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-flash[1m]",
+            "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-flash",
+            "PATH": "/usr/bin",
+        }
+        env = spawnlib.build_child_env(_cell(pool="subscription"), base)
+        for var in spawnlib._PROVIDER_REDIRECT_VARS:
+            self.assertNotIn(var, env, f"{var} would redirect the subscription lane")
+        self.assertNotIn("ANTHROPIC_API_KEY", env)
+        self.assertEqual(env["PATH"], "/usr/bin")
+
+    def test_subscription_strip_wins_over_a_profile_supplied_key(self):
+        """Ordering pin: the profile is applied BEFORE the harness/pool branch,
+        so a profile cannot re-add the variable the subscription lane removes
+        to keep an ambient key from silently billing the API."""
+        profile = self._profile_file(
+            {"ANTHROPIC_API_KEY": "sk-smuggled", "ANTHROPIC_BASE_URL": "https://x.test"}
+        )
+        cell = _cell(pool="subscription", auth={"profile": "p"})
+        env = spawnlib.build_child_env(cell, {}, env_profiles={"p": profile})
+        self.assertNotIn("ANTHROPIC_API_KEY", env)
+        self.assertNotIn("ANTHROPIC_BASE_URL", env)
+
+
+class ClaudeApiBareFlag(unittest.TestCase):
+    """`--bare` is what forces the 'api' lane off an ambient subscription
+    login, but it also skips EVERY settings-injected hook -- verified live: a
+    PreToolUse hook passed via `--settings` fires without `--bare` and does not
+    fire with it. That silently disables the worktree guard
+    (`worker_guard_settings_json`, added because a worker wrote into the
+    canonical checkout on 2026-09-05) for the whole lane, so a profile-backed
+    cell -- which does not need `--bare` for its original purpose, because
+    injected credentials already pin the endpoint and auth -- must not get it.
+    """
+
+    def test_bare_is_added_for_an_api_cell_without_a_profile(self):
+        cmd = spawnlib.build_cmd(
+            "p", _cell(pool="api", auth={"env": "K"}, target="claude-api")
+        )
+        self.assertIn("--bare", cmd)
+
+    def test_bare_is_omitted_for_a_profile_backed_api_cell(self):
+        cmd = spawnlib.build_cmd(
+            "p",
+            _cell(pool="api", auth={"profile": "p"}, target="claude-deepseek"),
+        )
+        self.assertNotIn("--bare", cmd)
+
+    def test_profile_backed_cell_keeps_the_settings_injected_guard(self):
+        """The invariant the omission protects: both `--settings` (which
+        carries the guard) and the absence of `--bare` (which would skip it)."""
+        cmd = spawnlib.build_cmd(
+            "p",
+            _cell(pool="api", auth={"profile": "p"}, target="claude-deepseek"),
+        )
+        self.assertIn("--settings", cmd)
+        self.assertNotIn("--bare", cmd)
+
+    def test_bare_is_omitted_for_a_subscription_cell(self):
+        self.assertNotIn("--bare", spawnlib.build_cmd("p", _cell(pool="subscription")))
+
+
+class ExplicitCellOverrideCarriesTargetDefinition(unittest.TestCase):
+    """`explicit_cell_override` REPLACES the operator's routing file with a
+    mkstemp one for the duration of a `--model-map`/`--effort`/`--agent
+    --model` override, so anything that temp file omits is genuinely absent
+    downstream rather than inherited. It used to carry only harness/pool, which
+    made an api- or profile-backed target unreachable through every explicit
+    override path."""
+
+    def _written(self, target, model, routing, **kwargs):
+        with (
+            _patch_routing(routing),
+            spawnlib.explicit_cell_override(target, model, **kwargs),
+        ):
+            path = os.environ.get(spawnlib.ROUTING_FILE_ENV)
+            self.assertIsNotNone(path, "override must point ROUTING_FILE_ENV")
+            return yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+
+    def _routing(self):
+        return {
+            "targets": {
+                "claude-deepseek": {
+                    "harness": "claude",
+                    "pool": "api",
+                    "api_opt_in": True,
+                    "auth": {"profile": "deepseek"},
+                }
+            },
+            "env_profiles": {
+                "deepseek": {
+                    "from": "/x/settings.json",
+                    "keys": ["ANTHROPIC_BASE_URL"],
+                },
+                "unrelated": {"from": "/x/other.json", "keys": ["B"]},
+            },
+        }
+
+    def test_carries_api_opt_in_auth_and_the_referenced_profile(self):
+        doc = self._written("claude-deepseek", "deepseek-flash[1m]", self._routing())
+        entry = doc["targets"]["claude-deepseek"]
+        self.assertTrue(entry["api_opt_in"])
+        self.assertEqual(entry["auth"], {"profile": "deepseek"})
+        self.assertEqual(
+            doc["tiers"]["explicit"]["claude-deepseek"]["model"], "deepseek-flash[1m]"
+        )
+        self.assertIn("deepseek", doc["env_profiles"])
+
+    def test_only_the_referenced_profile_is_copied(self):
+        doc = self._written("claude-deepseek", "m", self._routing())
+        self.assertEqual(list(doc["env_profiles"]), ["deepseek"])
+
+    def test_effort_rides_through_the_explicit_cell(self):
+        doc = self._written("claude-deepseek", "m", self._routing(), effort="high")
+        self.assertEqual(doc["tiers"]["explicit"]["claude-deepseek"]["effort"], "high")
+
+    def test_model_id_with_yaml_metacharacters_round_trips(self):
+        """`deepseek-flash[1m]` is not safe to interpolate into a plain YAML
+        scalar by hand -- the file is written with safe_dump for this reason."""
+        doc = self._written("claude-deepseek", "deepseek-flash[1m]", self._routing())
+        self.assertEqual(
+            doc["tiers"]["explicit"]["claude-deepseek"]["model"], "deepseek-flash[1m]"
+        )
 
 
 class DispatchIdEnvVar(unittest.TestCase):

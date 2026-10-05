@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """
 CI's structural half of the Route C scope-check gate.
 
@@ -46,7 +46,7 @@ def _run_git(repo: Path, args: Sequence[str], timeout: int = 15) -> str | None:
             text=True,
             timeout=timeout,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
     if out.returncode != 0:
         return None

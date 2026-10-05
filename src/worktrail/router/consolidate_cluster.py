@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """
 Two-phase queue consolidation for the `consolidate-cluster` dashboard action
 (spec 018, change 2026-07-14--consolidate-cluster-action).
@@ -155,8 +155,8 @@ def _member_created_at(text: str) -> datetime.datetime | None:
             return None
 
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=datetime.timezone.utc)
-        return dt.astimezone(datetime.timezone.utc)
+            dt = dt.replace(tzinfo=datetime.UTC)
+        return dt.astimezone(datetime.UTC)
     except Exception:  # noqa: BLE001 -- degrade, never crash the preview
         return None
 
@@ -520,7 +520,7 @@ def _run_work_queue_cli(
             env=env,
         )
         return json.loads(result.stdout)
-    except (subprocess.SubprocessError, ValueError, OSError):
+    except subprocess.SubprocessError, ValueError, OSError:
         return None
 
 

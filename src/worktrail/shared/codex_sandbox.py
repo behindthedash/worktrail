@@ -5,8 +5,10 @@ and the writable roots (`--add-dir`) a Codex child gets. Call sites
 (`router/skill_dispatch.py`, `orchestrator/spawnlib.py`, `drain/drain.py`)
 compose their argv from it instead of hardcoding `danger-full-access`.
 
-Default root set (design D3): the child cwd, its git common dir (a linked
-worktree's objects live there), the operator state dir, the work-queue root,
+Default root set (design D3): the child cwd, its administrative git dir (a
+linked worktree keeps its `index.lock` and other local state there) and its git
+common dir (a linked worktree's objects live there), the operator state dir, the
+work-queue root,
 `<repo>-worktrees` when `repo` is given, caller extras, and any
 `WORKTRAIL_CODEX_EXTRA_WRITABLE_ROOTS` entries. `/tmp` / `$TMPDIR` are
 writable by Codex default and not repeated. Nonexistent roots are still
@@ -37,30 +39,39 @@ _MODES = (WORKSPACE_WRITE, DANGER_FULL_ACCESS)
 NETWORK_ACCESS_OVERRIDE = "sandbox_workspace_write.network_access=true"
 
 
-def git_common_dir(cwd: str | Path) -> Path | None:
-    """Absolute git common dir for *cwd* (the shared `.git` a linked worktree's
-    objects live in), or None when cwd is not a git checkout."""
+def _rev_parse_path(cwd: str | Path, *flags: str) -> Path | None:
+    """One `git rev-parse --path-format=absolute <flags>` result, or None when
+    cwd is not a git checkout or git is unavailable."""
     try:
         proc = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(cwd),
-                "rev-parse",
-                "--path-format=absolute",
-                "--git-common-dir",
-            ],
+            ["git", "-C", str(cwd), "rev-parse", "--path-format=absolute", *flags],
             capture_output=True,
             text=True,
             timeout=15,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return None
     if proc.returncode != 0:
         return None
     out = proc.stdout.strip()
     return Path(out) if out else None
+
+
+def git_admin_dir(cwd: str | Path) -> Path | None:
+    """Absolute administrative git dir for *cwd*, or None when cwd is not a git
+    checkout.
+
+    For a linked worktree this is the private `.git/worktrees/<name>` directory
+    holding its `index.lock` and other per-worktree state; for a normal checkout
+    it equals the git common dir."""
+    return _rev_parse_path(cwd, "--git-dir")
+
+
+def git_common_dir(cwd: str | Path) -> Path | None:
+    """Absolute git common dir for *cwd* (the shared `.git` a linked worktree's
+    objects live in), or None when cwd is not a git checkout."""
+    return _rev_parse_path(cwd, "--git-common-dir")
 
 
 def work_queue_root() -> Path:
@@ -97,9 +108,9 @@ def writable_roots(
     """The de-duplicated, stably ordered writable root set for a Codex child."""
     cwd = Path(cwd)
     candidates: list[Path] = [cwd]
-    common = git_common_dir(cwd)
-    if common is not None:
-        candidates.append(common)
+    for git_dir in (git_admin_dir(cwd), git_common_dir(cwd)):
+        if git_dir is not None:
+            candidates.append(git_dir)
     candidates.append(worktrail_home())
     candidates.append(work_queue_root())
     if repo is not None:

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """
 `go`'s Phase 3 repo-resolution staleness guard.
 
@@ -40,7 +40,7 @@ def _run(args, timeout: int) -> subprocess.CompletedProcess | None:
         return subprocess.run(
             args, check=False, capture_output=True, text=True, timeout=timeout
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
 
 

@@ -6,8 +6,10 @@
 so `land_pr()` reported `LandOutcome(outcome="refused", refused_step="push",
 detail=None)` with no information about *why* the push was rejected. These
 tests pin `_push()`'s stderr (falling back to stdout) capture via its
-`detail_out` out-param, and `land_pr()`'s own surfacing of that detail on
-the `refused_step == "push"` path.
+`detail_out` out-param, its `(no output)` fallback for a git process that
+fails silently, and `land_pr()`'s own surfacing of that detail on the
+`refused_step == "push"` path -- including when the detail channel comes
+back empty, which must still never yield `detail=None`.
 
 Kept in its own module rather than extending `tests/router/test_land_pr.py`:
 that file's tasks 1.1->1.2 already saturate the compile same-file chain
@@ -69,12 +71,12 @@ class PushDetailCaptureTests(unittest.TestCase):
         self.assertEqual(refused, "push")
         self.assertEqual(detail_out, ["everything up-to-date"])
 
-    def test_failure_with_no_output_leaves_detail_out_empty(self) -> None:
+    def test_failure_with_no_output_contributes_a_cause_detail(self) -> None:
         runner = self._runner(subprocess.CompletedProcess([], 1, stdout="", stderr=""))
         detail_out: list[str] = []
         refused = land_pr._push("/tmp", "feature", "origin", runner, detail_out)
         self.assertEqual(refused, "push")
-        self.assertEqual(detail_out, [])
+        self.assertEqual(detail_out, ["git push to origin failed: (no output)"])
 
     def test_ambiguous_timeout_does_not_populate_detail_out(self) -> None:
         def runner(cmd, **kwargs):
@@ -161,9 +163,9 @@ class LandPrPushRefusalOrchestrationTests(unittest.TestCase):
 
     def _patched(self, **overrides):
         defaults = {
-            "_commit_pending": None,
+            "_commit_pending": (None, None),
             "_ensure_compile_markers": (None, None),
-            "_run_preflight_and_labels": (None, ["go:risk-low"]),
+            "_run_preflight_and_labels": (None, ["go:risk-low"], None),
             "_current_branch": "feature",
             "_push_target": ("origin", None),
         }
@@ -202,14 +204,32 @@ class LandPrPushRefusalOrchestrationTests(unittest.TestCase):
             outcome.detail, "! [remote rejected] feature -> feature (denied)"
         )
 
-    def test_push_refusal_with_no_captured_output_reports_none(self) -> None:
+    def test_push_refusal_with_no_captured_output_still_reports_a_detail(self) -> None:
+        """Even when the detail channel comes back empty -- a real `git push`
+        can exit non-zero with nothing on stderr or stdout -- a `refused`
+        outcome must name the failed step rather than carry `detail=None`."""
+
         def fake_push(repo, branch, remote, runner, detail_out=None):
             return "push"
 
         outcome, _ = self._run(_land_request(), fake_push)
         self.assertEqual(outcome.outcome, "refused")
         self.assertEqual(outcome.refused_step, "push")
-        self.assertIsNone(outcome.detail)
+        self.assertTrue(outcome.detail)
+        self.assertIn("push", outcome.detail)
+
+    def test_empty_output_push_failure_through_real_push_carries_detail(self) -> None:
+        """`land_pr()` end-to-end with the REAL `_push()`: a `git push` that
+        exits 1 printing nothing still yields a non-empty `detail`."""
+
+        def runner(cmd, **kwargs):
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+
+        real_push = land_pr._push
+        outcome, _ = self._run(_land_request(runner=runner), real_push)
+        self.assertEqual(outcome.outcome, "refused")
+        self.assertEqual(outcome.refused_step, "push")
+        self.assertEqual(outcome.detail, "git push to origin failed: (no output)")
 
 
 if __name__ == "__main__":

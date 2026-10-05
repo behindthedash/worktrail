@@ -767,6 +767,14 @@ def _completed_journal_entry(tid, role, *, review_status=None):
     }
 
 
+def _without_run_plan_compile():
+    """Keep resume-metadata tests off the live, model-backed compile path."""
+    return patch(
+        "worktrail.orchestrator.live.apply_run_plan",
+        side_effect=lambda _repo, _spec_rel, _spec_id, loaded: loaded,
+    )
+
+
 class ResumeValidatesAfterReconcile(unittest.TestCase):
     """Resume ordering: live_run_real must reconcile the journal BEFORE validating
     task metadata. A task the journal already marks done but whose frontmatter has
@@ -797,15 +805,16 @@ class ResumeValidatesAfterReconcile(unittest.TestCase):
             )
             fake = FakeSpawn()
             # Must NOT raise RuntimeError("...missing required frontmatter files...").
-            res = live.live_run_real(
-                repo,
-                "docs/specs/001-x",
-                max_workers=1,
-                out_cassette=str(journal_path),
-                run_id="resume-1",
-                resume=True,
-                spawn=fake,
-            )
+            with _without_run_plan_compile():
+                res = live.live_run_real(
+                    repo,
+                    "docs/specs/001-x",
+                    max_workers=1,
+                    out_cassette=str(journal_path),
+                    run_id="resume-1",
+                    resume=True,
+                    spawn=fake,
+                )
             # Journal replay carried it to done; no role was re-spawned.
             task = next(t for t in res["tasks"] if t["id"] == "TASK-001")
             self.assertEqual(task["status"], "done")
@@ -819,7 +828,10 @@ class ResumeValidatesAfterReconcile(unittest.TestCase):
                 Path(tmp),
                 {"TASK-001": _fm("TASK-001", "")},  # impl task, empty files: []
             )
-            with self.assertRaisesRegex(RuntimeError, "TASK-001"):
+            with (
+                self.assertRaisesRegex(RuntimeError, "TASK-001"),
+                _without_run_plan_compile(),
+            ):
                 live.live_run_real(
                     repo,
                     "docs/specs/001-x",

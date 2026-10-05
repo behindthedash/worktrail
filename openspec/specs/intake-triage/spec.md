@@ -30,7 +30,7 @@ The unattended auto-pick used by `worktrail-go auto` (and therefore by every dra
 - **THEN** the execution brief is claimed and the intake brief is recorded as skipped with reason `intake-untriaged`
 
 ### Requirement: Interactive pickup of an intake brief triages it
-When a user runs `worktrail-go <brief-id>` and the brief is an intake brief, the system SHALL run the intake-triage evaluation for that single brief and present its verdict for confirmation, instead of dispatching it for implementation. Applying the verdict SHALL follow the same apply semantics as the unattended pre-pass, including landing any resulting pull request through the shared PR-landing pipeline in the same invocation. The session SHALL report the landing outcome the apply step returns; when that outcome is a code defect or blocking review threads, the session SHALL continue the CI watch loop's repair procedure against the reported branch and run record rather than stopping at "PR opened". The brief SHALL NOT be claimed into `picked/` for implementation by this path.
+When a user runs `worktrail-go <brief-id>` and the brief is an intake brief, the system SHALL run the intake-triage evaluation for that single brief and present its verdict for confirmation, instead of dispatching it for implementation. Applying the verdict SHALL follow the same apply semantics as the unattended pre-pass, including landing any resulting pull request through the shared PR-landing pipeline in the same invocation. For a verdict that lands a pull request (`fold-into-change`, `propose-change`), the session SHALL report the landing outcome the apply step returns; when that outcome is a code defect or blocking review threads, the session SHALL continue the CI watch loop's repair procedure against the reported branch and run record rather than stopping at "PR opened". The brief SHALL NOT be claimed into `picked/` for implementation by this path.
 
 #### Scenario: User names an intake brief
 - **WHEN** `worktrail-go 20260826-143940-consolidated-...` is invoked and that brief has no `seeded-from:`
@@ -40,11 +40,11 @@ When a user runs `worktrail-go <brief-id>` and the brief is an intake brief, the
 - **WHEN** `worktrail-go <brief-id>` is invoked for a brief carrying `seeded-from:`
 - **THEN** the brief is claimed and dispatched exactly as before this change
 
-#### Scenario: Work-directly continues into dispatch
+#### Scenario: Work-directly stamps and stops
 - **WHEN** an interactive pickup's applied verdict is `work-directly` and the brief is now
   stamped `seeded-from: triage:<run-date>:direct`
-- **THEN** the same invocation claims the brief and proceeds through classification and
-  dispatch as it would for an execution brief named directly
+- **THEN** the session reports the stamp and stops, without claiming the brief or dispatching
+  it in the same invocation — the brief remains in `queue/` for a later execution dispatch
 
 #### Scenario: Keep is recorded interactively
 - **WHEN** an interactive pickup's verdict is `keep` for a brief not yet due for escalation
@@ -697,4 +697,80 @@ fall through to free text exactly as before.
   parse result's `brief_status` is `picked`, and lists `blocked_brief_owned`,
   `blocked_brief_missing`, and `blocked_empty_brief` next to `blocked_pending_decision`
   as exit-2 cases that do not proceed to apply
+
+### Requirement: Base branch resolution for fold and propose applies
+
+After a `fold-into-change` or `propose-change` verdict's brief is claimed, and before the
+base-branch fetch or the worktree creation, `apply --confirm` SHALL resolve the base branch
+name it fetches and branches from, against the same push remote it already resolves for
+that fetch, the unpushed-base check, and the worktree base ref (per "Fold and propose are
+applied as a pull request, fail-closed"). The resolution SHALL try three sources in order:
+(1) the target repo's policy `base_branch`, when it is a non-empty string; (2) the branch
+named by the checkout's local `refs/remotes/<remote>/HEAD` ref; (3) the branch the remote
+reports for its own `HEAD` symref, read over the wire as `git ls-remote --symref <remote>
+HEAD` and taken from its `ref: refs/heads/<name>` line, so a repo whose default branch is
+not `main` resolves even when its checkout carries no local remote-HEAD ref. The resolution
+SHALL NOT fall back to `main`, or to any branch name no source named, when all three
+sources fail. When no source resolves a base branch, the apply SHALL fail closed before any
+fetch or worktree creation, with a `status: "error"` action-log entry whose error names the
+repo's `base_branch` policy key as the remedy and carries the branch name the apply would
+have used, and SHALL release the claimed brief back to `queue/` unmodified, matching the
+failure shape of every other pre-PR failure in this path. When the resolved base branch's
+fetch fails, the reported error SHALL additionally name the resolved `<remote>/<base
+branch>` and the `base_branch` policy key as the remedy for a missing or misspelled base
+branch, alongside the underlying git failure. All three sources are consulted only after a
+successful claim: a brief observed as already claimed SHALL reach none of them and SHALL
+return the concurrent-claim error as before.
+
+#### Scenario: A non-main default resolves without local state
+
+- **WHEN** `apply --confirm` executes `fold-into-change` or `propose-change` against a repo
+  whose policy sets no `base_branch` and whose checkout has no local
+  `refs/remotes/origin/HEAD`, and `git ls-remote --symref origin HEAD` answers `ref:
+  refs/heads/dev`
+- **THEN** the apply runs `git fetch origin dev`, creates the worktree from `origin/dev`,
+  never fetches or branches off `origin/main`, and reports no base-branch-resolution error
+
+#### Scenario: The local remote-HEAD ref answers without a wire probe
+
+- **WHEN** the policy sets no `base_branch` and the checkout's `refs/remotes/<remote>/HEAD`
+  names `dev`
+- **THEN** the apply resolves `dev`, issues no `ls-remote` call, and fetches `dev`
+
+#### Scenario: An explicit policy base_branch wins
+
+- **WHEN** the repo's policy sets `base_branch: dev` and the remote's default branch is
+  `main`
+- **THEN** the apply resolves `dev` without consulting either remote-HEAD source, and the
+  fetch, the unpushed-base check, and the worktree base ref all use `<remote>/dev`
+
+#### Scenario: An unresolvable base branch fails closed before any ref work
+
+- **WHEN** the policy sets no `base_branch`, the checkout has no
+  `refs/remotes/<remote>/HEAD`, and the `git ls-remote --symref <remote> HEAD` query fails
+  or reports no default branch
+- **THEN** the action-log entry reports `status: error` with an error naming the repo's
+  `base_branch` policy key, no fetch and no worktree creation is issued, the claimed brief
+  is back in `queue/` unmodified, and the entry carries the branch name the apply would
+  have used
+
+#### Scenario: Fetch failure names the policy-key remedy
+
+- **WHEN** the resolved base branch's `git fetch <remote> <base branch>` fails
+- **THEN** the error reports the underlying git failure, the resolved `<remote>/<base
+  branch>`, and the repo's `base_branch` policy key as the remedy, and the claimed brief is
+  released back to `queue/` unmodified
+
+#### Scenario: A fork-configured checkout resolves from the push remote
+
+- **WHEN** `remote.pushDefault` is `fork`, the policy sets no `base_branch`, and the
+  checkout has no local `refs/remotes/fork/HEAD`
+- **THEN** the `ls-remote --symref` probe runs against `fork` and never `origin`, and the
+  branch it resolves drives the `fork/<base branch>` fetch and worktree base ref
+
+#### Scenario: An already-claimed brief performs no base-branch work
+
+- **WHEN** a second `apply --confirm` observes the brief already claimed by a concurrent run
+- **THEN** it issues no `symbolic-ref`, `ls-remote`, or `fetch` call, and returns the
+  concurrent-claim error naming that run, as before
 

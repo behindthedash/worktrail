@@ -79,7 +79,7 @@ def _gate(repo: Path, journal_path: Path, select: Callable) -> tuple[dict, dict 
         return {"status": "skipped", "reason": "disabled"}, None
     try:
         journal = json.loads(Path(journal_path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return {"status": "failed", "reason": "journal_unreadable"}, None
     digest = build_outcome_digest(journal)
     if not digest["has_signal"]:
@@ -181,7 +181,7 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 journal = json.loads(Path(args.journal).read_text(encoding="utf-8"))
                 digest = build_outcome_digest(journal)
-            except (OSError, json.JSONDecodeError):
+            except OSError, json.JSONDecodeError:
                 pass
         out: dict[str, Any] = {"digest": digest, "decision": decision}
         print(json.dumps(out, indent=2, sort_keys=True) if args.json else out)

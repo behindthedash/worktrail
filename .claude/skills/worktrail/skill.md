@@ -45,6 +45,12 @@ triggers:
     - import_dep_edges
     - spec_from_file_location
     - import_module
+    - env_profiles
+    - auth.profile
+    - build_child_env
+    - _apply_env_profile
+    - _PROVIDER_REDIRECT_VARS
+    - explicit_cell_override
 ---
 
 You are working on **worktrail's task-orchestration core**: compiling specs/changes into a
@@ -184,7 +190,57 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
   its `deny` is honored under `--permission-mode bypassPermissions` (live-verified 2026-09-05).
   An explicit `--settings` in `extra_args` is respected and not overridden; non-`claude` agents
   get no guard. `tests/orchestrator/test_worktree_guard_hook.py` pins the decisions and the
-  injection.
+  injection. `--bare` skips every settings-injected hook, so a claude `api` cell without a
+  profile — which still takes `--bare` — has never carried this guard; a profile-backed `api`
+  cell now omits `--bare` (see below) and keeps it.
+- **A target's `auth.profile` is merged into the child env *before* the harness/pool branch**
+  (`spawnlib._apply_env_profile`, the first statement of `build_child_env`): the profile table is
+  threaded in as the `env_profiles=` keyword from `_prepare_child_env`, out of the *same*
+  resolved routing dict `select_cell` served from — never re-loaded, because a second read could
+  diverge from the table that chose the cell and would repeat the I/O on every
+  session-limit/infra hop. The ordering is load-bearing: applying *after* the branch would let a
+  profile re-add `ANTHROPIC_API_KEY` on a `subscription` cell after that lane pops it, silently
+  defeating the guarantee below. A target declaring both `auth.env` and `auth.profile` raises
+  `OperatorConfigError` (two sources for one auth lane), and a profile on a non-claude harness
+  still applies. The *table* is threaded, but the profile file itself is re-read on each spawn —
+  a profile file broken mid-run raises rather than hopping.
+- **The claude `subscription` lane strips every provider-redirect variable, not just
+  `ANTHROPIC_API_KEY`** (`_PROVIDER_REDIRECT_VARS`: `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`,
+  `ANTHROPIC_MODEL`, the `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` aliases, and
+  `CLAUDE_CODE_SUBAGENT_MODEL`). `spawn_agent` builds every child env from `{**os.environ, ...}`
+  and an interactive session carries the operator's whole provider redirect, so removing only the
+  key left a subscription worker — selected *because* the tier wanted Anthropic — pointed at
+  whatever endpoint happened to be ambient.
+- **A profile-backed claude `api` cell omits `--bare`** (`build_cmd`): `--bare` is what forces
+  that lane off an ambient subscription login, but it also skips every settings-injected hook,
+  including the `--settings` worktree guard. Injected credentials already pin the endpoint and
+  auth — all `--bare` was doing for that lane — so omitting it costs nothing and restores the
+  guard; an `api` cell *without* a profile still gets `--bare`. (`--bare` does not disable
+  project `AGENTS.md`/`AGENTS.md`; it trims plugin/skill context only.)
+- **`explicit_cell_override`'s throwaway routing file reproduces the target's whole definition** —
+  harness, pool, `api_opt_in`, the full `auth` mapping, and the one `env_profiles` entry
+  `auth.profile` names — written with `yaml.safe_dump`. That file *replaces* the operator's
+  routing file for the override's duration rather than layering over it, so anything it omits is
+  genuinely absent downstream: carrying only harness/pool made an api target unreachable
+  (`select_cell` skipped it for missing `api_opt_in`, and an api cell raised for a missing
+  `auth.env`). `safe_dump`, not string interpolation, because a model id like
+  `deepseek-flash[1m]` is not safe as a plain scalar (`[` opens a flow sequence). Only paths and
+  key names are written — never a value, so the 0600 mkstemp file stays secret-free.
+- **A caller that names a harness + model pins them through `explicit_cell_override` +
+  `tier="explicit"`, never through `spawn_agent` kwargs.** `spawn_agent` takes no
+  `agent=`/`model=`/`effort=` — a spawn resolves its cell from routing via `tier` plus an
+  optional `prefer` naming a *target*, so a harness name has to be translated first.
+  `live._target_for_harness(routing, harness)` returns the first `routing.targets` entry whose
+  `harness` matches, or `None` (the same lookup `LiveSpawn.__call__` uses for its role/agent
+  `prefer` fallback, where `None` preserves the pre-spec "every role defaults to the run agent"
+  parity); `live._machine_wide_target_for_harness(harness)` resolves it against the operator's
+  machine-wide routing file — deliberately the file `spawnlib.explicit_cell_override()` reads,
+  so the target it returns is always one the override can pin — and raises `OperatorConfigError`
+  for an undeclared harness rather than falling through to whatever a tier row would otherwise
+  serve. `run_research_session` (the `--fork-research` pre-load, which must run on the harness
+  its workers will fork from) and `smoke()` (a probe that would otherwise report OK for a
+  combination the operator never asked about) both use the pinned form; their old kwarg form
+  raised `TypeError` on every real invocation (handoff 20261001-190740).
 - **A "session limit" park is bounded by a re-probe cadence and a total budget, never by the
   notice's stated reset alone** (`spawnlib.spawn_agent`): each park is
   `min(until_reset + 5s, SESSION_LIMIT_REPROBE_MAX_S, budget_left)` where the cadence defaults to
@@ -270,10 +326,18 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
   "all files exist" INFO/WARN split; `LiveSpawn.pre_commit_cmd`: the lazy policy-backed
   property threaded into the worker ctx; `_branch_content_in_base`/`dependency_start_ref`:
   ancestry + merge-tree (clean OR conflicted = in base) decision on whether a retained
-  dependency branch is a stacking point or already squash-merged
+  dependency branch is a stacking point or already squash-merged;
+  `_target_for_harness`/`_machine_wide_target_for_harness`: the harness→routing-target
+  translation a spawn call site needs before it can pin a named harness+model through
+  `explicit_cell_override` + `tier="explicit"` (`run_research_session`'s `--fork-research`
+  pre-load and `smoke()`'s connectivity probe; the machine-wide resolver raises
+  `OperatorConfigError` for an undeclared harness)
 - `orchestrator/spawnlib.py` — `_with_default_setting_sources`/`worker_guard_settings_json`:
   the per-`claude`-spawn defaults (`--setting-sources project,local` plus the `--settings`
   guard-hook JSON) that `build_cmd` applies unless the caller passed them explicitly;
+  `build_child_env`'s `env_profiles=` keyword (`_apply_env_profile`, `_profile_name`,
+  `_PROVIDER_REDIRECT_VARS`) that injects a target's `auth.profile` before the harness/pool
+  branch, and `explicit_cell_override`'s whole-definition throwaway routing file;
   `SESSION_LIMIT_REPROBE_MAX_S`/`SESSION_LIMIT_TOTAL_WAIT_MAX_S`/`SESSION_LIMIT_WAITS_DEFAULT`
   and the bounded session-limit park + clamped `rate_limit` capacity gate inside `spawn_agent`
   (pinned by `SessionLimitRetry` in `tests/orchestrator/test_spawnlib.py`)
@@ -286,4 +350,4 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
   the free-rerun probe `wait_and_fix_ci` tries once before spawning a ci-fix worker
 
 ---
-**Last Updated:** 2026-09-15
+**Last Updated:** 2026-10-03

@@ -15,7 +15,7 @@ def _project_section(pyproject: Path, section: str) -> dict[str, str]:
     """Read the simple string-valued project tables Worktrail uses.
 
     This intentionally avoids a TOML dependency so the post-install check also
-    works on Worktrail's minimum Python 3.10 before optional dev dependencies
+    works on Worktrail's minimum Python 3.14 before optional dev dependencies
     are imported.
     """
     values: dict[str, str] = {}

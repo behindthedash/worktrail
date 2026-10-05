@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """
 `worktrail-detach` -- run a long-running command outside the agent harness's
 tracked process tree, with a log, a pid file, and an exit-code sentinel.
@@ -76,7 +76,7 @@ def handle_paths(name: str, sd: Path) -> dict[str, Path]:
 def _read_int(path: Path) -> int | None:
     try:
         return int(path.read_text().strip())
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return None
 
 

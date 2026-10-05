@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """Classifier Coverage Audit — replay `classify.py` over historical briefs.
 
 Read-only CLI that answers one question: **where does the route classifier
@@ -212,7 +212,7 @@ def load_actual_routes(runs_root: Path) -> dict[str, str]:
     for path in sorted(runs_root.glob("*/*.yaml")):
         try:
             record = yaml.safe_load(path.read_text(encoding="utf-8"))
-        except (OSError, yaml.YAMLError):
+        except OSError, yaml.YAMLError:
             continue
         if not isinstance(record, dict):
             continue

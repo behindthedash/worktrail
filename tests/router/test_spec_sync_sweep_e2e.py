@@ -241,7 +241,7 @@ def _hash_tree(root: Path) -> dict[str, tuple[int, int, str]]:
 
 
 @contextmanager
-def _work_queue_dir(path: Path) -> Generator[None, None, None]:
+def _work_queue_dir(path: Path) -> Generator[None]:
     """Point work_queue.py's base_dir() at a fixture queue base for the
     duration of the block, restoring the prior WORK_QUEUE_DIR afterward."""
     previous = os.environ.get("WORK_QUEUE_DIR")

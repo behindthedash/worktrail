@@ -8,7 +8,7 @@ triggers:
 You are working in **worktrail**, a spec-format-agnostic task orchestration package.
 
 ## Tech Stack
-Python 3.10+ | one runtime dependency: `pyyaml` | pytest for tests (`dev` extra) | setuptools `src/` layout packaging | ruff is pinned exactly (`ruff==<version>` in `pyproject.toml`'s `dev` extra) — CI's "Lint, Test & Build" job runs ruff lint + ruff format check + a shebang/exec-bit check + pytest + a golden regression check + build
+Python 3.14+ | one runtime dependency: `pyyaml` | pytest for tests (`dev` extra) | setuptools `src/` layout packaging | ruff is pinned exactly (`ruff==<version>` in `pyproject.toml`'s `dev` extra) — CI's "Lint, Test & Build" job runs ruff lint + ruff format check + a shebang/exec-bit check + pytest + a golden regression check + build
 
 ## Commands
 - `./scripts/dev-install.sh` — `pip install -e ".[dev]"`; refuses to run from a linked worktree (must be the canonical checkout, e.g. `~/projects/worktrail`)

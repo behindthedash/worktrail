@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """Queue-drain driver: repeatedly launch fresh-context one-shots of the
 worktrail-go skill's auto mode until the work queue is empty or a stop
 condition fires.
@@ -100,7 +100,7 @@ Usage:
            [--dry-run] [--json]
 
 Exit codes: 0 = drained/stopped cleanly with a reported reason; 2 = refused to
-start (lock held, bad args, missing queue dir).
+start (lock held, bad args, missing queue dir, routing not spawn-ready).
 """
 
 from __future__ import annotations
@@ -117,7 +117,7 @@ import sys
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -131,12 +131,14 @@ from ..router.policy import (
     default_run_record_dir,
     load_policy,
     resolve_routing,
+    resolved_routing_file_path,
 )
 from ..router.policy_selfcheck import discover_repo_names
 from ..router.poll_run import unresolved_decision_ids as _poll_unresolved_decision_ids
 from ..router.pr_labels import ensure_pr_risk_label
 from ..router.routing_cli import _check as check_routing_liveness
 from ..router.run_record import _active_conflicts
+from ..router.spawn_readiness import readiness_problems
 from ..runtime.selection import NoExecutionTarget, select_cell
 from ..shared.codex_sandbox import codex_sandbox_args
 from ..shared.homedir import worktrail_home
@@ -544,7 +546,7 @@ def capacity_gated(cache: dict, agent: str, now: datetime | None = None) -> bool
 def read_capacity_cache(path: Path) -> dict:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return {}
 
 
@@ -559,6 +561,37 @@ def machine_wide_routing() -> dict[str, Any] | None:
     return load_policy(worktrail_home()).get("routing")
 
 
+def refuse_unready_routing() -> None:
+    """Raise when any declared routing cell cannot spawn, naming it and the file.
+
+    Resolves the cell table here, fresh from the machine-wide routing file
+    (`load_policy(worktrail_home())` -> `resolve_routing()`), never the
+    validated `machine_wide_routing()` block already in scope: the probe must
+    judge exactly the table a spawn is served from. Feeding it a re-derived
+    table is the gap the `env_profiles` incident fell through -- the file
+    still declared a key the resolver had already dropped, so a check that
+    judged the declared form reported `ok` for cells that could not launch.
+
+    Every problem is a message from the spawn path's own builders
+    (`spawn_readiness.readiness_problems`), so each unready cell raises with
+    the same reason a real spawn would die on -- operator configuration, not
+    a condition to wait out, which is why this refuses the whole drain instead
+    of logging and routing around it. Capacity gates stay out of it: a gated
+    cell is a waitable runtime state the selector already walks past, and the
+    probe records no gate of its own.
+    """
+    problems = readiness_problems(resolve_routing(load_policy(worktrail_home())))
+    if not problems:
+        return
+    detail = "; ".join(
+        f"{row}/{target}: {reason}"
+        for (row, target), reason in sorted(problems.items())
+    )
+    raise RuntimeError(
+        f"routing is not spawn-ready ({resolved_routing_file_path()}): {detail}"
+    )
+
+
 def select_available_agent(
     cache: dict,
     candidates: list[str],
@@ -566,8 +599,10 @@ def select_available_agent(
     now: datetime | None = None,
 ) -> tuple[str, str | None, str | None] | None:
     """First candidate (in configured order) that is not capacity-gated, paired
-    with the model/effort routing.yaml resolved for it -- `None` for both when
-    routing is unset (or incomplete: no `targets`/`default_tier`), so the
+    with the model/effort routing.yaml resolved for it and the routing target
+    that cell came from (the key a blocked iteration must persist its own
+    capacity gate under -- see record_capacity_gate) -- `None` for all three
+    when routing is unset (or incomplete: no `targets`/`default_tier`), so the
     caller falls back to the CLI's own default instead of passing a sentinel
     string as `--model`. Returns `None` when every candidate is gated. A
     candidate with no cache entry at all counts as available, matching
@@ -614,7 +649,7 @@ def select_available_agent(
         # not adopted routing.yaml yet sees no behavior change.
         for candidate in candidates:
             if not capacity_gated(cache, candidate, now=now):
-                return candidate, None, None
+                return candidate, None, None, None
         return None
 
     harness_to_target: dict[str, str] = {}
@@ -641,7 +676,7 @@ def select_available_agent(
         cell = select_cell(scoped_routing, default_tier, capacity=capacity, now=now)
     except NoExecutionTarget:
         return None
-    return cell.harness, cell.model, cell.effort
+    return cell.harness, cell.model, cell.effort, cell.target
 
 
 MAX_TRANSCRIPT_FILES = (
@@ -679,7 +714,7 @@ def write_iteration_transcript(
     """
     if transcript_dir is None:
         return None
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     try:
         transcript_dir.mkdir(parents=True, exist_ok=True)
         stamp = now.strftime("%Y%m%dT%H%M%SZ")
@@ -710,19 +745,27 @@ def write_iteration_transcript(
 
 
 def record_capacity_gate(
-    cache_path: Path, agent: str, failure_class: str, retry_after: datetime
+    cache_path: Path, gate_key: str, failure_class: str, retry_after: datetime
 ) -> None:
-    """Persist a bare-agent-keyed capacity gate so the next iteration's
+    """Persist a bare-keyed capacity gate so the next iteration's
     select_available_agent()/capacity_gated() check sees it immediately.
 
-    Keyed by plain agent name (no model), unlike agent_capacity.record()'s
-    "agent:model" keys -- drain.py has no model concept of its own, and
-    capacity_gated() already matches a bare key by exact agent-name equality.
+    `gate_key` is the routing target the blocked cell came from (the caller
+    passes `active_target or active_agent`), because that is the key
+    select_available_agent()'s per-cell capacity check queries --
+    provider_key(target, model) -- and capacity_gated() honors a bare target
+    entry for every model of that target. Without routing the selection unit
+    is the bare harness name, so the harness name is the key then.
+    Live reproduction 2026-10-03 (drain-logs/2026-10-03T09-17-01Z.json): under
+    routing, a harness-keyed gate ("claude") was invisible to the
+    target-keyed query ("claude-deepseek:deepseek-flash[1m]"), so the same
+    exhausted cell was re-selected and two blocked iterations advanced to the
+    circuit breaker instead of failing over.
     """
     with agent_capacity.write_lock(cache_path):
         data = agent_capacity.load(cache_path)
         providers = data.setdefault("providers", {})
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for key in list(providers):
             entry = providers[key]
             if not isinstance(entry, dict) or entry.get("source") != "drain":
@@ -732,7 +775,7 @@ def record_capacity_gate(
             ) or agent_capacity._parse_time(entry.get("reset_at"))
             if retry_at is not None and retry_at <= now:
                 del providers[key]
-        providers[agent] = {
+        providers[gate_key] = {
             "status": "unavailable",
             "failure_class": failure_class,
             "checked_at": now.isoformat(),
@@ -1922,7 +1965,7 @@ def sweep_remediations(
                     f"is capacity-gated ({', '.join(candidates)})"
                 )
                 continue
-            chosen, _chosen_model, _chosen_effort = selection
+            chosen, _chosen_model, _chosen_effort, _chosen_target = selection
             if chosen != current_agent:
                 log(
                     f"agent switch: {current_agent or candidates[0]} -> "
@@ -1980,7 +2023,7 @@ def acquire_lock(lock_file: Path) -> bool:
         try:
             holder = json.loads(lock_file.read_text(encoding="utf-8"))
             pid = int(holder.get("pid", -1))
-        except (OSError, ValueError):
+        except OSError, ValueError:
             pid = -1
         if pid > 0 and _pid_alive(pid):
             return False
@@ -2271,7 +2314,7 @@ def _intake_triage_out_dir(now: datetime | None = None) -> Path:
     triage run, mirroring `queue_triage._default_out_dir()`'s own layout
     (`worktrail_home()/triage/<run-id>/`) without depending on that private
     helper directly."""
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     return worktrail_home() / "triage" / f"drain-{now.strftime('%Y%m%dT%H%M%SZ')}"
 
 
@@ -2424,11 +2467,24 @@ def drain(
     active_agent = config.agent
     active_model: str | None = None
     active_effort: str | None = None
+    # Routing target the selected cell came from; the key a blocked iteration's
+    # capacity gate is persisted under (see record_capacity_gate). None
+    # without routing, where the bare harness name is the gate key.
+    active_target: str | None = None
     seeded_backlog: dict[str, Any] = {}
     intake_triage_result: dict[str, Any] = {}
     seed_backlog_pass_result: dict[str, Any] = {}
     routing = machine_wide_routing()
     try:
+        # Refuse before anything runs -- including the intake-triage pre-pass
+        # below, whose evaluate step spawns an agent of its own. A cell the
+        # spawn path's builders reject is operator configuration, not a
+        # waitable condition: raising here makes `main()` exit 2 naming every
+        # unready cell and the routing file, rather than logging and routing
+        # around a misconfiguration for the rest of the pass. Deliberately
+        # not the best-effort posture the liveness check further down uses
+        # (that one records a capacity gate, which stays walkable).
+        refuse_unready_routing()
         if slot == 0 and config.intake_triage:
             # Close the intake loop BEFORE the leader's own sweeps/seeding and
             # BEFORE the claim loop's first ready-count check, so a brief
@@ -2539,7 +2595,7 @@ def drain(
                 initial_cache, candidates, routing
             ) or select_available_agent({}, candidates, routing)
             if selection is not None:
-                active_agent, active_model, active_effort = selection
+                active_agent, active_model, active_effort, active_target = selection
         cmd = build_command(
             active_agent,
             config.permission_args,
@@ -2560,8 +2616,9 @@ def drain(
                 if selection is None:
                     state.agent_capacity_gated = True
                 else:
-                    chosen, chosen_model, chosen_effort = selection
+                    chosen, chosen_model, chosen_effort, chosen_target = selection
                     state.agent_capacity_gated = False
+                    active_target = chosen_target
                     if (
                         chosen != active_agent
                         or chosen_model != active_model
@@ -2672,7 +2729,13 @@ def drain(
                     f"{spawned.stdout}\n{spawned.stderr}"
                 ) or agent_capacity.retry_time(failure_class)
                 record_capacity_gate(
-                    config.capacity_cache, active_agent, failure_class, reset_at
+                    config.capacity_cache,
+                    # The routing target, not the harness: that is the key
+                    # select_available_agent()'s per-cell capacity() check
+                    # queries (see record_capacity_gate).
+                    active_target or active_agent,
+                    failure_class,
+                    reset_at,
                 )
             state.iteration += 1
             if outcome.kind != "pending_user_decision":

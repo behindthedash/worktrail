@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """Claude Stop hook for exceptional next-step capture.
 
 After substantive work, block session termination once so the agent can suggest
@@ -319,7 +319,7 @@ def check_deferred_work(run_record_paths: list[str]) -> list[dict]:
             text=True,
             timeout=DEFERRED_WORK_TIMEOUT_SECONDS,
         )
-    except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
+    except OSError, subprocess.TimeoutExpired, subprocess.SubprocessError:
         return []
     if result.returncode != 0:
         return []
@@ -367,7 +367,7 @@ def check_dedup_gate(
             text=True,
             timeout=DEDUP_GATE_TIMEOUT_SECONDS,
         )
-    except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
+    except OSError, subprocess.TimeoutExpired, subprocess.SubprocessError:
         return []
     if result.returncode != 0:
         return []
@@ -466,7 +466,7 @@ def query_open_prs(session_id: str) -> list[dict]:
             text=True,
             timeout=PR_LEDGER_TIMEOUT_SECONDS,
         )
-    except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
+    except OSError, subprocess.TimeoutExpired, subprocess.SubprocessError:
         return []
     if result.returncode != 0:
         return []

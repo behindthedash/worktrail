@@ -202,6 +202,7 @@ class E2EBackwardCompatTest(unittest.TestCase):
                     "roles": {},
                     "purposes": {},
                     "default_tier": None,
+                    "env_profiles": {},
                     "drain": {},
                 },
             )

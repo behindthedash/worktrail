@@ -274,6 +274,86 @@ DEFAULTS: dict[str, Any] = {
     "pre_commit_cmd": None,
 }
 
+
+# Declared expected type for every flat policy key, swept by
+# `_sweep_key_types()` in `load_policy()`. Two-layer arrangement: this table is
+# the coarse first layer — it only asserts the *shape* of a value against its
+# `DEFAULTS` entry and restores the default when the shape is wrong. The
+# existing per-key checks further down `load_policy()` are the second layer and
+# still run last, unchanged: they own the value-level rules (allowed literals,
+# integer minimums, per-entry cleaning) that a type alone cannot express. A key
+# whose default is `None` accepts `None` in addition to the declared type.
+# `routing` and `add_ons` are exempt (`_TYPE_SWEEP_EXEMPT`): both are resolved
+# by their own validating resolvers before the sweep runs.
+POLICY_KEY_TYPES: dict[str, type | tuple[type, ...]] = {
+    "base_branch": str,
+    "agent_learning": bool,
+    "automerge": dict,
+    "protected_paths": list,
+    # (list, str): `automerge_eligible()` tests `route in require_human_routes`, so a
+    # single-route bare string ("B") is a working gate that a sweep to `[]` would open.
+    "require_human_routes": (list, str),
+    "auth_testing": str,
+    "run_record_dir": str,
+    "integrate_smoke_cmd": str,
+    "post_merge_smoke_cmd": str,
+    "integrate_smoke_retries": int,
+    "pre_pr_cmd": str,
+    "docs_only_paths": list,
+    "promotion_pairs": dict,
+    "worktree_bootstrap_cmd": str,
+    "migration_path_patterns": list,
+    "agent_cli": str,
+    "agent_model": str,
+    "fallback_agent_cli": str,
+    "max_workers": int,
+    "merge_method_by_base": dict,
+    "pr_pacing_wait_s": int,
+    "release_gate": str,
+    "allow_seeded_implementation": bool,
+    "max_active_changes": int,
+    "max_parallel_workers": int,
+    "triage_keep_limit": int,
+    "triage_max_queue_age_days": int,
+    "compile_max_critical_path_over_width": int,
+    "compile_max_same_file_chain": int,
+    "review_skip_max_diff_lines": int,
+    "pre_commit_cmd": str,
+}
+
+# Keys deliberately outside POLICY_KEY_TYPES; see the comment above.
+_TYPE_SWEEP_EXEMPT = frozenset({"routing", "add_ons"})
+
+# Declared in POLICY_KEY_TYPES but NOT swept: each of these already has a
+# stricter per-key check further down `load_policy()` (allowed literals,
+# integer minimums, per-entry cleaning) that subsumes a type check and owns
+# its own warning text. Sweeping them first would swallow the wrong-typed
+# value before that check ever saw it, silently changing warnings callers
+# already assert on. The sweep therefore covers exactly the keys that had no
+# value-level check at all.
+_SWEEP_SKIP = frozenset(
+    {
+        "automerge",
+        "allow_seeded_implementation",
+        "agent_cli",
+        "agent_model",
+        "fallback_agent_cli",
+        "max_workers",
+        "pr_pacing_wait_s",
+        "max_parallel_workers",
+        "integrate_smoke_retries",
+        "max_active_changes",
+        "triage_keep_limit",
+        "triage_max_queue_age_days",
+        "compile_max_critical_path_over_width",
+        "compile_max_same_file_chain",
+        "review_skip_max_diff_lines",
+        "pre_commit_cmd",
+        "merge_method_by_base",
+        "promotion_pairs",
+    }
+)
+
 KNOWN_KEYS = set(DEFAULTS) | {"automerge"}
 VALID_MAX_RISK = ("low", "medium")
 VALID_MERGE_METHODS = ("merge", "squash", "rebase")
@@ -483,6 +563,33 @@ def _validate_routing_targets(
                 "target kept but ineligible until opted in"
             )
         auth = entry.get("auth")
+        if auth is not None and not isinstance(auth, dict):
+            meta["warnings"].append(
+                f"routing.targets.{name}.auth must be a mapping "
+                f"(env or profile); got {auth!r} — spawn will reject it"
+            )
+        if isinstance(auth, dict):
+            if auth.get("env") and auth.get("profile"):
+                # Two sources for one auth lane. Picking one silently is the
+                # exact failure class env profiles exist to eliminate, so this
+                # is surfaced even though the target is kept (the spawn hard-
+                # fails; see build_child_env).
+                meta["warnings"].append(
+                    f"routing.targets.{name}.auth declares both 'env' and "
+                    "'profile' — they name two sources for the same auth lane; "
+                    "remove one"
+                )
+            if auth.get("profile") and pool == "subscription":
+                # The subscription lane pops ANTHROPIC_API_KEY *after* profile
+                # injection (build_child_env), so a profile-supplied key cannot
+                # survive there. Warn rather than reject: a profile on a
+                # subscription target may still legitimately inject non-key
+                # variables.
+                meta["warnings"].append(
+                    f"routing.targets.{name}.auth.profile on a 'subscription' "
+                    "target: that lane strips ANTHROPIC_API_KEY after "
+                    "injection, so a profile-supplied API key will not survive"
+                )
         resolved[name] = {
             "harness": harness,
             "pool": pool,
@@ -490,6 +597,113 @@ def _validate_routing_targets(
             "auth": auth,
         }
     return resolved
+
+
+def _validate_routing_env_profiles(
+    raw: Any, meta: dict[str, Any]
+) -> dict[str, dict[str, Any]]:
+    """`routing.env_profiles`: named environment sources a target's
+    `auth.profile` names -- `{name: {from, keys, expect?}}`.
+
+    A profile stores **no values**: `from` is a path to a JSON file, `keys`
+    lists which of that file's `env` entries to copy, and the optional `expect`
+    maps a key to the literal it must equal before a worker is launched. The
+    split is deliberate and independent -- a key may be asserted without being
+    copied (provenance checking) and copied without being asserted (so its
+    value is never printable). Never-raise warn-and-drop, like the sibling
+    `_validate_routing_*` validators.
+
+    A malformed `expect` drops the whole profile rather than ignoring just the
+    assertion: a silently-dropped assertion is indistinguishable from a passing
+    one, which would defeat the only thing `expect` exists for.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        meta["warnings"].append(
+            f"routing.env_profiles must be a mapping of name -> profile; "
+            f"got {raw!r} — ignored"
+        )
+        return {}
+    resolved: dict[str, dict[str, Any]] = {}
+    for name, entry in raw.items():
+        if not isinstance(name, str):
+            meta["warnings"].append(
+                f"routing.env_profiles: key must be a string; got {name!r} — ignored"
+            )
+            continue
+        if not isinstance(entry, dict):
+            meta["warnings"].append(
+                f"routing.env_profiles.{name} must be a mapping "
+                f"(from/keys/expect); got {entry!r} — dropped"
+            )
+            continue
+        unknown = sorted(set(entry) - {"from", "keys", "expect"})
+        if unknown:
+            meta["warnings"].append(
+                f"routing.env_profiles.{name}: unknown key(s) "
+                f"{', '.join(unknown)} — ignored"
+            )
+        source = entry.get("from")
+        if not isinstance(source, str) or not source.strip():
+            meta["warnings"].append(
+                f"routing.env_profiles.{name}.from must be a non-empty path "
+                "string; dropped"
+            )
+            continue
+        keys = entry.get("keys")
+        if (
+            not isinstance(keys, list)
+            or not keys
+            or not all(isinstance(k, str) and k for k in keys)
+        ):
+            meta["warnings"].append(
+                f"routing.env_profiles.{name}.keys must be a non-empty list of "
+                "non-empty strings; dropped"
+            )
+            continue
+        expect = entry.get("expect")
+        if expect is not None and (
+            not isinstance(expect, dict)
+            or not all(
+                isinstance(k, str) and isinstance(v, str) for k, v in expect.items()
+            )
+        ):
+            meta["warnings"].append(
+                f"routing.env_profiles.{name}.expect must be a mapping of "
+                "string -> string; dropped"
+            )
+            continue
+        resolved[name] = {
+            "from": source,
+            "keys": list(keys),
+            "expect": dict(expect or {}),
+        }
+    return resolved
+
+
+def _warn_undeclared_env_profiles(
+    targets: dict[str, dict[str, Any]],
+    env_profiles: dict[str, dict[str, Any]],
+    meta: dict[str, Any],
+) -> None:
+    """Warn on an `auth.profile` naming a profile `env_profiles` does not
+    declare. The target is kept (mirroring "`pool: api` without `api_opt_in`
+    is kept but ineligible") so it still appears in `--check` diagnostics; the
+    authoritative failure is at spawn, where a missing profile raises.
+    """
+    for name, target in targets.items():
+        auth = target.get("auth")
+        if not isinstance(auth, dict):
+            continue
+        profile = auth.get("profile")
+        if not profile or profile in env_profiles:
+            continue
+        meta["warnings"].append(
+            f"routing.targets.{name}.auth.profile names {profile!r}, which is "
+            "not declared in routing.env_profiles; target kept but every spawn "
+            "will fail until it is declared"
+        )
 
 
 def _validate_routing_agents(
@@ -985,10 +1199,15 @@ def _validate_routing(raw: Any, meta: dict[str, Any]) -> dict[str, Any] | None:
     if not raw:
         return None
     _reject_legacy_routing_keys(raw)
+    # Resolved before `targets`: a target's `auth.profile` is validated against
+    # this table.
+    env_profiles = _validate_routing_env_profiles(raw.get("env_profiles"), meta)
     targets = _validate_routing_targets(raw.get("targets"), meta)
+    _warn_undeclared_env_profiles(targets, env_profiles, meta)
     tiers = _validate_routing_tiers(raw.get("tiers"), targets, meta)
     return {
         "targets": targets,
+        "env_profiles": env_profiles,
         "defaults": _validate_routing_defaults(raw.get("defaults"), meta),
         "roles": _validate_routing_roles(raw.get("roles"), tiers, targets, meta),
         "tiers": tiers,
@@ -1086,8 +1305,8 @@ def resolve_routing(
     policy: dict[str, Any], route: str = "", risk: str = ""
 ) -> dict[str, Any]:
     """Deterministically resolve the effective targets/tiers/roles/purposes/
-    drain configuration — the single source of truth for the selector
-    (`select_cell()`, task 2.1) and dispatch (`tier_for()`, task 4.1).
+    env_profiles/drain configuration — the single source of truth for the
+    selector (`select_cell()`, task 2.1) and dispatch (`tier_for()`, task 4.1).
 
     Args:
         policy: the dict returned by `load_policy()`.
@@ -1108,6 +1327,16 @@ def resolve_routing(
                                           # dispatch.tier_for() ahead of
                                           # complexity to resolve a task's tier
           "default_tier": Optional[str], # routing.default_tier
+          "env_profiles": {name: {"from", "keys", "expect"}},
+                                          # routing.env_profiles, the profile
+                                          # table a target's `auth.profile`
+                                          # resolves against. Threaded through
+                                          # here because spawnlib reads it off
+                                          # *this* resolved dict (never a
+                                          # second load, which could diverge
+                                          # from the table `select_cell`
+                                          # served from) -- dropping it made
+                                          # every profile-bearing cell raise.
           "drain": {"max_workers": int}, # routing.drain, the machine-wide
                                           # drain defaults (D1); {} when absent.
                                           # `agent`/`fallback_agents` are
@@ -1129,6 +1358,7 @@ def resolve_routing(
             "roles": {},
             "purposes": {},
             "default_tier": None,
+            "env_profiles": {},
             "drain": {},
         }
     drain_raw = routing.get("drain") or {}
@@ -1141,6 +1371,7 @@ def resolve_routing(
         "roles": routing.get("roles") or {},
         "purposes": routing.get("purposes") or {},
         "default_tier": routing.get("default_tier"),
+        "env_profiles": routing.get("env_profiles") or {},
         "drain": drain,
     }
 
@@ -1226,6 +1457,62 @@ def has_policy_file(repo: Path) -> bool:
     return policy_file_path(repo).is_file()
 
 
+def _sweep_key_types(policy: dict[str, Any], meta: dict[str, Any]) -> None:
+    """Replace any wrong-typed policy value with its `DEFAULTS` entry, one
+    warning per rejected key. Coarse shape layer only — see POLICY_KEY_TYPES."""
+
+    def _accepts(value: Any, expected: type | tuple[type, ...]) -> bool:
+        types = expected if isinstance(expected, tuple) else (expected,)
+        if isinstance(value, bool) and bool not in types:
+            # A YAML `true` must never satisfy an integer key (bool is an int
+            # subclass), or `max_workers: true` would thread through as 1.
+            return False
+        return isinstance(value, types)
+
+    def _name(expected: type | tuple[type, ...]) -> str:
+        types = expected if isinstance(expected, tuple) else (expected,)
+        return "/".join(t.__name__ for t in types)
+
+    def _check(
+        key: str,
+        value: Any,
+        expected: type | tuple[type, ...],
+        default: Any,
+        allow_none: bool,
+    ) -> Any:
+        if value is None and allow_none:
+            return value
+        if _accepts(value, expected):
+            return value
+        meta["warnings"].append(
+            f"{key} must be {_name(expected)}"
+            + (" or null" if allow_none else "")
+            + f"; got {value!r} — using default {default!r}"
+        )
+        return copy.deepcopy(default)
+
+    for key, expected in POLICY_KEY_TYPES.items():
+        if key in _SWEEP_SKIP:
+            continue
+        allow_none = DEFAULTS[key] is None
+        # `run_record_dir` alone has a lazily-resolved default (load_policy()
+        # seeds it from default_run_record_dir()), so restore that, not None.
+        default = default_run_record_dir() if key == "run_record_dir" else DEFAULTS[key]
+        policy[key] = _check(key, policy.get(key), expected, default, allow_none)
+    # `automerge.target_branches` is a flat key living one level down. A bare
+    # string is accepted here because `automerge_eligible()` already normalizes
+    # it to a single-branch list -- that is this key's per-key layer.
+    automerge = policy.get("automerge")
+    if isinstance(automerge, dict):
+        automerge["target_branches"] = _check(
+            "automerge.target_branches",
+            automerge.get("target_branches"),
+            (list, str),
+            DEFAULTS["automerge"]["target_branches"],
+            False,
+        )
+
+
 def load_policy(repo: Path) -> dict[str, Any]:
     policy = copy.deepcopy(DEFAULTS)
     # Resolved here (not in DEFAULTS) so the worktrail-home lookup stays lazy;
@@ -1276,6 +1563,9 @@ def load_policy(repo: Path) -> dict[str, Any]:
         full_local = {}
     policy["routing"] = _resolve_routing(repo, full_local, meta)
     policy["add_ons"] = _resolve_add_ons(full_local, meta)
+    # Coarse type sweep first; the per-key checks below are the value-level
+    # layer and still run last, unchanged (see POLICY_KEY_TYPES).
+    _sweep_key_types(policy, meta)
     # Validation / clamping — never let a policy file widen autonomy unsafely.
     mr = policy["automerge"].get("max_risk", "low")
     if mr not in VALID_MAX_RISK:

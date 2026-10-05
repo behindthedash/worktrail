@@ -19,9 +19,11 @@ from worktrail.router.policy import (
     _validate_routing_agents,
     _validate_routing_default_tier,
     _validate_routing_drain,
+    _validate_routing_env_profiles,
     _validate_routing_purpose_tiers,
     _validate_routing_targets,
     _validate_routing_tiers,
+    _warn_undeclared_env_profiles,
     automerge_eligible,
     automerge_labels,
     detect_external_automerge,
@@ -1981,6 +1983,43 @@ class Routing(unittest.TestCase):
             pol = load_policy(repo)
         self.assertEqual(resolve_routing(pol)["purposes"], {})
 
+    def test_resolve_routing_carries_env_profiles(self):
+        # The spawn seam resolves `auth.profile` off THIS resolved table,
+        # never a second policy read (`model-tier-routing`: "the same resolved
+        # routing table the cell was selected from, without re-reading
+        # policy"), so a declared profile table has to survive resolution.
+        # Dropped here, every profile-bearing cell -- e.g. a DeepSeek lane's
+        # `claude-deepseek` -- raised OperatorConfigError before launch:
+        # confirmed live 2026-10-02, the drain's intake-triage spawn died on
+        # exactly that error while the profile WAS declared in routing.yaml.
+        repo = _repo_with(
+            "routing:\n"
+            "  targets:\n"
+            "    claude-deepseek:\n"
+            "      harness: claude\n"
+            "      pool: api\n"
+            "      api_opt_in: true\n"
+            "      auth:\n"
+            "        profile: deepseek\n"
+            "  env_profiles:\n"
+            "    deepseek:\n"
+            "      from: /home/briank/.claude/settings.json\n"
+            "      keys:\n"
+            "        - ANTHROPIC_BASE_URL\n"
+        )
+        with self._no_mw_env():
+            pol = load_policy(repo)
+        self.assertEqual(
+            resolve_routing(pol)["env_profiles"],
+            {
+                "deepseek": {
+                    "from": "/home/briank/.claude/settings.json",
+                    "keys": ["ANTHROPIC_BASE_URL"],
+                    "expect": {},
+                }
+            },
+        )
+
     def test_resolve_routing_no_routing_configured_returns_empty_shape(self):
         repo = _repo_with(
             "agent_cli: claude\nagent_model: sonnet\nfallback_agent_cli: codex\n"
@@ -1996,6 +2035,7 @@ class Routing(unittest.TestCase):
                 "roles": {},
                 "purposes": {},
                 "default_tier": None,
+                "env_profiles": {},
                 "drain": {},
             },
         )
@@ -2027,6 +2067,216 @@ class Routing(unittest.TestCase):
         with self._no_mw_env():
             pol = load_policy(repo)
         self.assertIsNone(pol["routing"])
+
+
+class TestValidateRoutingEnvProfiles(unittest.TestCase):
+    """`_validate_routing_env_profiles()`: `routing.env_profiles` into
+    `{name: {from, keys, expect}}`. A profile stores no values -- only a path,
+    key names, and an optional non-secret assertion."""
+
+    def test_absent_resolves_to_empty(self):
+        meta = {"warnings": []}
+        self.assertEqual(_validate_routing_env_profiles(None, meta), {})
+        self.assertEqual(meta["warnings"], [])
+
+    def test_non_mapping_warns_and_ignored(self):
+        meta = {"warnings": []}
+        self.assertEqual(_validate_routing_env_profiles(["deepseek"], meta), {})
+        self.assertTrue(
+            any("routing.env_profiles must be a mapping" in w for w in meta["warnings"])
+        )
+
+    def test_valid_profile_resolves_all_three_fields(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_env_profiles(
+            {
+                "deepseek": {
+                    "from": "~/.claude/settings.json",
+                    "keys": ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"],
+                    "expect": {
+                        "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic"
+                    },
+                }
+            },
+            meta,
+        )
+        self.assertEqual(
+            resolved,
+            {
+                "deepseek": {
+                    "from": "~/.claude/settings.json",
+                    "keys": ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"],
+                    "expect": {
+                        "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic"
+                    },
+                }
+            },
+        )
+        self.assertEqual(meta["warnings"], [])
+
+    def test_expect_defaults_to_empty_mapping(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_env_profiles(
+            {"p": {"from": "~/x.json", "keys": ["A"]}}, meta
+        )
+        self.assertEqual(resolved["p"]["expect"], {})
+
+    def test_entry_not_a_mapping_is_dropped(self):
+        meta = {"warnings": []}
+        self.assertEqual(_validate_routing_env_profiles({"p": "~/x.json"}, meta), {})
+        self.assertTrue(any("must be a mapping" in w for w in meta["warnings"]))
+
+    def test_missing_or_empty_from_is_dropped(self):
+        for entry in (
+            {"keys": ["A"]},
+            {"from": "", "keys": ["A"]},
+            {"from": 3, "keys": ["A"]},
+        ):
+            with self.subTest(entry=entry):
+                meta = {"warnings": []}
+                self.assertEqual(_validate_routing_env_profiles({"p": entry}, meta), {})
+                self.assertTrue(
+                    any(".from must be" in w for w in meta["warnings"]),
+                    meta["warnings"],
+                )
+
+    def test_keys_must_be_a_non_empty_list_of_non_empty_strings(self):
+        for keys in (None, [], "A", [""], [1], ["A", ""]):
+            with self.subTest(keys=keys):
+                meta = {"warnings": []}
+                resolved = _validate_routing_env_profiles(
+                    {"p": {"from": "~/x.json", "keys": keys}}, meta
+                )
+                self.assertEqual(resolved, {})
+                self.assertTrue(
+                    any(".keys must be" in w for w in meta["warnings"]),
+                    meta["warnings"],
+                )
+
+    def test_malformed_expect_drops_the_whole_profile(self):
+        """A silently-ignored assertion is indistinguishable from a passing one,
+        which would defeat the only thing `expect` exists for."""
+        for expect in ({"A": 1}, "A=1", ["A"]):
+            with self.subTest(expect=expect):
+                meta = {"warnings": []}
+                resolved = _validate_routing_env_profiles(
+                    {"p": {"from": "~/x.json", "keys": ["A"], "expect": expect}}, meta
+                )
+                self.assertEqual(resolved, {})
+                self.assertTrue(
+                    any(".expect must be" in w for w in meta["warnings"]),
+                    meta["warnings"],
+                )
+
+    def test_unknown_key_inside_a_profile_warns_but_keeps_it(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_env_profiles(
+            {"p": {"from": "~/x.json", "keys": ["A"], "keyz": ["A"]}}, meta
+        )
+        self.assertIn("p", resolved)
+        self.assertTrue(any("unknown key" in w for w in meta["warnings"]))
+
+
+class TestWarnUndeclaredEnvProfiles(unittest.TestCase):
+    def test_dangling_reference_warns_and_keeps_the_target(self):
+        meta = {"warnings": []}
+        targets = {
+            "claude-deepseek": {
+                "harness": "claude",
+                "pool": "api",
+                "api_opt_in": True,
+                "auth": {"profile": "ghost"},
+            }
+        }
+        _warn_undeclared_env_profiles(targets, {}, meta)
+        self.assertTrue(
+            any("ghost" in w and "claude-deepseek" in w for w in meta["warnings"]),
+            meta["warnings"],
+        )
+        self.assertIn("claude-deepseek", targets)
+
+    def test_declared_reference_is_silent(self):
+        meta = {"warnings": []}
+        _warn_undeclared_env_profiles(
+            {"t": {"harness": "claude", "pool": "api", "auth": {"profile": "p"}}},
+            {"p": {"from": "~/x.json", "keys": ["A"], "expect": {}}},
+            meta,
+        )
+        self.assertEqual(meta["warnings"], [])
+
+    def test_targets_without_a_profile_are_silent(self):
+        meta = {"warnings": []}
+        _warn_undeclared_env_profiles(
+            {
+                "a": {"harness": "claude", "pool": "subscription", "auth": None},
+                "b": {"harness": "codex", "pool": "api", "auth": {"codex_home": "/x"}},
+            },
+            {},
+            meta,
+        )
+        self.assertEqual(meta["warnings"], [])
+
+
+class TestValidateRoutingTargetsAuthShape(unittest.TestCase):
+    """`auth` is carried through `_validate_routing_targets` verbatim (the
+    spawn lane is where it is enforced), but the shapes that cannot mean
+    anything are surfaced here so `--check` shows them before a spawn fails."""
+
+    def _validated(self, auth, *, pool="api"):
+        meta = {"warnings": []}
+        resolved = _validate_routing_targets(
+            {
+                "t": {
+                    "harness": "claude",
+                    "pool": pool,
+                    "api_opt_in": True,
+                    "auth": auth,
+                }
+            },
+            meta,
+        )
+        return resolved, meta["warnings"]
+
+    def test_auth_is_carried_through_verbatim(self):
+        resolved, warnings = self._validated({"profile": "p"})
+        self.assertEqual(resolved["t"]["auth"], {"profile": "p"})
+        self.assertEqual(warnings, [])
+
+    def test_non_mapping_auth_warns(self):
+        resolved, warnings = self._validated(["profile"])
+        self.assertTrue(any("auth must be a mapping" in w for w in warnings), warnings)
+        self.assertIn("t", resolved)
+
+    def test_env_and_profile_together_warn(self):
+        """Two sources for one auth lane; the spawn hard-fails, but `--check`
+        should say so first."""
+        _, warnings = self._validated({"env": "K", "profile": "p"})
+        self.assertTrue(any("two sources" in w for w in warnings), warnings)
+
+    def test_profile_on_a_subscription_target_warns(self):
+        """The subscription lane strips ANTHROPIC_API_KEY after injection, so
+        a profile-supplied key cannot survive there."""
+        _, warnings = self._validated({"profile": "p"}, pool="subscription")
+        self.assertTrue(
+            any("subscription" in w and "profile" in w for w in warnings), warnings
+        )
+
+    def test_codex_home_plus_profile_does_not_warn(self):
+        """Not a conflict: CODEX_HOME selects the home, a profile could still
+        add e.g. OPENAI_BASE_URL."""
+        meta = {"warnings": []}
+        _validate_routing_targets(
+            {
+                "t": {
+                    "harness": "codex",
+                    "pool": "api",
+                    "api_opt_in": True,
+                    "auth": {"codex_home": "/x", "profile": "p"},
+                }
+            },
+            meta,
+        )
+        self.assertEqual(meta["warnings"], [])
 
 
 class TestValidateRoutingTargets(unittest.TestCase):

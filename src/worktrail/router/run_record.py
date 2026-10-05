@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """GO v2 run record — the machine-readable audit log of every front-door run.
 
 One YAML file per run under <dir>/<repo-name>/<run-id>.yaml (default dir
@@ -24,6 +24,10 @@ Subcommands:
          [--routing-decision JSON] [--gates "gate_a,gate_b"]
                                                -> prints {run_id, path}
   set    PATH KEY VALUE                       -> set/replace a top-level field
+  set-list PATH KEY [VALUE ...]               -> set/replace a field with a list
+                                               (the only way to write a list, and
+                                               the repair path for a list-typed
+                                               field left holding a scalar)
   append PATH KEY VALUE                       -> append VALUE to a list field
   intervention PATH --category C --minutes N --tokens N --note "..."
          -> log a manual rescue (process-friction telemetry for retros)
@@ -64,9 +68,11 @@ finish PATH --status completed_pr_open [--pr URL] [--merge-result ...]
           -> stamp one pending-user-decision lifecycle hop into the record's
              `pending_decisions` list (idempotent per event+decision-id; see
              DECISION_EVENTS / workqueue/decisions.py's envelope contract)
-  active-conflicts --dir DIR --repo REPO --specification SPEC [--exclude PATH]
-         -> read-only scan for other non-terminal runs on the same
-            repo+specification; prints a JSON array (see contracts/active-conflicts-cli.md)
+  active-conflicts --dir DIR --repo REPO [--specification SPEC] [--exclude PATH]
+         -> read-only scan for other non-terminal runs on the same repo;
+            --specification restricts it to that specification, omitting it
+            scans repo-wide (each entry names its own specification); prints
+            a JSON array (see contracts/active-conflicts-cli.md)
   claim  RUN_PATH --specification SPEC [--remote] [--remote-ttl-seconds N]
          -> atomically claim repo+specification for the run at RUN_PATH before
             committing to implement it. Closes the TOCTOU gap in the read-only
@@ -543,12 +549,34 @@ def cmd_start(args: argparse.Namespace) -> int:
     return 0
 
 
+def _scalar_list_field_hint(key: str) -> str:
+    """Refusal for appending to a scalar-holding list field, naming the real repair.
+
+    `set` stores its VALUE verbatim, so it cannot produce a list -- `set-list` is
+    the only invocation that replaces a scalar with a list. The old "use `set`"
+    message pointed at a command that could not do the job (worktrail brief
+    20261003-204455: `set PATH handoffs_consumed '["a","b"]'` stored a string, and
+    the documented recovery from `append` was a dead end).
+    """
+    return f"field '{key}' is scalar; use `set-list` to replace it with a list"
+
+
 def cmd_set(args: argparse.Namespace) -> int:
     path = Path(args.path)
     record = _load(path)
     if args.key == "status" and args.value not in PHASES:
         raise SystemExit(f"invalid phase '{args.value}'; allowed: {PHASES}")
     record[args.key] = args.value
+    _save(path, record)
+    return 0
+
+
+def cmd_set_list(args: argparse.Namespace) -> int:
+    path = Path(args.path)
+    record = _load(path)
+    if args.key == "status":
+        raise SystemExit("field 'status' is a phase, not a list; use `set`")
+    record[args.key] = list(args.values)
     _save(path, record)
     return 0
 
@@ -562,7 +590,7 @@ def cmd_append(args: argparse.Namespace) -> int:
     elif isinstance(cur, list):
         cur.append(args.value)
     else:
-        raise SystemExit(f"field '{args.key}' is scalar; use `set`")
+        raise SystemExit(_scalar_list_field_hint(args.key))
     _save(path, record)
     return 0
 
@@ -642,7 +670,7 @@ def cmd_intervention(args: argparse.Namespace) -> int:
     elif isinstance(cur, list):
         cur.append(entry)
     else:
-        raise SystemExit("field 'interventions' is scalar; cannot append")
+        raise SystemExit(_scalar_list_field_hint("interventions"))
     _save(path, record)
     print(json.dumps({"logged": entry}))
     return 0
@@ -950,7 +978,7 @@ def record_decision_event(
     if entries is None:
         entries = record["pending_decisions"] = []
     elif not isinstance(entries, list):
-        raise SystemExit("field 'pending_decisions' is scalar; cannot append")
+        raise SystemExit(_scalar_list_field_hint("pending_decisions"))
     for entry in entries:
         if _decision_entry_matches(entry, event, decision_id):
             return {
@@ -1016,7 +1044,7 @@ def _scope_review_worktree_empty_diff(record: dict[str, Any]) -> str | None:
             check=False,
             capture_output=True,
         )
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return None
     # `git diff <base_commit>` (no --cached) already reflects uncommitted edits to
     # tracked files; the one thing it never shows is a brand-new untracked file
@@ -1141,7 +1169,7 @@ def _query_merge_state(
             text=True,
             timeout=30,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
     if result.returncode != 0:
         return None
@@ -1348,11 +1376,17 @@ def _is_stale(record: dict[str, Any], repo_dir: Path, base_branch: str) -> bool:
 
 
 def _active_conflicts(
-    repo_dir: Path, repo_root: Path, specification: str, exclude: Path | None
+    repo_dir: Path, repo_root: Path, specification: str | None, exclude: Path | None
 ) -> dict[str, list[Any]]:
-    """Other non-terminal run records under `repo_dir` targeting `specification`,
-    partitioned into `{"live": [...], "stale": [...], "warnings": [...]}` via
-    `_is_stale()`.
+    """Non-terminal run records under `repo_dir` faithfully partitioned into
+    `{"live": [...], "stale": [...], "warnings": [...]}` via `_is_stale()`.
+
+    With `specification` set, only records targeting that exact specification
+    are classified. With `specification=None` the scan is repo-wide: every
+    non-terminal record is classified whatever its own specification, and each
+    entry's `specification` names that record's own value (None when the
+    record never got one) -- how a caller detects concurrent work on the same
+    repo under a different specification.
 
     `repo_root` is the actual git repository (for `_is_stale()`'s `git cat-file`
     check), distinct from `repo_dir` (the run-records directory for this repo).
@@ -1365,6 +1399,11 @@ def _active_conflicts(
     this is the mandatory `#active-conflicts-scan` hard-stop gate, and one bad
     file must never silently disable it for every other run. Skipped files are
     reported in `warnings`, never dropped without a trace.
+
+    A `repo_dir` that does not exist is not a silent clean scan either: both
+    partitions stay empty but `warnings` names the exact path that was never
+    read, so a caller can tell "nothing was scanned" apart from "nothing was
+    found". `cmd_active_conflicts` pairs this with exit 1.
     """
     live: list[dict[str, Any]] = []
     stale: list[dict[str, Any]] = []
@@ -1379,7 +1418,10 @@ def _active_conflicts(
                 continue
             if record.get("final_status") is not None:
                 continue
-            if record.get("specification") != specification:
+            if (
+                specification is not None
+                and record.get("specification") != specification
+            ):
                 continue
             entry = {
                 "run_id": record.get("run_id"),
@@ -1387,10 +1429,15 @@ def _active_conflicts(
                 "started_at": record.get("started_at"),
                 "request_summary": record.get("request_summary"),
                 "agent": record.get("agent"),
+                "specification": record.get("specification"),
             }
             base_branch = record.get("base_branch")
             is_stale = bool(base_branch) and _is_stale(record, repo_root, base_branch)
             (stale if is_stale else live).append(entry)
+    else:
+        warnings.append(
+            f"{repo_dir} does not exist -- no run records were scanned for this repo"
+        )
     return {"live": live, "stale": stale, "warnings": warnings}
 
 
@@ -1443,16 +1490,26 @@ def _file_overlap_conflicts(
 
 
 def cmd_active_conflicts(args: argparse.Namespace) -> int:
-    """Read-only scan for other non-terminal runs on the same repo+specification.
+    """Read-only scan for other non-terminal runs on the same repo.
+
+    With `--specification SPEC` the scan is restricted to that specification;
+    with it omitted the scan is repo-wide — every non-terminal record for the
+    repo is classified, each entry naming its own `specification` (null when
+    the record never got one).
 
     Prints the `{"live": [...], "stale": [...]}` partition from
     `_active_conflicts()`.
+
+    Exits 1 when the records root does not exist -- the scan could not look,
+    and `_active_conflicts()` says so in `warnings` -- and 0 otherwise. The
+    exit code comes from the filesystem predicate, never from `warnings`
+    being non-empty: a malformed record skipped on an existing root exits 0.
     """
     repo = Path(args.repo).resolve()
     repo_dir = Path(args.dir).expanduser() / repo.name
     exclude = Path(args.exclude).resolve() if args.exclude else None
     print(json.dumps(_active_conflicts(repo_dir, repo, args.specification, exclude)))
-    return 0
+    return 0 if repo_dir.is_dir() else 1
 
 
 def cmd_reconcile(args: argparse.Namespace) -> int:
@@ -1997,7 +2054,7 @@ def _lock_path(run_path: Path, specification: str) -> Path:
 def _load_lock(lock_path: Path) -> dict[str, Any]:
     try:
         return json.loads(lock_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return {}
 
 
@@ -2451,6 +2508,12 @@ def main(argv=None) -> int:
     s.add_argument("value")
     s.set_defaults(func=cmd_set)
 
+    s = sub.add_parser("set-list")
+    s.add_argument("path")
+    s.add_argument("key")
+    s.add_argument("values", nargs="*")
+    s.set_defaults(func=cmd_set_list)
+
     s = sub.add_parser("append")
     s.add_argument("path")
     s.add_argument("key")
@@ -2518,7 +2581,13 @@ def main(argv=None) -> int:
     s = sub.add_parser("active-conflicts")
     s.add_argument("--dir", required=True)
     s.add_argument("--repo", required=True)
-    s.add_argument("--specification", required=True)
+    s.add_argument(
+        "--specification",
+        default=None,
+        help="restrict the scan to records targeting this exact specification; "
+        "omit for a repo-wide scan of every non-terminal record (each entry "
+        "names its own specification, null when the record never got one)",
+    )
     s.add_argument("--exclude", default=None)
     s.set_defaults(func=cmd_active_conflicts)
 

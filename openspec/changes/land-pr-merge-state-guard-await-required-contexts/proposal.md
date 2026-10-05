@@ -54,3 +54,9 @@ result is threaded into `_watch_ci`. It is in scope at the BLOCKED branch and un
   saturates the compile same-file gate).
 - No CLI, `LandRequest`, or `LandOutcome` shape change. A repo with no ruleset-required
   contexts, or an unreadable ruleset, lands exactly as it does today.
+
+## Folded from 20261005-090358-blocked-branch-missed-pending-check
+
+worktrail land-pr: run record finished as blocked_product_decision while a required check was merely still running — the BLOCKED branch's not-reported-yet discrimination did not fire despite all required contexts being present and non-terminal
+
+Premise confirmed by /home/briank/.worktrail/runs/pullhook/go-20261005-084700.yaml: its merge_result correction states the earlier blocked_product_decision finish was recorded 'while the required checks were still pending (all required contexts were present and running, not absent)'. The discrimination exists in main: _required_contexts_reported/_outstanding_required_contexts (src/worktrail/router/land_pr.py:1147-1186), BLOCKED re-poll loop (land_pr.py:1877-1910), product-decision branch (land_pr.py:2022), landed via #1313 -> c368a92c #1328 (2026-09-21) and still failing on 2026-10-05 under worktrail 1.1.41 (HEAD 20546b61), so this is a recurrence inside the open change's own capability, not a stale brief. The change remains open (tasks.md: 1.1 [x], 2.1 e2e verification [ ]). Guard call sites are only land_pr.py:1872/1909, so code evidence also answers the brief's open question: required_status_check_contexts returns None on a failed lookup and [] on zero rules (automerge_preflight.py:116-144), and _required_contexts_reported treats both as trivially true by the change's explicit design. Precedent: dec-20261005-083810-required-checks-absent-768c4e8b8e6e (human answer: add recurrence evidence to this existing change). Memory only documents the distinct absent-checks variant (reference_land_pr_blocked_required_checks_absent).

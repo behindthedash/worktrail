@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """Queue triage: repo-scoped dedup/staleness evaluation of the work queue.
 
 Recommended cadence: monthly, or pre-drain weekly -- not nightly. A full
@@ -19,7 +19,9 @@ import re
 import subprocess
 import sys
 import time
+import uuid
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -50,6 +52,83 @@ logger = logging.getLogger(__name__)
 _FOCUS_BODY_RE = re.compile(r"^##\s+Focus\s*$\r?\n(.+)$", re.MULTILINE)
 
 NO_REPO_KEY = "__none__"
+
+
+@contextmanager
+def _evaluator_worktree(cwd: str | Path):
+    """Give an evaluator a linked worktree when its checkout is canonical.
+
+    Headless Codex workers are guarded against running in a canonical checkout.
+    Evaluators only inspect repo state, but still need a valid linked-worktree
+    cwd to launch. Existing worktrees are already isolated and pass through.
+    """
+    repo_root = Path(cwd).resolve()
+    git_entry = repo_root / ".git"
+    if git_entry.is_file():
+        try:
+            gitdir_line = git_entry.read_text(encoding="utf-8").strip()
+            gitdir_value = gitdir_line.removeprefix("gitdir: ")
+            gitdir = Path(gitdir_value)
+            if not gitdir.is_absolute():
+                gitdir = (repo_root / gitdir).resolve()
+            is_linked_worktree = (gitdir / "commondir").is_file()
+        except OSError:
+            yield str(cwd)
+            return
+    else:
+        is_linked_worktree = False
+
+    if is_linked_worktree or not git_entry.is_dir():
+        yield str(cwd)
+        return
+
+    has_head = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "--verify", "HEAD"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if has_head.returncode != 0:
+        yield str(cwd)
+        return
+
+    from ..orchestrator.worktree import default_worktree_base
+
+    worktree_base = default_worktree_base(repo_root)
+    worktree_base.mkdir(parents=True, exist_ok=True)
+    worktree = worktree_base / f".triage-evaluator-{uuid.uuid4().hex}"
+    added = subprocess.run(
+        ["git", "-C", str(repo_root), "worktree", "add", "--detach", str(worktree)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if added.returncode != 0:
+        detail = (added.stderr or added.stdout).strip()
+        raise WorktreeAddError(f"triage evaluator worktree creation failed: {detail}")
+
+    try:
+        yield str(worktree)
+    finally:
+        removed = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_root),
+                "worktree",
+                "remove",
+                "--force",
+                str(worktree),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if removed.returncode != 0:
+            detail = (removed.stderr or removed.stdout).strip()
+            logger.warning(
+                "triage evaluator worktree cleanup failed for %s: %s", worktree, detail
+            )
 
 
 def _claim_or_reclaim_stale(brief_id: str, by: str) -> dict:
@@ -231,7 +310,8 @@ EVALUATOR_PROMPT_TEMPLATE = """\
 You are triaging work-queue briefs for the repo group `{repo}` for staleness, \
 duplication, and whether they belong folded into or proposed as an OpenSpec \
 change. Evaluate ONLY the briefs listed below; do not scan the queue for \
-others.
+others. This is a read-only evaluation: do not modify files, create commits, \
+or open pull requests.
 
 Mechanical premise check: each brief below also carries a deterministic \
 premise check run before you were spawned (a quoted claim/path/command from \
@@ -1412,13 +1492,13 @@ def _check_repo_archived(repo: str, cwd: str | Path) -> bool | None:
             cwd=str(cwd),
             timeout=30,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
     if result.returncode != 0:
         return None
     try:
         data = json.loads(result.stdout)
-    except (json.JSONDecodeError, ValueError):
+    except json.JSONDecodeError, ValueError:
         return None
     if not isinstance(data, dict):
         return None
@@ -1494,7 +1574,9 @@ def evaluate_group(
     Builds `EVALUATOR_PROMPT_TEMPLATE` for this group (one `{id, focus, created}`
     line per brief, `path.stem` as `id` -- matching `work_queue.resolve()`'s
     primary identifier) and spawns one cold headless worker via
-    `spawnlib.spawn_agent()` in `cwd`, under `DEFAULT_TIER` with `agent` passed
+    `spawnlib.spawn_agent()` in an isolated linked worktree when `cwd` is a
+    canonical checkout (an existing linked worktree is reused), under
+    `DEFAULT_TIER` with `agent` passed
     through as a soft `prefer` hint (design D3: routing, not this caller, owns
     the tier's harness/model choice). `cwd` is the group's target repo checkout
     when `repo` is not `NO_REPO_KEY` (so the evaluator's `git`/`gh` calls run
@@ -1626,7 +1708,10 @@ def evaluate_group(
         propose_target_rule=propose_target_rule,
         dependency_freshness=dependency_freshness.format_freshness_block(freshness),
     )
-    result = spawnlib.spawn_agent(prompt, cwd, tier=DEFAULT_TIER, prefer=agent)
+    with _evaluator_worktree(cwd) as evaluator_cwd:
+        result = spawnlib.spawn_agent(
+            prompt, evaluator_cwd, tier=DEFAULT_TIER, prefer=agent
+        )
     candidates_by_brief = {
         path.stem: [c["id"] for c in candidates_by_path[path]] for path in briefs
     }
@@ -1920,7 +2005,7 @@ def parse_verdicts(
     for snippet in _extract_json_objects(raw_text):
         try:
             obj = json.loads(snippet)
-        except (json.JSONDecodeError, ValueError):
+        except json.JSONDecodeError, ValueError:
             continue
         if not isinstance(obj, dict):
             continue
@@ -2833,7 +2918,7 @@ def _repo_base_branch(repo: Path) -> str:
             text=True,
             timeout=15,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return "main"
     if result.returncode == 0:
         branch = result.stdout.strip()
@@ -2982,8 +3067,11 @@ def _worktree_pr_close(
     to `queue/` (`release()`) and returns `status="error"` with the `branch`
     name it would have used, so a caller can diagnose or retry without the
     queue and the target repo disagreeing about what happened. Once a PR URL
-    exists, closes the brief (`done(..., triaged_to=pr_url)`), with rollback
-    (`release()`) on `done()` failure. The local worktree is cleaned up
+    exists, closes the brief (`done(..., triaged_to=pr_url)`); a rejected
+    closure is reported with `rolled_back: False` and the brief stays claimed
+    in `picked/` -- the PR exists, so the stalled-in-flight resume path closes
+    it against that PR rather than a release re-queueing work the PR already
+    captures. The local worktree is cleaned up
     in a `finally` except on `code_defect` or `review_threads_blocking` outcomes
     where it is left on disk for manual review, otherwise it is always
     removed regardless of outcome. The local branch is deleted too when no PR
@@ -3238,13 +3326,15 @@ def _worktree_pr_close(
     done_res = done(v.brief_id, note=v.evidence, triaged_to=pr_url)
     if done_res["status"] != "done":
         detail = done_res.get("error")
-        release_res = release(v.brief_id)
+        # The brief stays claimed in `picked/`: a PR exists, so there is no
+        # work to re-queue. Releasing here would race the stalled-in-flight
+        # resume path, which closes the brief against this PR.
         return {
             **result,
             "status": "error",
             "path": done_res.get("path"),
             "error": f"done: {done_res['status']}" + (f" ({detail})" if detail else ""),
-            "rolled_back": release_res["status"] == "released",
+            "rolled_back": False,
             "branch": branch,
             "pr_url": pr_url,
             "landing": landing_dict,

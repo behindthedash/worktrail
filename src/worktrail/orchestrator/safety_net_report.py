@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """Aggregate observability report for the orchestrator's "safety net" recovery
 paths -- code that recovers instead of failing hard (see live.py's
 `_require_dependency_files` WARN downgrade and verify.py's `auto_merge`
@@ -41,7 +41,7 @@ def journal_paths(repo: Path) -> Iterator[Path]:
 def _load(path: Path) -> dict[str, Any]:
     try:
         return json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return {}
 
 

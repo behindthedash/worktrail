@@ -2,16 +2,22 @@
 """Tests for routing_cli.py. Run: python3 test_routing_cli.py"""
 
 import io
+import os
 import subprocess
 import tempfile
 import unittest
-from contextlib import redirect_stdout
-from datetime import datetime, timezone
+from contextlib import redirect_stderr, redirect_stdout
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
 
 from worktrail.orchestrator import agent_capacity
-from worktrail.router.policy import _load_yaml_mapping, _validate_routing
+from worktrail.router import routing_cli
+from worktrail.router.policy import (
+    _load_yaml_mapping,
+    _validate_routing,
+    resolve_routing,
+)
 from worktrail.router.routing_cli import (
     STARTER_ROUTING_YAML,
     _check,
@@ -180,16 +186,139 @@ class CheckTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.routing_path = Path(self._tmp.name) / "routing.yaml"
         self.capacity_path = Path(self._tmp.name) / "agent-capacity.json"
-        self.now = datetime(2026, 8, 27, tzinfo=timezone.utc)
+        self.now = datetime(2026, 8, 27, tzinfo=UTC)
 
     def _write(self, text: str) -> None:
         self.routing_path.write_text(text, encoding="utf-8")
+
+    def _run(self, path: Path | None = None, **kwargs):
+        """Run `_check` against `path` (default: this fixture).
+
+        `_check` resolves the table the way a spawn does --
+        `resolve_routing(load_policy(worktrail_home()))` -- so the file under
+        test is selected through the documented `WORKTRAIL_ROUTING_FILE`
+        override, the same seam an operator points at a routing file.
+        """
+        with mock.patch.dict(
+            "os.environ",
+            {"WORKTRAIL_ROUTING_FILE": str(path or self.routing_path)},
+        ):
+            return _check(**kwargs)
 
     def _fake_runner(self, *model_ids):
         def runner(cmd, **kwargs):
             return _FakeResult(stdout="\n".join(model_ids))
 
         return runner
+
+    def _write_settings(self, name: str, payload: str) -> Path:
+        path = Path(self._tmp.name) / name
+        path.write_text(payload, encoding="utf-8")
+        return path
+
+    def _profile_routing(self, source: Path, *, expect: str = "") -> str:
+        # Block style, not `{model: deepseek-flash[1m]}`: inside a YAML FLOW
+        # mapping `[` opens a flow sequence, so an unquoted bracketed model id
+        # there is a parse error. (Same hazard `explicit_cell_override` avoids
+        # by writing its temp file with safe_dump.)
+        return f"""
+env_profiles:
+  deepseek:
+    from: {source}
+    keys: [ANTHROPIC_BASE_URL]
+{expect}targets:
+  claude-deepseek:
+    harness: claude
+    pool: api
+    api_opt_in: true
+    auth:
+      profile: deepseek
+tiers:
+  t1-deep:
+    claude-deepseek:
+      model: deepseek-flash[1m]
+"""
+
+    def test_resolvable_env_profile_notes_ok_and_exits_zero(self):
+        source = self._write_settings(
+            "settings.json", '{"env": {"ANTHROPIC_BASE_URL": "https://ds.test"}}'
+        )
+        self._write(self._profile_routing(source))
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = self._run(
+                path=self.routing_path, capacity_path=self.capacity_path, now=self.now
+            )
+        self.assertEqual(rc, 0)
+        self.assertIn("env profile deepseek ok", out.getvalue())
+
+    def test_missing_profile_file_fails_without_recording_a_capacity_gate(self):
+        """It flips the exit code but must NOT record an `agent_capacity` gate:
+        a gate is skipped silently by `select_cell` on the next spawn, which
+        would turn a loud config error into an invisible fallback -- the exact
+        failure class env profiles exist to eliminate. The FAIL carries the
+        probe's own message, which names the cell, the profile, and the file."""
+        source = Path(self._tmp.name) / "absent.json"
+        self._write(self._profile_routing(source))
+        err = io.StringIO()
+        with (
+            mock.patch.object(agent_capacity, "record") as record,
+            redirect_stderr(err),
+        ):
+            rc = self._run(
+                path=self.routing_path, capacity_path=self.capacity_path, now=self.now
+            )
+        self.assertEqual(rc, 1)
+        record.assert_not_called()
+        self.assertIn("does not exist", err.getvalue())
+        self.assertIn("env profile 'deepseek'", err.getvalue())
+
+    def test_expect_mismatch_names_the_key_and_fails(self):
+        source = self._write_settings(
+            "settings.json",
+            '{"env": {"ANTHROPIC_BASE_URL": "https://api.anthropic.com"}}',
+        )
+        self._write(
+            self._profile_routing(
+                source,
+                expect=(
+                    "    expect:\n"
+                    "      ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic\n"
+                ),
+            )
+        )
+        err = io.StringIO()
+        with redirect_stderr(err):
+            rc = self._run(
+                path=self.routing_path, capacity_path=self.capacity_path, now=self.now
+            )
+        self.assertEqual(rc, 1)
+        self.assertIn("ANTHROPIC_BASE_URL", err.getvalue())
+        self.assertIn("api.deepseek.com", err.getvalue())
+
+    def test_dangling_profile_reference_does_not_crash_check(self):
+        """A target naming an undeclared profile warns at validation time and
+        FAILs at check time; neither may raise."""
+        self._write("""
+targets:
+  claude-deepseek:
+    harness: claude
+    pool: api
+    api_opt_in: true
+    auth:
+      profile: ghost
+tiers:
+  t1-deep:
+    claude-deepseek:
+      model: deepseek-flash[1m]
+""")
+        err = io.StringIO()
+        with redirect_stderr(err):
+            rc = self._run(
+                path=self.routing_path, capacity_path=self.capacity_path, now=self.now
+            )
+        self.assertEqual(rc, 1)
+        self.assertIn("ghost", err.getvalue())
 
     def test_all_cells_clean_exits_zero(self):
         self._write("""
@@ -205,7 +334,7 @@ tiers:
     claude-sub: {model: sonnet, effort: high}
     opencode-free: {model: opencode/deepseek-v4-flash-free}
 """)
-        rc = _check(
+        rc = self._run(
             path=self.routing_path,
             runner=self._fake_runner("opencode/deepseek-v4-flash-free"),
             capacity_path=self.capacity_path,
@@ -223,7 +352,7 @@ tiers:
   t1-deep:
     opencode-free: {model: opencode/retired-model-free}
 """)
-        rc = _check(
+        rc = self._run(
             path=self.routing_path,
             runner=self._fake_runner("opencode/other-model-free"),
             capacity_path=self.capacity_path,
@@ -248,7 +377,7 @@ tiers:
   t1-deep:
     opencode-free: {model: opencode/deepseek-v4-flash-free}
 """)
-        rc = _check(
+        rc = self._run(
             path=self.routing_path,
             runner=self._fake_runner("opencode/deepseek-v4-flash-free"),
             capacity_path=self.capacity_path,
@@ -268,7 +397,7 @@ tiers:
   t1-deep:
     opencode-free: {model: opencode/deepseek-v4-flash}
 """)
-        rc = _check(
+        rc = self._run(
             path=self.routing_path,
             runner=self._fake_runner("opencode/deepseek-v4-flash"),
             capacity_path=self.capacity_path,
@@ -286,7 +415,7 @@ tiers:
   t1-deep:
     claude-sub: {model: sonnet, effort: extreme}
 """)
-        rc = _check(
+        rc = self._run(
             path=self.routing_path,
             runner=self._fake_runner(),
             capacity_path=self.capacity_path,
@@ -309,7 +438,7 @@ tiers:
 
         out = io.StringIO()
         with redirect_stdout(out):
-            rc = _check(
+            rc = self._run(
                 path=self.routing_path,
                 runner=self._fake_runner("opencode/deepseek-v4-flash-free"),
                 capacity_path=self.capacity_path,
@@ -333,7 +462,7 @@ tiers:
 
         out = io.StringIO()
         with redirect_stdout(out):
-            rc = _check(
+            rc = self._run(
                 path=self.routing_path,
                 runner=self._fake_runner(),
                 capacity_path=self.capacity_path,
@@ -349,7 +478,7 @@ tiers:
         self.assertIn("sonnet", text)
 
     def test_missing_routing_file_exits_nonzero(self):
-        rc = _check(
+        rc = self._run(
             path=Path(self._tmp.name) / "does-not-exist.yaml",
             runner=self._fake_runner(),
             capacity_path=self.capacity_path,
@@ -359,7 +488,7 @@ tiers:
 
     def test_malformed_yaml_exits_nonzero(self):
         self._write("targets: [this is not: a mapping\n")
-        rc = _check(
+        rc = self._run(
             path=self.routing_path,
             runner=self._fake_runner(),
             capacity_path=self.capacity_path,
@@ -373,7 +502,7 @@ agents:
   claude:
     default_model: sonnet
 """)
-        rc = _check(
+        rc = self._run(
             path=self.routing_path,
             runner=self._fake_runner(),
             capacity_path=self.capacity_path,
@@ -383,7 +512,7 @@ agents:
 
     def test_empty_routing_exits_nonzero(self):
         self._write("{}\n")
-        rc = _check(
+        rc = self._run(
             path=self.routing_path,
             runner=self._fake_runner(),
             capacity_path=self.capacity_path,
@@ -410,7 +539,7 @@ tiers:
 
         err = io.StringIO()
         with redirect_stderr(err):
-            rc = _check(
+            rc = self._run(
                 path=self.routing_path,
                 runner=self._fake_runner(),
                 capacity_path=self.capacity_path,
@@ -418,6 +547,144 @@ tiers:
             )
         self.assertEqual(rc, 1)
         self.assertIn("2 cell(s) gated", err.getvalue())
+
+    def test_servable_table_exits_zero(self):
+        """Subscription cells are spawn-ready in any shell: nothing to
+        resolve, nothing to opt into -- the readiness stage must not turn a
+        working table into a failure."""
+        self._write("""
+targets:
+  claude-sub:
+    harness: claude
+    pool: subscription
+  codex-sub:
+    harness: codex
+    pool: subscription
+tiers:
+  t1-deep:
+    claude-sub: {model: opus, effort: high}
+    codex-sub: {model: gpt-5.6-sol, effort: high}
+""")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = self._run(runner=self._fake_runner())
+        self.assertEqual(rc, 0)
+        self.assertIn("ok", out.getvalue())
+
+    def test_unselectable_api_target_fails_with_the_message_and_no_gate(self):
+        """`pool: api` without `api_opt_in` is a cell the selector skips as
+        ineligible -- no run can reach it. It must be `FAIL` with the probe's
+        message, and record NO `model_unavailable` gate even though its model
+        is unserved: a gate is skipped *silently* by the next select, turning
+        a loud configuration error into an invisible fallback."""
+        self._write("""
+targets:
+  opencode-api:
+    harness: opencode
+    pool: api
+tiers:
+  t2-build:
+    opencode-api: {model: opencode/retired-model-free}
+""")
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            mock.patch.object(agent_capacity, "record") as record,
+            redirect_stdout(out),
+            redirect_stderr(err),
+        ):
+            rc = self._run(
+                runner=self._fake_runner(),
+                capacity_path=self.capacity_path,
+                now=self.now,
+            )
+        self.assertEqual(rc, 1)
+        record.assert_not_called()
+        self.assertIn("api_opt_in", err.getvalue())
+        self.assertIn("FAIL", out.getvalue())
+
+    def test_unset_auth_variable_fails_naming_the_variable(self):
+        """The environment-sensitive class: a claude `api` cell whose named
+        variable is not in the checking shell cannot spawn from it."""
+        var = "WORKTRAIL_TEST_CHECK_API_KEY"
+        self._write(f"""
+targets:
+  claude-api:
+    harness: claude
+    pool: api
+    api_opt_in: true
+    auth:
+      env: {var}
+tiers:
+  t2-build:
+    claude-api: {{model: sonnet}}
+""")
+        err = io.StringIO()
+        with mock.patch.dict("os.environ"):
+            os.environ.pop(var, None)
+            with redirect_stderr(err):
+                rc = self._run(capacity_path=self.capacity_path, now=self.now)
+        self.assertEqual(rc, 1)
+        self.assertIn(var, err.getvalue())
+        self.assertIn("export it before spawning", err.getvalue())
+
+    def test_auth_variable_exported_in_the_checking_shell_exits_zero(self):
+        var = "WORKTRAIL_TEST_CHECK_API_KEY"
+        self._write(f"""
+targets:
+  claude-api:
+    harness: claude
+    pool: api
+    api_opt_in: true
+    auth:
+      env: {var}
+tiers:
+  t2-build:
+    claude-api: {{model: sonnet}}
+""")
+        out = io.StringIO()
+        with (
+            mock.patch.dict("os.environ", {var: "sk-check"}),
+            redirect_stdout(out),
+        ):
+            rc = self._run(capacity_path=self.capacity_path, now=self.now)
+        self.assertEqual(rc, 0)
+        self.assertIn("ok", out.getvalue())
+
+    def test_env_profiles_dropped_by_the_resolver_fails_though_the_file_declares_it(
+        self,
+    ):
+        """The incident shape end to end: the file declares the profile, but
+        the *resolved* table has lost `env_profiles`, so no spawn could resolve
+        the cell -- `--check` must judge the table it was served, not report
+        `ok` from the file's declared keys."""
+        source = self._write_settings(
+            "settings.json", '{"env": {"ANTHROPIC_BASE_URL": "https://ds.test"}}'
+        )
+        self._write(self._profile_routing(source))
+        real = resolve_routing
+
+        def resolver_without_env_profiles(policy, *args, **kwargs):
+            resolved = real(policy, *args, **kwargs)
+            resolved.pop("env_profiles", None)
+            return resolved
+
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            mock.patch.object(
+                routing_cli, "resolve_routing", resolver_without_env_profiles
+            ),
+            redirect_stdout(out),
+            redirect_stderr(err),
+        ):
+            rc = self._run(capacity_path=self.capacity_path, now=self.now)
+        self.assertEqual(rc, 1)
+        # The file still declares the profile: the failure is about the
+        # resolved table, not the file's keys.
+        raw = _load_yaml_mapping(self.routing_path.read_text(encoding="utf-8"))
+        self.assertIn("deepseek", raw["env_profiles"])
+        self.assertIn("FAIL", out.getvalue())
+        self.assertIn("deepseek", err.getvalue())
+        self.assertIn("env_profiles", err.getvalue())
 
 
 class MigrateTests(unittest.TestCase):

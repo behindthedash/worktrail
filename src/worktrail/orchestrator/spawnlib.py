@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """
 Parallel SDD Orchestrator -- headless `claude -p` worker invocation.
 
@@ -35,7 +35,10 @@ the worker invoked. The caller receives a `SpawnResult` named-tuple with:
 
   text        — worker's final message (what the orchestrator parses for report-back)
   usage       — {input_tokens, cache_creation_input_tokens, cache_read_input_tokens,
-                  output_tokens, total_cost_usd}
+                  output_tokens, total_cost_usd}, plus the diagnostic fields
+                  `_parse_stream_json` lifts from the result event (subtype,
+                  is_error, stop_reason, num_turns, permission_denials, and
+                  duration_api_ms when the event carries it)
   tools_used  — sorted list of distinct tool names (Read, Edit, Write, Bash, …)
   skills_used — sorted list of distinct skill names invoked via the Skill tool
 
@@ -76,7 +79,10 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
 
+import yaml
+
 from ..router import routing_cli
+from ..router.env_profile import resolve_env_profile
 from ..router.policy import (
     ROUTING_FILE_ENV,
     OperatorConfigError,
@@ -285,7 +291,7 @@ def partial_usage_from_stream(raw: str) -> dict:
         for field in fields:
             try:
                 totals[field] += int(turn_usage.get(field, 0) or 0)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 continue
     if not turns:
         return {}
@@ -310,10 +316,14 @@ def _parse_stream_json(raw: str) -> tuple[str, dict, list[str], list[str], str]:
     `usage` also carries a few non-token diagnostic fields lifted straight from the
     "result" event: `subtype` (e.g. "success", "error_max_turns",
     "error_during_execution"), `is_error`, `stop_reason` (e.g. "end_turn",
-    "max_tokens"), `num_turns`, and `permission_denials`. None of these are used for
-    billing -- they exist so a report-back parse failure (dispatch.parse_report_back
-    raising "no report-back JSON block found") can be diagnosed from *why* the
-    worker's final turn ended instead of only the error message and duration.
+    "max_tokens"), `num_turns`, `permission_denials`, and `duration_api_ms` (the
+    event's own server-side API time, retained only when the event carries it --
+    a present-and-zero value is half of the measured zero-API-call shape
+    `_zero_api_call_result` classifies as an infra failure). None of these are
+    used for billing -- they exist so a report-back parse failure
+    (dispatch.parse_report_back raising "no report-back JSON block found") can be
+    diagnosed from *why* the worker's final turn ended instead of only the error
+    message and duration.
 
     Stream structure (`opencode run --format json`) -- a completely different JSONL
     vocabulary (verified against a live reproduction, handoff 20260722-152514):
@@ -403,6 +413,12 @@ def _parse_stream_json(raw: str) -> tuple[str, dict, list[str], list[str], str]:
                 "num_turns": int(event.get("num_turns", 0) or 0),
                 "permission_denials": event.get("permission_denials") or [],
             }
+            # Retained only when the result event actually carries it: the
+            # zero-API-call detection keys on the field's PRESENCE (see
+            # _zero_api_call_result), so defaulting an absent field to 0 would
+            # misclassify every stream that simply lacks it.
+            if "duration_api_ms" in event:
+                usage["duration_api_ms"] = int(event.get("duration_api_ms") or 0)
             session_id = event.get("session_id") or ""
 
         elif event_type == "assistant":
@@ -499,13 +515,46 @@ def _opencode_error_event(stdout: str | None) -> dict | None:
     return None
 
 
+# The four token counters a claude result event always reports. A zero-API-call
+# result leaves every one of them at 0.
+_TOKEN_COUNT_FIELDS = (
+    "input_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "output_tokens",
+)
+
+
+def _zero_api_call_result(usage: Mapping[str, Any] | None) -> bool:
+    """True for the measured "the spawn made no API call" result shape.
+
+    The claude CLI can exit 0 with a well-formed success envelope whose own
+    diagnostics prove the API was never reached: `duration_api_ms` present and
+    0, `num_turns` 0, and all four token counters 0. That is not a task verdict,
+    so `is_infra_failure` treats it as an infra failure and the spawn retries
+    instead of recording a successful empty run.
+
+    `duration_api_ms` must be PRESENT: opencode-synthesized usage dicts also
+    carry `num_turns: 0` and (for a denial-only stream) all-zero counters, and
+    must never be caught by this check.
+    """
+    if not isinstance(usage, Mapping) or "duration_api_ms" not in usage:
+        return False
+    if usage.get("duration_api_ms") != 0 or usage.get("num_turns") != 0:
+        return False
+    return all(int(usage.get(field) or 0) == 0 for field in _TOKEN_COUNT_FIELDS)
+
+
 def is_infra_failure(returncode: int, stdout: str | None) -> bool:
-    """A spawn that exited non-zero, produced no output, or (opencode) reported a
-    top-level error event -- a transient blip, not a task verdict. (A real task
-    failure is exit 0 + a `status:failed` report.)"""
+    """A spawn that exited non-zero, produced no output, (opencode) reported a
+    top-level error event, or produced the zero-API-call result shape -- a
+    transient blip, not a task verdict. (A real task failure is exit 0 + a
+    `status:failed` report.)"""
     if returncode != 0 or not (stdout or "").strip():
         return True
-    return _opencode_error_event(stdout) is not None
+    if _opencode_error_event(stdout) is not None:
+        return True
+    return _zero_api_call_result(_parse_stream_json(stdout)[1])
 
 
 def _is_auth_failure(proc: subprocess.CompletedProcess, raw: str | None) -> bool:
@@ -631,7 +680,17 @@ def build_cmd(
             cmd += ["--model", model]
         if effort:
             cmd += ["--effort", effort]
-        if cell.pool == "api":
+        if cell.pool == "api" and _profile_name(cell) is None:
+            # --bare is what forces the 'api' lane off an ambient subscription
+            # login, but it also skips EVERY settings-injected hook -- verified
+            # live: a PreToolUse hook passed via --settings fires without
+            # --bare and does not fire with it. That silently disables the
+            # worktree guard (`worker_guard_settings_json`, which exists
+            # because a worker wrote into the canonical checkout on 2026-09-05)
+            # for the whole lane. A profile-backed cell does not need --bare for
+            # its original purpose: the injected credentials already pin the
+            # endpoint and auth explicitly, so --bare there would buy nothing
+            # and cost the guard.
             cmd += ["--bare"]
         if resume_session_id:
             cmd += ["--resume", resume_session_id, "--fork-session"]
@@ -665,31 +724,161 @@ def build_cmd(
     return cmd
 
 
-def build_child_env(cell: Cell, base_env: Mapping[str, str]) -> dict[str, str]:
+# Environment variables that redirect a claude spawn to a different endpoint or
+# model than the one its own auth would otherwise select. The subscription lane
+# must clear ALL of them, not just ANTHROPIC_API_KEY: an interactive Claude Code
+# session carries the operator's whole provider redirect in its ambient env
+# (verified: `ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic` is present
+# in a session's environment, and `spawn_agent` builds every child env from
+# `{**os.environ, ...}`). Leaving them set would send a subscription worker --
+# selected precisely because the tier wanted Anthropic -- to whatever endpoint
+# happens to be ambient, which is the same silent misroute in the opposite
+# direction from the one env profiles exist to fix.
+_PROVIDER_REDIRECT_VARS = (
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "CLAUDE_CODE_SUBAGENT_MODEL",
+)
+
+
+def _profile_name(cell: Cell) -> str | None:
+    """The `auth.profile` *cell* declares, if any."""
+    auth = cell.auth if isinstance(cell.auth, Mapping) else {}
+    name = auth.get("profile")
+    return name if isinstance(name, str) and name else None
+
+
+def _apply_env_profile(
+    cell: Cell,
+    env: dict[str, str],
+    env_profiles: Mapping[str, Mapping[str, Any]],
+    declared_env_profiles: Mapping[str, Mapping[str, Any]] | None = None,
+) -> None:
+    """Merge *cell*'s declared env profile into *env*, in place.
+
+    Applied BEFORE the harness/pool branch in `build_child_env` so a claude
+    `subscription` cell's `ANTHROPIC_API_KEY` pop still wins over a
+    profile-supplied key -- otherwise a profile could re-add the very variable
+    that lane removes to keep an ambient key from silently billing the API, and
+    the documented guarantee would be defeated by config.
+
+    Every failure is `OperatorConfigError`, and a worker launched without its
+    endpoint makes no API call while still exiting 0 -- but only a *populated*
+    `env_profiles` table missing the declared name is operator configuration.
+    An empty/absent resolved table is attributed to the resolver/caller
+    instead: the table the cell was selected from is the one that failed to
+    carry a profile the routing file may well declare, so instructing the
+    operator to edit that file would name the wrong party.
+
+    *declared_env_profiles* is the loader's (`load_policy`'s) validated view of
+    the winning routing source, consulted for **membership only** -- it never
+    influences resolution, which reads `env_profiles` alone. When it declares
+    the named profile, the empty-table error says so, so the operator learns
+    the routing file is innocent.
+    """
+    name = _profile_name(cell)
+    if name is None:
+        return
+    auth = cell.auth if isinstance(cell.auth, Mapping) else {}
+    if auth.get("env"):
+        raise OperatorConfigError(
+            f"routing target {cell.target!r} declares both auth.env and "
+            f"auth.profile -- they name two sources for one auth lane; remove "
+            f"one from its routing.targets entry in {resolved_routing_file_path()}"
+        )
+    if not env_profiles:
+        # The resolved table carries nothing, so the routing file cannot be
+        # blamed for this cell: report the fault where it is observable.
+        declares_name = (
+            isinstance(declared_env_profiles, Mapping) and name in declared_env_profiles
+        )
+        raise OperatorConfigError(
+            f"routing target {cell.target!r} declares auth.profile {name!r}, but "
+            "the resolved routing table (resolved from "
+            f"{resolved_routing_file_path()}) carries no env_profiles table, so "
+            "no profile can resolve from it -- this is a resolver/caller fault "
+            "(the table was dropped before spawn or never threaded into the "
+            "spawn)"
+            + (
+                f"; the routing file does declare {name!r}, which the resolved "
+                "table dropped"
+                if declares_name
+                else ""
+            )
+        )
+    profile = env_profiles.get(name)
+    if not isinstance(profile, Mapping):
+        raise OperatorConfigError(
+            f"routing target {cell.target!r} declares auth.profile {name!r}, which "
+            f"is not declared in routing.env_profiles in "
+            f"{resolved_routing_file_path()} -- add an `env_profiles: {{{name}: "
+            "{from: <file>, keys: [...]}}}` entry there"
+        )
+    env.update(
+        resolve_env_profile(
+            name,
+            profile,
+            target=cell.target,
+            declared_in=resolved_routing_file_path(),
+        )
+    )
+
+
+def build_child_env(
+    cell: Cell,
+    base_env: Mapping[str, str],
+    *,
+    env_profiles: Mapping[str, Mapping[str, Any]] | None = None,
+    declared_env_profiles: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, str]:
     """The auth lane *cell*'s harness/pool draws from (design D6), layered onto
     a copy of *base_env*.
 
-    A claude `subscription` cell has `ANTHROPIC_API_KEY` removed so an ambient
-    key can never silently switch a subscription spawn's billing to the API.
-    A claude `api` cell requires its target's declared `auth: {env: <NAME>}`
-    and that named variable set (non-empty) in *base_env*; both are load-bearing
-    identity the launcher cannot guess, so a missing one raises
-    `OperatorConfigError` naming the target and what to fix rather than spawning
-    an unauthenticated worker. Every other harness/pool combination returns
-    *base_env* unchanged -- opencode/codex auth is unaffected by pool (D6)."""
+    A claude `subscription` cell has every provider-redirect variable removed so
+    neither an ambient API key nor an ambient base URL can silently switch a
+    subscription spawn's endpoint or billing. A claude `api` cell either
+    resolves its target's declared `auth.profile` (`env_profiles`, threaded in
+    by the caller from the same resolved routing table `select_cell` served
+    from) or requires its declared `auth: {env: <NAME>}` and that named
+    variable set (non-empty) in *base_env* -- the two are mutually exclusive,
+    and both are load-bearing identity the launcher cannot guess, so a missing
+    one raises `OperatorConfigError` naming the target and what to fix rather
+    than spawning an unauthenticated worker. Every other harness/pool
+    combination returns *base_env* unchanged -- opencode/codex auth is
+    unaffected by pool (D6), though a profile on those harnesses still applies.
+
+    *declared_env_profiles* is **attribution-only**: the loader's view of the
+    winning routing source, forwarded to `_apply_env_profile` so an empty
+    resolved table can say whether the routing file declares the profile. It
+    is never consulted for resolution -- `env_profiles or {}` normalizes the
+    resolved table (None and `{}` are the same empty-table case) and is the
+    only table a profile resolves from.
+    """
     env = dict(base_env)
+    _apply_env_profile(cell, env, env_profiles or {}, declared_env_profiles)
     if cell.harness != "claude":
         return env
     if cell.pool == "subscription":
         env.pop("ANTHROPIC_API_KEY", None)
+        for var in _PROVIDER_REDIRECT_VARS:
+            env.pop(var, None)
         return env
     if cell.pool == "api":
+        if _profile_name(cell) is not None:
+            # The profile supplied the credentials above; requiring auth.env on
+            # top would be a second, conflicting source for the same lane.
+            return env
         auth = cell.auth if isinstance(cell.auth, Mapping) else {}
         var_name = auth.get("env")
         if not var_name:
             raise OperatorConfigError(
                 f"routing target {cell.target!r} (harness claude, pool api) has no "
-                "auth.env configured -- add `auth: {env: <ENV_VAR_NAME>}` to its "
+                "auth.env or auth.profile configured -- add `auth: {env: "
+                "<ENV_VAR_NAME>}` or `auth: {profile: <NAME>}` to its "
                 f"routing.targets entry in {resolved_routing_file_path()}"
             )
         value = env.get(var_name)
@@ -700,6 +889,47 @@ def build_child_env(cell: Cell, base_env: Mapping[str, str]) -> dict[str, str]:
             )
         env[var_name] = value
     return env
+
+
+def codex_api_home(cell: Cell) -> str | None:
+    """The declared, provisioned `CODEX_HOME` a codex `api` cell spawns in, or
+    None for any other cell (which spawns with the parent's ChatGPT login
+    inherited instead).
+
+    CODEX_HOME isolation is the one live-verified per-spawn auth selector for
+    codex (routing-target-selector task 3.6: `-c preferred_auth_method` and
+    OPENAI_API_KEY are both inert against a persisted login), so an `api` cell
+    with no home to point at -- or a home nothing ever logged into -- cannot
+    serve; both cases raise `OperatorConfigError` naming the target and the
+    provisioning command.
+
+    Shared with `router.spawn_readiness.readiness_problems` (`--check` and the
+    drain's preflight), so a codex `api` cell that passes the readiness probe
+    is one this path accepts: the check cannot drift from the raises it guards.
+    Only the *validation* lives here -- the home itself is created at spawn
+    time by `prepare_codex_child_environment` (a probe must not create it, or
+    the spawn it predicted would run against state it made).
+    """
+    if cell.harness != "codex" or cell.pool != "api":
+        return None
+    auth = cell.auth if isinstance(cell.auth, Mapping) else {}
+    codex_home_override = auth.get("codex_home")
+    if not codex_home_override:
+        raise OperatorConfigError(
+            f"routing target {cell.target!r} (harness codex, pool "
+            "api) has no auth.codex_home configured -- add `auth: "
+            "{codex_home: <path>}` to its routing.targets entry in "
+            f"{resolved_routing_file_path()}, naming a home provisioned "
+            "with `codex login --with-api-key`"
+        )
+    if not (Path(codex_home_override).expanduser() / "auth.json").exists():
+        raise OperatorConfigError(
+            f"routing target {cell.target!r}'s auth.codex_home "
+            f"({codex_home_override}) has no auth.json -- provision it "
+            "once with `CODEX_HOME=<that path> codex login --with-api-key` "
+            "before spawning this 'api' pool"
+        )
+    return codex_home_override
 
 
 # --------------------------------------------------------------------------- #
@@ -968,6 +1198,12 @@ def explicit_cell_override(target: str, model: str, *, effort: str | None = None
     `--agent`/`--model` override and `LiveSpawn.__call__`'s `--model-map`/
     `--effort` override -- same mechanism, same guarantee.
 
+    The throwaway file reproduces the target's whole definition -- harness,
+    pool, `api_opt_in`, `auth`, and the one `env_profiles` entry `auth.profile`
+    names -- not just harness/pool, because it REPLACES the routing file rather
+    than layering over it. Omitting any of them makes an api- or
+    profile-backed target unreachable through this path.
+
     Raises `OperatorConfigError` when `target` does not already name a
     declared `routing.targets` entry: an explicit override reuses a real
     target's harness/pool, it never invents one.
@@ -983,18 +1219,41 @@ def explicit_cell_override(target: str, model: str, *, effort: str | None = None
     os.close(fd)
     explicit_file = Path(path)
     try:
-        effort_line = f"      effort: {effort}\n" if effort else ""
+        # The throwaway file REPLACES the operator's routing file for the
+        # duration of the override, so anything it omits is genuinely absent
+        # downstream -- not inherited. Carrying only harness/pool silently
+        # dropped `api_opt_in` (so `select_cell` skipped an api target as
+        # ineligible and the override died with NoExecutionTarget), `auth` (so
+        # an api cell raised "has no auth.env configured"), and `env_profiles`
+        # (so a profile-backed cell resolved nothing). Only the ONE profile the
+        # target names is copied, and it carries paths and key names only --
+        # never a value, so the mkstemp 0600 file stays secret-free.
+        entry: dict[str, Any] = {
+            "harness": declared["harness"],
+            "pool": declared.get("pool", "subscription"),
+        }
+        if declared.get("api_opt_in"):
+            entry["api_opt_in"] = True
+        auth = declared.get("auth")
+        if isinstance(auth, dict):
+            entry["auth"] = auth
+        cell_def: dict[str, Any] = {"model": model}
+        if effort:
+            cell_def["effort"] = effort
+        document: dict[str, Any] = {
+            "targets": {target: entry},
+            "tiers": {"explicit": {target: cell_def}},
+        }
+        profile_name = auth.get("profile") if isinstance(auth, dict) else None
+        if profile_name:
+            profiles = routing.get("env_profiles") or {}
+            if profile_name in profiles:
+                document["env_profiles"] = {profile_name: profiles[profile_name]}
+        # safe_dump, not string interpolation: a model id may contain YAML
+        # metacharacters (e.g. `deepseek-flash[1m]`), which flow-style
+        # interpolation into a plain scalar is not safe against.
         explicit_file.write_text(
-            "targets:\n"
-            f"  {target}:\n"
-            f"    harness: {declared['harness']}\n"
-            f"    pool: {declared.get('pool', 'subscription')}\n"
-            "tiers:\n"
-            "  explicit:\n"
-            f"    {target}:\n"
-            f"      model: {model}\n"
-            f"{effort_line}",
-            encoding="utf-8",
+            yaml.safe_dump(document, sort_keys=False), encoding="utf-8"
         )
         previous = os.environ.get(ROUTING_FILE_ENV)
         os.environ[ROUTING_FILE_ENV] = str(explicit_file)
@@ -1056,12 +1315,13 @@ def spawn_agent(
     the caller (parsed as a missing report-back -> task failure) rather than
     looping forever.
 
-    An ordinary infra failure (non-zero exit / empty stdout) retries the SAME
-    cell up to `retries` times first -- except an auth-class failure (401,
-    consumed refresh token), which cannot clear itself and so gates the cell
+    An ordinary infra failure (non-zero exit / empty stdout / the zero-API-call
+    result shape -- see `_zero_api_call_result`) retries the SAME cell up to
+    `retries` times first -- except an auth-class failure (401, consumed
+    refresh token), which cannot clear itself and so gates the cell
     on the first attempt (`_is_auth_failure`) with no retry or backoff. Once
-    that budget is exhausted the cell
-    is gated `failure_class="infra"` (via `agent_capacity.classify_failure`)
+    that budget is exhausted the cell is gated with `classify_failure`'s class
+    (or `startup` for an exhausted zero-API-call shape)
     and, exactly like the session-limit path above, we re-select from the same
     row -- the fresh gate excludes the failed cell -- and continue this same
     attempt loop against whatever cell is served next, with its own fresh
@@ -1072,7 +1332,14 @@ def spawn_agent(
     Raises `subprocess.TimeoutExpired` on a wall-clock timeout.
     """
     _ensure_agent_memory_ignored(cwd, log)
-    routing = resolve_routing(load_policy(worktrail_home()))
+    policy = load_policy(worktrail_home())
+    routing = resolve_routing(policy)
+    # The loader's own view of the winning routing source, carried only so an
+    # empty resolved table's error can say whether the file declares the
+    # profile (attribution, never resolution -- see `build_child_env`). The
+    # single load is hoisted: a second read could diverge from the table that
+    # chose this cell, and it would repeat the I/O on every hop.
+    declared_env_profiles = (policy.get("routing") or {}).get("env_profiles")
 
     def _select() -> Cell:
         return select_cell(
@@ -1126,31 +1393,12 @@ def spawn_agent(
             # the one live-verified per-spawn auth selector for codex
             # (routing-target-selector task 3.6: `-c preferred_auth_method`
             # and OPENAI_API_KEY are both inert against a persisted login).
-            codex_home_override: str | None = None
-            inherit_auth = True
-            if current_cell.pool == "api":
-                auth = (
-                    current_cell.auth if isinstance(current_cell.auth, Mapping) else {}
-                )
-                codex_home_override = auth.get("codex_home")
-                if not codex_home_override:
-                    raise OperatorConfigError(
-                        f"routing target {current_cell.target!r} (harness codex, pool "
-                        "api) has no auth.codex_home configured -- add `auth: "
-                        "{codex_home: <path>}` to its routing.targets entry in "
-                        f"{resolved_routing_file_path()}, naming a home provisioned "
-                        "with `codex login --with-api-key`"
-                    )
-                if not (Path(codex_home_override).expanduser() / "auth.json").exists():
-                    raise OperatorConfigError(
-                        f"routing target {current_cell.target!r}'s auth.codex_home "
-                        f"({codex_home_override}) has no auth.json -- provision it "
-                        "once with `CODEX_HOME=<that path> codex login --with-api-key` "
-                        "before spawning this 'api' pool"
-                    )
-                inherit_auth = False
+            # The declared home is validated by `codex_api_home`, shared with
+            # the readiness probe (`--check` / the drain's preflight) so the
+            # check cannot fall behind this path.
+            codex_home_override = codex_api_home(current_cell)
             env, codex_home, automatic_home = prepare_codex_child_environment(
-                codex_home_override, inherit_auth=inherit_auth
+                codex_home_override, inherit_auth=codex_home_override is None
             )
             env["CC_HEADLESS"] = "1"
             if automatic_home:
@@ -1172,7 +1420,19 @@ def spawn_agent(
             env["WORKTRAIL_DISPATCH_ID"] = dispatch_id
         else:
             env.pop("WORKTRAIL_DISPATCH_ID", None)
-        return build_child_env(current_cell, env), oc_data_dir
+        # The profile table is threaded from the SAME resolved routing dict
+        # `select_cell` served from, never re-loaded: a second read could
+        # diverge from the table that chose this cell, and it would repeat the
+        # I/O on every session-limit/infra hop.
+        return (
+            build_child_env(
+                current_cell,
+                env,
+                env_profiles=routing.get("env_profiles") or {},
+                declared_env_profiles=declared_env_profiles,
+            ),
+            oc_data_dir,
+        )
 
     child_env, opencode_dir = _prepare_child_env(cell)
 
@@ -1416,6 +1676,22 @@ def spawn_agent(
             attempt = attempts
         if attempt >= attempts:
             failure_class = _opencode_unknown_error_failure_class(cell, last_raw)
+            if failure_class is None and _zero_api_call_result(
+                _parse_stream_json(last_raw)[1]
+            ):
+                # A zero-API-call result that exhausted the retry budget maps to
+                # the short-cooldown `startup` class, ahead of classify_failure's
+                # text fallthrough: the CLI exited 0 without ever reaching the
+                # API, which is the transient spawn-layer shape startup's 60s
+                # cooldown covers. `auth` and `model_unavailable` are barred --
+                # both carry 24h cooldowns in DEFAULT_COOLDOWNS, and this shape
+                # carries no credential/model-id evidence at all (auth would
+                # also gate without retry, and model_unavailable is never
+                # probed, so either would park a healthy cell for a day). The
+                # fallthrough is not the label either: on a clean exit with no
+                # error text it can only guess `transport` (30s, a network
+                # blip) because there is nothing to match, not from evidence.
+                failure_class = "startup"
             if failure_class is None:
                 failure_class = agent_capacity.classify_failure(
                     proc.returncode, last_raw, proc.stderr or ""
@@ -1438,7 +1714,7 @@ def spawn_agent(
                 f"{last_raw}\n{proc.stderr or ''}"
             )
             if explicit_reset is not None and explicit_reset <= datetime.datetime.now(
-                datetime.timezone.utc
+                datetime.UTC
             ):
                 explicit_reset = None
             agent_capacity.record(

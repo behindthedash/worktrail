@@ -451,7 +451,92 @@ class TestCli(unittest.TestCase):
             exit_code = main(["--repo", str(repo)])
 
         self.assertEqual(exit_code, 0)
-        self.assertIn("resumable, no action needed", out.getvalue())
+        self.assertIn("resumable", out.getvalue())
+
+    def test_cli_text_output_names_resume_group_for_human_triage(self):
+        """The findings header/body point at the recovery command, with the
+        repo path and spec id needed to actually run it."""
+        repo = _repo_with_worktrees(self.tmp, "flagged-repo")
+        _journal(self.tmp / "flagged-repo-worktrees", "spec-b", _QUARANTINED_GROUPS)
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            exit_code = main(["--repo", str(repo)])
+
+        text = out.getvalue()
+        self.assertEqual(exit_code, 1)
+        self.assertIn("worktrail-resume-group", text)
+        self.assertIn("--group 1.2", text)
+        self.assertIn(f"--repo {repo}", text)
+        self.assertIn("--spec spec-b", text)
+
+    def test_cli_text_output_names_resume_group_for_resumable(self):
+        repo = _repo_with_worktrees(self.tmp, "resumable-repo")
+        _journal(
+            self.tmp / "resumable-repo-worktrees", "spec-c", _BUDGET_EXHAUSTED_GROUPS
+        )
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            exit_code = main(["--repo", str(repo)])
+
+        text = out.getvalue()
+        self.assertEqual(exit_code, 0)
+        self.assertIn("worktrail-resume-group", text)
+        self.assertIn("--all-resumable", text)
+        self.assertIn(f"--repo {repo}", text)
+        self.assertIn("--spec spec-c", text)
+
+    def test_cli_json_payload_and_exit_code_unchanged(self):
+        """A journal carrying a reconcilable, a resumable and a human-triage
+        quarantine still produces the same JSON payload and exit code."""
+        repo = _repo_with_worktrees(self.tmp, "mixed-repo")
+        _journal(
+            self.tmp / "mixed-repo-worktrees",
+            "spec-d",
+            {
+                "1.1": {"state": "QUARANTINED", "pr_url": "https://example.com/pr/1"},
+                "1.2": {
+                    "state": "QUARANTINED",
+                    "pr_url": "",
+                    "quarantine_reason": "budget_exhausted",
+                },
+                "1.3": {"state": "QUARANTINED", "pr_url": "https://example.com/pr/3"},
+            },
+        )
+        _write_runplan(repo, "spec-d", _RUNPLAN_TASKS)
+
+        def fake_reconcile(_repo, finding):
+            if finding["group"] == "1.1":
+                return {
+                    "spec_id": finding["spec_id"],
+                    "group": finding["group"],
+                    "method": "base-branch-files",
+                    "evidence": ["a.py"],
+                }
+            return None
+
+        out = io.StringIO()
+        with (
+            patch(
+                "worktrail.router.quarantine_selfcheck.reconcile_finding",
+                side_effect=fake_reconcile,
+            ),
+            redirect_stdout(out),
+        ):
+            exit_code = main(["--repo", str(repo), "--json"])
+
+        self.assertEqual(exit_code, 1)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["flagged"], 1)
+        result = payload["results"][0]
+        self.assertEqual([f["group"] for f in result["findings"]], ["1.3"])
+        self.assertEqual(
+            [r["group"] for r in result["reconciled"]],
+            ["1.1"],
+        )
+        self.assertEqual([f["group"] for f in result["resumable"]], ["1.2"])
+        self.assertNotIn("worktrail-resume-group", out.getvalue())
 
 
 if __name__ == "__main__":

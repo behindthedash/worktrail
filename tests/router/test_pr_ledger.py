@@ -18,7 +18,7 @@ from worktrail.shared.brief_frontmatter import (
 
 URL = "https://github.com/acme/widgets/pull/42"
 URL2 = "https://github.com/acme/widgets/pull/43"
-T0 = datetime.datetime(2026, 9, 10, 12, 0, tzinfo=datetime.timezone.utc)
+T0 = datetime.datetime(2026, 9, 10, 12, 0, tzinfo=datetime.UTC)
 
 
 def _view(payload: dict | None, rc: int = 0):

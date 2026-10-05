@@ -38,7 +38,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from worktrail.conductor import parallelism, req_coverage, runplan
+from worktrail.conductor import ac_targets, parallelism, req_coverage, runplan
 from worktrail.conductor.import_deps import import_dep_edges, produced_file_dep_edges
 from worktrail.conductor.runplan import (
     COMPILE_MARKER_NAME,
@@ -969,8 +969,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     gaps = needs_compile(merged)
     collisions = runplan.unordered_file_collisions(merged)
     uncovered = req_coverage.find_uncovered_requirements(spec_dir, repo)
+    target_gaps = ac_targets.find_missing_ac_targets(spec_dir, repo)
 
-    if not (gaps or collisions or uncovered):
+    if not (gaps or collisions or uncovered or target_gaps):
         write_marker(spec_dir, plan.fingerprint)
 
     # Advisory wall-clock signal (parallelism.py): shape is already enforced
@@ -995,7 +996,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             _print_ordering_gap_error(collisions)
         if uncovered:
             _print_req_coverage_gap_error(uncovered)
-        return 1 if (gaps or collisions or uncovered) else 0
+        if target_gaps:
+            _print_ac_target_gap_error(target_gaps)
+        return 1 if (gaps or collisions or uncovered or target_gaps) else 0
 
     print(f"{plan.spec_id}  source={plan.source}  fingerprint={plan.fingerprint[:12]}")
     print(
@@ -1015,7 +1018,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         _print_ordering_gap_error(collisions)
     if uncovered:
         _print_req_coverage_gap_error(uncovered)
-    return 1 if (gaps or collisions or uncovered) else 0
+    if target_gaps:
+        _print_ac_target_gap_error(target_gaps)
+    return 1 if (gaps or collisions or uncovered or target_gaps) else 0
 
 
 def _print_scope_gap_error(gaps: list[str]) -> None:
@@ -1068,6 +1073,20 @@ def _print_req_coverage_gap_error(uncovered: list[str]) -> None:
         "mentioned in `tasks.md`. Add a task that names it (or references it "
         "explicitly), or drop the requirement if it is not actually part of this "
         "change.",
+        file=sys.stderr,
+    )
+
+
+def _print_ac_target_gap_error(findings: list[str]) -> None:
+    """Print missing update targets to stderr in either output mode."""
+    print(
+        f"ERROR: {len(findings)} acceptance-criterion update target(s) are absent:",
+        file=sys.stderr,
+    )
+    for finding in findings:
+        print(f"  {finding}", file=sys.stderr)
+    print(
+        "  correct the AC to match the base tree, or reword it as an addition.",
         file=sys.stderr,
     )
 

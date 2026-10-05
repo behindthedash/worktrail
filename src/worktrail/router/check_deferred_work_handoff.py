@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """Stop-hook deferred-work handoff guard.
 
 Reads one or more `worktrail-run-record` YAML paths (the same `.yaml` files
@@ -66,7 +66,7 @@ def load_deferred_work_entries(
         path = Path(raw_path)
         try:
             record, warning = _load_lenient(path)
-        except (OSError, UnicodeDecodeError):
+        except OSError, UnicodeDecodeError:
             # Missing/unreadable file, or non-UTF-8 content -- `_load_lenient`
             # only catches its own `RunRecordFormatError`, not an absent path,
             # a permissions failure, or a decode error; all are just as
@@ -105,7 +105,7 @@ def _brief_focus_texts(directory: Path) -> list[str]:
     for path in paths:
         try:
             focus = _wq_focus_of(path)
-        except (OSError, UnicodeDecodeError):
+        except OSError, UnicodeDecodeError:
             continue
         if focus:
             texts.append(focus)

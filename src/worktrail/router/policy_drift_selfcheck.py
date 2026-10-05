@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """policy_drift_selfcheck.py — worktrail-go-policy.yaml rationale-vs-reality drift detector.
 
 `docs/specs/worktrail-go-policy.yaml` justifies each repo's pre-PR gate in freeform
@@ -224,7 +224,7 @@ def tracked_test_files(repo: Path) -> list[str]:
             text=True,
             timeout=30,
         )
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return []
     if proc.returncode != 0:
         return []

@@ -7,7 +7,7 @@ name = "worktrail"
 version = "1.1.41"
 description = "Spec-format-agnostic task orchestration: parallel worktree fan-out, a route classifier, and a work-queue handoff system"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.14"
 license = { text = "MIT" }
 dependencies = [
     "pyyaml>=6.0",
@@ -18,7 +18,7 @@ dev = [
     "pytest>=7.0",
     "requests>=2.34.2",
     "build>=1.0",
-    "ruff==0.16.7",
+    "ruff==0.16.10",
 ]
 
 [project.scripts]
@@ -29,6 +29,7 @@ worktrail-orchestrate = "worktrail.orchestrator.orchestrate:main"
 worktrail-live = "worktrail.orchestrator.live:main"
 worktrail-detach = "worktrail.runtime.detach:main"
 worktrail-integrate = "worktrail.orchestrator.integrate:main"
+worktrail-resume-group = "worktrail.orchestrator.resume_group:main"
 worktrail-spec-create = "worktrail.taskformats.create:main"
 worktrail-task-lifecycle = "worktrail.taskformats.devkit.cli:main"
 worktrail-agent-capacity = "worktrail.orchestrator.agent_capacity:main"
@@ -117,6 +118,10 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 worktrail = [".fixtures/**/*", "learning/*.md"]
+
+[tool.ruff]
+# Lint against the same Python floor Worktrail supports at runtime.
+target-version = "py314"
 
 [tool.pytest.ini_options]
 # `scripts/ci` is here because its `test_*.py` files were otherwise collected

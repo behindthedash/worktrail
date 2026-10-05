@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from worktrail.drain import stuck_remediation
 
@@ -10,7 +10,7 @@ def _finding(repo="repo-a", spec_id="spec-1"):
 
 def test_repeated_recurrence_increments_streak_and_flags_at_threshold():
     history = {"version": 1, "identities": {}}
-    now = datetime(2026, 8, 17, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 17, tzinfo=UTC)
     resumed = {"sync_pending": [_finding()]}
 
     for expected_streak in (1, 2):
@@ -40,7 +40,7 @@ def test_repeated_recurrence_increments_streak_and_flags_at_threshold():
 
 
 def test_identity_absent_from_resumed_drops_out_instead_of_persisting_streak():
-    now = datetime(2026, 8, 17, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 17, tzinfo=UTC)
     history = {
         "version": 1,
         "identities": {
@@ -70,7 +70,7 @@ def test_identity_absent_from_resumed_drops_out_instead_of_persisting_streak():
 
 
 def test_independent_tracking_across_repo_spec_identities():
-    now = datetime(2026, 8, 17, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 17, tzinfo=UTC)
     history = {"version": 1, "identities": {}}
     resumed = {
         "sync_pending": [
@@ -107,7 +107,7 @@ def test_independent_tracking_across_repo_spec_identities():
 
 
 def test_independent_tracking_across_different_remediation_keys():
-    now = datetime(2026, 8, 17, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 17, tzinfo=UTC)
     history = {"version": 1, "identities": {}}
     resumed = {
         "sync_pending": [_finding(repo="repo-a", spec_id="spec-1")],
@@ -158,7 +158,7 @@ def test_save_writes_atomically(tmp_path):
 
 def test_sweep_and_record_round_trip_across_calls(tmp_path):
     path = tmp_path / "history.json"
-    now = datetime(2026, 8, 17, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 17, tzinfo=UTC)
     resumed = {"sync_pending": [_finding()]}
 
     stuck_first = stuck_remediation.sweep_and_record(
@@ -212,7 +212,7 @@ def test_sweep_and_record_recovers_from_corrupt_history_file(tmp_path):
         path,
         threshold=3,
         retention=stuck_remediation.DEFAULT_RETENTION,
-        now=datetime(2026, 8, 17, tzinfo=timezone.utc),
+        now=datetime(2026, 8, 17, tzinfo=UTC),
     )
 
     assert stuck == []

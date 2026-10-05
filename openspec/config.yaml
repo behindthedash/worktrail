@@ -1,7 +1,7 @@
 schema: spec-driven
 
 context: |
-  Python 3.10+ package (pyproject.toml, src/worktrail/ layout, console-script
+  Python 3.14+ package (pyproject.toml, src/worktrail/ layout, console-script
   entry points). Never commit directly on main -- branch off into a sibling
   git worktree, open a PR, merge only after CI is green (see AGENTS.md).
   New behavior needs pytest coverage (tests/ mirrors src/worktrail/ layout)

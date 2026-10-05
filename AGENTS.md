@@ -106,11 +106,22 @@ unchanged.
 ## Development
 
 ```bash
-./scripts/dev-install.sh   # pip install -e ".[dev]", refuses to run from a worktree
-pytest
-python3 -m worktrail.orchestrator.orchestrate check   # golden record/replay regression
-python3 scripts/ci/ruff_pinned.py check .             # NOT a bare `ruff` -- see below
-python3 scripts/ci/check_shebang_exec_bits.py
+./scripts/dev-install.sh   # invokes python3.14 -m pip install -e ".[dev]" from the canonical checkout
+PYTHONPATH=src python3.14 -m pytest
+PYTHONPATH=src python3.14 -m worktrail.orchestrator.orchestrate check   # golden record/replay regression
+python3.14 scripts/ci/ruff_pinned.py check .                            # NOT a bare `ruff` -- see below
+python3.14 scripts/ci/check_shebang_exec_bits.py
+```
+
+`python3.14` here — and in the policy's `pre_pr_cmd`/`pre_commit_cmd` — is a PATH lookup, and
+`./scripts/dev-install.sh` installs `.[dev]` into whichever interpreter that name resolves to,
+so run the suite with that same interpreter. If `python3.14` resolves to one with no dev extras
+(e.g. a uv-managed 3.14 with nothing installed into it), the pytest command fails with
+`ModuleNotFoundError: No module named 'pytest'`. Point PATH at an interpreter that has them —
+on this machine that is the repo-local, gitignored `.venv`:
+
+```bash
+export PATH="$PWD/.venv/bin:$PATH"   # from the canonical checkout
 ```
 
 **Lint through the two wrappers, never a bare `ruff`.** Both exist because a

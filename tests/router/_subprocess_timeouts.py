@@ -44,7 +44,7 @@ def subprocess_timeout_s() -> float:
         return DEFAULT_TIMEOUT_S
     try:
         value = float(raw.strip())
-    except (AttributeError, ValueError):
+    except AttributeError, ValueError:
         return DEFAULT_TIMEOUT_S
     if value <= 0:
         return DEFAULT_TIMEOUT_S

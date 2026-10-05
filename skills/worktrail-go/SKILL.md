@@ -35,9 +35,11 @@ spellings that are still accepted (`auto`, `drain`, `new`, `implement spec`, `fi
 - `worktrail-go handoff list` — list queued briefs, no dispatch
 - `worktrail-go BRIEF-ID` (or `handoff start BRIEF-ID`) — claim or resume a specific queued
   brief; an untriaged intake brief (no `seeded-from:`) is triaged instead: evaluate → apply →
-  report; a `work-directly` verdict continues by re-invoking `worktrail-land-pr` when
-  `landing.outcome` is `code_defect` or `review_threads_blocking`, until a terminal
-  outcome, then stops — still no Phase 3 claim/dispatch (spec `intake-to-spec-triage`)
+  report; a verdict that lands a pull request (`fold-into-change`, `propose-change`)
+  continues by re-invoking `worktrail-land-pr` when `landing.outcome` is `code_defect`
+  or `review_threads_blocking`, until a terminal outcome, then stops; a `work-directly`
+  verdict reports its stamp and stops — still no Phase 3 claim/dispatch
+  (spec `intake-to-spec-triage`)
 - `worktrail-go handoff auto` or `worktrail-go REPO handoff auto` — auto-pick the next ranked queue brief and start it, no selection prompt (spec 017)
 - `worktrail-go handoff drain [max-items] [repo]` — delegate to the unattended queue drain
 - `worktrail-go spec new X` — plan a new feature (Route C+D)
@@ -351,10 +353,12 @@ repo token in the invocation itself) before doing anything else:
      JSON is never re-typed into the command.
      Run the apply with the Bash tool's `timeout` parameter set to 600000 (the apply can
      itself drive a PR through `worktrail-land-pr`'s CI-watch to a terminal outcome).
-     Report the resulting `pr_url` and `landing.outcome` to the user. On a
-     `work-directly` verdict whose `landing.outcome` is `code_defect` or
-     `review_threads_blocking`, continue by re-invoking `worktrail-land-pr` against
-     `landing.run` (from `landing.worktree`) until a terminal outcome is reached, then
+     For a verdict that lands a pull request (`fold-into-change`, `propose-change`),
+     report the resulting `pr_url` and `landing.outcome` to the user; when that outcome
+     is `code_defect` or `review_threads_blocking`, continue by re-invoking
+     `worktrail-land-pr` against `landing.run` (from `landing.worktree`) until a
+     terminal outcome is reached, then stop. A `work-directly` verdict produces no
+     landing — report the stamp the apply returned (`action`, `status`, `path`) and
      stop. Still no Phase 3 claim/dispatch —
      a triage-gate pickup never carries into Phase 3's claim+dispatch flow in the same
      invocation.
@@ -644,7 +648,7 @@ Route the request to the right handler. Per-route playbooks: `references/routes.
 
 Dispatch policy is simple:
 
-- Resolve the routing configuration before dispatching the route: `ROUTING_JSON=$(worktrail-policy --repo "$REPO" --resolve-routing "$ROUTE:$RISK_LEVEL" --json)`. `--resolve-routing`'s `ROUTE:RISK` argument is vestigial — `resolve_routing()` (`policy.py`) ignores it, kept only for call-site compatibility — and always returns the full resolved `{targets, tiers, roles, purposes, default_tier, drain}` configuration, not a flat `agent_cli`/`agent_model` pair and not a per-role triple. Per-spawn resolution happens downstream of this dict: `tier_for(role, task, roles, purposes, default_tier)` derives each task role's own `(tier, prefer, independent)` from it, and the adapter's `select_dispatch_cell()` resolves the front-door role's cell directly from `routing["roles"]["front-door"]`.
+- Resolve the routing configuration before dispatching the route: `ROUTING_JSON=$(worktrail-policy --repo "$REPO" --resolve-routing "$ROUTE:$RISK_LEVEL" --json)`. `--resolve-routing`'s `ROUTE:RISK` argument is vestigial — `resolve_routing()` (`policy.py`) ignores it, kept only for call-site compatibility — and always returns the full resolved `{targets, tiers, roles, purposes, default_tier, env_profiles, drain}` configuration, not a flat `agent_cli`/`agent_model` pair and not a per-role triple. Per-spawn resolution happens downstream of this dict: `tier_for(role, task, roles, purposes, default_tier)` derives each task role's own `(tier, prefer, independent)` from it, and the adapter's `select_dispatch_cell()` resolves the front-door role's cell directly from `routing["roles"]["front-door"]`.
 - Map `tier_for()`'s resolved output to the dispatch layer: `tier` names the `routing.tiers` row to select from; `prefer` (optional) names a `routing.targets` entry to move to the front of that row; `independent` (optional bool, judgment roles only) asks the selector to prefer any target on a different harness than the one that implemented the task. There is no separate per-role agent/model map and no `fallback` list to carry through — preference order lives in `routing.targets`' own file order, and the row itself is the entire fallback chain: the orchestrator's single selector (`select_cell`) walks that row in order, skipping `api`-pool targets without `api_opt_in`, skipping cells gated in `agent-capacity.json`, and resolves the concrete harness/model/effort at spawn time.
 - Tiers resolve on a separate axis from `$ROUTE:$RISK_LEVEL` (per-task `tier`, or `complexity`/`purpose` mapped onto one): `tier_for()`'s precedence is an explicit per-task `tier` field > the role's own tier (for judgment roles: `review`/`resolve`/`ci-fix`/`assembly-resolve`) > a `routing.purposes` match on the task's `purpose` > `complexity` > `routing.default_tier`. `review` defaults to `{tier: default_tier, independent: true}` when `routing.roles.review` is unconfigured.
 - Explicit invocation flags or caller-supplied `AGENT_CLI` always win over the derived routing values. The routing table slots into the existing precedence at the repository-policy tier: explicit invocation > repository policy (routing table here) > machine-wide env > detected host > `claude`.
@@ -1055,10 +1059,10 @@ When a brief is claimed, surface any related briefs from its `related` frontmatt
 /go 20260613-001000-raw-handoff
 ```
 → One-line dashboard summary → `kind: intake` → single-brief triage gate → evaluate →
-apply → report; a `work-directly` verdict continues by re-invoking `worktrail-land-pr`
-when `landing.outcome` is `code_defect` or `review_threads_blocking`, until a
-terminal outcome, then stops — every other verdict STOPs (no claim, no
-sdd-workflow dispatch, no Phase 3)
+apply → report; a verdict that lands a pull request continues by re-invoking
+`worktrail-land-pr` when `landing.outcome` is `code_defect` or
+`review_threads_blocking`, until a terminal outcome, then stops — every other verdict
+STOPs (no claim, no sdd-workflow dispatch, no Phase 3)
 
 **Auto mode (spec 017)**
 ```

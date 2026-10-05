@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """reconcile_pr_labels.py — scheduled self-heal for drifted `go:risk-*` PR labels.
 
 `pr_labels.py`'s `ensure_pr_risk_label()` only runs at the moment one specific
@@ -165,7 +165,7 @@ def _open_prs(repo: Path) -> list[dict[str, Any]] | None:
             timeout=30,
             cwd=str(repo),
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
     if result.returncode != 0:
         return None
