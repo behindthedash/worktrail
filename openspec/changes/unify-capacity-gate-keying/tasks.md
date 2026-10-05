@@ -84,7 +84,7 @@
 
 ## 3. The exhausted-row diagnostic names the gate key
 
-- [ ] 3.1 In `src/worktrail/runtime/selection.py`, change `NoExecutionTarget.__init__`'s
+- [x] 3.1 In `src/worktrail/runtime/selection.py`, change `NoExecutionTarget.__init__`'s
       quadruple-arity label (`:67-86`) so each attempted cell is named by its gate key
       `f"{target}:{model}"` verbatim, with the harness still named alongside it (for example
       `f"{target}:{model} [{harness}]"`), keeping the gate class and retry time appended in the
