@@ -18,7 +18,7 @@ dev = [
     "pytest>=7.0",
     "requests>=2.34.2",
     "build>=1.0",
-    "ruff==0.16.9",
+    "ruff==0.16.10",
 ]
 
 [project.scripts]
