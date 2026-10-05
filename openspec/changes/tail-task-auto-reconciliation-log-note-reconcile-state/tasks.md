@@ -1,6 +1,6 @@
 ## 1. Partition the run-complete note by recorded outcome
 
-- [ ] 1.1 In `src/worktrail/orchestrator/live.py`, rewrite `_format_unreconciled_tail_note`
+- [x] 1.1 In `src/worktrail/orchestrator/live.py`, rewrite `_format_unreconciled_tail_note`
       (`:727`) to partition its findings by `reconcile_state` instead of rendering one fixed
       clause over all of them. Keep the existing `if not findings: return None` guard and the
       existing nested `_entry(f)` renderer (`task (sha <head_sha> @ <worktree><suffix>)`, where
