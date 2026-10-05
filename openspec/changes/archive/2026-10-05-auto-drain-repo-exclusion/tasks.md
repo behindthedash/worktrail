@@ -148,7 +148,7 @@
 
 ## 4. Verification
 
-- [ ] 4.1 [e2e] Run `PYTHONPATH=src pytest -q`, `PYTHONPATH=src python3 -m
+- [x] 4.1 [e2e] Run `PYTHONPATH=src pytest -q`, `PYTHONPATH=src python3 -m
       worktrail.orchestrator.orchestrate check`, `python3 scripts/ci/ruff_pinned.py check .`,
       `python3 scripts/ci/ruff_pinned.py format --check .`, and
       `python3 scripts/ci/check_shebang_exec_bits.py`, then `openspec validate
