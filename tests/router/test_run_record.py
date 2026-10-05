@@ -2046,6 +2046,55 @@ class TestActiveConflictsPartitioning(unittest.TestCase):
         )
 
 
+def _docstring_subcommand_entry(name):
+    """Return the module docstring's block for one subcommand.
+
+    The docstring is `argparse.ArgumentParser(description=__doc__)` for
+    `worktrail-run-record`, so these blocks ARE the command's `--help` text --
+    user-facing surface, not internal prose. An entry starts at exactly two
+    spaces of indent; its continuation lines are indented further.
+    """
+    entry = []
+    for line in run_record.__doc__.splitlines():
+        if line.startswith(f"  {name} "):
+            entry = [line]
+            continue
+        if not entry:
+            continue
+        if line.startswith("   "):
+            entry.append(line)
+        elif line.strip():
+            break
+    return "\n".join(entry)
+
+
+class TestModuleDocstringAccuracy(unittest.TestCase):
+    """The module docstring is the `--help` text (`description=__doc__`), so a
+    stale entry misdocuments the command to every operator who runs
+    `worktrail-run-record --help`. Regression for the archived
+    `active-conflicts-staleness-reconciliation` change: its task 1.4 was
+    ticked without applying the docstring edit it named.
+    """
+
+    def test_active_conflicts_entry_documents_the_partitioned_object(self):
+        entry = _docstring_subcommand_entry("active-conflicts")
+
+        self.assertTrue(entry, "no active-conflicts entry in the module docstring")
+        self.assertIn("live", entry)
+        self.assertIn("stale", entry)
+        self.assertNotIn("JSON array", entry)
+
+    def test_active_conflicts_entry_cites_no_missing_contract_file(self):
+        entry = _docstring_subcommand_entry("active-conflicts")
+
+        self.assertNotIn("contracts/", entry)
+
+    def test_active_conflicts_entry_documents_the_missing_root_exit_status(self):
+        entry = _docstring_subcommand_entry("active-conflicts")
+
+        self.assertIn("exits 1", entry.lower())
+
+
 def _reconcile(run_path, **over):
     argv = ["reconcile", run_path]
     if "note" in over and over["note"] is not None:
