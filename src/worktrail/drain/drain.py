@@ -2420,8 +2420,8 @@ def run_intake_triage_prepass(
         os.environ["WORK_QUEUE_DIR"] = str(queue_dir)
     try:
         if dry_run:
-            groups, skipped = queue_triage_mod.inventory(
-                within_days=25, exclude_repos=exclude_repos
+            groups, skipped, _escalate, _inferred, _unresolvable = (
+                queue_triage_mod.inventory(within_days=25, exclude_repos=exclude_repos)
             )
             log(
                 f"intake-triage: dry-run preview -- {len(groups)} repo group(s), "

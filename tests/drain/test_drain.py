@@ -5055,6 +5055,9 @@ def test_run_intake_triage_prepass_dry_run_spawns_no_agent(tmp_path, monkeypatch
         lambda within_days, **kw: (
             {"repo-a": [Path("brief.md")]},
             [Path("skipped.md")],
+            [],
+            [],
+            [],
         ),
     )
 
@@ -6348,23 +6351,36 @@ def test_run_intake_triage_prepass_passes_one_exclude_repo_flag_per_entry(
 def test_run_intake_triage_prepass_dry_run_inventory_receives_exclude_repos(
     tmp_path, monkeypatch
 ):
+    """The dry-run preview must go through `inventory()`'s real five-value
+    contract and apply the exclusion list, not merely receive it: a
+    two-value fake here let every real dry-run `--intake-triage` pass crash
+    with `ValueError: too many values to unpack` (task 2.1 review, major #1)."""
+    queue_dir = tmp_path / "wq"
+    queue_path = queue_dir / "queue"
+    queue_path.mkdir(parents=True)
+    for name, repo in (("a.md", "repo-a"), ("b.md", "repo-b")):
+        (queue_path / name).write_text(
+            f"---\nfocus: handle a queued brief\nstatus: queued\nrepo: {repo}\n---\n\nbody\n",
+            encoding="utf-8",
+        )
     seen = {}
+    real_inventory = drain.queue_triage_mod.inventory
 
-    def fake_inventory(within_days, **kw):
+    def spy(within_days, **kw):
         seen["within_days"] = within_days
         seen.update(kw)
-        return {"repo-a": [Path("brief.md")]}, []
+        return real_inventory(within_days, **kw)
 
-    monkeypatch.setattr(drain.queue_triage_mod, "inventory", fake_inventory)
+    monkeypatch.setattr(drain.queue_triage_mod, "inventory", spy)
 
     result = run_intake_triage_prepass(
-        tmp_path / "wq",
+        queue_dir,
         log=lambda _l: None,
         dry_run=True,
-        exclude_repos=["beta"],
+        exclude_repos=["repo-b"],
     )
 
-    assert seen == {"within_days": 25, "exclude_repos": ["beta"]}
+    assert seen == {"within_days": 25, "exclude_repos": ["repo-b"]}
     assert result == {"dry_run": True, "groups": 1, "briefs_skipped": 0}
 
 
