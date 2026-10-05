@@ -1,6 +1,6 @@
 ## 1. Gate path needles on shape and strip node-ids
 
-- [ ] 1.1 In `src/worktrail/router/brief_probes.py`, strip a pytest node-id suffix before path
+- [x] 1.1 In `src/worktrail/router/brief_probes.py`, strip a pytest node-id suffix before path
       classification: in `extract_probes`, after `_strip_punct`, reduce a `::`-bearing token to
       its portion before the first `::` and run the existing `_is_path_token` test on that
       portion, emitting it as the probe when it passes. A token whose portion before `::` fails
