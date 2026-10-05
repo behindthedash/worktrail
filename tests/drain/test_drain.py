@@ -53,6 +53,7 @@ from worktrail.drain.drain import (
     resume_verify_pending,
     run_intake_triage_prepass,
     run_one_shot,
+    scoped_repo_names,
     select_available_agent,
     slot_lock_path,
     sweep_remediations,
@@ -3264,7 +3265,7 @@ def test_archive_openspec_change_gh_pr_create_failure_raises(tmp_path, monkeypat
             detail="label not found",
         )
 
-    def mock_finder(repos_root, go_repo):
+    def mock_finder(repos_root, go_repo, exclude_repos=()):
         return [
             {
                 "repo": repo,
@@ -3906,7 +3907,7 @@ def test_sweep_remediations_runs_every_table_row(monkeypatch, tmp_path):
     calls = []
 
     def make_row(key):
-        def finder(repos_root, go_repo):
+        def finder(repos_root, go_repo, exclude_repos=()):
             return [{"repo_name": key, "spec_id": "spec-a"}]
 
         def action(finding, agent, timeout, spawner, log):
@@ -3935,7 +3936,7 @@ def test_sweep_remediations_runs_every_table_row(monkeypatch, tmp_path):
 
 
 def test_sweep_remediations_isolates_per_finding_failure(monkeypatch, tmp_path):
-    def failing_finder(repos_root, go_repo):
+    def failing_finder(repos_root, go_repo, exclude_repos=()):
         return [
             {"repo_name": "repo-a", "spec_id": "spec-a"},
             {"repo_name": "repo-b", "spec_id": "spec-b"},
@@ -3946,13 +3947,13 @@ def test_sweep_remediations_isolates_per_finding_failure(monkeypatch, tmp_path):
             raise RuntimeError("boom")
         return {"repo": finding["repo_name"], "spec_id": finding["spec_id"]}
 
-    def ok_finder(repos_root, go_repo):
+    def ok_finder(repos_root, go_repo, exclude_repos=()):
         return [{"repo_name": "repo-c", "spec_id": "spec-c"}]
 
     def ok_action(finding, agent, timeout, spawner, log):
         return {"repo": finding["repo_name"], "spec_id": finding["spec_id"]}
 
-    def openspec_archive_finder(repos_root, go_repo):
+    def openspec_archive_finder(repos_root, go_repo, exclude_repos=()):
         return [{"repo_name": "repo-d", "spec_id": "add-export"}]
 
     def openspec_archive_action(finding, agent, timeout, spawner, log):
@@ -4041,7 +4042,7 @@ def test_sweep_remediations_skips_finding_when_spec_claimed_by_active_run(
     started = json.loads(out.getvalue())
     run_record_mod.main(["set", started["path"], "specification", "spec-a"])
 
-    def finder(repos_root, go_repo):
+    def finder(repos_root, go_repo, exclude_repos=()):
         return [{"repo": repo_root, "repo_name": "target-repo", "spec_id": "spec-a"}]
 
     def action(finding, agent, timeout, spawner, log):
@@ -4074,7 +4075,7 @@ def test_sweep_remediations_proceeds_when_active_run_check_raises(
     # A policy/run-record read error in the new claim check must not abort
     # the whole sweep -- same one-finding-must-not-block-the-rest guarantee
     # remediation.action()'s own try/except already provides.
-    def finder(repos_root, go_repo):
+    def finder(repos_root, go_repo, exclude_repos=()):
         return [
             {"repo": Path("/fake/repo"), "repo_name": "repo-a", "spec_id": "spec-a"}
         ]
@@ -4114,7 +4115,7 @@ def test_sweep_remediations_proceeds_when_no_active_claim(monkeypatch, tmp_path)
         f"run_record_dir: {runs_root}\n"
     )
 
-    def finder(repos_root, go_repo):
+    def finder(repos_root, go_repo, exclude_repos=()):
         return [{"repo": repo_root, "repo_name": "target-repo", "spec_id": "spec-a"}]
 
     def action(finding, agent, timeout, spawner, log):
@@ -4140,7 +4141,7 @@ def test_sweep_remediations_keys_filter_restricts_rows(monkeypatch, tmp_path):
     called_finders = []
 
     def make_row(key):
-        def finder(repos_root, go_repo):
+        def finder(repos_root, go_repo, exclude_repos=()):
             called_finders.append(key)
             return []
 
@@ -4189,7 +4190,7 @@ def test_sweep_remediations_falls_back_when_primary_agent_gated(monkeypatch, tmp
 
     used_agents = []
 
-    def finder(repos_root, go_repo):
+    def finder(repos_root, go_repo, exclude_repos=()):
         return [{"repo_name": "repo-a", "spec_id": "spec-a"}]
 
     def action(finding, agent, timeout, spawner, log):
@@ -4228,7 +4229,7 @@ def test_sweep_remediations_skips_finding_when_every_candidate_gated(
         )
     )
 
-    def finder(repos_root, go_repo):
+    def finder(repos_root, go_repo, exclude_repos=()):
         return [{"repo_name": "repo-a", "spec_id": "spec-a"}]
 
     def action(finding, agent, timeout, spawner, log):
@@ -4260,7 +4261,7 @@ def test_sweep_remediations_re_reads_capacity_between_findings(monkeypatch, tmp_
     capacity_cache = tmp_path / "capacity.json"
     capacity_cache.write_text(json.dumps({"claude": {"status": "gated"}}))
 
-    def finder(repos_root, go_repo):
+    def finder(repos_root, go_repo, exclude_repos=()):
         return [
             {"repo_name": "repo-a", "spec_id": "spec-a"},
             {"repo_name": "repo-b", "spec_id": "spec-b"},
@@ -4737,7 +4738,7 @@ def test_close_stale_bookkeeping_gh_pr_create_failure_raises(tmp_path, monkeypat
             detail="label not found",
         )
 
-    def mock_finder(repos_root, go_repo):
+    def mock_finder(repos_root, go_repo, exclude_repos=()):
         return [
             {
                 "repo": repo,
@@ -5051,7 +5052,13 @@ def test_run_intake_triage_prepass_dry_run_spawns_no_agent(tmp_path, monkeypatch
     monkeypatch.setattr(
         drain.queue_triage_mod,
         "inventory",
-        lambda within_days: ({"repo-a": [Path("brief.md")]}, [Path("skipped.md")]),
+        lambda within_days, **kw: (
+            {"repo-a": [Path("brief.md")]},
+            [Path("skipped.md")],
+            [],
+            [],
+            [],
+        ),
     )
 
     result = run_intake_triage_prepass(
@@ -5087,7 +5094,9 @@ def test_drain_intake_triage_flag_on_runs_prepass(tmp_path, monkeypatch):
     monkeypatch.setattr(
         drain,
         "run_intake_triage_prepass",
-        lambda queue_dir, log, dry_run=False: {"out_dir": "fake-out-dir"},
+        lambda queue_dir, log, dry_run=False, exclude_repos=(): {
+            "out_dir": "fake-out-dir"
+        },
     )
 
     summary = drain.drain(
@@ -5246,7 +5255,7 @@ def test_drain_intake_triage_dry_run_previews_and_populates_summary(
     monkeypatch.setattr(
         drain,
         "run_intake_triage_prepass",
-        lambda queue_dir, log, dry_run=False: (
+        lambda queue_dir, log, dry_run=False, exclude_repos=(): (
             seen_dry_run.append(dry_run)
             or {"out_dir": "fake-out-dir", "dry_run": dry_run}
         ),
@@ -5985,3 +5994,465 @@ def test_record_capacity_gate_keeps_foreign_and_active_entries(tmp_path):
     assert set(providers) == {"claude-sub:opus", "codex", "claude"}
     assert providers["claude-sub:opus"]["source"] == "spawn"
     assert providers["codex"]["source"] == "drain"
+
+
+# ---------------------------------------------------------------------------
+# Repo exclusion (routing.drain.exclude_repos)
+
+
+def test_scoped_repo_names_drops_excluded_and_composes_with_go_repo(tmp_path):
+    repos_root = tmp_path / "projects"
+    for name in ("alpha", "beta", "gamma"):
+        _make_repo(repos_root, name)
+
+    assert scoped_repo_names(repos_root) == ["alpha", "beta", "gamma"]
+    assert scoped_repo_names(repos_root, exclude_repos=["beta"]) == ["alpha", "gamma"]
+    # go_repo and exclude_repos compose: the restriction applies first, then
+    # the exclusion -- the explicit-scope override itself lives in drain().
+    assert scoped_repo_names(repos_root, go_repo="beta", exclude_repos=["gamma"]) == [
+        "beta"
+    ]
+    assert scoped_repo_names(repos_root, go_repo="beta", exclude_repos=["beta"]) == []
+    assert scoped_repo_names(repos_root, exclude_repos=["ghost"]) == [
+        "alpha",
+        "beta",
+        "gamma",
+    ]
+
+
+def test_repo_sandbox_roots_skips_excluded_repo(tmp_path):
+    repos_root = tmp_path / "projects"
+    for name in ("alpha", "beta", "gamma"):
+        _make_repo(repos_root, name)
+
+    roots = repo_sandbox_roots(repos_root, exclude_repos=["beta"])
+
+    assert roots == [
+        repos_root / "alpha" / ".git",
+        repos_root / "alpha-worktrees",
+        repos_root / "gamma" / ".git",
+        repos_root / "gamma-worktrees",
+    ]
+    assert not any("beta" in str(root) for root in roots)
+
+
+def test_repo_sandbox_roots_go_repo_still_composes_with_exclusion(tmp_path):
+    repos_root = tmp_path / "projects"
+    for name in ("alpha", "beta"):
+        _make_repo(repos_root, name)
+
+    assert repo_sandbox_roots(repos_root, go_repo="alpha", exclude_repos=["beta"]) == [
+        repos_root / "alpha" / ".git",
+        repos_root / "alpha-worktrees",
+    ]
+
+
+_FINDER_NAMES = [
+    "find_resumable_quarantines",
+    "find_verify_pending_specs",
+    "find_sync_pending_specs",
+    "find_stale_bookkeeping_specs",
+    "find_complete_openspec_changes",
+    "find_stale_branches",
+]
+
+
+def _seed_finder_finding(repos_root: Path, name: str, finder_name: str) -> None:
+    """Give repo `name` under `repos_root` exactly one finding of the kind
+    `finder_name` reports (each branch mirrors that finder's own
+    discovers-across-repos fixture)."""
+    if finder_name == "find_stale_branches":
+        _merged_branch(_init_branch_repo(repos_root, name), "topic")
+        return
+    repo = _make_repo(repos_root, name)
+    if finder_name == "find_resumable_quarantines":
+        (repo / "docs" / "specs" / "spec-x").mkdir(parents=True)
+        _write_journal(repo, "spec-x", _BUDGET_EXHAUSTED_GROUPS)
+    elif finder_name == "find_verify_pending_specs":
+        _write_verify_pending_spec(
+            repo, "spec-x", "https://github.com/test/repo/pull/1"
+        )
+    elif finder_name == "find_sync_pending_specs":
+        _write_sync_pending_spec(repo, "spec-x")
+    elif finder_name == "find_stale_bookkeeping_specs":
+        _init_git_repo(repo)
+        _write_stale_bookkeeping_spec(repo, "spec-x")
+    elif finder_name == "find_complete_openspec_changes":
+        _write_openspec_complete_change(repo, "add-export")
+
+
+@pytest.mark.parametrize("finder_name", _FINDER_NAMES)
+def test_finder_skips_excluded_repo_but_keeps_every_other_finding(
+    tmp_path, finder_name
+):
+    """Every remediation finder must treat an excluded repo as if it weren't
+    there -- no finding at all, while an identical finding in a non-excluded
+    repo still comes back."""
+    repos_root = tmp_path / "projects"
+    _seed_finder_finding(repos_root, "repo-a", finder_name)
+    _seed_finder_finding(repos_root, "repo-b", finder_name)
+    finder = getattr(drain, finder_name)
+
+    assert [f["repo_name"] for f in _no_gh(finder, repos_root)] == ["repo-a", "repo-b"]
+
+    found = _no_gh(finder, repos_root, None, ("repo-b",))
+
+    assert [f["repo_name"] for f in found] == ["repo-a"]
+
+
+def test_count_ready_briefs_ignores_excluded_repo_in_all_repo_shapes():
+    def brief(repo=None, **kw):
+        entry = {"blocked": False, "not_yet_due": False, **kw}
+        if repo is not None:
+            entry["repo"] = repo
+        return entry
+
+    queue = {
+        "briefs": [
+            brief("/home/op/projects/beta"),
+            brief("beta"),
+            brief("behindthedash/beta"),
+            brief("/home/op/projects/alpha"),
+            brief(),  # no repo at all -- never excluded
+            brief("beta", blocked=True),
+            brief("beta", not_yet_due=True),
+        ]
+    }
+
+    assert count_ready_briefs(queue) == 5  # the two blocked/deferred never count
+    assert count_ready_briefs(queue, ["beta"]) == 2  # alpha + the repo-less brief
+
+
+def _repo_queue(briefs):
+    """list_queue stand-in that serves `briefs` exactly once and then an empty
+    queue (a claim moves the brief's file out of queue/) -- the same
+    one-item-then-empty shape as FakeQueue([1, 0, 0])."""
+
+    state = {"calls": 0}
+
+    def _list(*_a, **_k):
+        state["calls"] += 1
+        return {"briefs": list(briefs) if state["calls"] == 1 else []}
+
+    return _list
+
+
+def _ready_brief(repo: str, name: str = "b1.md") -> dict:
+    return {
+        "filename": name,
+        "repo": repo,
+        "blocked": False,
+        "not_yet_due": False,
+    }
+
+
+def test_drain_only_excluded_briefs_stops_queue_empty_and_spawns_nothing(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        drain,
+        "list_queue",
+        _repo_queue(
+            [_ready_brief("/home/op/projects/beta"), _ready_brief("beta", "b2.md")]
+        ),
+    )
+    config = make_config(tmp_path, exclude_repos=["beta"])
+    spawned = []
+
+    summary = drain.drain(
+        config,
+        spawner=lambda c, t: spawned.append(c) or SpawnOutcome(0),
+        log=lambda _l: None,
+    )
+
+    assert summary["stopped"].startswith("queue_empty")
+    assert summary["iterations"] == []
+    assert spawned == []
+
+
+def test_drain_still_runs_when_only_some_ready_briefs_are_excluded(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        drain,
+        "list_queue",
+        _repo_queue(
+            [_ready_brief("/home/op/projects/beta"), _ready_brief("alpha", "b2.md")]
+        ),
+    )
+    config = make_config(tmp_path, exclude_repos=["beta"])
+    spawned = []
+
+    summary = drain.drain(
+        config,
+        spawner=lambda c, t: spawned.append(c) or SpawnOutcome(0),
+        log=lambda _l: None,
+    )
+
+    # Exactly one iteration: the kept brief is still ready and runs. The
+    # excluded brief is invisible to both the pre- and post-iteration counts,
+    # so `claimed_delta` is 1 (the kept brief leaving queue/) -- not 2, which
+    # is what a post-read that forgot the exclusion would report by crediting
+    # the excluded brief's disappearance as a second claim.
+    assert len(spawned) == 1
+    assert len(summary["iterations"]) == 1
+    assert summary["iterations"][0]["claimed_delta"] == 1
+
+
+def test_drain_reports_applied_list_and_unmatched_entries(tmp_path, monkeypatch):
+    repos_root = tmp_path / "projects"
+    _make_repo(repos_root, "alpha")
+    _make_repo(repos_root, "beta")
+    install_fake_queue(monkeypatch, FakeQueue([0]))
+    config = make_config(
+        tmp_path, repos_root=repos_root, exclude_repos=["beta", "ghost"]
+    )
+    logs = []
+
+    summary = drain.drain(config, spawner=lambda c, t: SpawnOutcome(0), log=logs.append)
+
+    assert summary["stopped"].startswith("queue_empty")
+    assert any(
+        "excluding repos from unattended sweeps: beta, ghost" in line for line in logs
+    )
+    unmatched = next(line for line in logs if "matching no repo" in line)
+    assert "ghost" in unmatched
+    assert "beta" not in unmatched
+    assert str(repos_root) in unmatched
+
+
+def test_drain_missing_repos_root_omits_unmatched_report(tmp_path, monkeypatch):
+    """An unmatched entry is only reportable against a real repos_root -- with
+    none configured, the report is the list alone (the existing no-op)."""
+    install_fake_queue(monkeypatch, FakeQueue([0]))
+    config = make_config(tmp_path, exclude_repos=["ghost"])
+    logs = []
+
+    drain.drain(config, spawner=lambda c, t: SpawnOutcome(0), log=logs.append)
+
+    assert any("excluding repos from unattended sweeps: ghost" in line for line in logs)
+    assert not any("matching no repo" in line for line in logs)
+
+
+def test_drain_go_repo_override_keeps_excluded_repo_in_scope(tmp_path, monkeypatch):
+    repos_root = tmp_path / "projects"
+    _make_repo(repos_root, "beta")
+    monkeypatch.delenv("WORKTRAIL_CODEX_SANDBOX_MODE", raising=False)
+    monkeypatch.setattr(drain, "list_queue", _repo_queue([_ready_brief("beta")]))
+    config = make_config(
+        tmp_path,
+        agent="codex",
+        repos_root=repos_root,
+        go_repo="beta",
+        exclude_repos=["beta", "gamma"],
+    )
+    logs = []
+    cmds = []
+
+    drain.drain(
+        config,
+        spawner=lambda c, t: cmds.append(list(c)) or SpawnOutcome(0),
+        log=logs.append,
+    )
+
+    assert any(
+        "drain: --go-repo beta overrides routing.drain.exclude_repos for this run"
+        in line
+        for line in logs
+    )
+    # `gamma` is untouched by the override and still reported as applied.
+    assert any("excluding repos from unattended sweeps: gamma" in line for line in logs)
+    # `beta`'s brief counts as ready (it was dropped from the run's list) and
+    # the codex sandbox keeps beta's writable roots.
+    assert len(cmds) == 1
+    add_dirs = [cmds[0][i + 1] for i, a in enumerate(cmds[0]) if a == "--add-dir"]
+    assert str(repos_root / "beta" / ".git") in add_dirs
+    assert str(repos_root / "beta-worktrees") in add_dirs
+
+
+def test_drain_go_repo_not_excluded_logs_no_override(tmp_path, monkeypatch):
+    repos_root = tmp_path / "projects"
+    _make_repo(repos_root, "alpha")
+    _make_repo(repos_root, "beta")
+    install_fake_queue(monkeypatch, FakeQueue([0]))
+    config = make_config(
+        tmp_path, repos_root=repos_root, go_repo="alpha", exclude_repos=["beta"]
+    )
+    logs = []
+
+    drain.drain(config, spawner=lambda c, t: SpawnOutcome(0), log=logs.append)
+
+    assert not any("overrides routing.drain.exclude_repos" in line for line in logs)
+    assert any("excluding repos from unattended sweeps: beta" in line for line in logs)
+
+
+def test_main_populates_exclude_repos_from_routing_file(tmp_path, monkeypatch):
+    rc, config = _run_main(
+        tmp_path,
+        monkeypatch,
+        config_payload='{"drain": {"exclude_repos": ["beta", "gamma"]}}',
+    )
+    assert rc == 0
+    assert config.exclude_repos == ["beta", "gamma"]
+
+
+def test_main_exclude_repos_defaults_empty_without_config(tmp_path, monkeypatch):
+    rc, config = _run_main(tmp_path, monkeypatch)
+    assert rc == 0
+    assert config.exclude_repos == []
+
+
+def test_main_exits_2_on_malformed_exclude_repos(tmp_path, monkeypatch, capsys):
+    rc, config = _run_main(
+        tmp_path,
+        monkeypatch,
+        config_payload='{"drain": {"exclude_repos": "beta"}}',
+    )
+    assert rc == 2
+    assert config is None
+    assert (
+        "routing.drain.exclude_repos must be a list of non-empty repo names"
+        in capsys.readouterr().err
+    )
+
+
+def test_run_intake_triage_prepass_passes_one_exclude_repo_flag_per_entry(
+    tmp_path, monkeypatch
+):
+    calls = []
+
+    def fake_main(argv):
+        calls.append(argv)
+        if argv[0] == "evaluate":
+            out_dir = Path(argv[argv.index("--out-dir") + 1])
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "verdict.json").write_text("[]", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(drain.queue_triage_mod, "main", fake_main)
+
+    run_intake_triage_prepass(
+        tmp_path / "wq", log=lambda _l: None, exclude_repos=["beta", "gamma"]
+    )
+
+    out_dir = Path(calls[0][calls[0].index("--out-dir") + 1])
+    assert calls[0] == [
+        "evaluate",
+        "--out-dir",
+        str(out_dir),
+        "--exclude-repo",
+        "beta",
+        "--exclude-repo",
+        "gamma",
+    ]
+    assert calls[1][0] == "apply"
+
+
+def test_run_intake_triage_prepass_dry_run_inventory_receives_exclude_repos(
+    tmp_path, monkeypatch
+):
+    """The dry-run preview must go through `inventory()`'s real five-value
+    contract and apply the exclusion list, not merely receive it: a
+    two-value fake here let every real dry-run `--intake-triage` pass crash
+    with `ValueError: too many values to unpack` (task 2.1 review, major #1)."""
+    queue_dir = tmp_path / "wq"
+    queue_path = queue_dir / "queue"
+    queue_path.mkdir(parents=True)
+    for name, repo in (("a.md", "repo-a"), ("b.md", "repo-b")):
+        (queue_path / name).write_text(
+            f"---\nfocus: handle a queued brief\nstatus: queued\nrepo: {repo}\n---\n\nbody\n",
+            encoding="utf-8",
+        )
+    seen = {}
+    real_inventory = drain.queue_triage_mod.inventory
+
+    def spy(within_days, **kw):
+        seen["within_days"] = within_days
+        seen.update(kw)
+        return real_inventory(within_days, **kw)
+
+    monkeypatch.setattr(drain.queue_triage_mod, "inventory", spy)
+
+    result = run_intake_triage_prepass(
+        queue_dir,
+        log=lambda _l: None,
+        dry_run=True,
+        exclude_repos=["repo-b"],
+    )
+
+    assert seen == {"within_days": 25, "exclude_repos": ["repo-b"]}
+    assert result == {"dry_run": True, "groups": 1, "briefs_skipped": 0}
+
+
+def test_drain_seed_backlog_prepass_forwards_exclude_repos(tmp_path, monkeypatch):
+    repos_root = tmp_path / "projects"
+    _make_needs_tasks_repo(repos_root, "repo-a", "010-alpha")
+    monkeypatch.setenv("WORK_QUEUE_DIR", str(tmp_path / "wq"))
+    install_fake_queue(monkeypatch, FakeQueue([0]))
+    config = make_config(tmp_path, repos_root=repos_root, exclude_repos=["repo-b"])
+    seen = []
+    real_seed_backlog = drain.seed_backlog_mod.seed_backlog
+
+    def spy(*a, **k):
+        seen.append(k)
+        return real_seed_backlog(*a, **k)
+
+    monkeypatch.setattr(drain.seed_backlog_mod, "seed_backlog", spy)
+
+    drain.drain(config, spawner=lambda c, t: SpawnOutcome(0), log=lambda _l: None)
+
+    assert len(seen) == 1
+    assert seen[0]["exclude_repos"] == ["repo-b"]
+
+
+def test_drain_seed_backlog_dry_run_branch_forwards_exclude_repos(
+    tmp_path, monkeypatch
+):
+    repos_root = tmp_path / "projects"
+    _make_needs_tasks_repo(repos_root, "repo-a", "010-alpha")
+    monkeypatch.setenv("WORK_QUEUE_DIR", str(tmp_path / "wq"))
+    install_fake_queue(monkeypatch, FakeQueue([0]))
+    config = make_config(
+        tmp_path,
+        repos_root=repos_root,
+        seed_backlog_pass=True,
+        dry_run=True,
+        exclude_repos=["repo-b"],
+    )
+    seen = []
+    real_seed_backlog = drain.seed_backlog_mod.seed_backlog
+
+    def spy(*a, **k):
+        seen.append(k)
+        return real_seed_backlog(*a, **k)
+
+    monkeypatch.setattr(drain.seed_backlog_mod, "seed_backlog", spy)
+
+    drain.drain(config, spawner=lambda c, t: SpawnOutcome(0), log=lambda _l: None)
+
+    assert len(seen) == 1
+    assert seen[0]["dry_run"] is True
+    assert seen[0]["exclude_repos"] == ["repo-b"]
+    assert not (tmp_path / "wq" / "queue").exists() or not list(
+        (tmp_path / "wq" / "queue").glob("*.md")
+    )
+
+
+def test_drain_sweep_remediations_receives_exclude_repos(tmp_path, monkeypatch):
+    fake = FakeQueue([0])
+    install_fake_queue(monkeypatch, fake)
+    repos_root = tmp_path / "projects"
+    _make_repo(repos_root, "repo-a")
+    config = make_config(tmp_path, repos_root=repos_root, exclude_repos=["repo-b"])
+    seen = []
+    real_sweep = drain.sweep_remediations
+
+    def spy(*a, **k):
+        seen.append(k)
+        return real_sweep(*a, **k)
+
+    monkeypatch.setattr(drain, "sweep_remediations", spy)
+
+    drain.drain(config, spawner=lambda c, t: SpawnOutcome(0), log=lambda _l: None)
+
+    assert seen and all(k["exclude_repos"] == ["repo-b"] for k in seen)

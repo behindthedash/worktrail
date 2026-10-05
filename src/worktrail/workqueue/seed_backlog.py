@@ -37,7 +37,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from pathlib import Path
 from typing import Any
 
@@ -77,21 +77,38 @@ def _base_branch_for(repo: Path) -> str | None:
         return None
 
 
+def _scoped_repo_names(
+    repos_root: Path, go_repo: str | None, exclude_repos: Collection[str]
+) -> list[str]:
+    """`discover_repo_names()` restricted to `go_repo` (when given), then with
+    `exclude_repos` dropped -- so a repo the operator excluded from unattended
+    draining (`routing.drain.exclude_repos`) is never scanned and none of its
+    specs or epics can become a brief."""
+    names = discover_repo_names(repos_root)
+    if go_repo:
+        names = [n for n in names if n == go_repo]
+    if exclude_repos:
+        excluded = set(exclude_repos)
+        names = [n for n in names if n not in excluded]
+    return names
+
+
 # ---------------------------------------------------------------------------
 # Finders
 
 
 def find_needs_tasks_specs(
-    repos_root: Path, go_repo: str | None = None
+    repos_root: Path,
+    go_repo: str | None = None,
+    exclude_repos: Collection[str] = (),
 ) -> list[dict[str, Any]]:
     """Every (repo, spec) pair in the `needs-tasks` dashboard stage.
 
     `needs-clarification` is deliberately excluded: its next action requires
-    human answers, not a mechanical spec-to-tasks pass.
+    human answers, not a mechanical spec-to-tasks pass. `exclude_repos` drops
+    repos from the scan entirely (see `_scoped_repo_names`).
     """
-    names = discover_repo_names(repos_root)
-    if go_repo:
-        names = [n for n in names if n == go_repo]
+    names = _scoped_repo_names(repos_root, go_repo, exclude_repos)
     found: list[dict[str, Any]] = []
     for name in names:
         repo_path = repos_root / name
@@ -119,18 +136,19 @@ def find_needs_tasks_specs(
 
 
 def find_ready_specs(
-    repos_root: Path, go_repo: str | None = None
+    repos_root: Path,
+    go_repo: str | None = None,
+    exclude_repos: Collection[str] = (),
 ) -> list[dict[str, Any]]:
     """Every (repo, spec) pair in the `ready-to-implement` dashboard stage, for
     repos that have opted into Route D implementation seeding.
 
     Gated per repo by `load_policy(repo)["allow_seeded_implementation"]`: a
     repo that hasn't opted in never has its `ready-to-implement` specs scanned
-    at all, let alone seeded.
+    at all, let alone seeded. `exclude_repos` drops repos from the scan before
+    that opt-in is even consulted (see `_scoped_repo_names`).
     """
-    names = discover_repo_names(repos_root)
-    if go_repo:
-        names = [n for n in names if n == go_repo]
+    names = _scoped_repo_names(repos_root, go_repo, exclude_repos)
     found: list[dict[str, Any]] = []
     for name in names:
         repo_path = repos_root / name
@@ -160,7 +178,9 @@ def find_ready_specs(
 
 
 def find_epic_gaps(
-    repos_root: Path, go_repo: str | None = None
+    repos_root: Path,
+    go_repo: str | None = None,
+    exclude_repos: Collection[str] = (),
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Every epic under `docs/specs/epics/` with fewer citing specs than
     decomposed `### Feature` headings and a non-terminal `**Status:**`.
@@ -184,9 +204,7 @@ def find_epic_gaps(
     Seeding one would produce a brief for a feature the epic author has
     explicitly said cannot be worked yet.
     """
-    names = discover_repo_names(repos_root)
-    if go_repo:
-        names = [n for n in names if n == go_repo]
+    names = _scoped_repo_names(repos_root, go_repo, exclude_repos)
     found: list[dict[str, Any]] = []
     sequencing_gated: list[dict[str, Any]] = []
     for name in names:
@@ -345,6 +363,7 @@ def seed_backlog(
     max_seeds: int = DEFAULT_MAX_SEEDS,
     dry_run: bool = False,
     log: Callable[[str], None] = print,
+    exclude_repos: Collection[str] = (),
 ) -> dict[str, Any]:
     """Find unseeded backlog and capture up to `max_seeds` briefs for it.
 
@@ -354,13 +373,18 @@ def seed_backlog(
     `unparseable_epics` (epic files with no feature decomposition), and
     `sequencing_gated_epics` (epic files whose next feature is blocked by
     an open gate).
+
+    `exclude_repos` is forwarded to all three finders, so an excluded repo
+    contributes no candidates of any kind (see `_scoped_repo_names`). The CLI
+    deliberately has no flag for it: the list is operator policy resolved by
+    the caller (`drain`), not a per-invocation choice.
     """
     queue_base = Path(queue_base or work_queue.base_dir()).expanduser()
-    candidates = find_needs_tasks_specs(repos_root, go_repo)
-    epic_findings, sequencing_gated = find_epic_gaps(repos_root, go_repo)
+    candidates = find_needs_tasks_specs(repos_root, go_repo, exclude_repos)
+    epic_findings, sequencing_gated = find_epic_gaps(repos_root, go_repo, exclude_repos)
     unparseable = [f for f in epic_findings if f.get("unparseable")]
     candidates += [f for f in epic_findings if not f.get("unparseable")]
-    candidates += find_ready_specs(repos_root, go_repo)
+    candidates += find_ready_specs(repos_root, go_repo, exclude_repos)
     for finding in unparseable:
         log(
             f"seed-backlog: skipping epic {finding['repo_name']} "
