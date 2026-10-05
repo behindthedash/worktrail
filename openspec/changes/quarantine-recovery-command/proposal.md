@@ -110,3 +110,13 @@ Triage each group: repair and resume it, or discard it if the work already lande
 worktrail-selfcheck-fleet-sweep: quarantine worktrail openspec-validate-ci-gate
 
 Journal run-openspec-validate-ci-gate.json still holds base/dropped (task_failure) and tail-4.1 (merge_conflict) QUARANTINED (mtime 2026-08-22), plus tail-2.2 OPEN. Change openspec/changes/quarantine-recovery-command is active and its proposal.md folded section names brief 20260930-112546 directly; tasks.md 4.1 lists ../run-openspec-validate-ci-gate.json. The other listed candidate (tail-dispatch-require-merged-deps) is a poor fit — it gates tail dispatch on declared deps, which is unrelated to clearing stuck journal records.
+
+## Folded from 20261004-112540-worktrail-has-orchestrator-groups-stuck
+
+worktrail has orchestrator groups stuck in QUARANTINED for spec `built-artifact-packaging-parity-gate` (worktrail-quarantine-selfcheck): tail-3.5 (merge_conflict, 35d); tail-4.2 (merge_conflict, 35d)
+
+Triage each group: repair and resume it, or discard it if the work already landed or is no longer wanted.
+
+worktrail-selfcheck-fleet-sweep: quarantine worktrail built-artifact-packaging-parity-gate
+
+Spec archived: openspec/changes/archive/2026-08-31-built-artifact-packaging-parity-gate. Journal run-built-artifact-packaging-parity-gate.json still holds tail-3.5 and tail-4.2 state=QUARANTINED (live json read, file mtime 2026-08-30). This brief is the next re-filing of the class already folded as '## Folded from 20260930-112541-worktrail-has-orchestrator-groups-stuck' in openspec/changes/quarantine-recovery-command/proposal.md:94 (commit 928a58d7 / #1421); recover.py still absent.
