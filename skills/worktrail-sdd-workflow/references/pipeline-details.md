@@ -201,9 +201,43 @@ launching the orchestrator — never launch with uncommitted output sitting in `
 
 **Stage results:** `../../worktrail-go/references/subagent-prompts.md#stage-result-handling`.
 
-3. **scope-check** — run `worktrail-compile` against the change directory *before*
+3. **Direct-mode gate** — decide the execution mode with the code-enforced verdict,
+   before the scope-check below:
+
+   ```bash
+   worktrail-modify-direct-gate "$CHANGE_DIR" --json
+   ```
+
+   Branch **only** on the verdict's `eligible` field — the gate's word is the
+   decision; never re-judge eligibility by reading the change. Record it either way:
+
+   - **`eligible: true` → direct mode.** Record
+     `worktrail-run-record append "$RUN" decisions "modify-direct-mode: direct — <the gate's reason>"`
+     and implement the change's single task inline in `$WT` (on `chg/$CHANGE_ID` —
+     never the base checkout and never a task worktree), committing there. Run the
+     retained gates exactly as the orchestrated path does: the scope-check/compile
+     step below (committing the resulting `.compile-ok`), `openspec validate
+     <change-id>`, the pre-PR gate (`worktrail-pre-pr-gate --run …`, the same
+     invocation and label computation the landing blocks below use), and CI. Then
+     land exactly ONE PR via `worktrail-land-pr` carrying the change artifacts +
+     implementation, in checkpoint mode so the run record stays open (mirroring the
+     sync PR's checkpoint usage in
+     `../../worktrail-go/references/subagent-prompts.md#sync-before-teardown`; verify
+     flags against `land_pr.py`'s CLI). No orchestrator launch, no worker spawn, no
+     task worktree. Continue to the sync step and teardown exactly as the
+     orchestrated path, and finish per the route's normal completion. Accepted
+     trade-off: direct mode forgoes the orchestrator's independent reviewer and
+     worktree isolation — the same trust level `routes.md` §F already extends to
+     direct fix-branch worktrees — and a change touching the routing/classification
+     surface can never ride direct mode (the gate refuses it).
+   - **`eligible: false` → orchestrated mode, unchanged.** Record
+     `worktrail-run-record append "$RUN" decisions "modify-direct-mode: orchestrated — <the gate's reason>"`
+     before launch, surface the reason to the operator, and proceed through the
+     existing steps below unchanged — the fallback is never silent.
+
+4. **scope-check** — run `worktrail-compile` against the change directory *before*
    the pre-launch uncommitted-output guard below, mirroring `#new-pipeline` step 3.
-   `#orchestrator` (invoked in step 6 below) runs the same command again immediately
+   `#orchestrator` (invoked in step 7 below) runs the same command again immediately
    before `full-real` — a no-op cache hit there, per `compile.py`'s content-fingerprint
    cache — but running it here first, while the change directory is still open for a
    commit, is what gets the resulting `.compile-ok` marker committed at all. Run only
@@ -228,7 +262,7 @@ launching the orchestrator — never launch with uncommitted output sitting in `
    re-runs the compile and commits the resulting `.compile-ok` at landing, so the
    spec PR can no longer ship without it.
 
-4. **Pre-launch uncommitted-output guard (mandatory)** — mirrors the `new`
+5. **Pre-launch uncommitted-output guard (mandatory)** — mirrors the `new`
    pipeline's base-checkout diff detection (`#new-pipeline` step 5b), but checks
    the change-spec worktree itself rather than `$REPO`. (Verified: unlike `new`,
    this pipeline has no intermediate docs-only-PR-push-and-merge stage before
@@ -239,18 +273,18 @@ launching the orchestrator — never launch with uncommitted output sitting in `
 ```bash
 CHG_DIFF=$(git -C "$WT" status --porcelain -- openspec/ 2>&1)
 if [ -n "$CHG_DIFF" ]; then
-  echo "ERROR: $WT has uncommitted openspec/ output (proposal/specs/design/tasks, or a freshly-written .compile-ok from step 3). Commit it on chg/$CHANGE_ID before launching the orchestrator — an uncommitted file here will be silently absent from every task worktree the orchestrator forks from \$WT." >&2
+  echo "ERROR: $WT has uncommitted openspec/ output (proposal/specs/design/tasks, or a freshly-written .compile-ok from step 4). Commit it on chg/$CHANGE_ID before launching the orchestrator — an uncommitted file here will be silently absent from every task worktree the orchestrator forks from \$WT." >&2
   exit 1
 fi
 ```
 
-5. Run `../../worktrail-go/references/subagent-prompts.md#already-implemented-check` → `../../worktrail-go/references/subagent-prompts.md#precheck-gate`
+6. Run `../../worktrail-go/references/subagent-prompts.md#already-implemented-check` → `../../worktrail-go/references/subagent-prompts.md#precheck-gate`
    (`SPEC_ROOT=$WT`, pointed at `$CHANGE_DIR`).
-6. **orchestrator** — invoke per `../../worktrail-go/references/subagent-prompts.md#orchestrator` with
+7. **orchestrator** — invoke per `../../worktrail-go/references/subagent-prompts.md#orchestrator` with
    `SPEC_ROOT=$WT`, `run_in_background: true`. Cutting task worktrees from `$WT`
    (not `$REPO`) is what guarantees the just-committed change-spec and task files
    are present in every forked task worktree.
-7. **sync** (mandatory, BEFORE any teardown) — `../../worktrail-go/references/subagent-prompts.md#sync-before-teardown`.
+8. **sync** (mandatory, BEFORE any teardown) — `../../worktrail-go/references/subagent-prompts.md#sync-before-teardown`.
 
 Re-run the dashboard; teardown per `../../worktrail-go/references/subagent-prompts.md#worktree-lifecycle` (change-spec
 worktree only after sync completes).
