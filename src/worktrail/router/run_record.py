@@ -72,7 +72,12 @@ finish PATH --status completed_pr_open [--pr URL] [--merge-result ...]
          -> read-only scan for other non-terminal runs on the same repo;
             --specification restricts it to that specification, omitting it
             scans repo-wide (each entry names its own specification); prints
-            a JSON array (see contracts/active-conflicts-cli.md)
+            {"live": [...], "stale": [...], "warnings": [...]} -- each
+            non-terminal record partitioned by staleness, stale only when its
+            worktree is gone and every path in its non-empty `files_changed`
+            resolves on its own base_branch. Exits 1 when the records root
+            <dir>/<repo.name> is missing (the scan could not look; `warnings`
+            names that path), else 0.
   claim  RUN_PATH --specification SPEC [--remote] [--remote-ttl-seconds N]
          -> atomically claim repo+specification for the run at RUN_PATH before
             committing to implement it. Closes the TOCTOU gap in the read-only
