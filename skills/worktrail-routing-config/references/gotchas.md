@@ -119,6 +119,13 @@ for past manual clears) and blocked a target that should have been available aga
 assuming a routing-table edit "didn't take" when a target still isn't being selected, check this
 file for that target/model pair's current `status`.
 
+An entry is keyed either `target:model` — one cell's gate — or bare `target`. A bare entry gates
+**every** model of that target, for every reader, so look for the bare key as well before
+concluding a routing edit "didn't take": the drain writes bare target keys, and a whole target
+can be skipped for an account-level reason (rate limit, billing block) that the model-qualified
+key does not show. A model-qualified entry never weakens a bare one — an active bare `target`
+gate still blocks `target:model` even when that model's own entry says `available`.
+
 ## Already-running processes don't see an edit until restarted
 
 A drain loop or long-lived orchestrator process reads `routing.yaml` once at startup and keeps
