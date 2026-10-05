@@ -58,9 +58,12 @@ with no PR remains a plain `failed` iteration.
 A record-less iteration whose captured output classifies as an account-level
 failure (agent_capacity.classify_failure: auth/billing -- the latter now also
 covers "usage limit"/"session limit" wording) is `blocked`, not `failed`: it
-does not count toward `circuit_breaker`, and it persists a capacity gate
-(agent_capacity cache, bare-agent-keyed) with a retry_after parsed from the
-notice itself when present, else the class's generic cooldown. Every
+does not count toward `circuit_breaker` -- the provider is unavailable, not the
+automation misbehaving, so the run stops through the capacity stop
+(`capacity_gated` in decide()), never through the failure counter -- and it
+persists a capacity gate (agent_capacity cache, bare-keyed) with a retry_after
+parsed from the notice itself when present, else the class's generic cooldown.
+Every
 iteration re-selects the first non-gated agent from `[--agent] +
 --fallback-agent...` in that fixed priority order (see
 select_available_agent) -- a gated primary is skipped in favor of a fallback
@@ -524,66 +527,20 @@ def newest_run_record(
 # Capacity cache
 
 
-def _entry_gated(state: dict, now: datetime) -> bool:
-    """True when `state` carries a gated status whose retry_after/reset_at has
-    not passed yet. A gated status with no timestamp at all is treated as
-    gated indefinitely (until cleared) -- unchanged from prior behavior. A
-    gated status with a timestamp that has already passed is NOT gated: the
-    whole point of persisting retry_after is so the drain picks the agent
-    back up automatically once its cooldown expires (see module docstring
-    above and record_capacity_gate()), which requires comparing it to now.
-    """
-    if str(state.get("status", "")).lower() not in ("gated", "unavailable", "blocked"):
-        return False
-    retry_at = agent_capacity._parse_time(
-        state.get("retry_after")
-    ) or agent_capacity._parse_time(state.get("reset_at"))
-    if retry_at is None:
-        return True
-    return retry_at > now
-
-
 def capacity_gated(cache: dict, agent: str, now: datetime | None = None) -> bool:
-    """True when every cached entry for `agent` carries an active (unexpired)
-    gate.
+    """True when `agent` resolves to an active (unexpired) capacity gate.
 
     The cache (agent_capacity.py) keys entries by provider identifiers like
-    'claude' or 'claude:opus'. No entry for the agent means no known gate.
-
-    A model-qualified query (e.g. 'claude:opus') also honors a bare-provider
-    entry ('claude') recorded by record_capacity_gate(), which has no model
-    concept of its own and always writes bare agent-name keys -- a
-    provider-wide gate (account rate limit, billing block) applies to every
-    model of that provider regardless of which model the read side happens
-    to know about. The bare-provider gate wins even when a specific model's
-    own cache entry says available: a per-model entry can be stale (seeded
-    before the provider-wide failure, or from a different model's routing
-    history), and a provider-wide gate is never weaker evidence than that.
+    'claude' or 'claude:opus'; no entry for the agent means no known gate.
+    Delegates to `agent_capacity.gate_entry()`, the single resolution every
+    capacity reader uses: a model-qualified query (e.g. 'claude:opus') also
+    honors a bare-provider entry ('claude') recorded by
+    record_capacity_gate(), and that bare provider-wide gate wins even when a
+    specific model's own cache entry says available -- see gate_entry()'s own
+    docstring for why. Both a full cache dict and a bare `providers` mapping
+    are accepted, exactly as before.
     """
-    now = now or agent_capacity._now()
-    providers = (
-        cache.get("providers") if isinstance(cache.get("providers"), dict) else cache
-    )
-    if not isinstance(providers, dict):
-        return False
-    if ":" in agent:
-        provider = agent.split(":", 1)[0]
-        bare = providers.get(provider)
-        if isinstance(bare, dict) and _entry_gated(bare, now):
-            return True
-    exact = providers.get(agent)
-    if isinstance(exact, dict):
-        return _entry_gated(exact, now)
-    if ":" in agent:
-        return False
-    matched = [
-        v
-        for k, v in providers.items()
-        if isinstance(v, dict) and str(k).startswith(agent + ":")
-    ]
-    if not matched:
-        return False
-    return all(_entry_gated(v, now) for v in matched)
+    return agent_capacity.gate_entry(agent, data=cache, now=now) is not None
 
 
 def read_capacity_cache(path: Path) -> dict:
@@ -796,9 +753,11 @@ def record_capacity_gate(
     `gate_key` is the routing target the blocked cell came from (the caller
     passes `active_target or active_agent`), because that is the key
     select_available_agent()'s per-cell capacity check queries --
-    provider_key(target, model) -- and capacity_gated() honors a bare target
-    entry for every model of that target. Without routing the selection unit
-    is the bare harness name, so the harness name is the key then.
+    provider_key(target, model) -- and the shared resolution
+    capacity_gated() delegates to (agent_capacity.gate_entry()) honors a bare
+    target entry for every model of that target. Without routing the
+    selection unit is the bare harness name, so the harness name is the key
+    then.
     Live reproduction 2026-10-03 (drain-logs/2026-10-03T09-17-01Z.json): under
     routing, a harness-keyed gate ("claude") was invisible to the
     target-keyed query ("claude-deepseek:deepseek-flash[1m]"), so the same
@@ -2222,10 +2181,12 @@ def classify_outcome(
                      iteration's captured output, when the process produced
                      no run record at all. A class in CAPACITY_FAILURE_CLASSES
                      (account-level: auth/billing) is a "blocked" outcome, not
-                     a plain "failed" one -- it should not count toward the
-                     circuit breaker (the agent itself is unavailable, not
-                     misbehaving) and should stop the drain via the existing
-                     capacity_gated path once the cache reflects it.
+                     a plain "failed" one -- the agent itself is unavailable,
+                     not misbehaving: it does not count toward the circuit
+                     breaker, and the run stops through the capacity stop
+                     (decide()'s `capacity_gated`) once every configured
+                     agent is gated. The failure counter is never the path
+                     that stops a capacity block.
     pending_decisions — decision ids from the record's `pending_decisions`
                      audit trail that still await a human answer. They make
                      the iteration a first-class pending_user_decision
@@ -2819,7 +2780,10 @@ def drain(
                 )
                 if applied:
                     log(f"drain: added missing {applied} label to {outcome.pr_url}")
-            if outcome.state and outcome.state.startswith("blocked_capacity_"):
+            capacity_block = bool(
+                outcome.state and outcome.state.startswith("blocked_capacity_")
+            )
+            if capacity_block:
                 # Only classify_outcome's own CAPACITY_FAILURE_CLASSES check
                 # produces this state, and only when failure_class was a
                 # member of that (non-None) set -- see classify_outcome.
@@ -2876,13 +2840,19 @@ def drain(
                     "present/answer the decision, then resume attended via "
                     "`worktrail-skill-dispatch --resume-decision <id>`"
                 )
-            if outcome.kind in ("failed", "blocked") and not decisions_filed:
+            if (
+                outcome.kind in ("failed", "blocked")
+                and not decisions_filed
+                and not capacity_block
+            ):
                 state.consecutive_failures += 1
             elif outcome.kind == "success":
                 state.consecutive_failures = 0
             # timeout_after_pr (and a decision-filed block) leaves
             # consecutive_failures unchanged: the automation did its job but
-            # did not reach a full terminal success state.
+            # did not reach a full terminal success state. A capacity block is
+            # likewise exempt -- the agent is unavailable, not misbehaving, and
+            # the run stops through the capacity stop, never this counter.
             if outcome.state == "completed_awaiting_human_approval":
                 pending_approvals.append(outcome.pr_url or outcome.brief_id or "?")
             elapsed = int(clock() - iter_start)

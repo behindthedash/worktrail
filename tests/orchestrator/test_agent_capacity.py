@@ -1003,6 +1003,17 @@ def _seed_gate(path, key, retry_at, source="drain", status="unavailable"):
     path.write_text(json.dumps(raw))
 
 
+def _seed_timeless_gate(path, key, status="blocked", checked_at=None):
+    """A gated entry with no retry window at all: gated until cleared."""
+    raw = json.loads(path.read_text()) if path.exists() else {"version": 1}
+    providers = raw.setdefault("providers", {})
+    state = {"status": status, "failure_class": "capacity", "source": "drain"}
+    if checked_at is not None:
+        state["checked_at"] = checked_at.isoformat()
+    providers[key] = state
+    path.write_text(json.dumps(raw))
+
+
 def test_status_labels_expired_and_active_gates(tmp_path, capsys):
     path = tmp_path / "capacity.json"
     now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
@@ -1404,3 +1415,318 @@ def test_weekly_limit_spawn_records_provider_derived_gate(tmp_path, monkeypatch)
     # The billing cooldown is 1h; a parsed 2pm-Pacific reset is not that.
     assert retry_after > datetime.now(UTC)
     assert retry_after.astimezone(_pacific()).hour == 14
+
+
+# ---------------------------------------------------------------------------
+# shared gate resolution (entry_gated / gate_entry)
+#
+# The drain writes bare target keys (record_capacity_gate) while select_cell /
+# check-agent / the dashboard ask model-qualified questions, so one resolution
+# has to answer both -- and a provider-wide bare entry outranks a per-model one.
+
+
+def test_entry_gated_statuses_and_window():
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
+    assert agent_capacity.entry_gated({"status": "Gated"}, now) is True
+    assert agent_capacity.entry_gated({"status": "blocked"}, now) is True
+    assert agent_capacity.entry_gated({"status": "unavailable"}, now) is True
+    assert agent_capacity.entry_gated({"status": "available"}, now) is False
+    assert (
+        agent_capacity.entry_gated(
+            {
+                "status": "unavailable",
+                "retry_after": (now - timedelta(seconds=1)).isoformat(),
+            },
+            now,
+        )
+        is False
+    )
+    assert (
+        agent_capacity.entry_gated(
+            {
+                "status": "unavailable",
+                "retry_after": (now + timedelta(seconds=1)).isoformat(),
+            },
+            now,
+        )
+        is True
+    )
+    assert (
+        agent_capacity.entry_gated(
+            {
+                "status": "unavailable",
+                "reset_at": (now + timedelta(seconds=1)).isoformat(),
+            },
+            now,
+        )
+        is True
+    )
+
+
+def test_gate_entry_accepts_a_full_cache_dict_or_a_bare_providers_mapping():
+    state = {"status": "gated"}
+    assert agent_capacity.gate_entry(
+        "claude", data={"version": 1, "providers": {"claude": state}}
+    ) == ("claude", state)
+    assert agent_capacity.gate_entry("claude", data={"claude": state}) == (
+        "claude",
+        state,
+    )
+    assert agent_capacity.gate_entry("claude", data={"providers": "garbage"}) is None
+    assert agent_capacity.gate_entry("claude", data={}) is None
+
+
+def test_gate_entry_bare_query_requires_every_model_entry_active(tmp_path):
+    path = tmp_path / "capacity.json"
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
+    _seed_gate(path, "claude:opus", now + timedelta(hours=1))
+    _seed_gate(path, "claude:sonnet", now + timedelta(hours=2))
+
+    resolved = agent_capacity.gate_entry("claude", path=path, now=now)
+
+    assert resolved is not None
+    assert resolved[0] == "claude:opus"
+
+    # One un-gated model means the target still has capacity -- the bare
+    # query must stop being gated, not merely stop at the first hit.
+    agent_capacity.record("claude", "sonnet", outcome="available", path=path, now=now)
+    assert agent_capacity.gate_entry("claude", path=path, now=now) is None
+
+
+def test_gate_entry_bare_query_defers_to_its_own_entry(tmp_path):
+    # drain.capacity_gated's branch order: when a bare entry exists, it alone
+    # decides -- the `<query>:*` sweep is only consulted without one.
+    path = tmp_path / "capacity.json"
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
+    _seed_gate(path, "claude:opus", now + timedelta(hours=1))
+    agent_capacity.record("claude", "sonnet", outcome="available", path=path, now=now)
+
+    assert agent_capacity.gate_entry("claude", path=path, now=now) is None
+
+
+def test_check_model_query_is_gated_by_an_active_bare_target_entry(tmp_path):
+    # Drain reproduction 2026-10-03: the drain persists a bare target key, and
+    # a model-qualified reader must honour it -- otherwise the same exhausted
+    # cell is re-selected and two blocked iterations trip the circuit breaker.
+    path = tmp_path / "capacity.json"
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
+    _seed_gate(path, "claude-deepseek", now + timedelta(hours=1))
+
+    try:
+        agent_capacity.check(
+            "claude-deepseek", "deepseek-flash[1m]", path=path, now=now
+        )
+    except agent_capacity.ProviderUnavailable as exc:
+        assert exc.provider_key == "claude-deepseek"
+        assert exc.state.get("failure_class") == "capacity"
+    else:
+        raise AssertionError("a model-qualified query ignored the bare target gate")
+
+
+def test_check_model_query_passes_once_the_bare_target_entry_expires(tmp_path):
+    path = tmp_path / "capacity.json"
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
+    _seed_gate(path, "claude-deepseek", now - timedelta(minutes=1))
+
+    agent_capacity.check("claude-deepseek", "deepseek-flash[1m]", path=path, now=now)
+
+
+def test_available_model_entry_does_not_ungate_an_active_bare_target_entry(tmp_path):
+    path = tmp_path / "capacity.json"
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
+    _seed_gate(path, "claude-deepseek", now + timedelta(hours=1))
+    agent_capacity.record(
+        "claude-deepseek",
+        "deepseek-flash[1m]",
+        outcome="available",
+        path=path,
+        now=now,
+    )
+
+    try:
+        agent_capacity.check(
+            "claude-deepseek", "deepseek-flash[1m]", path=path, now=now
+        )
+    except agent_capacity.ProviderUnavailable:
+        pass
+    else:
+        raise AssertionError("a per-model 'available' entry weakened the bare gate")
+
+
+def test_probe_stamps_the_bare_entry_that_gated_a_model_query(tmp_path):
+    path = tmp_path / "capacity.json"
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
+    checked_at = now - timedelta(minutes=20)
+    retry_after = now + timedelta(hours=1)
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "providers": {
+                    "claude-deepseek": {
+                        "status": "unavailable",
+                        "failure_class": "billing",
+                        "retry_after": retry_after.isoformat(),
+                        "checked_at": checked_at.isoformat(),
+                        "source": "drain",
+                    }
+                },
+            }
+        )
+    )
+
+    agent_capacity.check("claude-deepseek", "deepseek-flash[1m]", path=path, now=now)
+
+    data = json.loads(path.read_text())
+    assert data["providers"]["claude-deepseek"]["probe_at"] == now.isoformat()
+    # The probe stamps the entry that actually gated the cell; it must not
+    # invent a model-qualified key that was never written.
+    assert "claude-deepseek:deepseek-flash[1m]" not in data["providers"]
+
+    try:
+        agent_capacity.check(
+            "claude-deepseek",
+            "deepseek-flash[1m]",
+            path=path,
+            now=now + timedelta(seconds=1),
+        )
+    except agent_capacity.ProviderUnavailable:
+        pass
+    else:
+        raise AssertionError("second check right after a probe should still gate")
+
+
+def test_gate_snapshot_reports_a_model_cell_gated_by_a_bare_target_entry(tmp_path):
+    path = tmp_path / "capacity.json"
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
+    retry_after = now + timedelta(minutes=30)
+    _seed_gate(path, "claude-deepseek", retry_after)
+
+    snapshot = agent_capacity.gate_snapshot(
+        ["claude-deepseek:deepseek-flash[1m]"], path=path, now=now
+    )
+
+    # _safe_identifier sanitizes the caller's key for display ('[' / ']' -> '_'),
+    # unchanged by the bare-entry resolution.
+    sanitized = "claude-deepseek:deepseek-flash_1m_"
+    assert snapshot["configured"] == [sanitized]
+    assert snapshot["gated"] == [
+        {
+            "provider": sanitized,
+            "failure_class": "capacity",
+            "retry_after": retry_after.isoformat(),
+        }
+    ]
+    assert snapshot["all_gated"] is True
+    assert snapshot["retry_after"] == retry_after.isoformat()
+
+
+def test_gate_snapshot_resolves_the_callers_key_verbatim(tmp_path):
+    # _safe_identifier is display-only: a model name it rewrites must still
+    # resolve its own exact cache entry, or a cell gated by a model-qualified
+    # entry (no bare target entry in sight) is reported as having capacity.
+    path = tmp_path / "capacity.json"
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
+    retry_after = now + timedelta(hours=1)
+    agent_capacity.record(
+        "claude-deepseek",
+        "deepseek-flash[1m]",
+        outcome="unavailable",
+        failure_class="billing",
+        retry_after=retry_after,
+        path=path,
+        now=now,
+    )
+
+    snapshot = agent_capacity.gate_snapshot(
+        ["claude-deepseek:deepseek-flash[1m]"], path=path, now=now
+    )
+
+    assert snapshot["configured"] == ["claude-deepseek:deepseek-flash_1m_"]
+    assert snapshot["gated"] == [
+        {
+            "provider": "claude-deepseek:deepseek-flash_1m_",
+            "failure_class": "billing",
+            "retry_after": retry_after.isoformat(),
+        }
+    ]
+    assert snapshot["all_gated"] is True
+    assert snapshot["retry_after"] == retry_after.isoformat()
+
+
+def test_gate_snapshot_bare_target_entry_stops_gating_once_expired(tmp_path):
+    path = tmp_path / "capacity.json"
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
+    _seed_gate(path, "claude-deepseek", now - timedelta(minutes=1))
+
+    snapshot = agent_capacity.gate_snapshot(
+        ["claude-deepseek:deepseek-flash[1m]"], path=path, now=now
+    )
+
+    assert snapshot["gated"] == []
+    assert snapshot["all_gated"] is False
+    assert snapshot["retry_after"] is None
+
+
+def test_check_timeless_gate_is_never_probed_through(tmp_path):
+    # A gate with no retry window is not a cooldown: entry_gated() reads it as
+    # gated until cleared, so the probe path must not let it through (nor
+    # stamp probe_at) once checked_at is older than PROBE_INTERVAL_S.
+    path = tmp_path / "capacity.json"
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
+    _seed_timeless_gate(path, "claude-deepseek", checked_at=now - timedelta(minutes=20))
+    before = path.read_bytes()
+
+    try:
+        agent_capacity.check(
+            "claude-deepseek", "deepseek-flash[1m]", path=path, now=now
+        )
+    except agent_capacity.ProviderUnavailable as exc:
+        assert exc.provider_key == "claude-deepseek"
+        assert exc.state["status"] == "blocked"
+    else:
+        raise AssertionError("a timeless gate was probed through")
+
+    assert path.read_bytes() == before
+
+
+def test_gate_snapshot_reports_a_timeless_bare_target_gate(tmp_path):
+    # The bare entry's timestampless gate must still be reported for every
+    # model-qualified key it blocks -- dropping it would report the blocked
+    # cell as having capacity.
+    path = tmp_path / "capacity.json"
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
+    _seed_timeless_gate(path, "claude-deepseek", checked_at=now)
+
+    snapshot = agent_capacity.gate_snapshot(
+        ["claude-deepseek:deepseek-flash[1m]"], path=path, now=now
+    )
+
+    assert snapshot["gated"] == [
+        {
+            "provider": "claude-deepseek:deepseek-flash_1m_",
+            "failure_class": "capacity",
+            "retry_after": None,
+        }
+    ]
+    assert snapshot["all_gated"] is True
+    assert snapshot["retry_after"] is None
+
+
+def test_gate_snapshot_retry_after_ignores_a_timeless_gate(tmp_path):
+    # A timeless gate has no retry window to report, so it must not foul the
+    # snapshot's earliest-retry computation.
+    path = tmp_path / "capacity.json"
+    now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
+    retry_after = now + timedelta(hours=1)
+    _seed_timeless_gate(path, "claude-deepseek", checked_at=now)
+    _seed_gate(path, "opencode:free/model", retry_after)
+
+    snapshot = agent_capacity.gate_snapshot(
+        ["claude-deepseek:deepseek-flash[1m]", "opencode:free/model"],
+        path=path,
+        now=now,
+    )
+
+    assert snapshot["all_gated"] is True
+    assert snapshot["retry_after"] == retry_after.isoformat()

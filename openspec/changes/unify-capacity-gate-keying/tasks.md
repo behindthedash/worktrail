@@ -1,6 +1,6 @@
 ## 1. One resolution decides whether a cell is capacity-gated
 
-- [ ] 1.1 In `src/worktrail/orchestrator/agent_capacity.py`, hoist the drain's bare-target-aware
+- [x] 1.1 In `src/worktrail/orchestrator/agent_capacity.py`, hoist the drain's bare-target-aware
       gate resolution into this module as the single reader, then route the module's own readers
       through it. Add `entry_gated(state, now=None) -> bool`: the gated-entry predicate, moved
       verbatim from `drain._entry_gated` (`src/worktrail/drain/drain.py:484-500`) -- a `dict`
@@ -42,7 +42,7 @@
 
 ## 2. The drain reads through the shared resolution and stops counting a capacity block
 
-- [ ] 2.1 In `src/worktrail/drain/drain.py`, replace the drain's private gate lookup with a
+- [x] 2.1 In `src/worktrail/drain/drain.py`, replace the drain's private gate lookup with a
       delegation to the hoisted resolution, then exempt a capacity block from the failure
       counter. Delete `_entry_gated()` (`:484-500`) and reduce
       `capacity_gated(cache, agent, now=None)` (`:503-543`) to
@@ -125,7 +125,7 @@
 
 ## 6. Verification
 
-- [ ] 6.1 [e2e] Run `PYTHONPATH=src pytest -q tests/orchestrator/test_agent_capacity.py
+- [x] 6.1 [e2e] Run `PYTHONPATH=src pytest -q tests/orchestrator/test_agent_capacity.py
       tests/orchestrator/test_check_agent_contract.py tests/router/test_dashboard.py
       tests/drain/test_drain.py tests/runtime/test_selection.py`, then `PYTHONPATH=src pytest
       -q` and `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`, then

@@ -23,6 +23,7 @@ from unittest import mock
 
 from worktrail.conductor import compile as runplan_compile
 from worktrail.conductor import runplan
+from worktrail.orchestrator import agent_capacity
 from worktrail.router import dashboard
 from worktrail.router.policy import load_policy, resolve_routing
 from worktrail.runtime.selection import select_cell
@@ -1721,6 +1722,106 @@ class ReposScan(unittest.TestCase):
             "claude-sub:claude-opus-4 (model_unavailable, retry 2026-07-20T21:00:00+00:00)",
             out,
         )
+
+    def test_render_dashboard_reports_a_bare_target_entry_as_the_gated_cell(self):
+        # The drain persists bare target keys (record_capacity_gate), while the
+        # dashboard asks model-qualified questions. gate_snapshot resolves each
+        # configured `<target>:<model>` key through agent_capacity.gate_entry,
+        # so the capacity line names the cell a bare target gate blocks.
+        now = datetime.datetime(2026, 7, 20, 20, 0, tzinfo=datetime.UTC)
+        retry_after = now + datetime.timedelta(hours=1)
+        policy = {
+            "routing": {
+                "targets": {
+                    "claude-deepseek": {
+                        "harness": "claude",
+                        "pool": "api",
+                        "api_opt_in": True,
+                    },
+                },
+                "tiers": {
+                    "t2-build": {"claude-deepseek": {"model": "deepseek-flash[1m]"}},
+                },
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "capacity.json"
+            cache.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "providers": {
+                            "claude-deepseek": {
+                                "status": "unavailable",
+                                "failure_class": "billing",
+                                "retry_after": retry_after.isoformat(),
+                                "checked_at": now.isoformat(),
+                                "source": "drain",
+                            }
+                        },
+                    }
+                )
+            )
+            keys = dashboard._routing_configured_providers(policy)
+            capacity = agent_capacity.gate_snapshot(keys, path=cache, now=now)
+
+        out = dashboard.render_dashboard([], None, [], [], capacity=capacity)
+
+        self.assertEqual(keys, ["claude-deepseek:deepseek-flash[1m]"])
+        self.assertTrue(capacity["all_gated"])
+        self.assertEqual(capacity["retry_after"], retry_after.isoformat())
+        self.assertIn("Headless capacity blocked", out)
+        # gate_snapshot's own _safe_identifier sanitizes the displayed label.
+        self.assertIn(
+            "claude-deepseek:deepseek-flash_1m_ (billing, retry "
+            f"{retry_after.isoformat()})",
+            out,
+        )
+
+    def test_render_dashboard_reports_a_timeless_bare_target_gate(self):
+        # A drain entry with no retry window is gated until cleared, so the
+        # capacity line must still name the cell the bare target key blocks.
+        now = datetime.datetime(2026, 7, 20, 20, 0, tzinfo=datetime.UTC)
+        policy = {
+            "routing": {
+                "targets": {
+                    "claude-deepseek": {
+                        "harness": "claude",
+                        "pool": "api",
+                        "api_opt_in": True,
+                    },
+                },
+                "tiers": {
+                    "t2-build": {"claude-deepseek": {"model": "deepseek-flash[1m]"}},
+                },
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "capacity.json"
+            cache.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "providers": {
+                            "claude-deepseek": {
+                                "status": "blocked",
+                                "failure_class": "billing",
+                                "checked_at": now.isoformat(),
+                                "source": "drain",
+                            }
+                        },
+                    }
+                )
+            )
+            keys = dashboard._routing_configured_providers(policy)
+            capacity = agent_capacity.gate_snapshot(keys, path=cache, now=now)
+
+        out = dashboard.render_dashboard([], None, [], [], capacity=capacity)
+
+        self.assertTrue(capacity["all_gated"])
+        self.assertIsNone(capacity["retry_after"])
+        self.assertIn("Headless capacity blocked", out)
+        self.assertIn("claude-deepseek:deepseek-flash_1m_ (billing", out)
 
     def test_routing_configured_providers_derives_from_routing_candidates(self):
         policy = {

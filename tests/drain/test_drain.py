@@ -736,6 +736,41 @@ def test_capacity_gated_expired_gate_all_models_matched_ungates_agent():
     assert capacity_gated(cache, "claude", now=now) is False
 
 
+def test_capacity_gated_model_query_single_bare_entry_gates():
+    # The bare entry is the ONLY entry, and the query is model-qualified:
+    # exactly the drain's own shape, since record_capacity_gate() keys a
+    # blocked iteration by its routing target, not by the cell
+    # (target:model) select_available_agent() queries with.
+    now = datetime(2026, 8, 22, tzinfo=UTC)
+    cache = {
+        "providers": {
+            "claude-deepseek": {
+                "status": "unavailable",
+                "failure_class": "billing",
+                "retry_after": (now + timedelta(hours=3)).isoformat(),
+            },
+        }
+    }
+    assert capacity_gated(cache, "claude-deepseek:deepseek-flash[1m]", now=now) is True
+
+
+def test_capacity_gated_sees_an_entry_written_by_record_capacity_gate(tmp_path):
+    # Round-trip through the writer: the key record_capacity_gate() persists
+    # is the one capacity_gated() resolves for the cell's own model-qualified
+    # query, so the next iteration's selection skips that cell.
+    cache_path = tmp_path / "capacity.json"
+    drain.record_capacity_gate(
+        cache_path,
+        "claude-deepseek",
+        "billing",
+        datetime.now(UTC) + timedelta(hours=2),
+    )
+    cache = drain.read_capacity_cache(cache_path)
+    assert cache["providers"]["claude-deepseek"]["status"] == "unavailable"
+    assert capacity_gated(cache, "claude-deepseek:deepseek-flash[1m]") is True
+    assert capacity_gated(cache, "codex-sub:gpt-5") is False
+
+
 def test_select_available_agent_picks_agent_back_up_after_retry_after_expires():
     now = datetime(2026, 8, 22, tzinfo=UTC)
     cache = {
@@ -1907,6 +1942,129 @@ def test_drain_fable_limit_persists_gate_and_stops_as_capacity_gated(
     for agent in ("claude", "codex"):
         assert cache["providers"][agent]["status"] == "unavailable"
         assert cache["providers"][agent]["failure_class"] == "billing"
+
+
+def test_drain_capacity_blocks_do_not_trip_circuit_breaker_while_selectable(
+    tmp_path, monkeypatch
+):
+    """A capacity block never advances the failure counter, even when the
+    gated stop cannot fire this iteration.
+
+    Candidate selection is patched to keep returning a selectable agent so
+    `state.agent_capacity_gated` stays False and the capacity stop cannot mask
+    the counter (the way test_drain_timeout_after_pr_does_not_trip_circuit_breaker
+    patches its spawner). Three billing-blocked iterations -- with the
+    breaker threshold at 2 -- must run to the item ceiling; the old counting
+    stopped the run as circuit_breaker after the second.
+    """
+    fake = FakeQueue([5])  # queue never shrinks; max_items bounds the loop
+    install_fake_queue(monkeypatch, fake)
+    config = make_config(tmp_path, max_items=3, failure_threshold=2)
+    monkeypatch.setattr(
+        drain,
+        "select_available_agent",
+        lambda *_a, **_k: ("claude", None, None, None),
+    )
+    seen_failures = []
+    real_decide = drain.decide
+
+    def spy_decide(state, now):
+        seen_failures.append(state.consecutive_failures)
+        return real_decide(state, now)
+
+    monkeypatch.setattr(drain, "decide", spy_decide)
+
+    def spawner(cmd, timeout):
+        return SpawnOutcome(1, "ERROR: You've hit your usage limit.", "")
+
+    summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
+
+    assert len(summary["iterations"]) == 3
+    assert all(i["kind"] == "blocked" for i in summary["iterations"])
+    assert all(i["state"] == "blocked_capacity_billing" for i in summary["iterations"])
+    # The counter never left zero on any pre-spawn decide() -- the old
+    # counting would have read 1 and 2 at the second and third call and
+    # stopped the run as circuit_breaker there.
+    assert seen_failures == [0, 0, 0, 0]
+    assert summary["stopped"].startswith("max_items")
+
+
+def test_drain_capacity_blocks_stop_as_capacity_gated_not_circuit_breaker(
+    tmp_path, monkeypatch
+):
+    # Two blocked iterations, one per configured candidate: once both targets
+    # carry an active gate, the next selection finds nothing and the run stops
+    # through the capacity stop -- never through the (now never advanced)
+    # failure counter, even though its threshold is 2.
+    fake = FakeQueue([2, 2, 2, 0])
+    install_fake_queue(monkeypatch, fake)
+    config = make_config(tmp_path, agent="claude", fallback_agents=["codex"])
+
+    def spawner(cmd, timeout):
+        return SpawnOutcome(1, "ERROR: You've hit your usage limit.", "")
+
+    summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
+
+    assert len(summary["iterations"]) == 2
+    assert all(i["kind"] == "blocked" for i in summary["iterations"])
+    assert all(i["state"] == "blocked_capacity_billing" for i in summary["iterations"])
+    assert summary["stopped"].startswith("capacity_gated")
+    assert "circuit_breaker" not in summary["stopped"]
+
+
+def test_drain_three_candidates_reach_the_third_before_capacity_gated(
+    tmp_path, monkeypatch
+):
+    # Failover, not the breaker: two blocks must not stop a run that still has
+    # an ungated candidate left. The old counting hit the threshold of 2 right
+    # after the second block and stopped as circuit_breaker without ever
+    # attempting opencode.
+    fake = FakeQueue([3])  # never shrinks; the capacity stop ends the run
+    install_fake_queue(monkeypatch, fake)
+    config = make_config(
+        tmp_path, agent="claude", fallback_agents=["codex", "opencode"]
+    )
+    seen_agents = []
+
+    def spawner(cmd, timeout):
+        seen_agents.append(cmd[0])
+        return SpawnOutcome(1, "ERROR: You've hit your usage limit.", "")
+
+    summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
+
+    assert seen_agents == ["claude", "codex", "opencode"]
+    assert len(summary["iterations"]) == 3
+    assert all(i["kind"] == "blocked" for i in summary["iterations"])
+    assert summary["stopped"].startswith("capacity_gated")
+    assert "circuit_breaker" not in summary["stopped"]
+
+
+def test_drain_external_dependency_blocks_still_trip_circuit_breaker(
+    tmp_path, monkeypatch
+):
+    # Only a capacity block is exempt. A record-level `blocked` iteration
+    # (blocked_external_dependency, no account-level failure class) still
+    # counts, exactly as before.
+    fake = FakeQueue([5])
+    install_fake_queue(monkeypatch, fake)
+    config = make_config(tmp_path, max_items=3, failure_threshold=2)
+    calls = {"n": 0}
+
+    def spawner(cmd, timeout):
+        calls["n"] += 1
+        write_run_record(
+            config.runs_dir, f"go-{calls['n']}", "blocked_external_dependency"
+        )
+        return SpawnOutcome(0)
+
+    summary = drain.drain(config, spawner=spawner, log=lambda _l: None)
+
+    assert len(summary["iterations"]) == 2
+    assert all(i["kind"] == "blocked" for i in summary["iterations"])
+    assert all(
+        i["state"] == "blocked_external_dependency" for i in summary["iterations"]
+    )
+    assert summary["stopped"].startswith("circuit_breaker")
 
 
 def test_drain_writes_transcript_when_transcript_dir_configured(tmp_path, monkeypatch):

@@ -8,14 +8,21 @@ is checked via its --output-last-message file, not JSONL "type" vocabulary.
 Run: python3 scripts/test_check_agent_contract.py
 """
 
+import contextlib
+import io
+import json
 import os
 import sys
 import tempfile
 import unittest
 from collections import namedtuple
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import ClassVar
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from worktrail.orchestrator import agent_capacity
 from worktrail.orchestrator import check_agent_contract as cac
 
 Proc = namedtuple("Proc", "returncode stdout stderr")
@@ -156,6 +163,113 @@ class CheckAgentMain(unittest.TestCase):
             self.assertEqual(rc, 0)
         finally:
             cac.subprocess.run = orig
+
+
+class CheckAgentCapacityGate(unittest.TestCase):
+    """The `worktrail-agent-capacity check-agent` CLI end of the shared gate
+    resolution: the drain persists a bare target key, so the same resolution
+    that gates `select_cell` must make `check-agent` report the one resolved
+    agent's cell gated -- and stop once the bare entry's window passes."""
+
+    ROUTING: ClassVar[dict] = {
+        "targets": {
+            "claude-deepseek": {
+                "harness": "claude",
+                "pool": "api",
+                "api_opt_in": True,
+            },
+        },
+        "tiers": {
+            "t2-build": {"claude-deepseek": {"model": "deepseek-flash[1m]"}},
+        },
+        "roles": {},
+        "purposes": {},
+        "default_tier": "t2-build",
+        "drain": {},
+    }
+
+    def _check_agent(self, cache: Path, now: datetime) -> tuple[int, dict]:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = agent_capacity.cmd_check_agent(
+                "claude", json.dumps(self.ROUTING), None, path=cache, now=now
+            )
+        return rc, json.loads(out.getvalue())
+
+    def _write_bare_gate(self, cache: Path, retry_after: datetime) -> None:
+        cache.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "providers": {
+                        "claude-deepseek": {
+                            "status": "unavailable",
+                            "failure_class": "billing",
+                            "retry_after": retry_after.isoformat(),
+                            "checked_at": datetime(
+                                2026, 7, 20, 20, 0, tzinfo=UTC
+                            ).isoformat(),
+                            "source": "drain",
+                        }
+                    },
+                }
+            )
+        )
+
+    def test_active_bare_target_entry_reports_the_resolved_agent_gated(self):
+        now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "capacity.json"
+            self._write_bare_gate(cache, now + timedelta(hours=1))
+
+            rc, out = self._check_agent(cache, now)
+
+        self.assertEqual(rc, 1)
+        self.assertTrue(out["gated"])
+        self.assertEqual(out["target"], "claude-deepseek")
+        self.assertEqual(out["model"], "deepseek-flash[1m]")
+        self.assertEqual(out["failure_class"], "billing")
+
+    def test_expired_bare_target_entry_reports_the_resolved_agent_ungated(self):
+        now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "capacity.json"
+            self._write_bare_gate(cache, now - timedelta(minutes=1))
+
+            rc, out = self._check_agent(cache, now)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(out, {"gated": False})
+
+    def test_timeless_bare_target_entry_keeps_reporting_the_agent_gated(self):
+        # No retry window means gated until cleared -- an old checked_at must
+        # not turn it into a probe-eligible cooldown for the CLI reader.
+        now = datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "capacity.json"
+            cache.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "providers": {
+                            "claude-deepseek": {
+                                "status": "blocked",
+                                "failure_class": "billing",
+                                "checked_at": (now - timedelta(minutes=20)).isoformat(),
+                                "source": "drain",
+                            }
+                        },
+                    }
+                )
+            )
+
+            rc, out = self._check_agent(cache, now)
+
+        self.assertEqual(rc, 1)
+        self.assertTrue(out["gated"])
+        self.assertEqual(out["target"], "claude-deepseek")
+        self.assertEqual(out["failure_class"], "billing")
+        self.assertIsNone(out["retry_after"])
 
 
 if __name__ == "__main__":
