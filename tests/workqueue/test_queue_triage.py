@@ -2526,6 +2526,27 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
         )
         self.assertNotIn("files:", tasks_text)
 
+    def test_task_never_declares_the_change_docs_the_fold_itself_writes(self):
+        """Brief 20260930-112548: the fold appends its own section to the target
+        change's `proposal.md` and its task group to `tasks.md` before that task
+        can ever run, so every fold's evidence cites both as the record of where
+        it landed -- while the task edits neither. Declaring them made every
+        fold a declarer of the change's own `proposal.md`, and compile's
+        same-file chain rule (`parallelism.py`) then hard-failed the third fold
+        into any one change (`same-file chain ... (3 > 2)`), capping fold depth
+        at two per change."""
+        tasks_text = self._fold_with_evidence(
+            "Folded into openspec/changes/widget-export-pipeline/proposal.md and "
+            "openspec/changes/widget-export-pipeline/tasks.md, whose 1.1 is still "
+            "open; the repair itself changes src/widgets/export.py.",
+            seed_files=["src/widgets/export.py"],
+        )
+        lines = tasks_text.splitlines()
+        task_index = next(
+            i for i, line in enumerate(lines) if line.startswith("- [ ] 2.1 ")
+        )
+        self.assertEqual(lines[task_index + 1], "      files: src/widgets/export.py")
+
     def test_pr_creation_failure_leaves_brief_untouched_and_reports_branch(self):
         run = self._dispatcher()
         land_outcome = LandOutcome(
@@ -7406,3 +7427,87 @@ class TestPromptAllowsWorkDirectlyCorrection(unittest.TestCase):
             "`judgment_reason` stays `needs-update`-only",
             qt.EVALUATOR_PROMPT_TEMPLATE,
         )
+
+
+class TestEvaluateExcludeRepoFlag(QueueTriageTestBase):
+    """`evaluate --exclude-repo NAME` (repeatable) is the drain's intake-triage
+    pre-pass scoping handle: the flag is collected and threaded straight into
+    `inventory()`, where excluded repo groups are dropped before any evaluator
+    is spawned."""
+
+    def test_repeated_flags_thread_into_inventory(self):
+        seen = []
+
+        def fake_inventory(within_days, repos_root=None, exclude_repos=()):
+            seen.append(
+                {
+                    "within_days": within_days,
+                    "repos_root": repos_root,
+                    "exclude_repos": list(exclude_repos),
+                }
+            )
+            return {}, [], [], [], []
+
+        with mock.patch(
+            "worktrail.workqueue.queue_triage.inventory",
+            side_effect=fake_inventory,
+        ):
+            exit_code = qt.main(
+                [
+                    "evaluate",
+                    "--out-dir",
+                    str(self.base / "out-exclude"),
+                    "--exclude-repo",
+                    "repo-b",
+                    "--exclude-repo",
+                    "repo-c",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0]["exclude_repos"], ["repo-b", "repo-c"])
+
+    def test_no_flags_passes_an_empty_list(self):
+        seen = []
+
+        def fake_inventory(within_days, repos_root=None, exclude_repos=()):
+            seen.append(list(exclude_repos))
+            return {}, [], [], [], []
+
+        with mock.patch(
+            "worktrail.workqueue.queue_triage.inventory",
+            side_effect=fake_inventory,
+        ):
+            exit_code = qt.main(["evaluate", "--out-dir", str(self.base / "out-none")])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(seen, [[]])
+
+    def test_flag_reaches_a_real_inventory_and_drops_the_group(self):
+        """End-to-end through the real `inventory()`: the excluded repo's group
+        is absent from the evaluation set the CLI is about to fan out over."""
+        repo_b = self.base / "repo-b"
+        repo_b.mkdir()
+        (self.base / "repo-a").mkdir()
+        self.write("b.md", repo=str(repo_b))
+        self.write("a.md", repo="repo-a")
+
+        out_dir = self.base / "out-real"
+        with mock.patch.object(qt, "evaluate_group", return_value=[]) as mock_eval:
+            exit_code = qt.main(
+                [
+                    "evaluate",
+                    "--out-dir",
+                    str(out_dir),
+                    "--repos-root",
+                    str(self.base),
+                    "--exclude-repo",
+                    "repo-b",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        evaluated = {call.args[0] for call in mock_eval.call_args_list}
+        self.assertNotIn(str(repo_b), evaluated)
+        self.assertIn("repo-a", evaluated)

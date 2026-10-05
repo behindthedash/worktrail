@@ -480,3 +480,89 @@ class TestConsumeAnsweredGuidance(QueueTriageTestBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestInventoryExcludeRepos(QueueTriageTestBase):
+    """`inventory(exclude_repos=...)` drops whole repo groups the operator has
+    excluded from unattended draining, so the drain's intake-triage pre-pass
+    never spawns an evaluator against them."""
+
+    def test_excluded_group_dropped_while_others_and_none_group_kept(self):
+        repo_a = self.base / "repo-a"
+        repo_a.mkdir()
+        repo_b = self.base / "repo-b"
+        repo_b.mkdir()
+        brief_a = self.write("a.md", repo=str(repo_a))
+        brief_b = self.write("b.md", repo=str(repo_b))
+        brief_none = self.write("d.md", body="## Focus\n\nnothing repo-specific here\n")
+
+        groups, skipped, escalate, _inferred, _unresolvable = qt.inventory(
+            within_days=25,
+            repos_root=str(self.base),
+            exclude_repos=["repo-b"],
+        )
+
+        self.assertNotIn(str(repo_b), groups)
+        self.assertEqual(groups[str(repo_a)], [brief_a])
+        self.assertEqual(groups[qt.NO_REPO_KEY], [brief_none])
+        self.assertEqual(skipped, [])
+        self.assertEqual(escalate, [])
+        self.assertNotIn(brief_b, [p for paths in groups.values() for p in paths])
+
+    def test_absolute_path_repo_value_matches_by_basename(self):
+        abs_repo = self.base / "checkouts" / "repo-c"
+        abs_repo.mkdir(parents=True)
+        self.write("c.md", repo=str(abs_repo))
+        self.write("e.md", repo="repo-keep")
+
+        groups, *_ = qt.inventory(
+            within_days=25,
+            repos_root=str(self.base),
+            exclude_repos=["repo-c"],
+        )
+
+        self.assertNotIn(str(abs_repo), groups)
+        self.assertIn("repo-keep", groups)
+
+    def test_bare_repo_key_matches_an_excluded_name_and_unmatched_names_are_inert(self):
+        repo = self.base / "repo-a"
+        repo.mkdir()
+        path = self.write("a.md", repo="repo-a")
+
+        groups, *_ = qt.inventory(
+            within_days=25,
+            repos_root=str(self.base),
+            exclude_repos=["repo-a", "ghost-repo"],
+        )
+        self.assertNotIn("repo-a", groups)
+
+        groups, *_ = qt.inventory(
+            within_days=25, repos_root=str(self.base), exclude_repos=["ghost-repo"]
+        )
+        self.assertEqual(groups["repo-a"], [path])
+
+    def test_no_repo_key_is_never_excluded(self):
+        """`__none__` is a bucket, not a repo: even a (nonsensical) exclusion
+        entry naming it leaves the repo-less group exactly as before."""
+        repo_less = self.write("a.md", body="## Focus\n\nnothing repo-specific here\n")
+
+        groups, *_ = qt.inventory(
+            within_days=25,
+            repos_root=str(self.base),
+            exclude_repos=[qt.NO_REPO_KEY],
+        )
+
+        self.assertEqual(groups[qt.NO_REPO_KEY], [repo_less])
+
+    def test_empty_exclude_repos_leaves_inventory_unchanged(self):
+        repo = self.base / "repo-a"
+        repo.mkdir()
+        path = self.write("a.md", repo=str(repo))
+
+        default, *_ = qt.inventory(within_days=25, repos_root=str(self.base))
+        explicit, *_ = qt.inventory(
+            within_days=25, repos_root=str(self.base), exclude_repos=()
+        )
+
+        self.assertEqual(default, explicit)
+        self.assertEqual(default[str(repo)], [path])

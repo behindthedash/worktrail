@@ -238,5 +238,29 @@ roles:
 # queue draining). Provider/pool preference now lives entirely in
 # `targets`' file order plus `default_tier` above -- there is no separate
 # drain-specific agent or fallback chain to configure.
+#
+# `exclude_repos` names repos the operator never wants drained unattended.
+# Entries are repo directory names exactly as `discover_repo_names()` reports
+# them -- the basename of a git checkout sitting directly under the repos
+# root (by default `~/projects/<name>`), never an absolute path or an
+# `owner/name` remote. The list is machine-wide only: only THIS file's copy
+# counts, so a repo-local `routing:` block that declares `exclude_repos`
+# neither extends nor shadows it, and is ignored with a warning. An excluded
+# repo is kept out of every unattended path the drain drives: the before and
+# after repo sweeps (including the codex sandbox's writable roots), the
+# seed-backlog and intake-triage pre-passes, the ready-brief count (so a
+# queue holding only excluded briefs stops `queue_empty` and spawns
+# nothing), and automatic brief selection, where its briefs are skipped with
+# the reason `repo-excluded`. Explicit scope beats the list: passing
+# `--go-repo` keeps the named repo in scope for that drain run, and
+# `--auto-repo` still picks that repo's briefs. An entry matching no repo is
+# inert -- named in the drain's startup report whenever the repos root
+# exists, never fatal, and it never changes the exit status. A value that is
+# not a list of non-empty strings is operator configuration, not a waitable
+# condition: it fails loudly (the drain refuses to start) instead of being
+# dropped.
 drain:
   max_workers: 2
+  # Repo directory names to keep out of unattended draining, e.g.
+  #   exclude_repos: [scratch-repo, experiments]
+  exclude_repos: []

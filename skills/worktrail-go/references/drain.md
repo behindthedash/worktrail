@@ -71,6 +71,32 @@ brief never loops. Results are captured into the drain summary (`seeds_captured`
 seed-backlog failure is logged but does not stop the drain; the main loop runs afterward
 regardless.
 
+## Repo exclusion (routing.drain.exclude_repos)
+
+The machine-wide routing file can keep repos out of unattended draining entirely.
+`routing.drain.exclude_repos` is a list of repo directory names exactly as
+`discover_repo_names()` reports them — the basename of a git checkout directly under
+`--repos-root` (e.g. `worktrail`, never an absolute path or an `owner/name` form).
+`worktrail-drain` resolves it at startup; there is no per-invocation flag to pass it. The
+key is machine-wide only: a repo-local `routing:` block that declares it neither shadows
+nor extends the operator's list — that copy is ignored with a warning.
+
+An excluded repo is kept out of every unattended path the drain drives:
+
+- the drain's repo sweeps, including the codex sandbox's writable roots;
+- both pre-passes — `--seed-backlog` seeds no brief from it, and `--intake-triage`
+  evaluates none of its groups;
+- the ready-brief count, so a queue holding only excluded briefs stops `queue_empty`
+  and spawns nothing;
+- automatic brief selection, where its briefs are skipped with reason `repo-excluded`
+  (see `references/auto-mode.md`).
+
+Explicit scope beats the list: the `<repo>` argument that becomes `--go-repo` keeps that
+repo in scope for the run, with a log line stating the explicit flag overrides
+`routing.drain.exclude_repos`. Before the first iteration — so `dry-run` shows it too —
+the drain logs the applied list when it is non-empty and names any entry that matches no
+repo under the repos root. An unmatched entry is inert and never changes the exit status.
+
 ## Loop operation
 
 A drain iteration that exhausts every configured agent's capacity stops

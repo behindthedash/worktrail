@@ -1001,3 +1001,134 @@ def test_epic_without_gate_prose_seeds_as_before(tmp_path):
     # Most importantly: no epic should be in sequencing_gated_epics
     # (gate detection only applies to epics WITH gate prose)
     assert summary.get("sequencing_gated_epics", []) == []
+
+
+# ---------------------------------------------------------------------------
+# Repo exclusion (routing.drain.exclude_repos)
+#
+# The seeder's three finders take `exclude_repos`, and `seed_backlog()`
+# forwards it to all of them. A repo named there is never scanned, so none of
+# its specs or epics can become a brief.
+
+
+def test_needs_tasks_spec_in_excluded_repo_is_never_scanned(tmp_path):
+    repos_root = tmp_path / "projects"
+    _mk_needs_tasks_spec(_mk_repo(repos_root, "repo-a"), "010-alpha")
+    _mk_needs_tasks_spec(_mk_repo(repos_root, "repo-b"), "011-beta")
+    qbase = tmp_path / "wq"
+
+    findings = seed_backlog.find_needs_tasks_specs(repos_root, exclude_repos=["repo-b"])
+    assert [f["seed_key"] for f in findings] == ["repo-a:spec:010-alpha"]
+
+    summary = seed_backlog.seed_backlog(
+        repos_root, queue_base=qbase, log=lambda _m: None, exclude_repos=["repo-b"]
+    )
+
+    assert [s["seed_key"] for s in summary["seeded"]] == ["repo-a:spec:010-alpha"]
+    assert [fm["repo"] for _p, fm in _queued_briefs(qbase)] == ["repo-a"]
+
+
+def test_epic_gap_in_excluded_repo_is_never_scanned(tmp_path):
+    repos_root = tmp_path / "projects"
+    _mk_epic(_mk_repo(repos_root, "repo-a"), "001-payments", features=2)
+    _mk_epic(_mk_repo(repos_root, "repo-b"), "002-billing", features=2)
+
+    found, sequencing_gated = seed_backlog.find_epic_gaps(
+        repos_root, exclude_repos=["repo-b"]
+    )
+
+    assert [f["seed_key"] for f in found] == ["repo-a:epic:001-payments:cited=0"]
+    assert sequencing_gated == []
+
+    summary = seed_backlog.seed_backlog(
+        repos_root,
+        queue_base=tmp_path / "wq",
+        log=lambda _m: None,
+        exclude_repos=["repo-b"],
+    )
+    assert [s["repo"] for s in summary["seeded"]] == ["repo-a"]
+
+
+def test_find_ready_specs_skips_excluded_repo_even_when_opted_in(tmp_path):
+    """The exclusion is applied at the discovery step, before the per-repo
+    `allow_seeded_implementation` opt-in is even consulted, so an opted-in
+    excluded repo still contributes nothing."""
+    repos_root = tmp_path / "projects"
+    repo_b = _mk_repo(repos_root, "repo-b")
+    _opt_in(repo_b)
+    _mk_ready_spec(repo_b, "030-delta")
+
+    assert seed_backlog.find_ready_specs(repos_root) != []
+    assert seed_backlog.find_ready_specs(repos_root, exclude_repos=["repo-b"]) == []
+
+    summary = seed_backlog.seed_backlog(
+        repos_root,
+        queue_base=tmp_path / "wq",
+        log=lambda _m: None,
+        exclude_repos=["repo-b"],
+    )
+    assert summary["seeded"] == []
+
+
+def test_exclude_repos_composes_with_go_repo(tmp_path):
+    """A non-excluded go_repo is still scanned; an excluded one is not, since
+    the explicit-scope override is drain()'s job, not the seeder's."""
+    repos_root = tmp_path / "projects"
+    _mk_needs_tasks_spec(_mk_repo(repos_root, "repo-a"), "010-alpha")
+    _mk_needs_tasks_spec(_mk_repo(repos_root, "repo-b"), "011-beta")
+    _mk_needs_tasks_spec(_mk_repo(repos_root, "repo-c"), "012-gamma")
+
+    findings = seed_backlog.find_needs_tasks_specs(
+        repos_root, go_repo="repo-b", exclude_repos=["repo-c"]
+    )
+    assert [f["seed_key"] for f in findings] == ["repo-b:spec:011-beta"]
+
+    assert (
+        seed_backlog.find_needs_tasks_specs(
+            repos_root, go_repo="repo-b", exclude_repos=["repo-b"]
+        )
+        == []
+    )
+
+
+def test_default_empty_exclude_repos_is_behavior_identical(tmp_path):
+    """The default `()` must leave the seeder's own output untouched: same
+    candidates and same summary with the keyword omitted and passed empty."""
+    repos_root = tmp_path / "projects"
+    repo_a = _mk_repo(repos_root, "repo-a")
+    _mk_needs_tasks_spec(repo_a, "010-alpha")
+    _mk_epic(repo_a, "001-payments", features=2)
+    repo_b = _mk_repo(repos_root, "repo-b")
+    _opt_in(repo_b)
+    _mk_ready_spec(repo_b, "030-delta")
+
+    default = seed_backlog.seed_backlog(
+        repos_root, queue_base=tmp_path / "wq-default", log=lambda _m: None
+    )
+    explicit = seed_backlog.seed_backlog(
+        repos_root,
+        queue_base=tmp_path / "wq-explicit",
+        log=lambda _m: None,
+        exclude_repos=(),
+    )
+
+    # Compare on everything but each seeded brief's generated id (a fresh slug
+    # per run, so it can't be stable across the two invocations).
+    def without_brief_ids(summary):
+        return [
+            {k: v for k, v in entry.items() if k != "brief_id"}
+            for entry in summary["seeded"]
+        ]
+
+    assert without_brief_ids(default) == without_brief_ids(explicit)
+    assert {k: v for k, v in default.items() if k != "seeded"} == {
+        k: v for k, v in explicit.items() if k != "seeded"
+    }
+    assert [s["seed_key"] for s in default["seeded"]] == [
+        "repo-a:spec:010-alpha",
+        "repo-a:epic:001-payments:cited=0",
+        "repo-b:impl:030-delta",
+    ]
+    assert seed_backlog.find_needs_tasks_specs(
+        repos_root
+    ) == seed_backlog.find_needs_tasks_specs(repos_root, exclude_repos=())

@@ -3926,6 +3926,102 @@ class AutoPick(unittest.TestCase):
             [{"id": "20260701-000000-bare", "reason": "repo-missing"}],
         )
 
+    def test_excluded_repo_brief_skipped_with_reason_and_never_picked(self):
+        """`routing.drain.exclude_repos` (machine-wide, task 1.1): a brief for
+        an excluded repo is never the auto pick, and carries the colon-free
+        `repo-excluded` reason so log_auto_pick_miss buckets it on its own."""
+        excluded = self.root / "projects" / "otherrepo"
+        excluded.mkdir()
+        briefs = [self._brief("20260701-000000-excluded.md", str(excluded))]
+
+        result = dashboard.auto_pick_brief(briefs, exclude_repos=["otherrepo"])
+
+        self.assertIsNone(result["pick"])
+        self.assertEqual(
+            result["skipped"],
+            [{"id": "20260701-000000-excluded", "reason": "repo-excluded"}],
+        )
+
+    def test_excluded_repo_matches_absolute_bare_and_owner_slash_values(self):
+        """A brief stores `repo:` verbatim (create_handoff.py does not
+        normalize), so the exclusion match is by basename -- absolute path,
+        bare name, and `owner/name` all match the same excluded repo."""
+        excluded = self.root / "projects" / "otherrepo"
+        excluded.mkdir()
+        for repo_value in (str(excluded), "otherrepo", "behindthedash/otherrepo"):
+            with self.subTest(repo=repo_value):
+                briefs = [self._brief("20260701-000000-excluded.md", repo_value)]
+                result = dashboard.auto_pick_brief(briefs, exclude_repos=["otherrepo"])
+                self.assertIsNone(result["pick"])
+                self.assertEqual(result["skipped"][0]["reason"], "repo-excluded")
+
+    def test_non_excluded_brief_in_same_queue_still_picked(self):
+        excluded = self.root / "projects" / "otherrepo"
+        excluded.mkdir()
+        briefs = [
+            self._brief("20260701-000000-excluded.md", str(excluded)),
+            self._brief("20260710-000000-mine.md", str(self.repo)),
+        ]
+
+        result = dashboard.auto_pick_brief(briefs, exclude_repos=["otherrepo"])
+
+        self.assertEqual(result["pick"]["id"], "20260710-000000-mine")
+        self.assertEqual(
+            result["skipped"],
+            [{"id": "20260701-000000-excluded", "reason": "repo-excluded"}],
+        )
+
+    def test_repo_filter_naming_excluded_repo_picks_it(self):
+        """Explicit scope overrides the exclusion list: `--auto-repo R` still
+        picks R's briefs, and records no `repo-excluded` skip for them."""
+        excluded = self.root / "projects" / "otherrepo"
+        excluded.mkdir()
+        briefs = [self._brief("20260701-000000-excluded.md", str(excluded))]
+
+        result = dashboard.auto_pick_brief(
+            briefs,
+            repo_filter="otherrepo",
+            repos_root=str(self.root / "projects"),
+            exclude_repos=["otherrepo"],
+        )
+
+        self.assertEqual(result["pick"]["id"], "20260701-000000-excluded")
+        self.assertEqual(result["skipped"], [])
+
+    def test_main_malformed_machine_wide_drain_warns_and_picks_unfiltered(self):
+        """`main()` reads the exclusion list best-effort: a malformed machine-wide
+        `drain:` section (the drain's own startup is its loud gate) must print a
+        warning to stderr and carry on with an unfiltered pick, never crash."""
+        from contextlib import redirect_stderr, redirect_stdout
+
+        routing = self.root / "routing.yaml"
+        routing.write_text("drain:\n  exclude_repos: myapp\n", encoding="utf-8")
+        specs = self.root / "specs"
+        specs.mkdir()
+        briefs = [self._brief("20260701-000000-mine.md", str(self.repo))]
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {"WORKTRAIL_ROUTING_FILE": str(routing)}),
+            redirect_stdout(out),
+            redirect_stderr(err),
+        ):
+            rc = dashboard.main(
+                [
+                    "--root",
+                    str(specs),
+                    "--json",
+                    "--auto",
+                    "--queue-json",
+                    json.dumps({"briefs": briefs}),
+                ]
+            )
+        self.assertEqual(rc, 0)
+        self.assertIn("ignoring routing.drain.exclude_repos", err.getvalue())
+        self.assertEqual(
+            json.loads(out.getvalue())["auto_pick"]["pick"]["id"],
+            "20260701-000000-mine",
+        )
+
     def test_empty_queue_returns_null_pick(self):
         result = dashboard.auto_pick_brief([])
         self.assertIsNone(result["pick"])

@@ -50,7 +50,7 @@ behavioral contract is `openspec/specs/model-tier-routing/spec.md` and
 | `roles` | Per-role override (`review`/`resolve`/`ci-fix`/`assembly-resolve`/`implement`/`fix`/`cleanup`): `{tier, prefer?, independent?}`. |
 | `purposes` | `{purpose_value: tier_name}` — routes implement/fix/cleanup tasks by their `purpose` frontmatter instead of `complexity`. |
 | `default_tier` | The tier used when nothing more specific matches. |
-| `drain` | Drain-loop-only settings (currently just `max_workers`). No `agent`/`fallback_agents` keys — those are retired, rejected loudly with a migrate hint. |
+| `drain` | Drain-loop-only settings: `max_workers` (concurrent drain-worker slots) and `exclude_repos` (repo directory names never drained unattended, as `discover_repo_names()` reports them — e.g. `worktrail`, not `/home/you/projects/worktrail` or `owner/worktrail`). `exclude_repos` is **machine-wide only** — a repo-local `routing:` block declaring it is ignored with a warning — and it reaches the drain's repo sweeps and codex sandbox roots, both pre-passes, the ready-brief count, and automatic brief selection (skip reason `repo-excluded`); `--go-repo`/`--auto-repo` beat it, and an entry matching no repo is inert and reported. No `agent`/`fallback_agents` keys — those are retired, rejected loudly with a migrate hint. |
 
 Full mechanics (precedence order, `prefer` vs `independent`, purpose vs complexity) are in
 `worktrail-go`'s SKILL.md Phase 7 — this skill won't restate them, only the parts you need to

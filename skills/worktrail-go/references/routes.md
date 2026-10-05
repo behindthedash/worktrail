@@ -200,7 +200,8 @@ Behavior violates the spec or an established expectation.
 4. Failing regression test first; prove it fails for the original reason.
 5. Narrowest correct fix authored as an OpenSpec change (`/opsx:propose`) when a
    spec owns the behavior — run it through `pipeline-details.md#modify-pipeline`
-   (single-worker orchestrate for 1-task fixes) — or a direct fix-branch
+   (the gate there routes 1-task mechanical changes to its direct branch, and
+   everything else to the orchestrator) — or a direct fix-branch
    worktree for unspecced code (setup: `subagent-prompts.md#fix-branch-worktree-setup`).
 6. Validate adjacent behavior + edge cases; update the spec only if behavior
    was undocumented/ambiguous or an invariant was missing.
@@ -225,7 +226,8 @@ Intentional behavior change; **spec first, code second.**
 2. Update spec + acceptance criteria as an OpenSpec change (`/opsx:propose`,
    `## MODIFIED Requirements`). Determine migration/rollout/deprecation needs;
    note impacted dependent specs.
-3. propose → orchestrator → sync, per `pipeline-details.md#modify-pipeline`.
+3. propose → the gate's mode (direct for a 1-task mechanical delta, orchestrator
+   otherwise) → sync, per `pipeline-details.md#modify-pipeline`.
 4. Tests prove the NEW contract; remove/update tests that pinned the old one.
 
 Completion: `completed_*`.
