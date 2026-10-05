@@ -20,6 +20,8 @@ from __future__ import annotations
 import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -180,6 +182,43 @@ class SpecAtFanoutRefsTests(unittest.TestCase):
         live._require_spec_at_fanout_refs(
             repo, "openspec/changes/feature", "origin", "main"
         )
+
+    def _repo_with_spec_ahead_of_origin(self, spec_rel: str) -> Path:
+        """Repo whose HEAD carries `spec_rel` but whose `origin/main` does not."""
+        origin = Path(tempfile.mkdtemp(prefix="fanout-origin-")) / "origin.git"
+        _git(origin.parent, "init", "-q", "--bare", "-b", "main", str(origin))
+        repo = self._repo_with_spec(spec_rel)
+        _git(repo, "remote", "add", "origin", str(origin))
+        _git(repo, "push", "-q", "origin", "main")  # pre-spec commit
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "spec")
+        return repo
+
+    def test_warns_when_the_base_ref_lacks_a_non_change_spec(self):
+        repo = self._repo_with_spec_ahead_of_origin("docs/specs/feature")
+        out = StringIO()
+        with redirect_stdout(out):
+            live._require_spec_at_fanout_refs(
+                repo, "docs/specs/feature", "origin", "main"
+            )
+        self.assertIn("does not carry", out.getvalue())
+
+    def test_change_spec_is_exempt_from_the_base_carry_warning(self):
+        """Brief 20261003-221246: a change's commit belongs on its own branch.
+
+        The warning fired on every modify-pipeline (Route F/G) run and told the
+        operator to push the spec commit to `origin/main` -- the one action that
+        must not be taken before the orchestrator runs. `_require_task_file` is
+        the backstop for a task worktree that really does start without its
+        task file, so nothing is lost by staying silent here.
+        """
+        repo = self._repo_with_spec_ahead_of_origin("openspec/changes/feature")
+        out = StringIO()
+        with redirect_stdout(out):
+            live._require_spec_at_fanout_refs(
+                repo, "openspec/changes/feature", "origin", "main"
+            )
+        self.assertEqual(out.getvalue(), "")
 
 
 if __name__ == "__main__":

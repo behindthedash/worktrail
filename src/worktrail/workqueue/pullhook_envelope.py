@@ -18,19 +18,46 @@ _CAPTURED_BY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]*(:[A-Za-z0-9._/-]+)?$")
 _VALID_INTENTS = {"requested", "planning-only", "unknown"}
 
 # Allowlists: any key not named here is a rejection, not a silently ignored extra.
-_TOP_LEVEL_KEYS = {"schema", "event_id", "captured_by", "target", "handoff", "source"}
-_TARGET_KEYS = {"repo", "remote", "base_branch"}
-_HANDOFF_KEYS = {"focus", "context", "approach", "artifacts", "implementation_intent"}
-_SOURCE_KEYS = {"repository", "merged_pr", "finding", "evidence"}
+_TOP_LEVEL_KEYS = {
+    "schema",
+    "event_id",
+    "dedupe_key",
+    "captured_by",
+    "target",
+    "handoff",
+    "source",
+    "finding",
+}
+_TARGET_KEYS = {"remote", "base_branch"}
+_HANDOFF_KEYS = {
+    "focus",
+    "context",
+    "suggested_approach",
+    "artifacts",
+    "implementation_intent",
+}
+_SOURCE_KEYS = {"repository", "pr_number", "merge_sha", "run_id", "brief_path"}
+_FINDING_KEYS = {
+    "identity_key",
+    "persona",
+    "route",
+    "journey",
+    "step",
+    "severity",
+    "heuristic",
+    "evidence_refs",
+    "judge_model",
+}
 
 _REQUIRED = (
     ("event_id", ("event_id",)),
     ("captured_by", ("captured_by",)),
-    ("target.repo", ("target", "repo")),
+    ("target.remote", ("target", "remote")),
     ("handoff.focus", ("handoff", "focus")),
     ("source.repository", ("source", "repository")),
-    ("source.merged_pr", ("source", "merged_pr")),
-    ("source.finding", ("source", "finding")),
+    ("source.pr_number", ("source", "pr_number")),
+    ("source.merge_sha", ("source", "merge_sha")),
+    ("finding.identity_key", ("finding", "identity_key")),
 )
 
 
@@ -88,11 +115,21 @@ def validate_envelope(envelope: Any) -> dict[str, Any]:
     target = _section(envelope, "target", _TARGET_KEYS)
     handoff = _section(envelope, "handoff", _HANDOFF_KEYS)
     source = _section(envelope, "source", _SOURCE_KEYS)
+    finding = _section(envelope, "finding", _FINDING_KEYS)
 
     for field, path in _REQUIRED:
         value = _lookup(envelope, path)
-        if value is None or not _as_str(value, field):
+        if path == ("source", "pr_number"):
+            valid = value is not None
+        else:
+            valid = value is not None and bool(_as_str(value, field))
+        if not valid:
             raise EnvelopeError(f"missing required field: {field}")
+
+    event_id = _as_str(envelope["event_id"], "event_id")
+    dedupe_key = envelope.get("dedupe_key")
+    if dedupe_key is not None and _as_str(dedupe_key, "dedupe_key") != event_id:
+        raise EnvelopeError("dedupe_key must match event_id")
 
     captured_by = _as_str(envelope["captured_by"], "captured_by")
     if not _CAPTURED_BY_PATTERN.match(captured_by):
@@ -118,44 +155,80 @@ def validate_envelope(envelope: Any) -> dict[str, Any]:
             return None
         return _as_str(value, label) or None
 
+    pr_number = source["pr_number"]
+    if isinstance(pr_number, bool) or not isinstance(pr_number, int) or pr_number < 1:
+        raise EnvelopeError("source.pr_number must be a positive integer")
+
+    def string_list(value: Any, label: str) -> list[str]:
+        if not isinstance(value, list) or any(
+            not isinstance(item, str) for item in value
+        ):
+            raise EnvelopeError(f"{label} must be a list of strings")
+        return [item.strip() for item in value if item.strip()]
+
+    artifacts = handoff.get("artifacts", [])
+    if artifacts is None:
+        artifacts = []
+    artifacts = string_list(artifacts, "handoff.artifacts")
+    evidence_refs = finding.get("evidence_refs", [])
+    if evidence_refs is None:
+        evidence_refs = []
+    evidence_refs = string_list(evidence_refs, "finding.evidence_refs")
+
+    normalized_finding: dict[str, Any] = {
+        "identity_key": _as_str(finding["identity_key"], "finding.identity_key"),
+        "evidence_refs": evidence_refs,
+    }
+    for key in _FINDING_KEYS - {"identity_key", "evidence_refs"}:
+        normalized_finding[key] = optional(finding, key, f"finding.{key}")
+
     return {
         "schema": SUPPORTED_SCHEMA,
         "event_id": _as_str(envelope["event_id"], "event_id"),
+        "dedupe_key": event_id,
         "captured_by": captured_by,
         "target": {
-            "repo": _as_str(target["repo"], "target.repo"),
             "remote": optional(target, "remote", "target.remote"),
             "base_branch": optional(target, "base_branch", "target.base_branch"),
         },
         "handoff": {
             "focus": _as_str(handoff["focus"], "handoff.focus"),
             "context": optional(handoff, "context", "handoff.context"),
-            "approach": optional(handoff, "approach", "handoff.approach"),
-            "artifacts": optional(handoff, "artifacts", "handoff.artifacts"),
+            "approach": optional(
+                handoff, "suggested_approach", "handoff.suggested_approach"
+            ),
+            "artifacts": artifacts,
             "implementation_intent": intent,
         },
         "source": {
             "repository": _as_str(source["repository"], "source.repository"),
-            "merged_pr": _as_str(source["merged_pr"], "source.merged_pr"),
-            "finding": _as_str(source["finding"], "source.finding"),
-            "evidence": optional(source, "evidence", "source.evidence"),
+            "pr_number": pr_number,
+            "merge_sha": _as_str(source["merge_sha"], "source.merge_sha"),
+            "run_id": optional(source, "run_id", "source.run_id"),
+            "brief_path": optional(source, "brief_path", "source.brief_path"),
         },
+        "finding": normalized_finding,
     }
 
 
 def _artifacts(valid: dict[str, Any]) -> str:
     source = valid["source"]
+    finding = valid["finding"]
     lines = [
         f"- External event: {valid['schema']} {valid['event_id']}",
         f"- Source repository: {source['repository']}",
-        f"- Merged PR: {source['merged_pr']}",
-        f"- Source finding: {source['finding']}",
+        f"- Merged PR: https://github.com/{source['repository']}/pull/{source['pr_number']}",
+        f"- Merge commit: {source['merge_sha']}",
+        f"- Source finding: {finding['identity_key']}",
     ]
-    if source["evidence"]:
-        lines.append(f"- Evidence: {source['evidence']}")
+    if source["run_id"]:
+        lines.append(f"- Source run: {source['run_id']}")
+    if source["brief_path"]:
+        lines.append(f"- Source brief: {source['brief_path']}")
+    lines.extend(f"- Evidence: {ref}" for ref in finding["evidence_refs"])
     producer = valid["handoff"]["artifacts"]
     if producer:
-        lines.append(producer)
+        lines.extend(f"- Producer artifact: {artifact}" for artifact in producer)
     return "\n".join(lines)
 
 
@@ -165,7 +238,7 @@ def map_envelope(envelope: Any) -> dict[str, Any]:
     handoff = valid["handoff"]
     return {
         "focus": handoff["focus"],
-        "repo": valid["target"]["repo"],
+        "repo": valid["source"]["repository"],
         "remote": valid["target"]["remote"],
         "base_branch": valid["target"]["base_branch"],
         "context": handoff["context"],

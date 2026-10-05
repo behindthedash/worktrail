@@ -101,7 +101,7 @@
 
 ## 4. Document the capacity key for the routing-config operator
 
-- [ ] 4.1 In `skills/worktrail-routing-config/references/gotchas.md`, extend "A stale capacity
+- [x] 4.1 In `skills/worktrail-routing-config/references/gotchas.md`, extend "A stale capacity
       gate can look like a routing bug" (`:113-121`) to state that an entry may be keyed
       `target:model` or bare `target`, that a bare entry gates every model of that target for
       every reader (so look for the bare key too before concluding a routing edit "didn't take",
@@ -113,7 +113,7 @@
 
 ## 5. Document the capacity-cache command surface's keys
 
-- [ ] 5.1 In `skills/worktrail-go/SKILL.md`'s capacity-cache command block (`:929-941`), state
+- [x] 5.1 In `skills/worktrail-go/SKILL.md`'s capacity-cache command block (`:929-941`), state
       that the provider keys `status` prints are exactly the keys `clear` accepts -- including a
       bare target key written by the drain, which clears that target for every model -- and that
       the key a skipped or blocked cell is reported by (the attempt list, and the blocked note

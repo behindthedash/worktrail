@@ -378,6 +378,20 @@ agents or writes task files — that is `orchestrator/`'s job.
   a list, with `SystemExit` naming `set`. All three append refusals share
   `_scalar_list_field_hint(key)`, which names `set-list` — the old `append` message said "use
   `set`", a command that cannot perform the repair.
+- **`classifier_coverage.py` reports a `handoffs_consumed` shape it cannot read as ids, and never
+  decodes one.** `_consumed_ids()` returns `(ids, diagnostics)`: a list of id strings (what every
+  current writer produces) and a single plain id string (the older `set` form, still on disk) are
+  ids, while a JSON-encoded array/object stored as a string (the same `set PATH handoffs_consumed
+  '["a","b"]'` footgun the bullet above describes), a comma-joined string, a non-string value, and a
+  non-string list entry are diagnostics. Each malformed shape used to come through as ONE brief id
+  that cannot exist, so the run's real attribution silently vanished from the `actual` join and this
+  audit never surfaced it (brief 20261003-221534). They are reported, never parsed and never split —
+  recovering the real ids is a separate judgment about what those records meant.
+  `load_actual_routes_with_diagnostics()` is the audit's loader (`load_actual_routes()` is its
+  `routes` projection; the newest run id still wins when several consumed one brief), the
+  diagnostics land in the `--json` payload as `corpus.malformed_consumed_records` (`record`,
+  `reason`, `value`), and `render_report` prints a `malformed handoffs_consumed: N record(s)` line
+  whenever that list is non-empty, so a reader knows `actual` is blind rather than complete.
 - **`capacity-gate --retry-after` is validated as ISO-8601 and stored verbatim, never slug-sanitized.**
   `cmd_capacity_gate` runs it through `_iso_retry_after` (a `datetime.fromisoformat` check that
   raises `SystemExit` on a non-ISO value) rather than `_safe_provider`, which is a slug sanitizer
@@ -459,6 +473,14 @@ agents or writes task files — that is `orchestrator/`'s job.
   return type so existing callers/mocks of `_push(repo, branch, remote, runner)` keep working. A
   timeout/`OSError` still returns `"push_ambiguous"` with nothing appended. Regression tests live
   in `tests/router/test_land_pr_push_refusal.py`, deliberately not in `test_land_pr.py`.
+- **`worktrail-land-pr` writes one `REFUSED at <step>: <detail>` line to stderr; stdout stays the
+  machine contract.** `_refusal_line()` takes the first non-blank line of `outcome.detail`,
+  truncating past `_MAX_REFUSAL_DETAIL_CHARS` (200) with a trailing `...`; an empty/`None` detail
+  yields the step alone. `main()` prints it only for `outcome == "refused"`, alongside the unchanged
+  JSON payload (`--json` is required), so a machine consumer sees exactly what it saw before. It
+  exists because the operator otherwise gets a JSON blob and has to read this module to interpret it
+  — two live refusals in run go-20261003-153531 (PR #1402) each did, and refusal is the single most
+  common landing failure (brief 20261003-204324).
 - **Every post-PR-open `gh` call in `land_pr.py` is scoped to the push-target repo via `base_slug`,
   never left to `gh`'s bare-number resolution.** `_gh(..., base_slug=)` appends `-R <base_slug>`
   (the slug `_push_target()` returns) when set; `_watch_ci`, `_checks_registered`, `_log_excerpt`,
@@ -591,7 +613,8 @@ agents or writes task files — that is `orchestrator/`'s job.
   commit/compile-marker/preflight/push/PR/CI-watch/merge-guard/review-thread-gate/finish pipeline
   every PR-opening call site should compose with instead of reimplementing a subset; `_push()`'s
   explicit-refspec + `detail_out` contract lives here, as does `_gh()`'s `base_slug` (`-R <slug>`)
-  scoping of every post-PR-open call
+  scoping of every post-PR-open call, and `_refusal_line()`'s stderr `REFUSED at <step>: <detail>`
+  line for the operator (stdout's JSON payload is unchanged)
 - `router/automerge_preflight.py` — `required_checks_gate()`, `owner_repo_from_git()`,
   `push_remote_name()`, `is_preflight_query_error()`; the live GitHub-side half of the automerge
   gate and the single resolution point for the *read* side's target remote, so the gate can never
@@ -610,4 +633,4 @@ agents or writes task files — that is `orchestrator/`'s job.
   best-effort writers that never affect what they record
 
 ---
-**Last Updated:** 2026-10-04
+**Last Updated:** 2026-10-05

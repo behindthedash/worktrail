@@ -140,6 +140,41 @@ class RenderPrBodyTests(unittest.TestCase):
         )
         self.assertIn("## Labels\n(none)", body)
 
+    def test_fold_in_section_renders_entries(self) -> None:
+        """worker-fold-in-policy: declared fold-ins are listed, one entry
+        each, on the always-present `## Fold-in Fixes` section."""
+        body = land_pr.render_pr_body(
+            summary="x",
+            route="F",
+            epic_feature_spec="none",
+            gate_evidence="x",
+            risk="low",
+            labels=["go:risk-low"],
+            automerge_recommendation="eligible",
+            fold_ins=[
+                "src/a.py (abc123): tighten x",
+                "src/b.py (def456): fix typo",
+            ],
+        )
+        self.assertIn(
+            "## Fold-in Fixes\n"
+            "- src/a.py (abc123): tighten x\n"
+            "- src/b.py (def456): fix typo",
+            body,
+        )
+
+    def test_fold_in_section_renders_none_without_entries(self) -> None:
+        body = land_pr.render_pr_body(
+            summary="x",
+            route="F",
+            epic_feature_spec="none",
+            gate_evidence="x",
+            risk="low",
+            labels=[],
+            automerge_recommendation="eligible",
+        )
+        self.assertIn("## Fold-in Fixes\nnone", body)
+
 
 class CommitPendingTests(unittest.TestCase):
     def test_dirty_tree_without_commit_message_refuses(self) -> None:

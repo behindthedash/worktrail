@@ -304,7 +304,15 @@ _REVIEWER_SYSTEM_PROMPT = (
     "bugs, missing tests, and scope drift, and do not rubber-stamp. Do not modify "
     "source. If the diff takes a different approach than the task literally "
     "describes, that is a FAILED-worthy finding on its own -- a plausible "
-    "justification for the deviation does not substitute for flagging it."
+    "justification for the deviation does not substitute for flagging it. "
+    "Validate every fold-in: each `fold-in:` commit in the diff and each entry in "
+    "the report-back's `fold_ins` must be inside the task's declared scope, "
+    "mechanical (restores documented or established intent; no new design, API, or "
+    "behavior contract), within the fold-in caps (at most 2 fold-ins and about 20 "
+    "changed lines), and leave the task's tests passing -- FAIL the review when a "
+    "declared fold-in does not meet those conditions. A declared, validated "
+    "fold-in is NOT scope drift; undeclared out-of-scope edits and unexplained "
+    "drift still FAIL, exactly as before."
 )
 
 # Lean worker flags: applied to every task worker spawn.
@@ -730,11 +738,24 @@ def _format_unreconciled_tail_note(findings: list[dict]) -> str | None:
     got merged onto base, so the run must not report unqualified success.
     Returns None for empty findings so callers can `if note:`.
 
-    When findings carry `reconcile_state`/`reconcile_pr_url` (i.e. they went
-    through `integrate.reconcile_unreconciled_tail_evidence`), each entry is
-    annotated with that outcome so the console log doesn't read as still
-    purely manual -- the fuller per-state wording lives in
-    `journal_selfcheck.py`'s dashboard finding, not here.
+    Findings are partitioned by `reconcile_state` into three buckets, in this
+    order of precedence:
+
+    - `merged` -- their commits did land on base after all, so they are
+      deliberately not reported at all (the run `go-20261004-093132` shape:
+      the sole finding had been merged by auto-reconciliation and the warning
+      was a false alarm).
+    - `opened`/`already-open`/`superseded` -- awaiting merge: an
+      auto-reconciliation PR exists (or a descendant tail task carries the
+      commits), so this bucket gets its own quieter line with no `!!` prefix
+      and no reconcile instruction.
+    - anything else -- `quarantined`, or a raw finding carrying no
+      `reconcile_state` at all (the pre-reconciliation journal shape): manual
+      residue, which keeps the original loud wording.
+
+    The emitted lines are joined with "\\n". Returns None when both reported
+    buckets are empty, which is the all-`merged` case (and the empty-findings
+    case, via the guard above).
     """
     if not findings:
         return None
@@ -749,12 +770,32 @@ def _format_unreconciled_tail_note(findings: list[dict]) -> str | None:
             suffix += f" by {f.get('reconcile_superseded_by', '?')}"
         return f"{f['task']} (sha {f['head_sha']} @ {f['worktree']}{suffix})"
 
-    return (
-        f"!! {len(findings)} tail task(s) completed with unreconciled evidence "
-        f"(commits never merged onto base -- reconcile before worktree cleanup, "
-        f"see journal `unreconciled_tail_evidence`): "
-        + ", ".join(_entry(f) for f in findings)
-    )
+    manual: list[dict] = []
+    awaiting: list[dict] = []
+    for f in findings:
+        state = f.get("reconcile_state")
+        if state == "merged":
+            continue
+        if state in ("opened", "already-open", "superseded"):
+            awaiting.append(f)
+        else:
+            manual.append(f)
+
+    lines: list[str] = []
+    if manual:
+        lines.append(
+            f"!! {len(manual)} tail task(s) completed with unreconciled evidence "
+            f"(commits never merged onto base -- reconcile before worktree cleanup, "
+            f"see journal `unreconciled_tail_evidence`): "
+            + ", ".join(_entry(f) for f in manual)
+        )
+    if awaiting:
+        lines.append(
+            f"{len(awaiting)} tail task(s) auto-reconciliation PR(s) awaiting merge "
+            f"(see journal `unreconciled_tail_evidence`): "
+            + ", ".join(_entry(f) for f in awaiting)
+        )
+    return "\n".join(lines) if lines else None
 
 
 def _format_checkbox_divergence_note(findings: list[dict]) -> str | None:
@@ -3319,6 +3360,7 @@ def live_run(
                 # "failed". Same fix as _apply_step_commit() (#496), applied here to
                 # live_run's own separate (pre-#498) entry-construction path.
                 report_fields["terminal_status"] = new
+            _inject_fold_in_fields(report_fields, task, rep)
             entries.append(
                 {
                     "task": rep["task"],
@@ -3576,12 +3618,41 @@ MISSING_CONTEXT_RECOVERY_EVENT = "missing_context_auto_recovery"
 
 
 def _would_land_terminal(task: dict, role: str, report: dict) -> bool:
-    """True when applying `report` would drive `task` to `failed`/`escalated`."""
+    """True when applying `report` would drive `task` to `failed`/`escalated`.
+
+    Mirrors `apply_report`'s fold-in gate (worker-fold-in-policy): a report
+    declaring a fold-in outside the task's scope is doomed to terminal `failed`
+    too, so it must not trigger the missing-context recovery (which resets the
+    task) on the way there."""
     try:
         new, _ = dispatch.transition(role, report, task.get("retry_count", 0))
     except ValueError, KeyError:
         return False
-    return new in ("failed", "escalated")
+    if new in ("failed", "escalated"):
+        return True
+    violations, _ = dispatch.fold_in_violations(task, report)
+    return bool(violations)
+
+
+def _inject_fold_in_fields(report_fields: dict, task: dict, rep: dict) -> None:
+    """worker-fold-in-policy journal half: attach declared fold-ins (and, for a
+    doomed report, the offending entries) to a journal entry's report dict.
+
+    Conditional on both: an entry for a report with no fold-ins gains no new
+    keys at all, so its journal shape stays byte-identical to the pre-change
+    one (the `terminal_status` conditional-injection pattern)."""
+    violations, fold_ins = dispatch.fold_in_violations(task, rep)
+    if fold_ins:
+        report_fields["fold_ins"] = [
+            {
+                "file": e.get("file"),
+                "commit": e.get("commit"),
+                "summary": e.get("summary"),
+            }
+            for e in fold_ins
+        ]
+    if violations:
+        report_fields["fold_in_violations"] = violations
 
 
 def _missing_context_recovery(
@@ -3938,6 +4009,17 @@ def _require_spec_at_fanout_refs(
     (`dependency_start_ref`), so a spec missing there is a warning naming that
     consequence -- a spec committed locally but not yet pushed is legitimate
     and common.
+
+    An OpenSpec change (`--spec openspec/changes/<id>`, the Route F/G modify
+    pipeline) is the one case that warning is wrong for, and it fired on every
+    such run (brief 20261003-221246, run go-20261003-211918): the change's
+    commit deliberately lives on its own `chg/<change-id>` branch and must NOT
+    be on `<remote>/<base>` before the orchestrator runs, so the "push the spec
+    commit" remediation is the one action a reader must not take, while the
+    worktree it warned about was in fact based on that change commit and
+    carried the change directory. A task worktree that does start without its
+    task file is caught at dispatch time by `_require_task_file`, so skipping
+    the warning here loses no guard.
     """
     spec_path = spec_rel.strip("/")
     if _git(repo, "cat-file", "-e", f"HEAD:{spec_path}", check=False).returncode != 0:
@@ -3948,6 +4030,8 @@ def _require_spec_at_fanout_refs(
             "checkout's branch, or point --repo at the checkout that has them, "
             "before launching the run."
         )
+    if spec_path.startswith("openspec/changes/"):
+        return
     base_ref = f"{remote}/{base}"
     if (
         _git(repo, "rev-parse", "--verify", "-q", base_ref, check=False).returncode == 0
@@ -4492,6 +4576,7 @@ def _apply_step_commit(
                     "notes": rep.get("notes"),
                 }
             )
+    _inject_fold_in_fields(report_fields, task, rep)
     entry: dict = {
         "task": rep["task"],
         "role": rep["step"],
@@ -6934,7 +7019,8 @@ def _pipeline_scheduler(
     integrate_module._record_unreconciled_tail_evidence(journal_path, unreconciled_tail)
     unreconciled_note = _format_unreconciled_tail_note(unreconciled_tail)
     if unreconciled_note:
-        print(f"{_ts()} {unreconciled_note}")
+        for line in unreconciled_note.splitlines():
+            print(f"{_ts()} {line}")
     # A task can carry its own DONE status while its owning group never reached
     # base (quarantined -- e.g. a dependency never merged); that is expected,
     # routine behavior, not a divergence, so exclude quarantined groups' tasks

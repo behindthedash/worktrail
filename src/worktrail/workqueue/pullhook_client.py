@@ -57,17 +57,21 @@ class PullHookItem:
     def from_json(cls, raw: Any) -> PullHookItem:
         if not isinstance(raw, dict):
             raise PullHookError("PullHook returned a non-object item")
-        payload = raw.get("payload")
-        if payload is None:
-            payload = {}
+        delivery_id = raw.get("id")
+        if not isinstance(delivery_id, str) or not delivery_id:
+            raise PullHookError("PullHook item is missing an id")
+        body = raw.get("body")
+        if not isinstance(body, str):
+            raise PullHookError("PullHook item body is not a string")
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError:
+            raise PullHookError("PullHook item body is not valid JSON") from None
         if not isinstance(payload, dict):
-            raise PullHookError("PullHook item payload is not an object")
-        event_id = raw.get("event_id") or raw.get("id")
+            raise PullHookError("PullHook item body is not a JSON object")
+        event_id = payload.get("event_id")
         if not isinstance(event_id, str) or not event_id:
-            raise PullHookError("PullHook item is missing an event id")
-        delivery_id = raw.get("delivery_id")
-        if delivery_id is not None and not isinstance(delivery_id, str):
-            raise PullHookError("PullHook item delivery_id is not a string")
+            raise PullHookError("PullHook item body is missing an event id")
         return cls(delivery_id=delivery_id, event_id=event_id, payload=payload)
 
 
@@ -98,20 +102,22 @@ class PullHookClient:
     # -- verbs ---------------------------------------------------------
 
     def claim(self, max_items: int = 1) -> list[PullHookItem]:
-        """Claim up to `max_items` items, making them invisible to others."""
+        """Claim one item, making it invisible to other consumers until acked."""
+        if max_items != 1:
+            raise ValueError("PullHook claim returns one item per request")
         body = self._request(
             "POST",
-            f"/channels/{urllib.parse.quote(self.channel)}/claim",
-            body={"max_items": max_items},
+            f"/api/hooks/{urllib.parse.quote(self.channel)}/claim",
         )
         return self._items(body)
 
     def peek(self, limit: int = 1) -> list[PullHookItem]:
-        """Read up to `limit` items without claiming them."""
+        """Read one item without claiming it."""
+        if limit != 1:
+            raise ValueError("PullHook peek returns one item per request")
         body = self._request(
             "GET",
-            f"/channels/{urllib.parse.quote(self.channel)}/peek",
-            query={"limit": limit},
+            f"/api/hooks/{urllib.parse.quote(self.channel)}/peek",
         )
         return self._items(body)
 
@@ -120,9 +126,9 @@ class PullHookClient:
         if not delivery_id:
             raise ValueError("delivery_id is required")
         self._request(
-            "POST",
-            f"/channels/{urllib.parse.quote(self.channel)}/ack",
-            body={"delivery_id": delivery_id},
+            "DELETE",
+            f"/api/hooks/{urllib.parse.quote(self.channel)}/items/"
+            f"{urllib.parse.quote(delivery_id, safe='')}",
         )
 
     # -- internals -----------------------------------------------------
@@ -130,12 +136,13 @@ class PullHookClient:
     @staticmethod
     def _items(body: Any) -> list[PullHookItem]:
         if isinstance(body, dict):
-            raw_items = body.get("items", [])
-        else:
-            raw_items = body
-        if not isinstance(raw_items, list):
-            raise PullHookError("PullHook returned a non-list of items")
-        return [PullHookItem.from_json(raw) for raw in raw_items]
+            if body.get("ok") is False:
+                raise PullHookError("PullHook rejected the request")
+            raw_item = body.get("webhook")
+            if raw_item is None:
+                return []
+            return [PullHookItem.from_json(raw_item)]
+        raise PullHookError("PullHook returned an invalid response")
 
     def _redact(self, text: str) -> str:
         return text.replace(self._token, "***") if self._token else text

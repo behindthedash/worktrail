@@ -176,6 +176,10 @@ _EXIT_REFUSED = 2
 _EXIT_CODE_DEFECT = 3
 _EXIT_CEILING = 4
 
+# Cap on the detail quoted in `_refusal_line`'s one stderr line. The full detail
+# stays in the JSON payload; this is the operator's first glance.
+_MAX_REFUSAL_DETAIL_CHARS = 200
+
 
 @dataclass(frozen=True)
 class LandRequest:
@@ -196,6 +200,7 @@ class LandRequest:
     checkpoint: bool = False
     watch_timeout_s: int = 600
     session_id: str | None = None
+    fold_ins: list[str] = field(default_factory=list)
     runner: Runner = subprocess.run
 
 
@@ -265,13 +270,19 @@ def render_pr_body(
     risk: str,
     labels: Sequence[str],
     automerge_recommendation: str,
+    fold_ins: Sequence[str] = (),
 ) -> str:
     """Standard PR body (routes.md's PR template, §"summary, route, spec
     lineage, pre-PR gate evidence, risk, labels, auto-merge recommendation")
     -- every `land_pr()`-opened PR carries the same sections regardless of
     caller, so a reviewer never has to guess which subset a given route
-    included."""
+    included.
+
+    `fold_ins` is the worker-fold-in-policy public declaration: pre-rendered
+    entries, one per declared fold-in. The section always renders; with no
+    entries it reads `none`."""
     label_line = ", ".join(labels) if labels else "(none)"
+    fold_in_line = "\n".join(f"- {entry}" for entry in fold_ins) if fold_ins else "none"
     return (
         "## Summary\n"
         f"{summary}\n\n"
@@ -286,7 +297,9 @@ def render_pr_body(
         "## Labels\n"
         f"{label_line}\n\n"
         "## Auto-Merge Recommendation\n"
-        f"{automerge_recommendation}\n"
+        f"{automerge_recommendation}\n\n"
+        "## Fold-in Fixes\n"
+        f"{fold_in_line}\n"
     )
 
 
@@ -1608,6 +1621,7 @@ def land_pr(request: LandRequest) -> LandOutcome:
         automerge_recommendation="eligible"
         if "go:no-automerge" not in labels
         else "ineligible",
+        fold_ins=request.fold_ins,
     )
     pr_result = open_or_update_pull_request(
         repo,
@@ -2095,6 +2109,27 @@ def _outcome_exit_code(outcome: str) -> int:
     }.get(outcome, 1)
 
 
+def _refusal_line(outcome: LandOutcome) -> str:
+    """One human-readable line for a refused outcome, written to stderr.
+
+    The JSON payload on stdout stays the machine contract (`--json` is
+    required); this line is for the operator reading the terminal, who
+    otherwise gets a JSON blob and has to read this module to interpret it --
+    the shape two live refusals in run go-20261003-153531 (PR #1402) each
+    required, and the refusal is the single most common landing failure
+    (brief 20261003-204324).
+    """
+    line = f"REFUSED at {outcome.refused_step}"
+    detail = next(
+        (ln.strip() for ln in (outcome.detail or "").splitlines() if ln.strip()), ""
+    )
+    if not detail:
+        return line
+    if len(detail) > _MAX_REFUSAL_DETAIL_CHARS:
+        detail = detail[:_MAX_REFUSAL_DETAIL_CHARS].rstrip() + "..."
+    return f"{line}: {detail}"
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--repo", required=True)
@@ -2109,6 +2144,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--risk", default="low")
     ap.add_argument("--gates", default="")
     ap.add_argument("--commit-message", default=None)
+    ap.add_argument(
+        "--fold-in",
+        action="append",
+        default=[],
+        dest="fold_ins",
+        help=(
+            "Pre-rendered fold-in entry to declare on the PR body's "
+            "'## Fold-in Fixes' section; repeat for multiple entries "
+            "(worker-fold-in-policy)"
+        ),
+    )
     ap.add_argument("--checkpoint", action="store_true")
     ap.add_argument("--watch-timeout", type=int, default=600, dest="watch_timeout_s")
     ap.add_argument(
@@ -2139,8 +2185,11 @@ def main(argv: list[str] | None = None) -> int:
         checkpoint=args.checkpoint,
         watch_timeout_s=args.watch_timeout_s,
         session_id=args.session_id,
+        fold_ins=args.fold_ins,
     )
     outcome = land_pr(request)
+    if outcome.outcome == "refused":
+        print(_refusal_line(outcome), file=sys.stderr)
     payload = {
         "outcome": outcome.outcome,
         "pr_url": outcome.pr_url,

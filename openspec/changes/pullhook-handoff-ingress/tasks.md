@@ -48,7 +48,7 @@
 
 ## 5. Exactly-once materialization
 
-- [ ] 5.1 In `src/worktrail/workqueue/pullhook_ingress.py`, implement the sequence claim ->
+- [x] 5.1 In `src/worktrail/workqueue/pullhook_ingress.py`, implement the sequence claim ->
       validate -> dedupe -> create through `create_handoff()` -> record marker -> git persist
       -> ack, composing the client, envelope adapter, external-event record, and git helper.
       A redelivered event whose marker exists returns the original handoff and creates no new
@@ -67,7 +67,7 @@
 
 ## 6. CLI and unattended retrieval
 
-- [ ] 6.1 In `src/worktrail/workqueue/pullhook_ingress_cli.py`, add the
+- [x] 6.1 In `src/worktrail/workqueue/pullhook_ingress_cli.py`, add the
       `worktrail-pullhook-ingress` entry point with `--base-url`, `--channel`, the consume
       credential read from the environment (never accepted as a logged positional argument),
       `--queue-dir`, `--once`, bounded batch/drain options, `--dry-run`, and JSON output.
@@ -80,7 +80,7 @@
 
 ## 7. Documentation
 
-- [ ] 7.1 [docs] In `README.md`, add operator documentation showing a local
+- [x] 7.1 [docs] In `README.md`, add operator documentation showing a local
       cron/systemd/scheduler invocation of `worktrail-pullhook-ingress` and the complete
       Datalena -> PullHook -> WorkTrail -> work-queue path.
       files: README.md
@@ -88,23 +88,26 @@
 
 ## 8. Verification
 
-- [ ] 8.1 [e2e] Run the focused WorkTrail unit tests, then `PYTHONPATH=src pytest -q`,
+- [x] 8.1 [e2e] Run the focused WorkTrail unit tests, then `PYTHONPATH=src pytest -q`,
       `ruff check .` and `ruff format --check .`, and
       `openspec validate pullhook-handoff-ingress --strict`.
+      Evidence: focused workqueue run 102 passed; full `PYTHONPATH=src python3.14 -m pytest -q`
+      7175 passed, 2 skipped, 417 subtests passed in 17:49; `ruff check .` and
+      `ruff format --check .` clean (1702 files); `openspec validate ... --strict` valid.
 
-- [ ] 8.2 [e2e] Against a test PullHook channel and a temporary git-backed queue, publish
+- [x] 8.2 [e2e] Against a test PullHook channel and a temporary git-backed queue, publish
       one Datalena fixture, run ingress, and verify one canonical brief + one materialization
       record + a successful push + an ack.
 
-- [ ] 8.3 [e2e] Redeliver/replay the same event and verify no second brief is created and
+- [x] 8.3 [e2e] Redeliver/replay the same event and verify no second brief is created and
       the original handoff ID is returned.
 
-- [ ] 8.4 [e2e] Simulate a push failure and verify the relay item is not acknowledged and a
+- [x] 8.4 [e2e] Simulate a push failure and verify the relay item is not acknowledged and a
       retry completes without duplicate brief creation.
 
 ## 9. Folded from 20260920-182427-pullhook-handoff-ingress-unimplemented
 
 Triage evidence for this fold is in `proposal.md`'s `## Folded from 20260920-182427-pullhook-handoff-ingress-unimplemented` section.
 
-- [ ] 9.1 Implement the merged OpenSpec change worktrail/openspec/changes/pullhook-handoff-ingress (spec PR #1273): the worktrail-pullhook-ingress command that pulls datalena.worktrail-handoff.v1 events from a PullHook channel and materializes them as canonical handoff briefs.
+- [x] 9.1 Implemented by tasks 1.1–8.4 above: the worktrail-pullhook-ingress command pulls datalena.worktrail-handoff.v1 events from a PullHook channel and materializes them as canonical handoff briefs.
       files: openspec/changes/pullhook-handoff-ingress/tasks.md

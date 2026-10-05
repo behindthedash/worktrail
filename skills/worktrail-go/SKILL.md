@@ -938,11 +938,20 @@ worktrail-agent-capacity clear --expired [--reason TEXT] [--cache PATH]
 
 - `status` prints provider keys, status, failure class, check time, and retry
   window — no credentials or raw cache content. Each gated entry is labelled
-  `(active)` or `(expired)` by its retry window.
+  `(active)` or `(expired)` by its retry window. The keys it prints are exactly
+  the keys `clear` accepts. That includes the bare target key the drain writes
+  when it capacity-blocks a cell (no `:`, e.g. `claude-deepseek`): it gates
+  every model of that target, so `clear claude-deepseek` clears that target for
+  every model — it removes exactly that key, so a separate `<target>:<model>`
+  entry, if one exists, still gates its own model.
 - `clear` removes a specific provider's gate, all gates (`--all`), or only expired
   gates (`--expired`). `--expired` removes only the expired ones. Every clear
   requires `--reason` (non-empty, ≤500 characters). Unknown keys, blank reasons,
   and malformed cache on mutation fail without changing the file.
+- The key a skipped or blocked cell is reported by is that same string: the
+  attempt list in the selector's "no execution cell has capacity" refusal, and
+  the `--provider` recorded in the `worktrail-run-record capacity-gate` note
+  above when no headless worker launched. Either can be pasted into `clear`.
 - Normal dispatch never clears or retries around a persisted gate implicitly.
   Only clear after the external condition (auth, billing, sandbox, startup, or
   transport) has been corrected.

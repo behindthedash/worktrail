@@ -78,7 +78,22 @@ def _strip_punct(token: str) -> str:
     return token
 
 
+def _strip_node_id(token: str) -> str:
+    """Reduce `token` to the path half of a pytest node-id.
+
+    `tests/router/test_brief_probes.py::TestFoo::test_bar` names a file and a
+    test *in* it; only the portion before the first `::` is a path -- and it
+    is the one a pathspec search can use. A token with no `::` is returned
+    unchanged, so this is safe to apply to every candidate.
+    """
+    return token.split("::", 1)[0]
+
+
 def _is_path_token(token: str) -> bool:
+    # Callers pass the token through `_strip_node_id` first, so a pytest
+    # node-id arrives here already reduced to its file portion: the whole
+    # `tests/x.py::test_y` is not a path, but `tests/x.py` is, and the
+    # suffix can never pass this test on its own.
     # `#` rules out both a path and a symbol -- it only shows up here as part
     # of a `owner/repo#N` pull-request reference, never a real path/symbol.
     if not token or "#" in token:
@@ -162,9 +177,14 @@ def extract_probes(text: str) -> dict[str, Any]:
     produces.
 
     The negative rules carry as much weight as the positive ones: task ids
-    and versions (`1.1`, `2.1/2.2/2.3`), absolute paths, and parenthesised
-    call-site lists are all path-shaped to a naive test and all crowd real
-    probes out of the caps. See `_is_path_token`.
+    and versions (`1.1`, `2.1/2.2/2.3`), absolute paths, parenthesised
+    call-site lists, and pytest node-ids are all path-shaped to a naive test
+    and all crowd real probes out of the caps. A token carrying a node-id
+    suffix (`tests/x.py::test_y`, or the class-qualified
+    `tests/x.py::TestFoo::test_bar`) is classified by the portion before its
+    first `::`, and that portion is what gets emitted; a portion that fails
+    the path test emits no path probe at all (`Foo::bar`). See
+    `_is_path_token`.
     """
     text = text or ""
 
@@ -177,10 +197,11 @@ def extract_probes(text: str) -> dict[str, Any]:
         token = _strip_punct(raw)
         if not token:
             continue
-        if _is_path_token(token):
-            if token not in seen_paths:
-                seen_paths.add(token)
-                paths.append(token)
+        path_token = _strip_node_id(token)
+        if _is_path_token(path_token):
+            if path_token not in seen_paths:
+                seen_paths.add(path_token)
+                paths.append(path_token)
         elif (
             _is_symbol_token(token) or _is_flag_token(token)
         ) and token not in seen_symbols:
@@ -192,10 +213,11 @@ def extract_probes(text: str) -> dict[str, Any]:
         token = _strip_punct(raw)
         if not token:
             continue
-        if _is_path_token(token):
-            if token not in seen_paths:
-                seen_paths.add(token)
-                paths.append(token)
+        path_token = _strip_node_id(token)
+        if _is_path_token(path_token):
+            if path_token not in seen_paths:
+                seen_paths.add(path_token)
+                paths.append(path_token)
         elif (
             _is_unquoted_symbol_token(token) or _is_flag_token(token)
         ) and token not in seen_symbols:

@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from typing import ClassVar
 
 from worktrail.orchestrator.dispatch import (
+    _FOLD_IN_CLAUSE,
     _ROLE_ACTION,
     ROLE_ASSEMBLY_RESOLVE,
     ROLE_CI_FIX,
@@ -29,6 +30,7 @@ from worktrail.orchestrator.dispatch import (
     apply_report,
     build_group_prompt,
     build_worker_prompt,
+    fold_in_violations,
     transition,
     validate_resolved_decision_input,
 )
@@ -321,11 +323,17 @@ class TestReviewChecksAcDodCheckboxes(unittest.TestCase):
         self.assertIn("human/planner decision", action)
 
     def test_other_roles_byte_for_byte_unchanged(self):
-        """AC-CHG-012: ROLE_IMPLEMENT, ROLE_FIX, ROLE_CLEANUP action strings
-        are exactly equal to their pre-change values (string equality, not
-        substring)."""
-        self.assertEqual(_ROLE_ACTION[ROLE_IMPLEMENT], self._UNCHANGED_ROLE_IMPLEMENT)
-        self.assertEqual(_ROLE_ACTION[ROLE_FIX], self._UNCHANGED_ROLE_FIX)
+        """AC-CHG-012, extended by worker-fold-in-policy: ROLE_IMPLEMENT and
+        ROLE_FIX differ from their pre-change values by exactly the fold-in
+        clause (string equality, not substring); ROLE_CLEANUP is still
+        untouched."""
+        self.assertEqual(
+            _ROLE_ACTION[ROLE_IMPLEMENT],
+            self._UNCHANGED_ROLE_IMPLEMENT + _FOLD_IN_CLAUSE,
+        )
+        self.assertEqual(
+            _ROLE_ACTION[ROLE_FIX], self._UNCHANGED_ROLE_FIX + _FOLD_IN_CLAUSE
+        )
         self.assertEqual(_ROLE_ACTION[ROLE_CLEANUP], self._UNCHANGED_ROLE_CLEANUP)
 
     def test_review_prompt_renders_with_extended_action(self):
@@ -1555,6 +1563,124 @@ class TestLearnedNotesRendering(unittest.TestCase):
                         role, _make_task(), self._ctx(learned_notes="")
                     ),
                 )
+
+
+class FoldInClauseTests(unittest.TestCase):
+    """worker-fold-in-policy: the implement/fix prompts carry the fold-in
+    clause and its report-back schema; the clean role is not widened."""
+
+    def _prompt(self, role):
+        return build_worker_prompt(role, _make_task(), _make_ctx())
+
+    def test_implement_prompt_states_fold_in_clause(self):
+        prompt = self._prompt(ROLE_IMPLEMENT)
+        for needle in (
+            "A verified defect",
+            "'fold-in:'",
+            "at most 2 fold-ins",
+            "about 20 changed lines",
+            "fold_ins",
+        ):
+            self.assertIn(needle, prompt)
+
+    def test_fix_prompt_states_fold_in_clause(self):
+        prompt = self._prompt(ROLE_FIX)
+        for needle in (
+            "A verified defect",
+            "'fold-in:'",
+            "at most 2 fold-ins",
+            "fold_ins",
+        ):
+            self.assertIn(needle, prompt)
+
+    def test_cleanup_prompt_not_widened(self):
+        prompt = self._prompt(ROLE_CLEANUP)
+        self.assertNotIn("fold-in:", prompt)
+        self.assertNotIn("fold_ins", prompt)
+
+    def test_report_schema_declares_fold_ins_for_implement_and_fix_only(self):
+        self.assertIn('"fold_ins"', self._prompt(ROLE_IMPLEMENT))
+        self.assertIn('"fold_ins"', self._prompt(ROLE_FIX))
+        self.assertNotIn('"fold_ins"', self._prompt(ROLE_REVIEW))
+        self.assertNotIn('"fold_ins"', self._prompt(ROLE_CLEANUP))
+
+
+class FoldInViolationsTests(unittest.TestCase):
+    """worker-fold-in-policy: declared fold-ins are validated in code against
+    the task's declared scope; an out-of-scope declaration fails the task
+    closed through the same terminal path a failed report takes."""
+
+    def _task(self, files, status="implementing"):
+        task = _make_task()
+        task["files"] = files
+        task["status"] = status
+        return task
+
+    def test_absent_key_and_empty_list_are_zero_fold_ins(self):
+        task = self._task(["a.py"])
+        for report in ({}, {"fold_ins": []}):
+            violations, valid = fold_in_violations(task, report)
+            self.assertEqual([], violations)
+            self.assertEqual([], valid)
+
+    def test_non_list_value_is_a_violation(self):
+        violations, valid = fold_in_violations(
+            self._task(["a.py"]), {"fold_ins": "a.py"}
+        )
+        self.assertEqual(1, len(violations))
+        self.assertEqual([], valid)
+
+    def test_non_mapping_entry_is_a_violation(self):
+        violations, valid = fold_in_violations(
+            self._task(["a.py"]), {"fold_ins": ["a.py"]}
+        )
+        self.assertEqual(1, len(violations))
+        self.assertEqual([], valid)
+
+    def test_missing_blank_and_non_string_file_are_violations(self):
+        violations, valid = fold_in_violations(
+            self._task(["a.py"]), {"fold_ins": [{}, {"file": ""}, {"file": 3}]}
+        )
+        self.assertEqual(3, len(violations))
+        self.assertEqual([], valid)
+
+    def test_out_of_scope_file_is_a_violation(self):
+        violations, valid = fold_in_violations(
+            self._task(["src/a.py"]), {"fold_ins": [{"file": "src/b.py"}]}
+        )
+        self.assertEqual(1, len(violations))
+        self.assertEqual([], valid)
+
+    def test_in_scope_file_is_valid_under_normpath(self):
+        entry = {"file": "src/a.py", "commit": "abc", "summary": "fix typo"}
+        violations, valid = fold_in_violations(
+            self._task(["./src/a.py"]), {"fold_ins": [entry]}
+        )
+        self.assertEqual([], violations)
+        self.assertEqual([entry], valid)
+
+    def test_out_of_scope_fold_in_fails_the_task_closed(self):
+        task = self._task(["src/a.py"])
+        report = {
+            "task": task["id"],
+            "step": ROLE_IMPLEMENT,
+            "status": "success",
+            "fold_ins": [{"file": "src/b.py", "commit": "abc", "summary": "x"}],
+        }
+        old, new = apply_report([task], report, ROLE_IMPLEMENT)
+        self.assertEqual("implementing", old)
+        self.assertEqual("failed", new)
+
+    def test_valid_fold_ins_leave_the_transition_unchanged(self):
+        task = self._task(["src/a.py"])
+        report = {
+            "task": task["id"],
+            "step": ROLE_IMPLEMENT,
+            "status": "success",
+            "fold_ins": [{"file": "src/a.py", "commit": "abc", "summary": "x"}],
+        }
+        old, new = apply_report([task], report, ROLE_IMPLEMENT)
+        self.assertEqual(("implementing", "reviewing"), (old, new))
 
 
 if __name__ == "__main__":

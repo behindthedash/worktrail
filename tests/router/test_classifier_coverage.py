@@ -6,6 +6,9 @@ fixtures to pin the audit contract:
   - the actual route (run record) outranks the brief's recommended route
   - ``handoffs_consumed`` is honoured in both its string and list forms, and
     the newest run wins when several consumed the same brief
+  - a ``handoffs_consumed`` shape that cannot be read as ids (a JSON-encoded
+    array or a comma-joined list stored as a string, a non-string value) is
+    reported as malformed instead of consumed as one impossible brief id
   - known route disagreements land in the right ``(expected, predicted)``
     cluster, with real classifier text (no stubbing of ``classify()``)
   - no-signal defaults are counted apart from mis-weighted signals
@@ -198,6 +201,84 @@ class TestExpectedRouteResolution(ClassifierCoverageTestCase):
 
         self.assertEqual(report["agreement"]["compared"], 1)
         self.assertEqual(report["agreement"]["agreed"], 1)
+
+
+class TestMalformedConsumedRecords(ClassifierCoverageTestCase):
+    """`handoffs_consumed` shapes that cannot be read as ids are diagnosed, not guessed.
+
+    A JSON-encoded array stored as a string (the `set PATH handoffs_consumed
+    '["a","b"]'` footgun, brief 20261003-204455) and a comma-joined id list were
+    each read as ONE brief id -- an id that cannot exist -- so the run's real
+    attribution silently vanished from the join and this audit never surfaced
+    it (brief 20261003-221534).
+    """
+
+    def test_json_array_string_is_not_consumed_as_one_id(self) -> None:
+        _write_brief(self.queue_root / "picked", "b-1", recommended="F")
+        _write_run(self.runs_root, "repo", "go-1", route="J", consumed='["b-1"]')
+
+        self.assertEqual(cc.load_actual_routes(self.runs_root), {})
+        report = self.audit()
+        # The brief is still compared -- against its recommendation, which is
+        # exactly the silent downgrade the record corrupted.
+        self.assertEqual(report["by_expected_route"][0]["expected"], "F")
+        self.assertEqual(
+            report["corpus"]["malformed_consumed_records"],
+            [
+                {
+                    "record": str(self.runs_root / "repo" / "go-1.yaml"),
+                    "reason": "JSON-encoded array stored as a string",
+                    "value": "'[\"b-1\"]'",
+                }
+            ],
+        )
+
+    def test_comma_joined_string_is_not_consumed_as_one_id(self) -> None:
+        _write_brief(self.queue_root / "picked", "b-1", recommended="F")
+        _write_brief(self.queue_root / "picked", "b-2", recommended="F")
+        _write_run(self.runs_root, "repo", "go-1", route="J", consumed="b-1,b-2")
+
+        self.assertEqual(cc.load_actual_routes(self.runs_root), {})
+        self.assertEqual(
+            [
+                entry["reason"]
+                for entry in self.audit()["corpus"]["malformed_consumed_records"]
+            ],
+            ["comma-joined ids stored as a string"],
+        )
+
+    def test_non_string_value_is_reported_not_coerced(self) -> None:
+        _write_brief(self.queue_root / "picked", "b-1", recommended="F")
+        _write_run(self.runs_root, "repo", "go-1", route="J", consumed=42)
+
+        self.assertEqual(cc.load_actual_routes(self.runs_root), {})
+        reasons = [
+            entry["reason"]
+            for entry in self.audit()["corpus"]["malformed_consumed_records"]
+        ]
+        self.assertEqual(reasons, ["int value, not a list or string"])
+
+    def test_clean_records_report_no_malformed_entries(self) -> None:
+        _write_brief(self.queue_root / "picked", "b-1", recommended="F")
+        _write_run(self.runs_root, "repo", "go-1", route="J", consumed=["b-1"])
+
+        self.assertEqual(cc.load_actual_routes(self.runs_root), {"b-1": "J"})
+        self.assertEqual(self.audit()["corpus"]["malformed_consumed_records"], [])
+
+    def test_report_surfaces_the_malformed_count(self) -> None:
+        _write_brief(self.queue_root / "picked", "b-1", recommended="F")
+        _write_run(self.runs_root, "repo", "go-1", route="J", consumed='["b-1"]')
+
+        rendered = cc.render_report(self.audit())
+
+        self.assertIn("malformed handoffs_consumed: 1 record(s)", rendered)
+        self.assertIn("corpus.malformed_consumed_records", rendered)
+
+    def test_report_stays_silent_when_nothing_is_malformed(self) -> None:
+        _write_brief(self.queue_root / "picked", "b-1", recommended="F")
+        _write_run(self.runs_root, "repo", "go-1", route="J", consumed=["b-1"])
+
+        self.assertNotIn("malformed handoffs_consumed", cc.render_report(self.audit()))
 
 
 class TestDisagreementClusters(ClassifierCoverageTestCase):

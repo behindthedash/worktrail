@@ -327,6 +327,7 @@ Completion: `completed_pr_open` / `completed_and_merged`.
 ## Pre-PR Test Gate          <!-- pre_pr_gate.py: command + PASS, or explicit policy skip -->
 ## Performance Impact
 ## Deferred Work and Handoffs <!-- brief ids created, or "none" -->
+## Fold-in Fixes             <!-- declared fold-ins (one entry each), or "none" -->
 ## Risk Assessment           <!-- low|medium|high|critical + why -->
 ## Rollback Plan
 ## Auto-Merge Eligibility    <!-- eligible/ineligible + exact reason + go:risk-*/go:no-automerge labels applied (pre_pr_gate.py --risk output; the labels, not this prose, are what auto-merge.yml actually enforces) -->

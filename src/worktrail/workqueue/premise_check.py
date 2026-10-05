@@ -14,6 +14,12 @@ Path presence claims resolve bare basenames: a candidate with no `/` that does
 not exist at the repo root is looked up against `git ls-files`, matching any
 tracked path whose final segment equals it, since briefs routinely name a file
 by basename alone rather than by its path from the repo root.
+
+A missing candidate that is not filename-shaped -- its final segment carries
+no extension and it does not end in `/` -- produces no verdict row at all.
+Slash-bearing prose the extractor is blind to (`claude/codex/opencode`,
+`stub/disable`) is the motivating case; a non-existent filename-shaped claim
+(`src/worktrail/does_not_exist.py`) still gets its "path does not exist" row.
 """
 
 from __future__ import annotations
@@ -90,6 +96,12 @@ _MIN_QUOTED_LEN = 12
 _MIN_FRAGMENT_LEN = 12
 _MAX_GIT_GREP_HITS = 5
 _MAX_OUTPUT_LINES = 20
+
+# An extension on the candidate's final segment, mirroring the extractor's
+# path-token shape (`src/worktrail/router/brief_probes.py`): a missing
+# candidate that carries one is a file claim worth refuting, and one that does
+# not (`claude/codex/opencode`) is prose the extractor cannot tell from a path.
+_EXT_SHAPE_RE = re.compile(r"\.[A-Za-z0-9]{1,10}$")
 
 
 @dataclass(frozen=True)
@@ -241,6 +253,21 @@ def _basename_matches(repo_path: Path, candidate: str) -> list[str]:
     ]
 
 
+def _is_filename_shaped(candidate: str) -> bool:
+    """True when `candidate` names a file/directory rather than prose.
+
+    Filename-shaped means the final segment carries an extension
+    (`src/worktrail/does_not_exist.py`) or the candidate ends in `/`. The
+    extractor is repo-blind, so a brief's `claude/codex/opencode` or
+    `stub/disable` arrives here looking like a path; without a filename
+    shape there is no claim to refute, and a "path does not exist" row for it
+    is noise.
+    """
+    if candidate.endswith("/"):
+        return True
+    return bool(_EXT_SHAPE_RE.search(candidate.rpartition("/")[2]))
+
+
 def _check_path(
     repo_path: Path, needle: str, polarity: str = "presence"
 ) -> dict[str, Any]:
@@ -254,15 +281,21 @@ def _check_path(
         # An absence claim never carries a meaningful `:LINE` suffix, so the
         # line-count refinement below stays scoped to the presence branches.
         if not target.exists():
-            return {
-                "confirmed": True,
-                "detail": f"absence confirmed: path does not exist: {candidate}",
-            }
+            detail = f"absence confirmed: path does not exist: {candidate}"
+            if not _is_filename_shaped(candidate):
+                return {"confirmed": True, "detail": detail, "skip": True}
+            return {"confirmed": True, "detail": detail}
         return {
             "confirmed": False,
             "detail": f"absence claim refuted: path exists: {candidate}",
         }
     if not target.exists():
+        if not _is_filename_shaped(candidate):
+            return {
+                "confirmed": False,
+                "detail": f"path does not exist: {candidate}",
+                "skip": True,
+            }
         matches = _basename_matches(repo_path, candidate)
         if matches:
             if len(matches) == 1:
@@ -374,7 +407,9 @@ def run_premise_check(
     needles are recorded unconfirmed without running. An `npm test` needle is
     skipped (but still consumes the command slot) when any entry in
     `dependency_freshness` -- the `check_dependency_freshness` result contract
-    -- has a status other than `fresh`.
+    -- has a status other than `fresh`. A path needle whose target does not
+    exist and whose candidate is not filename-shaped produces no row at all
+    (see module docstring).
     """
     repo_path = Path(repo_path)
     needles = extract_needles(focus)
@@ -385,6 +420,8 @@ def run_premise_check(
             outcome = _check_quoted(repo_path, n.needle)
         elif n.kind == "path":
             outcome = _check_path(repo_path, n.needle, n.polarity)
+            if outcome.get("skip"):
+                continue
         elif n.kind == "command":
             outcome = _check_command(
                 repo_path, n.needle, timeout_s, command_ran, dependency_freshness
