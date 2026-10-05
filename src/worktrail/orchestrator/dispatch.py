@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass
@@ -311,6 +312,25 @@ def tier_for(
 # --------------------------------------------------------------------------- #
 # Prompt building (cold-worker brief, design doc section 6)
 # --------------------------------------------------------------------------- #
+# Shared by the implement/fix role actions below -- the one bounded extension of
+# a task's work (worker-fold-in-policy): a verified, mechanical defect in a file
+# already named in Scope may be fixed in the same task, in its own commit, and
+# declared in the report-back; everything else is capture-only, never a scope
+# expansion.
+_FOLD_IN_CLAUSE = (
+    " A verified defect (reproduced or directly evidenced -- never a hypothesis or "
+    'a "while I\'m here" cleanup) in a file already named in Scope may be folded in '
+    "when the fix is mechanical (restores documented or established intent; no new "
+    "design, API, or behavior contract -- behavior-contract changes are never "
+    "fold-ins) and the task stays within the fold-in caps (at most 2 fold-ins and "
+    "about 20 changed lines): fix it in a SEPARATE commit whose message starts with "
+    "'fold-in:' and list it in the report-back's `fold_ins` ({{file, commit, summary}}). "
+    "Everything else -- unverified findings, files outside Scope, "
+    "non-mechanical fixes, over-cap findings -- is reported in `notes` for capture "
+    "only, never fixed here."
+)
+
+
 _ROLE_ACTION = {
     ROLE_IMPLEMENT: (
         "Implement ONLY the files in scope, per the task's Acceptance Criteria and "
@@ -319,6 +339,7 @@ _ROLE_ACTION = {
         "`ls` that they are present in this worktree before concluding they are "
         "missing -- report context_quality: insufficient with a specific "
         "missing_context entry only after that check fails, never on assumption."
+        + _FOLD_IN_CLAUSE
     ),
     ROLE_REVIEW: (
         "Run `git diff {base_commit}..HEAD` to see what was built. "
@@ -340,6 +361,7 @@ _ROLE_ACTION = {
         "If a finding requires touching a file outside this task's scope, decline it: "
         "report `status: failed` and list the untouchable file(s) as repo-relative paths "
         "in the report-back's `missing_context` field — never only in `notes`."
+        + _FOLD_IN_CLAUSE
     ),
     ROLE_CLEANUP: (
         "Run cleanup on ONLY the files this task changed: remove debug logs + "
@@ -783,6 +805,19 @@ def build_worker_prompt(
                 # Round >= 2 only: the round-1 review prompt stays byte-identical.
                 ['   "decision_required": "<text>|null",']
                 if role == ROLE_REVIEW and round_awareness
+                else []
+            ),
+            *(
+                # Implement/fix only: the optional fold-in declaration (see the
+                # fold-in clause in the role action above). Absent or [] means
+                # zero fold-ins and parses exactly as before.
+                [
+                    (
+                        '   "fold_ins": [{"file": "<path>", "commit": "<sha>", '
+                        '"summary": "<one line>"}]|[],'
+                    )
+                ]
+                if role in (ROLE_IMPLEMENT, ROLE_FIX)
                 else []
             ),
             '   "context_quality": "sufficient|too_much|insufficient",',
@@ -1230,6 +1265,50 @@ def transition(
     raise ValueError(f"unknown role: {role}")
 
 
+def fold_in_violations(
+    task: dict[str, Any], report: dict[str, Any]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split a report-back's declared fold-ins into (violations, valid entries).
+
+    The code-enforced half of the fold-in policy (worker-fold-in-policy): every
+    declared `fold_ins[].file` must be a member of the task's declared `files:`
+    scope under the same `os.path.normpath` normalization the orchestrator
+    applies to declared-scope checks. A violation is: a non-list `fold_ins`
+    value; an entry that is not a mapping; an entry whose `file` is missing,
+    blank, or not a string; or an entry whose normalized file is not in the
+    declared scope. An absent key (or `[]`) means zero fold-ins and is never an
+    error -- a report without declarations behaves exactly as before.
+    """
+    raw = report.get("fold_ins")
+    if raw is None:
+        return [], []
+    if not isinstance(raw, list):
+        return [{"file": None, "reason": "fold_ins must be a list"}], []
+    declared = {os.path.normpath(str(f)) for f in (task.get("files") or [])}
+    violations: list[dict[str, Any]] = []
+    valid: list[dict[str, Any]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            violations.append({"file": None, "reason": "entry must be an object"})
+            continue
+        file_value = entry.get("file")
+        if not isinstance(file_value, str) or not file_value.strip():
+            violations.append(
+                {"file": file_value, "reason": "file must be a non-empty string"}
+            )
+            continue
+        if os.path.normpath(file_value) not in declared:
+            violations.append(
+                {
+                    "file": file_value,
+                    "reason": "file is outside the task's declared scope",
+                }
+            )
+            continue
+        valid.append(entry)
+    return violations, valid
+
+
 def apply_report(
     tasks: list[dict[str, Any]],
     report: dict[str, Any],
@@ -1243,6 +1322,14 @@ def apply_report(
         raise ValueError(f"report references unknown task {report['task']!r}")
     old = task.get("status", "pending")
     new, retry = transition(role, report, task.get("retry_count", 0), max_retries)
+    violations, _ = fold_in_violations(task, report)
+    if violations:
+        # worker-fold-in-policy: a declared fold-in the task's declared scope
+        # does not back is never accepted -- the report fails the task through
+        # the same terminal "failed" state a failed report takes, so the
+        # existing terminal stamping/clear/quarantine machinery classifies it
+        # identically. Valid (or absent) fold-ins leave the transition alone.
+        new = "failed"
     task["status"] = new
     task["retry_count"] = retry
     if report.get("head_sha"):

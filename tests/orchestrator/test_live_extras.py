@@ -31,6 +31,17 @@ class ReviewerSystemPromptTests(unittest.TestCase):
             "does not substitute for flagging it", live._REVIEWER_SYSTEM_PROMPT
         )
 
+    def test_validates_declared_fold_ins(self):
+        """worker-fold-in-policy: the reviewer validates each declared fold-in
+        (in-scope, mechanical, within caps, tests passing) and still fails
+        undeclared drift exactly as before."""
+        prompt = live._REVIEWER_SYSTEM_PROMPT
+        self.assertIn("Validate every fold-in", prompt)
+        self.assertIn("fold-in:", prompt)
+        self.assertIn("within the fold-in caps", prompt)
+        self.assertIn("NOT scope drift", prompt)
+        self.assertIn("FAIL the review", prompt)
+
 
 class RunLockTests(unittest.TestCase):
     def test_context_manager_enter_returns_self(self):

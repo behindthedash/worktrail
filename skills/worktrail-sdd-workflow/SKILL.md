@@ -230,6 +230,32 @@ note with no `go:risk-*` label because the correction was then only a prose
 instruction reachable from the PR-producing-route branch above, and a human
 had to apply the label by hand before `CI: Auto-merge on open` would arm.
 
+### Defect handling — the three tiers
+
+A defect, gap, or tech-debt finding surfaced mid-run goes through exactly one of three tiers
+— never straight to capture by reflex:
+
+1. **Fold in** — the finding is a verified defect (reproduced or directly evidenced; a
+   hypothesis or a "while I'm here" cleanup is never enough), its fix touches only files
+   already in the unit's declared scope (a task's `files:` for workers; the change's own file
+   surface at authoring time), and the fix is mechanical (restores documented/established
+   intent; no new design, API, or behavior contract). Cap: at most 2 fold-ins and ~20 changed
+   lines per task. Fold-ins are committed separately (message starts `fold-in:`), declared in
+   the worker report-back's `fold_ins`, validated in code against the task's declared scope
+   (`fold_in_violations` — an out-of-scope declaration fails the task closed), reviewed for
+   mechanicalness by the independent reviewer, and listed on the PR's `## Fold-in Fixes`
+   section. Never fold a behavior-contract change (that is Route G) and never widen a file
+   scope for one.
+2. **Capture, routed into an active change** — anything out of scope, non-mechanical, or over
+   cap is captured as a work-queue brief; the existing triage `fold-into-change` verdict can
+   attach it to a change already in flight instead of minting a new one.
+3. **Standalone brief (Route F)** — an independent defect with no active change to ride.
+
+**Authoring stage (propose/plan authoring):** when a finding's file is already inside the
+change's own file surface, fold in — extend the owning task's declared scope or add a task —
+instead of capturing a brief. The full-pipeline cost of a captured one-line fix is the
+backlog problem this tiering exists to prevent.
+
 ### Artifact policy
 
 See `docs/design/history/go-v1-design.md` §6 (unchanged in v2): commit the durable SDD

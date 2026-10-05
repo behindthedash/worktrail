@@ -304,7 +304,15 @@ _REVIEWER_SYSTEM_PROMPT = (
     "bugs, missing tests, and scope drift, and do not rubber-stamp. Do not modify "
     "source. If the diff takes a different approach than the task literally "
     "describes, that is a FAILED-worthy finding on its own -- a plausible "
-    "justification for the deviation does not substitute for flagging it."
+    "justification for the deviation does not substitute for flagging it. "
+    "Validate every fold-in: each `fold-in:` commit in the diff and each entry in "
+    "the report-back's `fold_ins` must be inside the task's declared scope, "
+    "mechanical (restores documented or established intent; no new design, API, or "
+    "behavior contract), within the fold-in caps (at most 2 fold-ins and about 20 "
+    "changed lines), and leave the task's tests passing -- FAIL the review when a "
+    "declared fold-in does not meet those conditions. A declared, validated "
+    "fold-in is NOT scope drift; undeclared out-of-scope edits and unexplained "
+    "drift still FAIL, exactly as before."
 )
 
 # Lean worker flags: applied to every task worker spawn.
@@ -3352,6 +3360,7 @@ def live_run(
                 # "failed". Same fix as _apply_step_commit() (#496), applied here to
                 # live_run's own separate (pre-#498) entry-construction path.
                 report_fields["terminal_status"] = new
+            _inject_fold_in_fields(report_fields, task, rep)
             entries.append(
                 {
                     "task": rep["task"],
@@ -3609,12 +3618,41 @@ MISSING_CONTEXT_RECOVERY_EVENT = "missing_context_auto_recovery"
 
 
 def _would_land_terminal(task: dict, role: str, report: dict) -> bool:
-    """True when applying `report` would drive `task` to `failed`/`escalated`."""
+    """True when applying `report` would drive `task` to `failed`/`escalated`.
+
+    Mirrors `apply_report`'s fold-in gate (worker-fold-in-policy): a report
+    declaring a fold-in outside the task's scope is doomed to terminal `failed`
+    too, so it must not trigger the missing-context recovery (which resets the
+    task) on the way there."""
     try:
         new, _ = dispatch.transition(role, report, task.get("retry_count", 0))
     except ValueError, KeyError:
         return False
-    return new in ("failed", "escalated")
+    if new in ("failed", "escalated"):
+        return True
+    violations, _ = dispatch.fold_in_violations(task, report)
+    return bool(violations)
+
+
+def _inject_fold_in_fields(report_fields: dict, task: dict, rep: dict) -> None:
+    """worker-fold-in-policy journal half: attach declared fold-ins (and, for a
+    doomed report, the offending entries) to a journal entry's report dict.
+
+    Conditional on both: an entry for a report with no fold-ins gains no new
+    keys at all, so its journal shape stays byte-identical to the pre-change
+    one (the `terminal_status` conditional-injection pattern)."""
+    violations, fold_ins = dispatch.fold_in_violations(task, rep)
+    if fold_ins:
+        report_fields["fold_ins"] = [
+            {
+                "file": e.get("file"),
+                "commit": e.get("commit"),
+                "summary": e.get("summary"),
+            }
+            for e in fold_ins
+        ]
+    if violations:
+        report_fields["fold_in_violations"] = violations
 
 
 def _missing_context_recovery(
@@ -4525,6 +4563,7 @@ def _apply_step_commit(
                     "notes": rep.get("notes"),
                 }
             )
+    _inject_fold_in_fields(report_fields, task, rep)
     entry: dict = {
         "task": rep["task"],
         "role": rep["step"],
