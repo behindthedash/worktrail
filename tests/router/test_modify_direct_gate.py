@@ -57,14 +57,10 @@ class EligibleTests(unittest.TestCase):
     def test_happy_path_shape_and_facts(self):
         with TemporaryDirectory() as t:
             verdict = _verdict(Path(t))
-        self.assertEqual(
-            {"eligible", "reason", "task_count", "files"}, set(verdict)
-        )
+        self.assertEqual({"eligible", "reason", "task_count", "files"}, set(verdict))
         self.assertTrue(verdict["eligible"])
         self.assertEqual(1, verdict["task_count"])
-        self.assertEqual(
-            ["src/widget.py", "tests/test_widget.py"], verdict["files"]
-        )
+        self.assertEqual(["src/widget.py", "tests/test_widget.py"], verdict["files"])
         self.assertTrue(verdict["reason"].startswith("eligible"))
 
     def test_motivating_specimens_file_is_not_routing_surface(self):
@@ -132,9 +128,7 @@ class IneligibleTests(unittest.TestCase):
 
     def test_no_files_line_is_files_undeclared(self):
         with TemporaryDirectory() as t:
-            verdict = _verdict(
-                Path(t), tasks_md="## 1. Fix\n\n- [ ] 1.1 Do it.\n"
-            )
+            verdict = _verdict(Path(t), tasks_md="## 1. Fix\n\n- [ ] 1.1 Do it.\n")
         self.assertFalse(verdict["eligible"])
         self.assertTrue(verdict["reason"].startswith("files_undeclared"))
 
@@ -225,6 +219,7 @@ class MainEntryTests(unittest.TestCase):
             ],
             capture_output=True,
             text=True,
+            check=False,
             env={**os.environ, "PYTHONPATH": str(src)},
             timeout=60,
         )
