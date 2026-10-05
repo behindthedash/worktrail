@@ -127,7 +127,7 @@
 
 ## 3. Document the exclusion list
 
-- [ ] 3.1 [docs] Update the operator-facing docs for the new key and its reach.
+- [x] 3.1 [docs] Update the operator-facing docs for the new key and its reach.
       In `docs/config/routing.yaml.example`, extend the `routing.drain:` block's example
       (`:237`-`:242`) with `exclude_repos` and prose covering: entries are repo directory
       names as `discover_repo_names()` reports them; the list is machine-wide only; it
