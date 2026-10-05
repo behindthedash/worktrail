@@ -120,3 +120,13 @@ Triage each group: repair and resume it, or discard it if the work already lande
 worktrail-selfcheck-fleet-sweep: quarantine worktrail built-artifact-packaging-parity-gate
 
 Spec archived: openspec/changes/archive/2026-08-31-built-artifact-packaging-parity-gate. Journal run-built-artifact-packaging-parity-gate.json still holds tail-3.5 and tail-4.2 state=QUARANTINED (live json read, file mtime 2026-08-30). This brief is the next re-filing of the class already folded as '## Folded from 20260930-112541-worktrail-has-orchestrator-groups-stuck' in openspec/changes/quarantine-recovery-command/proposal.md:94 (commit 928a58d7 / #1421); recover.py still absent.
+
+## Folded from 20260930-112548-worktrail-has-orchestrator-groups-stuck
+
+worktrail has orchestrator groups stuck in QUARANTINED for spec `routing-target-selector` (worktrail-quarantine-selfcheck): tail-5.1 (merge_conflict, 34d); tail-6.5 (merge_conflict, 34d)
+
+Triage each group: repair and resume it, or discard it if the work already landed or is no longer wanted.
+
+worktrail-selfcheck-fleet-sweep: quarantine worktrail routing-target-selector
+
+Repo not archived: `gh repo view --json isArchived,name` -> {"isArchived":false,"name":"worktrail"}. Premise re-confirmed live: python3 json.load of ../run-routing-target-selector.json (spec_id= routing-target-selector per run-routing-target-selector.status.json) shows tail-5.1 and tail-6.5 both state='QUARANTINED' reason='merge_conflict', pr_url='', integrate_complete=None, resumed_quarantines=null; file mtime 2026-08-27, untouched since. Change not landed: ls src/worktrail/orchestrator/recover.py -> No such file; no 'recover' entry in pyproject.toml; openspec/changes/quarantine-recovery-command/tasks.md 1.1/1.2 still '- [ ]'. Precedent for this brief class: openspec/changes/quarantine-recovery-command/proposal.md carries '## Folded from' sections for the identical sibling re-filings 20260930-112541, 20260930-112546, 20261004-112540 (commits 928a58d7/#1421, c9e923d1/#1422, 0935b3a1/#1441); `grep -rn 112548 openspec/` and `git log --all --grep=112548` both empty, so this sibling is the one not yet folded. Spec archive (openspec/changes/archive/2026-08-28-routing-target-selector) does not clear the journal record - the same reasoning the 20261004-112540 fold note applied - and the change's tasks.md 1.1 is exactly the branch-repair + QUARANTINED-record-clearing path this brief's triage asks for.

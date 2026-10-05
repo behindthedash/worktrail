@@ -106,3 +106,10 @@ Triage evidence for this fold is in `proposal.md`'s `## Folded from 20261004-112
 
 - [ ] 7.1 worktrail has orchestrator groups stuck in QUARANTINED for spec `built-artifact-packaging-parity-gate` (worktrail-quarantine-selfcheck): tail-3.5 (merge_conflict, 35d); tail-4.2 (merge_conflict, 35d) Triage each group: repair and resume it, or discard it if the work already landed or is no longer wanted. worktrail-selfcheck-fleet-sweep: quarantine worktrail built-artifact-packaging-parity-gate
       files: openspec/changes/quarantine-recovery-command/proposal.md
+
+## 8. Folded from 20260930-112548-worktrail-has-orchestrator-groups-stuck
+
+Triage evidence for this fold is in `proposal.md`'s `## Folded from 20260930-112548-worktrail-has-orchestrator-groups-stuck` section.
+
+- [ ] 8.1 worktrail has orchestrator groups stuck in QUARANTINED for spec `routing-target-selector` (worktrail-quarantine-selfcheck): tail-5.1 (merge_conflict, 34d); tail-6.5 (merge_conflict, 34d) Triage each group: repair and resume it, or discard it if the work already landed or is no longer wanted. worktrail-selfcheck-fleet-sweep: quarantine worktrail routing-target-selector
+      files: ../run-routing-target-selector.json, pyproject.toml
