@@ -18,6 +18,57 @@ Run `worktrail-check-provider-commands` to validate every generated Claude,
 Codex, and OpenCode headless command against the installed CLI parsers without
 authenticating or launching model work.
 
+## PullHook handoff ingress
+
+Datalena publishes accepted-work events as `datalena.worktrail-handoff.v1`
+envelopes to a PullHook channel. A scheduled WorkTrail consumer pulls those
+events, validates the supported schema, and writes each event through the
+canonical handoff writer. WorkTrail stores an event marker to make redelivery
+idempotent; when queue git sync is enabled or required, it commits and pushes
+the new brief and marker before acknowledging the PullHook delivery. The
+consumer makes outbound requests only, so the WorkTrail host needs no inbound
+network path. Normal WorkTrail triage or drain handles the resulting brief.
+
+Install WorkTrail where `$WORK_QUEUE_DIR` is available and set
+`PULLHOOK_CONSUME_CREDENTIAL` in a protected environment file readable only by the
+service account (for example, mode `0600`). A systemd oneshot service can load
+that file without putting the token in its command line:
+
+```ini
+# /etc/systemd/system/worktrail-pullhook-ingress.service
+[Unit]
+Description=Pull Datalena handoffs from PullHook into WorkTrail
+
+[Service]
+Type=oneshot
+User=worktrail
+EnvironmentFile=/etc/worktrail/pullhook.env
+ExecStart=/usr/local/bin/worktrail-pullhook-ingress --base-url https://pullhook.io --channel datalena-worktrail --max-items 20
+```
+
+```ini
+# /etc/systemd/system/worktrail-pullhook-ingress.timer
+[Unit]
+Description=Check PullHook for Datalena handoffs every minute
+
+[Timer]
+OnBootSec=2m
+OnUnitActiveSec=1m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+Enable the timer with `systemctl enable --now worktrail-pullhook-ingress.timer`.
+Use `--once` to process at most one event, `--max-items` for a batch of up to
+100 events, and `--dry-run` to peek at and validate one event without creating
+a brief or acknowledging it. Results are emitted as JSON for scheduler logs.
+
+The data path is Datalena → PullHook → `worktrail-pullhook-ingress` → the local
+work-queue. PullHook remains the durable transport; WorkTrail owns materialized
+briefs and their deduplication records.
+
 ## Autonomous operation
 
 `worktrail-drain` runs the work queue unattended: each iteration spawns one fresh-context
