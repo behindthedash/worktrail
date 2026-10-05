@@ -53,8 +53,10 @@ class NoExecutionTarget(SelectionError):
     used by :func:`select_execution_target`, or the ``(target, harness,
     model, evidence)`` quadruples used by :func:`select_cell` -- the message
     is shaped from whichever arity was passed so ``select_cell``'s callers
-    get each cell's gate class and retry time without breaking the older,
-    shorter message existing callers already match on.
+    get each cell named by its capacity gate key ``target:model`` (the key
+    ``worktrail-agent-capacity status``/``clear`` accept) with the harness
+    alongside it, plus its gate class and retry time, without breaking the
+    older, shorter message existing callers already match on.
     """
 
     def __init__(self, attempted: Sequence[tuple]):
@@ -67,7 +69,7 @@ class NoExecutionTarget(SelectionError):
         if len(self.attempted[0]) == 4:
             parts = []
             for target, harness, model, evidence in self.attempted:
-                detail = f"{target} ({harness}:{model})"
+                detail = f"{target}:{model} [{harness}]"
                 gate_class = (
                     _value(evidence, "failure_class")
                     if isinstance(evidence, Mapping)
@@ -361,8 +363,10 @@ def select_cell(
       3. if `exclude_harness` is set, partition: other harnesses first, the
          excluded harness last (soft exclusion).
       4. the first cell whose `(target, model)` is not capacity-gated wins.
-      5. none available -> `NoExecutionTarget` listing every cell attempted
-         with its gate class and retry time.
+      5. none available -> `NoExecutionTarget` listing every cell attempted,
+         each named by its capacity gate key ``target:model`` -- the key
+         ``worktrail-agent-capacity status``/``clear`` accept -- with its
+         harness, gate class and retry time.
     """
     targets: Mapping[str, Any] = routing.get("targets") or {}
     row: Mapping[str, Any] = (routing.get("tiers") or {}).get(tier) or {}

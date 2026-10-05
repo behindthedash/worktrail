@@ -249,6 +249,43 @@ class TestExhaustion:
         assert "2026-08-28T00:00:00+00:00" in message
         assert len(excinfo.value.attempted) == 2
 
+    def test_exhausted_row_names_each_gate_key_verbatim_with_its_harness(self):
+        routing = _routing(
+            targets={
+                "claude-sub": _target("claude"),
+                "codex-sub": _target("codex"),
+                "opencode-free": _target("opencode", pool="free"),
+            },
+            tiers={
+                "t1-deep": {
+                    "claude-sub": _cell("opus[1m]"),
+                    "codex-sub": _cell("gpt-5"),
+                    "opencode-free": _cell("zen/free"),
+                }
+            },
+        )
+        with pytest.raises(NoExecutionTarget) as excinfo:
+            select_cell(routing, "t1-deep", prefer="opencode-free", capacity=_deny_all)
+        message = str(excinfo.value)
+        # Each attempted cell is named by its gate key verbatim -- the key an
+        # operator can paste into `worktrail-agent-capacity clear` -- with the
+        # harness alongside, in prefer order.
+        assert "opencode-free:zen/free [opencode]" in message
+        assert "claude-sub:opus[1m] [claude]" in message
+        assert "codex-sub:gpt-5 [codex]" in message
+        assert message.index("opencode-free:zen/free") < message.index(
+            "claude-sub:opus[1m]"
+        )
+        # The retired `target (harness:model)` half looked like a key the cache
+        # never held; it must not reappear.
+        assert "claude-sub (claude:opus[1m])" not in message
+        # The existing exhausted-row assertions still hold on this message.
+        assert "claude-sub" in message
+        assert "codex-sub" in message
+        assert "billing" in message
+        assert "2026-08-28T00:00:00+00:00" in message
+        assert len(excinfo.value.attempted) == 3
+
     def test_no_capacity_gate_means_first_cell_always_wins(self):
         routing = _routing(
             targets={
