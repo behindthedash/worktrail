@@ -730,11 +730,24 @@ def _format_unreconciled_tail_note(findings: list[dict]) -> str | None:
     got merged onto base, so the run must not report unqualified success.
     Returns None for empty findings so callers can `if note:`.
 
-    When findings carry `reconcile_state`/`reconcile_pr_url` (i.e. they went
-    through `integrate.reconcile_unreconciled_tail_evidence`), each entry is
-    annotated with that outcome so the console log doesn't read as still
-    purely manual -- the fuller per-state wording lives in
-    `journal_selfcheck.py`'s dashboard finding, not here.
+    Findings are partitioned by `reconcile_state` into three buckets, in this
+    order of precedence:
+
+    - `merged` -- their commits did land on base after all, so they are
+      deliberately not reported at all (the run `go-20261004-093132` shape:
+      the sole finding had been merged by auto-reconciliation and the warning
+      was a false alarm).
+    - `opened`/`already-open`/`superseded` -- awaiting merge: an
+      auto-reconciliation PR exists (or a descendant tail task carries the
+      commits), so this bucket gets its own quieter line with no `!!` prefix
+      and no reconcile instruction.
+    - anything else -- `quarantined`, or a raw finding carrying no
+      `reconcile_state` at all (the pre-reconciliation journal shape): manual
+      residue, which keeps the original loud wording.
+
+    The emitted lines are joined with "\\n". Returns None when both reported
+    buckets are empty, which is the all-`merged` case (and the empty-findings
+    case, via the guard above).
     """
     if not findings:
         return None
@@ -749,12 +762,32 @@ def _format_unreconciled_tail_note(findings: list[dict]) -> str | None:
             suffix += f" by {f.get('reconcile_superseded_by', '?')}"
         return f"{f['task']} (sha {f['head_sha']} @ {f['worktree']}{suffix})"
 
-    return (
-        f"!! {len(findings)} tail task(s) completed with unreconciled evidence "
-        f"(commits never merged onto base -- reconcile before worktree cleanup, "
-        f"see journal `unreconciled_tail_evidence`): "
-        + ", ".join(_entry(f) for f in findings)
-    )
+    manual: list[dict] = []
+    awaiting: list[dict] = []
+    for f in findings:
+        state = f.get("reconcile_state")
+        if state == "merged":
+            continue
+        if state in ("opened", "already-open", "superseded"):
+            awaiting.append(f)
+        else:
+            manual.append(f)
+
+    lines: list[str] = []
+    if manual:
+        lines.append(
+            f"!! {len(manual)} tail task(s) completed with unreconciled evidence "
+            f"(commits never merged onto base -- reconcile before worktree cleanup, "
+            f"see journal `unreconciled_tail_evidence`): "
+            + ", ".join(_entry(f) for f in manual)
+        )
+    if awaiting:
+        lines.append(
+            f"{len(awaiting)} tail task(s) auto-reconciliation PR(s) awaiting merge "
+            f"(see journal `unreconciled_tail_evidence`): "
+            + ", ".join(_entry(f) for f in awaiting)
+        )
+    return "\n".join(lines) if lines else None
 
 
 def _format_checkbox_divergence_note(findings: list[dict]) -> str | None:
@@ -6934,7 +6967,8 @@ def _pipeline_scheduler(
     integrate_module._record_unreconciled_tail_evidence(journal_path, unreconciled_tail)
     unreconciled_note = _format_unreconciled_tail_note(unreconciled_tail)
     if unreconciled_note:
-        print(f"{_ts()} {unreconciled_note}")
+        for line in unreconciled_note.splitlines():
+            print(f"{_ts()} {line}")
     # A task can carry its own DONE status while its owning group never reached
     # base (quarantined -- e.g. a dependency never merged); that is expected,
     # routine behavior, not a divergence, so exclude quarantined groups' tasks
