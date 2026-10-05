@@ -20,7 +20,7 @@ import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -3382,7 +3382,9 @@ def _fold_task_instruction(focus: str, evidence: str) -> str:
     return _SENTENCE_SPLIT_RE.split(collapsed, maxsplit=1)[0]
 
 
-def _fold_task_file_scope(worktree_dir: Path, *texts: str) -> list[str]:
+def _fold_task_file_scope(
+    worktree_dir: Path, *texts: str, exclude: Iterable[Path] = ()
+) -> list[str]:
     """Explicit `files:` scope for the task `_apply_fold_into_change()` appends.
 
     `worktrail-compile` seeds a task's scope from an indented `files:` line
@@ -3400,14 +3402,25 @@ def _fold_task_file_scope(worktree_dir: Path, *texts: str) -> list[str]:
     Takes every text the appended task is built from -- the brief focus the
     checklist item now states, and the verdict evidence -- because a path named
     only in the focus is still in the task's scope.
+
+    `exclude` names paths the caller writes itself; they are never returned.
+    The fold appends its own section to the target change's `proposal.md` and
+    its task group to `tasks.md` before that task can ever run, so its evidence
+    necessarily cites both as the record of where the fold landed -- while the
+    task itself edits neither. Declaring them put every fold into the change's
+    own `proposal.md` scope, and `parallelism.py`'s same-file chain rule then
+    serialized the folded tasks against each other until the third fold into
+    any one change failed compile outright (`3 > compile_max_same_file_chain`),
+    making fold depth a hard cap of two per change.
     """
+    excluded = {p.relative_to(worktree_dir).as_posix() for p in exclude}
     files: list[str] = []
     probes: list[str] = []
     for text in texts:
         probes.extend(brief_probes.extract_probes(text).get("paths", []))
     for probe in probes:
         rel = _PATH_LINE_SUFFIX_RE.sub("", probe)
-        if rel in files or not (worktree_dir / rel).is_file():
+        if rel in files or rel in excluded or not (worktree_dir / rel).is_file():
             continue
         files.append(rel)
     for rel in [f for f in files if f.startswith("src/")]:
@@ -3504,7 +3517,12 @@ def _apply_fold_into_change(
             task_block = (
                 f"- [ ] {group_number}.1 {_fold_task_instruction(focus, v.evidence)}\n"
             )
-            file_scope = _fold_task_file_scope(worktree_dir, focus, v.evidence)
+            file_scope = _fold_task_file_scope(
+                worktree_dir,
+                focus,
+                v.evidence,
+                exclude=(proposal_path, tasks_path),
+            )
             if file_scope:
                 task_block += f"      files: {', '.join(file_scope)}\n"
             # The triage evidence argues why the fold belongs; it stays out of

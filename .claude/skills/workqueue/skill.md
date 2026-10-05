@@ -134,18 +134,25 @@ move-a-brief mechanism never diverges between callers.
   carries a one-line pointer to `proposal.md`'s matching section, and `proposal.md`'s
   `## Folded from <brief-id>` section carries the brief's focus **and** the evidence verbatim.
 - **The fold-into-change task declares an explicit `files:` scope line derived from the brief's
-  focus and the verdict evidence.** `_fold_task_file_scope(worktree_dir, *texts)` takes every path
-  probe from `router.brief_probes.extract_probes()` (a `:120-140` line-number suffix stripped)
-  across every text the appended task is built from — the focus the checklist item now states, and
-  the evidence — that exists as a file in the worktree, then for each `src/` path appends the first
-  matching existing `tests/**/test_<stem>*.py` — the same glob compile's scope check uses. Passing
-  the focus as well as the evidence is what keeps a path named *only* in the focus inside the
-  task's scope, now that the task is stated from the focus. `worktrail-compile` seeds scope from an
-  indented `files:` line when present and otherwise infers it, and its scope check refuses a task
-  touching a `src/` file with no `tests/` path when that test file already exists; evidence cites
-  source files but never their tests, so the inferred scope failed on every fold into a change with
-  existing tests (brief 20260903-145001). An empty result emits no `files:` line, leaving compile's
-  inference as before.
+  focus and the verdict evidence.** `_fold_task_file_scope(worktree_dir, *texts, exclude=())` takes
+  every path probe from `router.brief_probes.extract_probes()` (a `:120-140` line-number suffix
+  stripped) across every text the appended task is built from — the focus the checklist item now
+  states, and the evidence — that exists as a file in the worktree, then for each `src/` path
+  appends the first matching existing `tests/**/test_<stem>*.py` — the same glob compile's scope
+  check uses. Passing the focus as well as the evidence is what keeps a path named *only* in the
+  focus inside the task's scope, now that the task is stated from the focus. `exclude` names paths
+  the caller writes itself, which are never returned: `_apply_fold_into_change()` passes
+  `exclude=(proposal_path, tasks_path)`, because the fold appends its own section to the target
+  change's `proposal.md` and its task group to `tasks.md` before that task can ever run, so its
+  evidence necessarily cites both as the record of where the fold landed — while the task itself
+  edits neither. Declaring them put every fold into the change's own `proposal.md` scope, and
+  `conductor/parallelism.py`'s same-file chain rule (default `compile_max_same_file_chain` = 2)
+  then failed compile on the third fold into any one change (`3 > 2`), making fold depth a hard
+  cap of two per change. `worktrail-compile` seeds scope from an indented `files:` line when
+  present and otherwise infers it, and its scope check refuses a task touching a `src/` file with
+  no `tests/` path when that test file already exists; evidence cites source files but never their
+  tests, so the inferred scope failed on every fold into a change with existing tests (brief
+  20260903-145001). An empty result emits no `files:` line, leaving compile's inference as before.
 - **Push goes to `git config remote.pushDefault` when set, else `origin`.** `_push_target()`
   returns the remote plus its GitHub `owner/repo` slug so `gh pr create -R <slug>` targets the
   fork's repo; with no `pushDefault` it pushes `origin` and lets `gh` infer the base repo as
@@ -228,12 +235,14 @@ move-a-brief mechanism never diverges between callers.
 - `workqueue/queue_triage.py` — intake-triage verdict apply actions (stale-close, duplicate-of,
   fold-into-change, propose-change, keep); the only caller that closes briefs with `triaged=True`.
   `_fold_task_instruction` derives the folded task's checklist body from the brief's focus, and
-  `_fold_task_file_scope` derives its `files:` scope from paths named in the focus or the evidence.
-  `_worktree_pr_close()` is the shared fold-into-change/propose-change pipeline and claims the
-  brief before any git/worktree/`land_pr` work (see the claim-first guard above). `cmd_evaluate()`
-  resolves each group's `repo:` via `_resolve_repo_dir()` before using it as the evaluator `cwd`,
-  skipping (not crashing on) a group whose repo doesn't resolve; `_evaluator_worktree()` then
-  wraps the evaluator spawn so a canonical checkout runs in a detached linked worktree instead
+  `_fold_task_file_scope` derives its `files:` scope from paths named in the focus or the evidence,
+  minus its `exclude=` paths (`_apply_fold_into_change()` excludes the change's own `proposal.md`
+  and `tasks.md`, which the fold writes itself). `_worktree_pr_close()` is the shared
+  fold-into-change/propose-change pipeline and claims the brief before any git/worktree/`land_pr`
+  work (see the claim-first guard above). `cmd_evaluate()` resolves each group's `repo:` via
+  `_resolve_repo_dir()` before using it as the evaluator `cwd`, skipping (not crashing on) a group
+  whose repo doesn't resolve; `_evaluator_worktree()` then wraps the evaluator spawn so a
+  canonical checkout runs in a detached linked worktree instead
 - `workqueue/create_handoff.py` (via `worktrail-handoff`) — brief creation entrypoint; delegates
   repo inference to `repo_inference.infer_repo()` with a prefix-match fallback.
   `_scan_durable_artifact_overlaps` is the capture-time advisory scan over spec slugs, OpenSpec
@@ -262,6 +271,10 @@ move-a-brief mechanism never diverges between callers.
   belongs, not what to do. The item states the work from the brief's focus
   (`_fold_task_instruction`), with one pointer to `proposal.md`'s `## Folded from <brief-id>`
   section for the evidence.
+- Never let the folded task declare the change's own `proposal.md`/`tasks.md` — the evidence cites
+  them as the fold's record of where it landed, but the task edits neither; pass them through
+  `_fold_task_file_scope`'s `exclude=` or the change's `proposal.md` chain fails compile on the
+  third fold into it (`compile_max_same_file_chain` = 2).
 - Never use a group's raw `repo:` frontmatter string directly as a subprocess `cwd` in
   `cmd_evaluate()` — always resolve it through `_resolve_repo_dir(repo, repos_root)` first and
   skip the group if it doesn't resolve, so one bad `repo:` value can't abort every other group's
@@ -274,4 +287,4 @@ move-a-brief mechanism never diverges between callers.
   `router/cluster_detect.py` so the two floors stay one calibrated constant.
 
 ---
-**Last Updated:** 2026-09-28
+**Last Updated:** 2026-10-05
