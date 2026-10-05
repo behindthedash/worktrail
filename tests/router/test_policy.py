@@ -28,6 +28,7 @@ from worktrail.router.policy import (
     automerge_labels,
     detect_external_automerge,
     load_policy,
+    machine_wide_exclude_repos,
     merge_method_for_branch,
     parse_policy_yaml,
     resolve_post_merge_smoke_cmd,
@@ -1973,7 +1974,7 @@ class Routing(unittest.TestCase):
         )
         self.assertEqual(first["purposes"], {"scaffolding": "t3"})
         self.assertEqual(first["default_tier"], "t3")
-        self.assertEqual(first["drain"], {"max_workers": 3})
+        self.assertEqual(first["drain"], {"max_workers": 3, "exclude_repos": []})
         self.assertNotIn("agents", first)
         self.assertNotIn("fallback", first)
 
@@ -2501,7 +2502,12 @@ class RoutingAgentsAndDrain(unittest.TestCase):
         )
         self.assertEqual(
             resolved,
-            {"agent": "codex", "fallback_agents": ["opencode"], "max_workers": 4},
+            {
+                "agent": "codex",
+                "fallback_agents": ["opencode"],
+                "max_workers": 4,
+                "exclude_repos": [],
+            },
         )
         self.assertEqual(meta["warnings"], [])
 
@@ -2514,7 +2520,13 @@ class RoutingAgentsAndDrain(unittest.TestCase):
         meta = {"warnings": []}
         resolved = _validate_routing_drain({"agent": "codex"}, meta)
         self.assertEqual(
-            resolved, {"agent": "codex", "fallback_agents": [], "max_workers": 2}
+            resolved,
+            {
+                "agent": "codex",
+                "fallback_agents": [],
+                "max_workers": 2,
+                "exclude_repos": [],
+            },
         )
 
     def test_validate_routing_drain_non_mapping_raises(self):
@@ -2549,7 +2561,12 @@ class RoutingAgentsAndDrain(unittest.TestCase):
         self.assertEqual(pol["routing"]["agents"], {})
         self.assertEqual(
             pol["routing"]["drain"],
-            {"agent": None, "fallback_agents": [], "max_workers": 3},
+            {
+                "agent": None,
+                "fallback_agents": [],
+                "max_workers": 3,
+                "exclude_repos": [],
+            },
         )
         self.assertEqual(pol["_meta"]["warnings"], [])
 
@@ -2593,7 +2610,7 @@ class RoutingAgentsAndDrain(unittest.TestCase):
             pol = load_policy(repo)
         result = resolve_routing(pol)
         self.assertNotIn("agents", result)
-        self.assertEqual(result["drain"], {"max_workers": 5})
+        self.assertEqual(result["drain"], {"max_workers": 5, "exclude_repos": []})
 
     def test_resolve_routing_drain_empty_when_absent(self):
         repo = _repo_with(
@@ -2612,6 +2629,157 @@ class RoutingAgentsAndDrain(unittest.TestCase):
         result = resolve_routing(pol)
         self.assertNotIn("agents", result)
         self.assertEqual(result["drain"], {})
+
+
+class DrainExcludeRepos(unittest.TestCase):
+    """`routing.drain.exclude_repos` (task 1.1): the machine-wide list of repos
+    unattended draining must skip. Absent resolves to the empty list; a
+    malformed value raises `OperatorConfigError` like `max_workers` (stated
+    operator intent, never silently dropped); the list is machine-wide only, so
+    a repo-local `routing:` block declaring it warns and is not honored."""
+
+    def _routing_file(self, text: str) -> Path:
+        tmp = tempfile.mkdtemp()
+        path = Path(tmp) / "routing.yaml"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def _mw_env(self, path: Path):
+        return mock.patch.dict(os.environ, {"WORKTRAIL_ROUTING_FILE": str(path)})
+
+    # -- _validate_routing_drain() ---------------------------------------
+
+    def test_absent_key_resolves_to_empty(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_drain({"max_workers": 3}, meta)
+        self.assertEqual(resolved["exclude_repos"], [])
+        self.assertEqual(meta["warnings"], [])
+
+    def test_declared_list_carried_in_order_and_stripped(self):
+        meta = {"warnings": []}
+        resolved = _validate_routing_drain(
+            {"exclude_repos": ["myapp", " other "]}, meta
+        )
+        self.assertEqual(resolved["exclude_repos"], ["myapp", "other"])
+
+    def test_bare_string_raises_naming_the_key(self):
+        with self.assertRaises(OperatorConfigError) as ctx:
+            _validate_routing_drain({"exclude_repos": "myapp"}, {"warnings": []})
+        self.assertIn("routing.drain.exclude_repos", str(ctx.exception))
+
+    def test_non_string_entry_raises_naming_the_key(self):
+        with self.assertRaises(OperatorConfigError) as ctx:
+            _validate_routing_drain({"exclude_repos": ["myapp", 5]}, {"warnings": []})
+        self.assertIn("routing.drain.exclude_repos", str(ctx.exception))
+
+    def test_blank_entry_raises_naming_the_key(self):
+        for blank in ("", "   "):
+            with self.assertRaises(OperatorConfigError) as ctx:
+                _validate_routing_drain(
+                    {"exclude_repos": ["myapp", blank]}, {"warnings": []}
+                )
+            self.assertIn("routing.drain.exclude_repos", str(ctx.exception))
+
+    # -- load_policy()/resolve_routing() through the machine-wide file -----
+
+    def test_absent_key_in_machine_wide_drain_resolves_to_empty(self):
+        routing = self._routing_file("drain:\n  max_workers: 3\n")
+        repo = _repo_with("agent_cli: claude\n")
+        with self._mw_env(routing):
+            pol = load_policy(repo)
+            self.assertEqual(pol["routing"]["drain"]["exclude_repos"], [])
+            self.assertEqual(resolve_routing(pol)["drain"]["exclude_repos"], [])
+            self.assertEqual(machine_wide_exclude_repos(), [])
+
+    def test_absent_drain_block_resolves_to_empty(self):
+        routing = self._routing_file(
+            "targets:\n  claude-sub:\n    harness: claude\n    pool: subscription\n"
+        )
+        repo = _repo_with("agent_cli: claude\n")
+        with self._mw_env(routing):
+            pol = load_policy(repo)
+            self.assertEqual(pol["routing"]["drain"], {})
+            self.assertEqual(resolve_routing(pol)["drain"], {})
+            self.assertEqual(machine_wide_exclude_repos(), [])
+
+    def test_declared_machine_wide_list_is_carried_in_order(self):
+        routing = self._routing_file(
+            "drain:\n  exclude_repos:\n    - myapp\n    - other\n"
+        )
+        repo = _repo_with("agent_cli: claude\n")
+        with self._mw_env(routing):
+            pol = load_policy(repo)
+        self.assertEqual(pol["routing"]["drain"]["exclude_repos"], ["myapp", "other"])
+        self.assertEqual(
+            resolve_routing(pol)["drain"]["exclude_repos"], ["myapp", "other"]
+        )
+        with self._mw_env(routing):
+            self.assertEqual(machine_wide_exclude_repos(), ["myapp", "other"])
+
+    def test_malformed_machine_wide_value_raises_through_load_policy(self):
+        routing = self._routing_file("drain:\n  exclude_repos: myapp\n")
+        repo = _repo_with("agent_cli: claude\n")
+        with self._mw_env(routing), self.assertRaises(OperatorConfigError) as ctx:
+            load_policy(repo)
+        self.assertIn("routing.drain.exclude_repos", str(ctx.exception))
+
+    # -- repo-local block is machine-wide only -----------------------------
+
+    def test_repo_local_declaration_warns_and_excludes_nothing(self):
+        repo = _repo_with("routing:\n  drain:\n    exclude_repos:\n      - myapp\n")
+        with self._mw_env(Path("/nonexistent/worktrail-exclude-repos/routing.yaml")):
+            pol = load_policy(repo)
+            self.assertTrue(
+                any(
+                    "routing.drain.exclude_repos" in w and "machine-wide" in w
+                    for w in pol["_meta"]["warnings"]
+                ),
+                pol["_meta"]["warnings"],
+            )
+            # The repo-local copy is inert: nothing is excluded machine-wide.
+            self.assertEqual(machine_wide_exclude_repos(), [])
+
+    # -- machine_wide_exclude_repos() --------------------------------------
+
+    def test_reads_the_default_home_routing_file(self):
+        home = Path(tempfile.mkdtemp())
+        (home / "routing.yaml").write_text(
+            "drain:\n  exclude_repos:\n    - myapp\n", encoding="utf-8"
+        )
+        with mock.patch.dict(os.environ, {"WORKTRAIL_HOME": str(home)}):
+            # Both routing-file env vars (current and legacy) must be absent for
+            # `default_routing_file()` -- i.e. $WORKTRAIL_HOME/routing.yaml -- to
+            # be the file under test; the module's autouse fixture seeds the
+            # legacy one.
+            os.environ.pop("WORKTRAIL_ROUTING_FILE", None)
+            os.environ.pop("GO_ROUTING_FILE", None)
+            self.assertEqual(machine_wide_exclude_repos(), ["myapp"])
+
+    def test_returns_empty_when_no_routing_file_exists(self):
+        absent = Path(tempfile.mkdtemp()) / "absent.yaml"
+        with self._mw_env(absent):
+            self.assertEqual(machine_wide_exclude_repos(), [])
+
+    def test_returns_empty_for_non_mapping_file(self):
+        routing = self._routing_file("- just\n- a\n- list\n")
+        with self._mw_env(routing):
+            self.assertEqual(machine_wide_exclude_repos(), [])
+
+    def test_raises_for_malformed_drain_section(self):
+        routing = self._routing_file("drain:\n  exclude_repos: 5\n")
+        with self._mw_env(routing), self.assertRaises(OperatorConfigError):
+            machine_wide_exclude_repos()
+
+    def test_passes_warnings_into_the_provided_meta(self):
+        routing = self._routing_file(
+            "targets:\n  claude-sub:\n    harness: claude\n    pool: subscription\n"
+            "    auth:\n      profile: missing-profile\n"
+            "drain:\n  exclude_repos:\n    - myapp\n"
+        )
+        meta = {"warnings": []}
+        with self._mw_env(routing):
+            self.assertEqual(machine_wide_exclude_repos(meta), ["myapp"])
+        self.assertTrue(any("missing-profile" in w for w in meta["warnings"]))
 
 
 class LegacyRoutingKeys(unittest.TestCase):
