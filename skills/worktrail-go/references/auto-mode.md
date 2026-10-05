@@ -107,6 +107,11 @@ these reasons:
   Only `triage: blocker` briefs are eligible during the freeze. Handle non-blocker briefs after
   the freeze ends or escalate.
 
+- `repo-excluded` — brief's repo is listed in the machine-wide routing file's
+  `routing.drain.exclude_repos` (the operator keeps that repo out of unattended draining).
+  Auto mode never picks it, and the drain's ready count and pre-passes skip it too. An explicit
+  `--auto-repo` for that repo still picks it — the exclusion only governs automatic selection.
+
 ## Phase 5.5 — collision / already-implemented checks have no ask
 
 `AskUserQuestion` is not a callable tool inside the headless one-shot processes
