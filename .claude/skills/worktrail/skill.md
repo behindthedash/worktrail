@@ -127,6 +127,19 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
   exit-1 case back to "not in base".
   `tests/orchestrator/test_stacked_worktree_squash_merged_dependency_branch.py` pins both the
   clean-squash and reviewed-squash-conflict shapes.
+- **`live._require_spec_at_fanout_refs` stays silent for an OpenSpec change spec.** Its
+  `<remote>/<base>` warning exists because a spec committed locally but not yet pushed is
+  legitimate and common, and it names the consequence (a task whose dependency branches are all
+  already in base forks from `<remote>/<base>` itself and would start without its task file) —
+  but that is wrong for `--spec openspec/changes/<id>` (the Route F/G modify pipeline): the
+  change's commit deliberately lives on its own `chg/<change-id>` branch and must NOT be on
+  `<remote>/<base>` before the orchestrator runs, so "push the spec commit to `<remote>/<base>`"
+  is the one action a reader must not take. The warning fired on every such run (brief
+  20261003-221246, run go-20261003-211918) about a worktree that was in fact based on that change
+  commit and carried the change directory. `_require_task_file` still catches a task worktree that
+  really does start without its task file at dispatch time, so skipping the warning loses no
+  guard. The `HEAD` half of the check is unchanged and still fatal — an OpenSpec change must be
+  present at the `--repo` checkout's tip, only the base-ref warning is exempt.
 - **A group entering QUARANTINED prints `!! QUARANTINED [<name>] <reason>` the moment it
   happens** (`_pipeline_scheduler`'s group-state recorder). Three groups sat quarantined for over
   an hour while the log showed only ticks and CI polls (2026-09-02); do not rely on the journal
@@ -327,6 +340,9 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
   property threaded into the worker ctx; `_branch_content_in_base`/`dependency_start_ref`:
   ancestry + merge-tree (clean OR conflicted = in base) decision on whether a retained
   dependency branch is a stacking point or already squash-merged;
+  `_require_spec_at_fanout_refs`: the launch-time spec-presence check (fatal at `HEAD`; a warning
+  only when `<remote>/<base>` lacks it) whose base-ref warning is deliberately skipped for an
+  `openspec/changes/<id>` spec, whose commit belongs on its own `chg/` branch rather than base;
   `_target_for_harness`/`_machine_wide_target_for_harness`: the harness→routing-target
   translation a spawn call site needs before it can pin a named harness+model through
   `explicit_cell_override` + `tier="explicit"` (`run_research_session`'s `--fork-research`
@@ -350,4 +366,4 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
   the free-rerun probe `wait_and_fix_ci` tries once before spawning a ci-fix worker
 
 ---
-**Last Updated:** 2026-10-03
+**Last Updated:** 2026-10-05
