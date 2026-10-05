@@ -231,41 +231,12 @@
       "priority": "high",
       "scope": "all",
       "alwaysActivate": false,
-      "filePatterns": [
-        "tests/**/*.py",
-        "conftest.py",
-        "scripts/ci/test_*.py",
-        "scripts/regenerate_classifier_corpus.py"
-      ],
+      "filePatterns": [],
       "promptTriggers": {
         "keywords": [
-          "test",
-          "pytest",
-          "unittest",
-          "fixture",
-          "hermetic",
-          "enforcement coverage",
-          "selfcheck",
-          "classifier_corpus",
-          "label_source",
-          "redaction",
-          "risk_probes",
-          "risk_probe_answers",
-          "TYPESAFE_API_KEY",
-          "relatedness_judgment",
-          "tests",
-          "testing",
-          "conventions",
-          "worktrail",
-          "isolation",
-          "conftest",
-          "test_",
-          "regenerate_classifier_corpus"
+          "tests"
         ],
-        "intentPatterns": [
-          "(create|update|fix|add|modify|change|debug|refactor|implement|build).*enforcement coverage",
-          "enforcement coverage.*(create|update|fix|add|modify|change|debug|refactor|implement|build)"
-        ]
+        "intentPatterns": []
       }
     },
     "workqueue": {
