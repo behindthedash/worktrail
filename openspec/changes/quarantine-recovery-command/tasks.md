@@ -59,7 +59,7 @@
 
 ## 2. Operator reference
 
-- [ ] 2.1 In `skills/worktrail-go/references/routes.md`, make the composed step the first
+- [x] 2.1 In `skills/worktrail-go/references/routes.md`, make the composed step the first
       instruction of Route E's quarantined-group paragraph: run `worktrail-live recover --repo
       <repo> --spec <spec> --group <name>`, resolve and re-run it when a conflict is reported,
       then run the existing `worktrail-live full-real --resume`; keep `worktrail-resume-group`
