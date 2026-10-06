@@ -39,5 +39,5 @@
 
 Triage evidence for this fold is in `proposal.md`'s `## Folded from 20261005-090358-blocked-branch-missed-pending-check` section.
 
-- [ ] 3.1 worktrail land-pr: run record finished as blocked_product_decision while a required check was merely still running — the BLOCKED branch's not-reported-yet discrimination did not fire despite all required contexts being present and non-terminal
+- [x] 3.1 worktrail land-pr: run record finished as blocked_product_decision while a required check was merely still running — the BLOCKED branch's not-reported-yet discrimination did not fire despite all required contexts being present and non-terminal
       files: src/worktrail/router/land_pr.py, tests/router/test_land_pr.py
