@@ -105,9 +105,21 @@
 - [x] 8.4 [e2e] Simulate a push failure and verify the relay item is not acknowledged and a
       retry completes without duplicate brief creation.
 
-## 9. Folded from 20260920-182427-pullhook-handoff-ingress-unimplemented
-
-Triage evidence for this fold is in `proposal.md`'s `## Folded from 20260920-182427-pullhook-handoff-ingress-unimplemented` section.
+## 9. Previously completed Datalena consumer
 
 - [x] 9.1 Implemented by tasks 1.1–8.4 above: the worktrail-pullhook-ingress command pulls datalena.worktrail-handoff.v1 events from a PullHook channel and materializes them as canonical handoff briefs.
       files: openspec/changes/pullhook-handoff-ingress/tasks.md
+
+## 10. GGB feedback envelope adapter
+
+- [ ] 10.1 Add a strict `worktrail.feedback.v1` adapter and ingress dispatch for the GGB event contract: validate schema, UUID event/feedback identity agreement, exact source id and kind, ISO 8601 occurrence time, required title/body, optional absolute HTTP(S) feedback URL, and the supported metadata keys `pageUrl`, `elementSelector`, optional `elementText`, optional `sourceFileHint`, optional `componentHint`, `changeKindGuess`, and `viewport`. Bind that source pair to trusted repo slug `gracefully-giving-back`; leave remote/base-branch resolution to normal WorkTrail policy. Map title/body to canonical focus/context, preserve source URL, occurrence time, and captured metadata as provenance, and leave implementation intent unset. Reject unsupported fields, screenshot data URLs, payloads over 262,144 bytes, and payload-supplied routing before queue mutation. Keep the existing schema/event marker and crash-recovery behavior compatible with GGB redelivery. Add unit coverage for valid/malformed/unknown/oversized envelopes, mapping/provenance, trusted routing, and path hints.
+      (Requirements: Only supported versioned envelopes are materialized; External provenance is retained; Feedback source routing is trusted and bounded; Redelivery cannot create duplicate handoffs.)
+      files: src/worktrail/workqueue/pullhook_feedback_envelope.py, src/worktrail/workqueue/pullhook_ingress.py, tests/workqueue/test_pullhook_feedback_envelope.py
+      depends: 2.1, 5.1
+
+## 11. GGB end-to-end and operator runbook
+
+- [ ] 11.1 Document the complete GGB feedback -> PullHook -> WorkTrail consumer -> git-backed work queue flow, trusted source-to-repository mapping, `PULLHOOK_BASE_URL`, `PULLHOOK_CONSUME_CREDENTIAL`, channel, scheduler invocation, rejection/retry behavior, and the distinction between PullHook acceptance and WorkTrail materialization. Verify with a test channel: one GGB event creates one canonical brief and provenance marker, duplicate delivery returns the same brief, required push failure leaves the event unacknowledged and retry does not duplicate it, and an unknown source produces no queue mutation.
+      (Requirements: WorkTrail consumes external handoff events by pulling; Relay acknowledgement follows durable queue persistence; External provenance is retained; Invalid events remain available for diagnosis.)
+      files: README.md, tests/workqueue/test_pullhook_feedback_ingress.py
+      depends: 10.1

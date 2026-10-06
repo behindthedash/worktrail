@@ -1,15 +1,16 @@
 ## Why
 
-WorkTrail's handoff queue is intentionally local: `worktrail-handoff` writes canonical briefs under `$WORK_QUEUE_DIR`, and the queue may optionally be a private git repository. That works for local agents but leaves CI systems such as Datalena with no safe remote intake path.
+WorkTrail's handoff queue is intentionally local: `worktrail-handoff` writes canonical briefs under `$WORK_QUEUE_DIR`, and the queue may optionally be a private git repository. PullHook provides a safe remote intake path, but the existing WorkTrail consumer only materializes Datalena's handoff schema. Gracefully Giving Back (GGB) now publishes website feedback through PullHook using a separate, versioned feedback schema, so those accepted submissions still need a WorkTrail adapter.
 
 PullHook already supplies the missing transport: authenticated channels, durable SQLite storage, idempotent publish, claim/ack lifecycle, and pull-based consumption. WorkTrail needs a consumer bridge that retrieves accepted-work envelopes and materializes them through the existing `create_handoff`/CLI contract.
 
 ## What Changes
 
 - Add a `worktrail-pullhook-ingress` command that consumes a configured PullHook channel.
-- Validate supported event schemas before any queue mutation; initially support `datalena.worktrail-handoff.v1`.
+- Validate supported event schemas before any queue mutation; support both `datalena.worktrail-handoff.v1` and GGB's `worktrail.feedback.v1`.
 - Claim an item, map the envelope into canonical `create_handoff()` arguments, and stamp `captured-by` from the producer.
-- Preserve external event/dedupe/source provenance in the handoff body/artifacts so a queue item can be traced back to its merged source PR.
+- Preserve external event/dedupe/source provenance in the handoff body/artifacts so a queue item can be traced back to its merged source PR or submitted website feedback.
+- Bind GGB's supported source identity to the trusted WorkTrail repository slug `gracefully-giving-back`; never treat payload metadata such as `sourceFileHint` as a filesystem path or repository selector.
 - Deduplicate before creating a brief using a durable external event marker/index so redelivery cannot create another handoff.
 - When `$WORK_QUEUE_DIR` is a git repository, commit and push the newly created brief before acknowledging the PullHook item. Ack only after durable local creation and required git sync succeed.
 - On validation, WorkTrail creation, or required git-sync failure, do not ack; allow lease expiry/retry/dead-letter behavior to remain PullHook's responsibility.
@@ -25,13 +26,11 @@ None. Existing handoff creation, queue claim/done/release, and PullHook remain a
 
 ## Impact
 
-- New WorkTrail CLI/module and tests.
+- A second strict envelope adapter, trusted GGB repository binding, operator documentation, and conformance/e2e verification for GGB feedback ingestion.
 - Local configuration/secrets for PullHook consume credential/channel.
 - Optional git-backed `$WORK_QUEUE_DIR` becomes the durable off-machine record for externally ingested briefs.
 - No requirement for producer repositories to install WorkTrail or hold work-queue GitHub credentials.
 
-## Folded from 20260920-182427-pullhook-handoff-ingress-unimplemented
+## Origin
 
-Implement the merged OpenSpec change worktrail/openspec/changes/pullhook-handoff-ingress (spec PR #1273): the worktrail-pullhook-ingress command that pulls datalena.worktrail-handoff.v1 events from a PullHook channel and materializes them as canonical handoff briefs. All tasks 1.1-8.4 are unchecked; no code exists. Datalena's publisher (datalena PR #2962, merged 2026-09-21) already posts to channel datalena-worktrail on pullhook.io, so events will accumulate unread until this ships.
-
-`gh repo view` confirms behindthedash/worktrail is not archived. `openspec/changes/pullhook-handoff-ingress/tasks.md` exists with 11 unchecked tasks and 0 checked (confirmed via `grep -c` for `- [ ]` / `- [x]`), and `ls src/worktrail/workqueue/ | grep -i pullhook` returns nothing, so task 1.1's `src/worktrail/workqueue/pullhook_client.py` is absent — the brief's premise holds and its work is exactly this change's scope. The brief's path string `worktrail/openspec/changes/pullhook-handoff-ingress` is just repo-prefixed; the change resolves at `openspec/changes/pullhook-handoff-ingress`.
+This change originally specified and delivered Datalena's PullHook consumer (WorkTrail PR #1273). Its completed tasks remain recorded below. This completion pass adds the separately versioned GGB feedback producer contract and the consumer behavior, configuration, failure handling, and verification needed to turn GGB submissions into canonical WorkTrail briefs.
