@@ -44,9 +44,64 @@ Ingress rejects unknown schemas. The Datalena v1 adapter maps:
 
 Future producers add adapters rather than weakening validation.
 
+### Decision 6: Feedback routing uses trusted source configuration
+
+The `worktrail.feedback.v1` adapter accepts only the GGB source identity
+`{id: "gracefully-giving-back", kind: "website-feedback"}` and binds it to the
+trusted repository slug `gracefully-giving-back`. WorkTrail's normal repository
+policy resolves remote and base branch; the event body cannot select a local
+checkout, queue directory, remote, or branch. In particular,
+`feedback.metadata.sourceFileHint` is untrusted descriptive evidence and MUST
+NOT be used as a path to read or write.
+
+### Decision 7: Feedback becomes a normal triageable handoff
+
+The stable feedback request UUID is the external `event_id` and the consumer's
+idempotency identity. The adapter maps the feedback title and body to the
+canonical handoff focus and context, respectively, and preserves the source
+URL and captured metadata as provenance. The event does not request autonomous
+implementation; implementation intent remains unspecified so normal WorkTrail
+triage applies. Optional values remain optional and are not invented.
+
+The adapter validates all fields it consumes, rejects unsupported envelope or
+metadata keys, and rejects an encoded JSON envelope larger than PullHook's
+262,144-byte default request limit before creating a brief. Supported metadata
+keys are `pageUrl`, `elementSelector`, optional `elementText`, optional
+`sourceFileHint`, optional `componentHint`, `changeKindGuess`, and `viewport`.
+It must not persist screenshot data URLs or allow metadata to override trusted
+routing.
+
+The accepted producer shape is:
+
+```json
+{
+  "schema": "worktrail.feedback.v1",
+  "event_id": "<feedback UUID>",
+  "source": {"id": "gracefully-giving-back", "kind": "website-feedback"},
+  "occurred_at": "<ISO 8601 timestamp>",
+  "feedback": {
+    "id": "<same feedback UUID>",
+    "title": "Website feedback: <change kind>",
+    "body": "<submitted request text>",
+    "url": "<optional absolute HTTP(S) page URL>",
+    "metadata": {
+      "pageUrl": "<captured page URL, may be a relative path>",
+      "elementSelector": "<captured selector>",
+      "elementText": "<optional captured text>",
+      "sourceFileHint": "<optional descriptive hint>",
+      "componentHint": "<optional descriptive hint>",
+      "changeKindGuess": "<producer classification>",
+      "viewport": {"width": 1280, "height": 720}
+    }
+  }
+}
+```
+
 ## Failure Semantics
 
-- Unknown/malformed event: no queue mutation; leave unacked or dead-letter according to explicit operator mode.
+- Unknown/malformed event: no queue mutation; leave unacknowledged and return a safe rejection. PullHook lease expiry/retry/dead-letter policy remains responsible for eventual handling.
 - Duplicate event already materialized: treat as success and ack without creating a second brief.
 - WorkTrail create failure: no ack.
 - Git commit/push failure when git durability is required: no ack. The retry must discover the already-created event marker and complete persistence/ack without duplicating the brief.
+- Unknown source identity, source kind, malformed feedback, invalid URL, oversized content, or unsupported schema: no brief and no ack; report a safe, actionable rejection while preserving the PullHook item for operator diagnosis/retry policy.
+- A source identity other than the exact GGB pair has no trusted repository mapping: no brief and no ack. Routing errors are not repaired by accepting a payload-supplied target.
