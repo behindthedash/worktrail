@@ -27,3 +27,10 @@
       scripts/ci/ruff_pinned.py check .`, and `python3
       scripts/ci/ruff_pinned.py format --check .`; confirm the recovered path
       still requires ordinary review and every refusal leaves the task failed.
+
+## 3. Folded from 20261005-103810-timeout-loses-committed-worktree
+
+Triage evidence for this fold is in `proposal.md`'s `## Folded from 20261005-103810-timeout-loses-committed-worktree` section.
+
+- [ ] 3.1 Timeout path still loses an already-COMMITTED task worktree: salvage_report() only runs after an unparseable report-back, so a worker that commits then times out is recorded failed with head_sha:'' and the group quarantines
+      files: src/worktrail/orchestrator/live.py, tests/orchestrator/test_live_extras.py
