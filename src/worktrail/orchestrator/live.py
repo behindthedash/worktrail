@@ -1665,49 +1665,24 @@ def _gate_blockers(entry: dict) -> list:
     return []
 
 
-def clear_tasks(repo: Path, spec_rel: str, task_ids: list) -> int:
-    """Surgically remove failed/escalated journal entries for *task_ids* so the next
-    `full-real` resume re-dispatches just those tasks as pending.
+def clear_task_entries(
+    journal: dict, task_ids: list[str]
+) -> tuple[list[dict], list[dict]]:
+    """Apply clear-task guardrails and dependency-gate cascade in memory.
 
-    This is the targeted alternative to `--fresh` for a hand-fixed task: replay bakes
-    any non-"retryable" terminal_status back into task status on every resume, and
-    `--fresh` discards the ENTIRE journal -- forcing every other task, including
-    already-merged work, to re-run. Semantics:
-
-    - Only entries whose `report.terminal_status` is non-retryable ("failed" /
-      "escalated") are removed. A task's earlier successful role entries
-      (implement/review) are kept, so a task that broke mid-flight resumes from
-      where it broke rather than from scratch.
-    - Cascades to `dependency-gate` entries blocked by a cleared task (see
-      `_gate_blockers`), transitively, so downstream tasks that only failed by
-      inheritance also become pending again.
-    - REFUSES (exit 1, journal untouched) when a targeted task has a completion
-      entry -- a successful cleanup is the per-task record that carried it to
-      "done" (`dispatch.apply_report`), and a merged group PR implies exactly that
-      record for each of its tasks -- or when a targeted task has nothing to clear
-      (guards against id typos silently no-opping).
-
-    Returns 0 on success, 1 on refusal or when there is no journal.
+    Callers own persistence so composed journal operations can make one atomic
+    write after all their other work succeeds.
     """
-    journal_path = journal_path_for(repo, spec_rel)
-    if not journal_path.exists():
-        print(
-            f"{_ts()} CLEAR-TASK: no run journal at {journal_path} -- nothing to clear"
-        )
-        return 1
-    journal = json.loads(journal_path.read_text())
     entries = journal.get("entries", [])
     targets = set(task_ids)
 
-    def _terminal_failure(entry: dict) -> bool:
+    def terminal_failure(entry: dict) -> bool:
         return (
             not entry.get("event")
             and (entry.get("report") or {}).get("terminal_status")
             in _NON_RETRYABLE_TERMINAL
         )
 
-    # Guardrail: never discard completed work. Refuse the whole operation (zero
-    # file mutation) if any targeted task has a completion record.
     for entry in entries:
         if entry.get("event") or entry.get("task") not in targets:
             continue
@@ -1718,52 +1693,87 @@ def clear_tasks(repo: Path, spec_rel: str, task_ids: list) -> int:
             and report.get("terminal_status") not in _NON_RETRYABLE_TERMINAL
         )
         if completed:
-            print(
-                f"{_ts()} CLEAR-TASK: refusing -- {entry.get('task')} has a "
-                f"success/completion entry (role {entry.get('role')!r}); clearing it "
-                f"would discard completed work. Journal left unchanged."
+            raise ValueError(
+                f"{entry.get('task')} has a success/completion entry "
+                f"(role {entry.get('role')!r}); clearing it would discard completed work"
             )
-            return 1
+
     uncleared = sorted(
-        t
-        for t in targets
-        if not any(_terminal_failure(e) and e.get("task") == t for e in entries)
+        task_id
+        for task_id in targets
+        if not any(
+            terminal_failure(entry) and entry.get("task") == task_id
+            for entry in entries
+        )
     )
     if uncleared:
-        print(
-            f"{_ts()} CLEAR-TASK: refusing -- no failed/escalated journal entries for "
-            f"{', '.join(uncleared)}; nothing to clear. Journal left unchanged."
+        raise ValueError(
+            "no failed/escalated journal entries for "
+            f"{', '.join(uncleared)}; nothing to clear"
         )
-        return 1
 
     cleared = set(targets)
-    remove = {
-        id(e) for e in entries if _terminal_failure(e) and e.get("task") in targets
+    removed = {
+        id(entry)
+        for entry in entries
+        if terminal_failure(entry) and entry.get("task") in targets
     }
-    # Cascade to fixpoint: a gate blocked by a cleared task is removed, and ITS
-    # task then counts as cleared for gates further downstream.
     changed = True
     while changed:
         changed = False
         for entry in entries:
-            if id(entry) in remove or not _terminal_failure(entry):
+            if id(entry) in removed or not terminal_failure(entry):
                 continue
             if entry.get("role") != "dependency-gate":
                 continue
             if cleared.intersection(_gate_blockers(entry)):
-                remove.add(id(entry))
+                removed.add(id(entry))
                 cleared.add(entry.get("task"))
                 changed = True
 
-    direct = [e for e in entries if id(e) in remove and e.get("task") in targets]
-    cascaded = [e for e in entries if id(e) in remove and e.get("task") not in targets]
-    journal["entries"] = [e for e in entries if id(e) not in remove]
+    direct = [
+        entry
+        for entry in entries
+        if id(entry) in removed and entry.get("task") in targets
+    ]
+    cascaded = [
+        entry
+        for entry in entries
+        if id(entry) in removed and entry.get("task") not in targets
+    ]
+    journal["entries"] = [entry for entry in entries if id(entry) not in removed]
+    return direct, cascaded
+
+
+def clear_tasks(repo: Path, spec_rel: str, task_ids: list) -> int:
+    """Surgically remove failed/escalated journal entries for *task_ids* so the next
+    `full-real` resume re-dispatches just those tasks as pending.
+
+    This is the targeted alternative to `--fresh` for a hand-fixed task: replay bakes
+    any non-"retryable" terminal_status back into task status on every resume, and
+    `--fresh` discards the ENTIRE journal -- forcing every other task, including
+    already-merged work, to re-run. Successful role entries remain; downstream
+    dependency-gate failures cascade transitively. Completed work and typo/no-op
+    selections are refused without writing. Returns 0 on success, 1 on refusal.
+    """
+    journal_path = journal_path_for(repo, spec_rel)
+    if not journal_path.exists():
+        print(
+            f"{_ts()} CLEAR-TASK: no run journal at {journal_path} -- nothing to clear"
+        )
+        return 1
+    journal = json.loads(journal_path.read_text())
+    try:
+        direct, cascaded = clear_task_entries(journal, task_ids)
+    except ValueError as exc:
+        print(f"{_ts()} CLEAR-TASK: refusing -- {exc}. Journal left unchanged.")
+        return 1
     progress.atomic_write_text(
         str(journal_path), json.dumps(journal, indent=2, sort_keys=True) + "\n"
     )
     msg = (
         f"CLEAR-TASK: removed {len(direct)} entr{'y' if len(direct) == 1 else 'ies'} "
-        f"for task(s) {', '.join(sorted(targets))}"
+        f"for task(s) {', '.join(sorted(set(task_ids)))}"
     )
     if cascaded:
         casc_ids = sorted({e.get("task") for e in cascaded})

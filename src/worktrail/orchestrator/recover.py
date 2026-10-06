@@ -13,97 +13,14 @@ import json
 import shutil
 import uuid
 from pathlib import Path
-from typing import Any
 
-from worktrail.orchestrator import dispatch, live, progress, resume_group, worktree
+from worktrail.orchestrator import live, progress, resume_group, worktree
 from worktrail.router import quarantine_selfcheck
 from worktrail.router.journal_selfcheck import _runlock_held
 
 
 class RecoveryRefused(RuntimeError):
     """A recovery precondition was not met; the journal must remain unchanged."""
-
-
-def _terminal_failure(entry: dict[str, Any]) -> bool:
-    return (
-        not entry.get("event")
-        and (entry.get("report") or {}).get("terminal_status")
-        in live._NON_RETRYABLE_TERMINAL
-    )
-
-
-def _clear_task_entries(
-    journal: dict[str, Any], task_ids: list[str]
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Apply clear-task's guardrails and cascade to an in-memory journal.
-
-    This is intentionally side-effect free except for the supplied in-memory
-    dictionary.  The command layer owns the single eventual journal write.
-    """
-    entries = journal.get("entries", [])
-    if not isinstance(entries, list):
-        entries = []
-    targets = set(task_ids)
-    for entry in entries:
-        if entry.get("event") or entry.get("task") not in targets:
-            continue
-        report = entry.get("report") or {}
-        completed = report.get("terminal_status") == "done" or (
-            entry.get("role") == dispatch.ROLE_CLEANUP
-            and report.get("status") != "failed"
-            and report.get("terminal_status") not in live._NON_RETRYABLE_TERMINAL
-        )
-        if completed:
-            raise RecoveryRefused(
-                f"{entry.get('task')} has a success/completion entry "
-                f"(role {entry.get('role')!r}); clearing it would discard completed work"
-            )
-
-    uncleared = sorted(
-        task_id
-        for task_id in targets
-        if not any(
-            _terminal_failure(entry) and entry.get("task") == task_id
-            for entry in entries
-        )
-    )
-    if uncleared:
-        raise RecoveryRefused(
-            "no failed/escalated journal entries for "
-            f"{', '.join(uncleared)}; nothing to clear"
-        )
-
-    cleared = set(targets)
-    removed = {
-        id(entry)
-        for entry in entries
-        if _terminal_failure(entry) and entry.get("task") in targets
-    }
-    changed = True
-    while changed:
-        changed = False
-        for entry in entries:
-            if id(entry) in removed or not _terminal_failure(entry):
-                continue
-            if entry.get("role") != "dependency-gate":
-                continue
-            if cleared.intersection(live._gate_blockers(entry)):
-                removed.add(id(entry))
-                cleared.add(entry.get("task"))
-                changed = True
-
-    direct = [
-        entry
-        for entry in entries
-        if id(entry) in removed and entry.get("task") in targets
-    ]
-    cascaded = [
-        entry
-        for entry in entries
-        if id(entry) in removed and entry.get("task") not in targets
-    ]
-    journal["entries"] = [entry for entry in entries if id(entry) not in removed]
-    return direct, cascaded
 
 
 @contextlib.contextmanager
@@ -210,8 +127,8 @@ def recover(
 
     after = copy.deepcopy(journal)
     try:
-        direct, cascaded = _clear_task_entries(after, selected_tasks)
-    except RecoveryRefused as exc:
+        direct, cascaded = live.clear_task_entries(after, selected_tasks)
+    except ValueError as exc:
         print(f"recover: refusing -- {exc}. Journal left unchanged.")
         return 1
 

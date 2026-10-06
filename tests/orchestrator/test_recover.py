@@ -210,3 +210,28 @@ def test_no_selector_and_non_quarantined_group_refuse_without_writing(tmp_path):
     assert recover.recover(repo, spec, [], [], remote="origin") == 1
     assert recover.recover(repo, spec, ["g"], [], remote="origin") == 1
     assert journal.read_text() == before
+
+
+def test_typo_task_selection_refuses_without_writing(tmp_path):
+    repo, journal, spec, _ = setup_repo(tmp_path)
+    write_journal(journal, tasks=["1.1"])
+    before = journal.read_text()
+
+    assert recover.recover(repo, spec, [], ["1.2"], remote="origin") == 1
+    assert journal.read_text() == before
+
+
+def test_recovery_writes_journal_exactly_once(tmp_path, monkeypatch):
+    repo, journal, spec, _ = setup_repo(tmp_path)
+    write_journal(journal, tasks=["1.1"])
+    original = recover.progress.atomic_write_text
+    writes = []
+
+    def count_write(path, text):
+        writes.append((path, text))
+        return original(path, text)
+
+    monkeypatch.setattr(recover.progress, "atomic_write_text", count_write)
+    assert recover.recover(repo, spec, [], ["1.1"], remote="origin") == 0
+    assert len(writes) == 1
+    assert writes[0][0] == journal
