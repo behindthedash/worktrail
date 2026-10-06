@@ -67,6 +67,7 @@ def test_claim_returns_items_and_sends_bearer_credential():
     assert [i.event_id for i in items] == ["evt-1"]
     assert items[0].delivery_id == "d-1"
     assert items[0].payload["schema"] == "datalena.worktrail-handoff.v1"
+    assert items[0].payload_size_bytes == len(ITEM["body"].encode("utf-8"))
 
     request = opener.requests[0]
     assert request.method == "POST"
@@ -74,6 +75,7 @@ def test_claim_returns_items_and_sends_bearer_credential():
         request.full_url == "https://pullhook.example/api/hooks/worktrail-handoff/claim"
     )
     assert request.get_header("Authorization") == f"Bearer {TOKEN}"
+    assert request.get_header("User-agent") == "WorkTrail-PullHook/1.0"
     assert request.data is None
 
 

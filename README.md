@@ -69,6 +69,44 @@ The data path is Datalena → PullHook → `worktrail-pullhook-ingress` → the 
 work-queue. PullHook remains the durable transport; WorkTrail owns materialized
 briefs and their deduplication records.
 
+### Gracefully Giving Back feedback
+
+GGB feedback follows the same pull-only path:
+
+```text
+Gracefully Giving Back → PullHook → worktrail-pullhook-ingress → git-backed work queue
+```
+
+Configure the consumer beside WorkTrail with `PULLHOOK_BASE_URL` (for example,
+`https://pullhook.io`), `PULLHOOK_CONSUME_CREDENTIAL`, and `PULLHOOK_CHANNEL` set to
+the channel carrying GGB feedback. The credential is read only from the environment. Keep it in a protected
+environment file readable by the service account; do not put it in command-line
+arguments. The GGB adapter accepts only source `{id: "gracefully-giving-back", kind:
+"website-feedback"}` and routes those events to the trusted `gracefully-giving-back`
+repository slug. Event fields cannot choose a repository, remote, branch, or queue
+directory. `sourceFileHint` is retained as descriptive provenance and is never read
+as a path.
+
+For a systemd timer, use a service such as:
+
+```ini
+[Service]
+Type=oneshot
+User=worktrail
+EnvironmentFile=/etc/worktrail/pullhook.env
+ExecStart=/usr/local/bin/worktrail-pullhook-ingress --base-url ${PULLHOOK_BASE_URL} --channel ${PULLHOOK_CHANNEL} --max-items 20
+```
+
+The timer can run the service every minute. `--once` limits a run to one delivery;
+`--max-items` is bounded to 100; `--dry-run` peeks at and validates one item without
+creating a handoff or acknowledging it. Results are JSON for scheduler logs. Invalid
+or unsupported envelopes remain unacknowledged for PullHook's lease/retry policy.
+When queue git sync is required, WorkTrail acknowledges an event only after its
+brief and provenance marker have been pushed. A push failure leaves the event
+available for retry, and the durable event marker makes that retry reuse the same
+brief. PullHook accepting a feedback submission means it is durably in the relay;
+it does not mean WorkTrail has materialized it in the local queue yet.
+
 ## Autonomous operation
 
 `worktrail-drain` runs the work queue unattended: each iteration spawns one fresh-context

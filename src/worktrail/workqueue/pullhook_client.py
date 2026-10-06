@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 DEFAULT_TIMEOUT = 15.0
+USER_AGENT = "WorkTrail-PullHook/1.0"
 
 __all__ = [
     "DEFAULT_TIMEOUT",
@@ -52,6 +53,7 @@ class PullHookItem:
     delivery_id: str | None
     event_id: str
     payload: dict[str, Any] = field(default_factory=dict)
+    payload_size_bytes: int | None = None
 
     @classmethod
     def from_json(cls, raw: Any) -> PullHookItem:
@@ -72,7 +74,12 @@ class PullHookItem:
         event_id = payload.get("event_id")
         if not isinstance(event_id, str) or not event_id:
             raise PullHookError("PullHook item body is missing an event id")
-        return cls(delivery_id=delivery_id, event_id=event_id, payload=payload)
+        return cls(
+            delivery_id=delivery_id,
+            event_id=event_id,
+            payload=payload,
+            payload_size_bytes=len(body.encode("utf-8")),
+        )
 
 
 class PullHookClient:
@@ -162,6 +169,7 @@ class PullHookClient:
         request = urllib.request.Request(url, data=data, method=method)
         request.add_header("Authorization", f"Bearer {self._token}")
         request.add_header("Accept", "application/json")
+        request.add_header("User-Agent", USER_AGENT)
         if data is not None:
             request.add_header("Content-Type", "application/json")
 
