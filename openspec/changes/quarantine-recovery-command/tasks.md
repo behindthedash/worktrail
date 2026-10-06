@@ -113,3 +113,9 @@ Triage evidence for this fold is in `proposal.md`'s `## Folded from 20260930-112
 
 - [ ] 8.1 worktrail has orchestrator groups stuck in QUARANTINED for spec `routing-target-selector` (worktrail-quarantine-selfcheck): tail-5.1 (merge_conflict, 34d); tail-6.5 (merge_conflict, 34d) Triage each group: repair and resume it, or discard it if the work already landed or is no longer wanted. worktrail-selfcheck-fleet-sweep: quarantine worktrail routing-target-selector
       files: ../run-routing-target-selector.json, pyproject.toml
+
+## 9. Folded from 20261005-103628-stale-ancestry-repair-unreachable
+
+Triage evidence for this fold is in `proposal.md`'s `## Folded from 20261005-103628-stale-ancestry-repair-unreachable` section.
+
+- [ ] 9.1 Orchestrator's retained-task-branch stale-ancestry repair is unreachable on the documented recovery path (worktree removed, branch kept)
