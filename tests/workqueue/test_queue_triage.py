@@ -250,6 +250,19 @@ class TestIsRecentlyTriaged(QueueTriageTestBase):
 
 
 class TestParseVerdicts(unittest.TestCase):
+    def test_carries_blocked_on_including_empty_string(self):
+        raw = (
+            '{"brief_id": "a", "verdict": "keep", "duplicate_of": null, '
+            '"evidence": "waiting on the upstream branch", "blocked_on": "upstream PR"}\n'
+            '{"brief_id": "b", "verdict": "keep", "duplicate_of": null, '
+            '"evidence": "the upstream PR landed", "blocked_on": ""}'
+        )
+
+        first, second = qt.parse_verdicts(raw, ["a", "b"])
+
+        self.assertEqual(first.blocked_on, "upstream PR")
+        self.assertEqual(second.blocked_on, "")
+
     def test_well_formed_verdict_is_parsed_as_is(self):
         raw = (
             '{"brief_id": "a", "verdict": "stale-close", "duplicate_of": null, '
@@ -7511,3 +7524,66 @@ class TestEvaluateExcludeRepoFlag(QueueTriageTestBase):
         evaluated = {call.args[0] for call in mock_eval.call_args_list}
         self.assertNotIn(str(repo_b), evaluated)
         self.assertIn("repo-a", evaluated)
+
+
+class TestExternalBlockerVerdicts(QueueTriageTestBase):
+    def _keep(self, blocked_on: str | None) -> qt.Verdict:
+        return qt.Verdict("a", "keep", None, "still relevant", blocked_on=blocked_on)
+
+    def test_keep_writes_blocker_and_preview_reports_it(self):
+        path = self.write("a.md")
+
+        [preview] = qt.apply_verdicts([self._keep("upstream PR #42")], confirm=False)
+
+        self.assertEqual(preview["blocked_on"], "upstream PR #42")
+        self.assertNotIn("blocked-on:", path.read_text(encoding="utf-8"))
+
+        qt.apply_verdicts([self._keep("upstream PR #42")], confirm=True)
+
+        self.assertEqual(qt.read_frontmatter(path)["blocked-on"], "upstream PR #42")
+        self.assertIn("verdict: keep", path.read_text(encoding="utf-8"))
+
+    def test_keep_echoes_or_leaves_existing_blocker_unchanged(self):
+        path = self.write("a.md")
+        qt._set_fm_fields(path, {"blocked-on": "upstream PR #42"})
+
+        qt.apply_verdicts([self._keep("upstream PR #42")], confirm=True)
+        qt.apply_verdicts([self._keep(None)], confirm=True)
+
+        self.assertEqual(qt.read_frontmatter(path)["blocked-on"], "upstream PR #42")
+
+    def test_keep_empty_blocker_removes_existing_field(self):
+        path = self.write("a.md")
+        qt._set_fm_fields(path, {"blocked-on": "upstream PR #42"})
+
+        qt.apply_verdicts([self._keep("")], confirm=True)
+
+        self.assertNotIn("blocked-on", qt.read_frontmatter(path))
+
+    def test_non_keep_does_not_write_blocker(self):
+        self.write("a.md")
+        verdict = qt.Verdict(
+            "a",
+            "stale-close",
+            None,
+            "PR #42 already shipped this",
+            blocked_on="ignored",
+        )
+
+        [entry] = qt.apply_verdicts([verdict], confirm=True)
+
+        self.assertNotIn("blocked-on", qt.read_frontmatter(Path(entry["path"])))
+
+    def test_accepted_work_directly_clears_existing_blocker(self):
+        path = self.write("a.md")
+        qt._set_fm_fields(path, {"blocked-on": "upstream PR #42"})
+        verdict = qt.Verdict(
+            "a",
+            "work-directly",
+            None,
+            "reproduces via pytest tests/test_queue_triage.py",
+        )
+
+        qt.apply_verdicts([verdict], confirm=True)
+
+        self.assertNotIn("blocked-on", qt.read_frontmatter(path))

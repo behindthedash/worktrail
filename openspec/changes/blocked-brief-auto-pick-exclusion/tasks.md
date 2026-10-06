@@ -1,6 +1,6 @@
 ## 1. External-blocker field, operator output, and the clear command (queue side)
 
-- [ ] 1.1 In `src/worktrail/workqueue/work_queue.py`, recognize the optional `blocked-on:`
+- [x] 1.1 In `src/worktrail/workqueue/work_queue.py`, recognize the optional `blocked-on:`
       frontmatter field as an independent blocking reason. Add a small helper (beside
       `_blocked_by_refs`, `:816`) that reads the field, coerces it to `str`, and returns the
       stripped value or `None` when it is missing, empty, or whitespace-only. In
@@ -34,7 +34,7 @@
 
 ## 2. Automatic selection names and skips the external blocker (dashboard side)
 
-- [ ] 2.1 In `src/worktrail/router/dashboard.py`, extend `_blocked_skip_reason` (`:2264`)
+- [x] 2.1 In `src/worktrail/router/dashboard.py`, extend `_blocked_skip_reason` (`:2264`)
       so that it returns `blocked:external` -- rather than the bare `blocked` -- for a brief
       that carries a non-empty `blocked-on:` (the `blocked_on` key queue-listing data now
       emits) and has neither a malformed nor an ambiguous `blocked-by` reference; malformed
@@ -52,7 +52,7 @@
 
 ## 3. Triage: a keep verdict records the external blocker (triage side)
 
-- [ ] 3.1 In `src/worktrail/workqueue/queue_triage.py`, give `Verdict` (`:1752`) one new
+- [x] 3.1 In `src/worktrail/workqueue/queue_triage.py`, give `Verdict` (`:1752`) one new
       defaulted field `blocked_on: str | None = None`, documented as the `keep` verdict's
       optional single-line external blocker (the string is significant when empty: it means
       "cleared"; `None` means "not judged"). Carry it through `parse_verdicts()`'s accepted

@@ -6661,13 +6661,14 @@ class AutoPickDependencyDiagnostics(unittest.TestCase):
                         {"id": "a", "reason": "blocked:malformed-dependency"},
                         {"id": "b", "reason": "blocked:ambiguous-dependency"},
                         {"id": "c", "reason": "blocked"},
+                        {"id": "d", "reason": "blocked:external"},
                     ],
                 },
-                total_briefs=3,
+                total_briefs=4,
                 path=log_path,
             )
             record = json.loads(log_path.read_text().splitlines()[0])
-        self.assertEqual(record["reasons"], {"blocked": 3})
+        self.assertEqual(record["reasons"], {"blocked": 4})
 
     def test_render_tags_dependency_reference_problem_distinctly(self):
         out = dashboard.render_dashboard(
@@ -6694,6 +6695,99 @@ class AutoPickDependencyDiagnostics(unittest.TestCase):
         self.assertIn("bad ref [dep-ref?]", out)
         self.assertNotIn("bad ref [blocked]", out)
         self.assertIn("plain wait [blocked]", out)
+
+
+class AutoPickExternalBlocker(unittest.TestCase):
+    """A brief carrying a non-empty `blocked-on:` (queue listing's
+    `blocked_on`) is skipped as `blocked:external` and never picked, while the
+    `blocked-by` reference problems still outrank it.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name) / "repo"
+        self.repo.mkdir(parents=True)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _brief(
+        self, filename: str, blocked_on=None, blocked=True, diagnostics=None
+    ) -> dict:
+        path = Path(self._tmp.name) / filename
+        path.write_text(
+            f"---\nid: {filename.replace('.md', '')}\nrepo: {self.repo}\n"
+            "status: queued\n---\n\n## Focus\n\nwork\n"
+        )
+        return {
+            "filename": filename,
+            "path": str(path),
+            "focus": "work",
+            "blocked": blocked,
+            "blocked_on": blocked_on,
+            "not_yet_due": False,
+            "recently_released": False,
+            "related": [],
+            "kind": "execution",
+            "dependency_diagnostics": diagnostics or [],
+        }
+
+    def _reason(self, brief: dict) -> str:
+        return dashboard.auto_pick_brief([brief])["skipped"][0]["reason"]
+
+    def test_external_blocker_is_skipped_and_never_picked(self):
+        result = dashboard.auto_pick_brief(
+            [self._brief("20260701-000000-external.md", "upstream PR #42 must land")]
+        )
+        self.assertIsNone(result["pick"])
+        self.assertEqual(
+            result["skipped"],
+            [{"id": "20260701-000000-external", "reason": "blocked:external"}],
+        )
+
+    def test_malformed_dependency_outranks_external_blocker(self):
+        brief = self._brief(
+            "20260701-000000-both.md",
+            "upstream PR #42 must land",
+            diagnostics=[
+                {
+                    "raw": "a, b",
+                    "reference": None,
+                    "state": "malformed",
+                    "candidates": [],
+                }
+            ],
+        )
+        self.assertEqual(self._reason(brief), "blocked:malformed-dependency")
+
+    def test_ambiguous_dependency_outranks_external_blocker(self):
+        brief = self._brief(
+            "20260701-000000-both.md",
+            "upstream PR #42 must land",
+            diagnostics=[
+                {
+                    "raw": "dep",
+                    "reference": "dep",
+                    "state": "ambiguous",
+                    "candidates": ["/q/a.md", "/q/b.md"],
+                }
+            ],
+        )
+        self.assertEqual(self._reason(brief), "blocked:ambiguous-dependency")
+
+    def test_brief_without_external_blocker_keeps_the_bare_reason(self):
+        brief = self._brief("20260701-000000-plain.md")
+        self.assertEqual(self._reason(brief), "blocked")
+
+    def test_clean_brief_in_the_same_queue_is_still_picked(self):
+        external = self._brief("20260701-000000-external.md", "upstream PR #42 lands")
+        clean = self._brief("20260702-000000-clean.md", blocked=False)
+        result = dashboard.auto_pick_brief([clean, external])
+        self.assertEqual(result["pick"]["id"], "20260702-000000-clean")
+        self.assertEqual(
+            result["skipped"],
+            [{"id": "20260701-000000-external", "reason": "blocked:external"}],
+        )
 
 
 class NestedWorktreeScanTests(unittest.TestCase):
