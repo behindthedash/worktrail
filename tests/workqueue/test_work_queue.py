@@ -2307,6 +2307,150 @@ class TestBlockedBy(QueueTestBase):
         )
 
 
+class TestExternalBlocker(QueueTestBase):
+    """The optional `blocked-on:` external blocker: listing, claim warnings,
+    and the `unblock` subcommand."""
+
+    _BLOCKER = "upstream datalena release must land"
+
+    def _one(self, filename: str = "20260101-000001-main.md") -> dict:
+        return {b["filename"]: b for b in q.list_queue()["briefs"]}[filename]
+
+    def test_list_reports_blocked_and_exposes_blocked_on(self):
+        self.write(
+            "20260101-000001-main.md",
+            focus="waiting on another repo",
+            extra=f"blocked-on: {self._BLOCKER}",
+        )
+        brief = self._one()
+        self.assertTrue(brief["blocked"])
+        self.assertEqual(brief["blocked_on"], self._BLOCKER)
+
+    def test_list_without_field_is_unchanged(self):
+        self.write("20260101-000001-main.md", focus="plain work")
+        brief = self._one()
+        self.assertIsNone(brief["blocked_on"])
+        self.assertFalse(brief["blocked"])
+        self.assertEqual(brief["focus"], "plain work")
+        self.assertEqual(brief["dependency_diagnostics"], [])
+
+    def test_list_blank_value_treated_as_absent(self):
+        self.write("20260101-000001-empty.md", focus="empty", extra='blocked-on: ""')
+        self.write(
+            "20260101-000002-space.md", focus="spaces", extra='blocked-on: "   "'
+        )
+        briefs = {b["filename"]: b for b in q.list_queue()["briefs"]}
+        self.assertIsNone(briefs["20260101-000001-empty.md"]["blocked_on"])
+        self.assertFalse(briefs["20260101-000001-empty.md"]["blocked"])
+        self.assertIsNone(briefs["20260101-000002-space.md"]["blocked_on"])
+        self.assertFalse(briefs["20260101-000002-space.md"]["blocked"])
+
+    def test_list_blocked_by_only_brief_unchanged(self):
+        self.write("20260101-000000-dep.md", focus="the prereq", brief_id="dep-id")
+        self.write("20260101-000001-main.md", focus="needs dep", blocked_by=["dep-id"])
+        brief = self._one()
+        self.assertIsNone(brief["blocked_on"])
+        self.assertTrue(brief["blocked"])
+
+    def test_claim_succeeds_and_warns_naming_the_blocker(self):
+        self.write(
+            "20260101-000001-main.md",
+            focus="waiting on another repo",
+            extra=f"blocked-on: {self._BLOCKER}",
+        )
+        res = q.claim("20260101-000001-main")
+        self.assertEqual(res["status"], "claimed")
+        self.assertTrue(any(self._BLOCKER in w for w in res["warnings"]))
+
+    def test_unblock_removes_field_and_preserves_every_other_key(self):
+        p = self.write(
+            "20260101-000001-main.md",
+            focus="waiting on another repo",
+            brief_id="main-id",
+            extra=f"blocked-on: {self._BLOCKER}",
+            blocked_by=["dep-id"],
+        )
+        res = q.unblock("20260101-000001-main")
+        self.assertEqual(res["status"], "unblocked")
+        self.assertTrue(res["cleared"])
+        self.assertEqual(res["id"], "main-id")
+        self.assertEqual(res["path"], str(p))
+        fm = q._read_frontmatter(p)
+        self.assertNotIn("blocked-on", fm)
+        self.assertEqual(fm.get("blocked-by"), ["dep-id"])
+        self.assertEqual(fm.get("id"), "main-id")
+        self.assertEqual(fm.get("focus"), "waiting on another repo")
+        self.assertEqual(fm.get("status"), "queued")
+        self.assertIn("## Focus", p.read_text(encoding="utf-8"))
+        listed = self._one()
+        self.assertIsNone(listed["blocked_on"])
+        self.assertFalse(listed["blocked"])  # stale dep-id is satisfied; external gone
+
+    def test_second_unblock_is_noop_reporting_nothing_cleared(self):
+        p = self.write(
+            "20260101-000001-main.md",
+            focus="waiting on another repo",
+            extra=f"blocked-on: {self._BLOCKER}",
+        )
+        self.assertTrue(q.unblock("20260101-000001-main")["cleared"])
+        before = p.read_bytes()
+        res = q.unblock("20260101-000001-main")
+        self.assertEqual(res["status"], "unblocked")
+        self.assertFalse(res["cleared"])
+        self.assertEqual(p.read_bytes(), before)
+
+    def test_unblock_unknown_id_reports_none(self):
+        res = q.unblock("missing-id-xyz")
+        self.assertEqual(res["status"], "none")
+        self.assertFalse(res["cleared"])
+        self.assertIsNone(res["path"])
+
+    def test_human_list_shows_blocker_text(self):
+        self.write(
+            "20260101-000001-main.md",
+            focus="waiting on another repo",
+            extra=f"blocked-on: {self._BLOCKER}",
+        )
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            self.assertEqual(q.main(["list"]), 0)
+        printed = out.getvalue()
+        self.assertIn("[blocked — waiting on prerequisites]", printed)
+        self.assertIn(f"blocked-on: {self._BLOCKER}", printed)
+
+    def test_cli_unblock_json_reports_cleared(self):
+        p = self.write(
+            "20260101-000001-main.md",
+            focus="waiting on another repo",
+            brief_id="main-id",
+            extra=f"blocked-on: {self._BLOCKER}",
+        )
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            code = q.main(["unblock", "20260101-000001-main", "--json"])
+        self.assertEqual(code, 0)
+        data = json.loads(out.getvalue())
+        self.assertEqual(data["status"], "unblocked")
+        self.assertTrue(data["cleared"])
+        self.assertEqual(data["id"], "main-id")
+        self.assertEqual(data["path"], str(p))
+        self.assertNotIn("blocked-on", q._read_frontmatter(p))
+
+    def test_cli_unblock_human_renders_noop(self):
+        self.write(
+            "20260101-000001-main.md",
+            focus="waiting on another repo",
+            extra=f"blocked-on: {self._BLOCKER}",
+        )
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            self.assertEqual(q.main(["unblock", "20260101-000001-main"]), 0)
+            self.assertEqual(q.main(["unblock", "20260101-000001-main"]), 0)
+        printed = out.getvalue()
+        self.assertIn("unblocked:", printed)
+        self.assertIn("nothing to clear:", printed)
+
+
 class TestPremiseDriftWarning(QueueTestBase):
     """Tests for the claim-time premise-drift age warning."""
 
