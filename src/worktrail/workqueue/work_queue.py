@@ -54,16 +54,17 @@ Exit codes for `claim`/`claim-batch`: 0 ok, 2 none, 3 ambiguous, 4 already-claim
 
 Write verification
 -------------------
-Every mutation that leaves a file on disk (`claim`, `done`, `release`, `link`) re-reads
-the file it just wrote and validates it (`brief_frontmatter.validate_brief`: a
+Every mutation that leaves a file on disk (`claim`, `done`, `release`, `link`,
+`unblock`) re-reads the file it just wrote and validates it
+(`brief_frontmatter.validate_brief`: a
 `---`-fenced block that parses as YAML to a mapping with non-empty `id`/`status`
 fields) before reporting success. A validation failure restores the file's
 pre-mutation content (and, for `claim`/`release`, undoes the queue/picked move) and
 returns `{"status": "write-verification-failed", "error": "<reason>"}` instead of a
-false "claimed"/"done"/"released"/"linked". This exists because a write path that
-merely returns success without checking its own output can silently leave a broken
-brief behind -- `list`, the dashboard, and `/go`'s picker would all have to cope with
-it downstream instead of the write itself catching it.
+false "claimed"/"done"/"released"/"linked"/"unblocked". This exists because a write
+path that merely returns success without checking its own output can silently
+leave a broken brief behind -- `list`, the dashboard, and `/go`'s picker would
+all have to cope with it downstream instead of the write itself catching it.
 
 Closure evidence gate (done --note)
 ------------------------------------
@@ -1961,9 +1962,15 @@ def unblock(identifier: str) -> dict[str, Any]:
     pending -- nothing about its lifecycle state changes). The field is removed
     via `_remove_fm_field`, leaving every other frontmatter key -- including
     `blocked-by` -- and the body untouched. A brief with no (effective)
-    `blocked-on:` value is a successful no-op reporting `cleared: false`, so
-    running this twice is safe. Returns
-    {"status": "unblocked"|"none"|"ambiguous"|"error", "cleared": bool,
+    `blocked-on:` value is a successful no-op reporting `cleared: false` under
+    status `nothing-to-clear`, so running this twice is safe -- and, unlike a
+    real clear (`unblocked`), it changed nothing on disk, so it must not
+    trigger the git backup. Like every other mutation, the just-written brief
+    is re-read and validated (`validate_brief`); a failure restores the
+    pre-mutation content and reports `write-verification-failed` instead of a
+    false success. Returns
+    {"status": "unblocked"|"nothing-to-clear"|"none"|"ambiguous"|"error"|
+     "write-verification-failed", "cleared": bool,
      "id": str|None, "path": str|None, "candidates": [...], "error": str|None}.
     """
     res = resolve(identifier, queue_dir())
@@ -1981,7 +1988,7 @@ def unblock(identifier: str) -> dict[str, Any]:
     brief_id = str(fm.get("id") or path.stem)
     if _blocked_on(fm) is None:
         return {
-            "status": "unblocked",
+            "status": "nothing-to-clear",
             "cleared": False,
             "id": brief_id,
             "path": str(path),
@@ -1989,8 +1996,8 @@ def unblock(identifier: str) -> dict[str, Any]:
             "error": None,
         }
     try:
-        _remove_fm_field(path, "blocked-on")
-    except (OSError, ValueError) as exc:
+        original = path.read_text(encoding="utf-8")
+    except OSError as exc:
         return {
             "status": "error",
             "cleared": False,
@@ -1999,6 +2006,39 @@ def unblock(identifier: str) -> dict[str, Any]:
             "candidates": [],
             "error": str(exc),
         }
+    try:
+        _remove_fm_field(path, "blocked-on")
+    except (OSError, ValueError) as exc:
+        # A partial/truncating write can leave the brief damaged; restore the
+        # pre-mutation content best-effort before reporting the failure.
+        try:
+            path.write_text(original, encoding="utf-8")
+        except OSError:
+            pass
+        return {
+            "status": "error",
+            "cleared": False,
+            "id": brief_id,
+            "path": str(path),
+            "candidates": [],
+            "error": str(exc),
+        }
+
+    ok, verr = validate_brief(path)
+    if not ok:
+        try:
+            path.write_text(original, encoding="utf-8")
+        except OSError:
+            pass
+        return {
+            "status": "write-verification-failed",
+            "cleared": False,
+            "id": brief_id,
+            "path": str(path),
+            "candidates": [],
+            "error": verr,
+        }
+
     return {
         "status": "unblocked",
         "cleared": True,
@@ -2434,11 +2474,9 @@ def _print_human(cmd: str, result: dict[str, Any]) -> None:
                 f"  companion {comp['identifier']}: {comp['status']}"
                 + (f" -> {comp['path']}" if comp.get("path") else "")
             )
-    elif status == "unblocked":
-        if result.get("cleared"):
-            print(f"unblocked: {result['path']}")
-        else:
-            print(f"nothing to clear: {result['path']}")
+    elif status in ("unblocked", "nothing-to-clear"):
+        cleared = "true" if result.get("cleared") else "false"
+        print(f"{status}: {result.get('id')} (cleared: {cleared}) {result.get('path')}")
     elif status == "linked":
         paths = result.get("paths", [])
         if len(paths) >= 2:

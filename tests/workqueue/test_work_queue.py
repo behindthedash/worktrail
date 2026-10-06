@@ -2395,7 +2395,9 @@ class TestExternalBlocker(QueueTestBase):
         self.assertTrue(q.unblock("20260101-000001-main")["cleared"])
         before = p.read_bytes()
         res = q.unblock("20260101-000001-main")
-        self.assertEqual(res["status"], "unblocked")
+        # A distinct status from a real clear (`unblocked`): the no-op changed
+        # nothing on disk, so `_BACKUP_ON` must not match it.
+        self.assertEqual(res["status"], "nothing-to-clear")
         self.assertFalse(res["cleared"])
         self.assertEqual(p.read_bytes(), before)
 
@@ -2436,10 +2438,11 @@ class TestExternalBlocker(QueueTestBase):
         self.assertEqual(data["path"], str(p))
         self.assertNotIn("blocked-on", q._read_frontmatter(p))
 
-    def test_cli_unblock_human_renders_noop(self):
-        self.write(
+    def test_cli_unblock_human_reports_cleared_id_and_path(self):
+        p = self.write(
             "20260101-000001-main.md",
             focus="waiting on another repo",
+            brief_id="main-id",
             extra=f"blocked-on: {self._BLOCKER}",
         )
         out = io.StringIO()
@@ -2447,8 +2450,67 @@ class TestExternalBlocker(QueueTestBase):
             self.assertEqual(q.main(["unblock", "20260101-000001-main"]), 0)
             self.assertEqual(q.main(["unblock", "20260101-000001-main"]), 0)
         printed = out.getvalue()
-        self.assertIn("unblocked:", printed)
-        self.assertIn("nothing to clear:", printed)
+        self.assertIn(f"unblocked: main-id (cleared: true) {p}", printed)
+        self.assertIn(f"nothing-to-clear: main-id (cleared: false) {p}", printed)
+
+    def test_noop_unblock_does_not_trigger_git_backup(self):
+        """A no-op changed nothing on disk, so `_BACKUP_ON` must not match it
+        (`_git_backup` would `git add -A` unrelated pending queue changes)."""
+        self.write("20260101-000001-main.md", focus="plain work")
+        out = io.StringIO()
+        with patch.object(q, "_git_backup") as backup, patch("sys.stdout", out):
+            code = q.main(["unblock", "20260101-000001-main", "--json"])
+        self.assertEqual(code, 0)
+        backup.assert_not_called()
+
+    def test_real_unblock_triggers_git_backup(self):
+        self.write(
+            "20260101-000001-main.md",
+            focus="waiting on another repo",
+            extra=f"blocked-on: {self._BLOCKER}",
+        )
+        out = io.StringIO()
+        with patch.object(q, "_git_backup") as backup, patch("sys.stdout", out):
+            code = q.main(["unblock", "20260101-000001-main", "--json"])
+        self.assertEqual(code, 0)
+        self.assertTrue(backup.called)
+
+    def test_unblock_rolls_back_when_post_write_validation_fails(self):
+        """A brief that parses but lacks `status` fails `validate_brief` after
+        the field is removed; the pre-mutation content is restored."""
+        original = (
+            "---\nfocus: external blocker only\n"
+            "blocked-on: upstream datalena release must land\n"
+            "---\n\n## Focus\n\nexternal blocker only\n"
+        )
+        p = self.queue / "20260101-000001-nostatus.md"
+        p.write_text(original, encoding="utf-8")
+        res = q.unblock("20260101-000001-nostatus")
+        self.assertEqual(res["status"], "write-verification-failed")
+        self.assertFalse(res["cleared"])
+        self.assertIsNotNone(res["error"])
+        self.assertEqual(p.read_text(encoding="utf-8"), original)
+
+    def test_unblock_restores_original_when_removal_write_fails(self):
+        """An OSError from a partial/truncating write must not leave the brief
+        damaged: the error path restores the pre-mutation content."""
+        p = self.write(
+            "20260101-000001-main.md",
+            focus="waiting on another repo",
+            extra=f"blocked-on: {self._BLOCKER}",
+        )
+        original = p.read_text(encoding="utf-8")
+
+        def _truncate_then_fail(path, key):
+            Path(path).write_text("", encoding="utf-8")
+            raise OSError("simulated partial write")
+
+        with patch.object(q, "_remove_fm_field", side_effect=_truncate_then_fail):
+            res = q.unblock("20260101-000001-main")
+        self.assertEqual(res["status"], "error")
+        self.assertFalse(res["cleared"])
+        self.assertIn("simulated partial write", res["error"])
+        self.assertEqual(p.read_text(encoding="utf-8"), original)
 
 
 class TestPremiseDriftWarning(QueueTestBase):
