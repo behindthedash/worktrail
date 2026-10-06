@@ -177,13 +177,14 @@ Existing work is the controlling artifact. **Reconstruct before acting:**
    repository state — never repeat earlier work.
 4. **CI/PR repair sub-mode** (secondary F): reproduce the failing check
    locally, fix on the same branch, re-run affected validation, push. Quarantined
-   orchestrator groups: see `#worktree-lifecycle` quarantine handling — first run
-   `worktrail-live recover --repo <repo> --spec <spec> --group <name>`. Resolve
-   any reported merge conflict on the task branch and run `recover` again, then
-   run the existing `worktrail-live full-real --repo <repo> --spec <spec>
-   --resume`. Use `worktrail-resume-group --repo <repo> --spec <spec> --group
-   <name>` (or `--all-resumable` for budget-exhausted quarantines) as the
-   journal-only alternative when branches need no repair.
+   orchestrator groups: see `#worktree-lifecycle` quarantine handling — first
+   run `worktrail-live recover --repo <repo> --spec
+   <spec> --group <name>`; if it reports a conflict, resolve it and re-run the
+   command, then run `worktrail-live full-real --repo <repo> --spec <spec>
+   --resume`, rather than hand-landing the PR and hand-running checkbox-sync.
+   For a group whose branches need no repair, `worktrail-resume-group --repo
+   <repo> --spec <spec> --group <name>` remains the journal-only alternative
+   (or `--all-resumable` for budget-exhausted quarantines).
 5. Re-enter the owning route at the detected stage (the dashboard's
    `next_action` is the entry point).
 
