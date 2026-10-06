@@ -8019,6 +8019,31 @@ def main(argv=None) -> int:
     )
     ct.add_argument("--tasks", required=True, help="Comma-separated task IDs to clear")
 
+    rc = sub.add_parser(
+        "recover",
+        help="Repair retained quarantined task branches and clear their journal state",
+    )
+    rc.add_argument("--repo", required=True, help="Absolute path to the real git repo")
+    rc.add_argument("--spec", required=True, help="Spec folder relative to repo root")
+    rc.add_argument(
+        "--group",
+        action="append",
+        default=[],
+        help="Quarantined group to recover (repeatable)",
+    )
+    rc.add_argument("--tasks", default="", help="Comma-separated task IDs to recover")
+    rc.add_argument("--base", default="dev", help="Base branch (default: dev)")
+    rc.add_argument(
+        "--remote",
+        default=None,
+        help="Git remote (default: checkout push remote or origin)",
+    )
+    rc.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report actions without merging or writing",
+    )
+
     args = p.parse_args(argv)
     # Only a spawning subcommand consumes the resolved model/role-models; a
     # non-spawning one (precheck above all) must not be blocked by a routing
@@ -8203,6 +8228,18 @@ def main(argv=None) -> int:
             print("clear-task: --tasks must list at least one task ID")
             return 1
         return clear_tasks(Path(args.repo).resolve(), args.spec, task_ids)
+    if args.cmd == "recover":
+        from worktrail.orchestrator import recover
+
+        return recover.recover(
+            Path(args.repo).resolve(),
+            args.spec,
+            args.group,
+            [s.strip() for s in args.tasks.split(",") if s.strip()],
+            base=args.base,
+            remote=args.remote or _default_remote(Path(args.repo).resolve()),
+            dry_run=args.dry_run,
+        )
     return 0
 
 
