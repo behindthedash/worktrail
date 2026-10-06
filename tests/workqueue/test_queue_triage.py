@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, ClassVar
 from unittest import mock
@@ -2373,6 +2374,67 @@ class TestApplyFoldIntoChange(QueueTriageTestBase):
                 "tests/workqueue/test_queue_triage.py",
             ],
         )
+
+    def test_fold_task_kind_marks_only_out_of_worktree_evidence_as_e2e(self):
+        worktree = self.base / "kind-probe"
+        worktree.mkdir()
+        journal = self.base / "run-probe.json"
+        journal.write_text("{}", encoding="utf-8")
+        (worktree / "inside.py").write_text("", encoding="utf-8")
+
+        self.assertEqual(
+            qt._fold_task_kind(worktree, [], "Read ../run-probe.json"), "e2e"
+        )
+        self.assertEqual(
+            qt._fold_task_kind(worktree, ["inside.py"], "Read ../run-probe.json"),
+            "",
+        )
+        self.assertEqual(
+            qt._fold_task_kind(worktree, [], "Read ../missing-run.json"), ""
+        )
+
+    def test_fold_render_tags_existing_out_of_worktree_evidence_as_e2e(self):
+        journal = self.worktree_dir.parent / "run-machine-local.json"
+        journal.parent.mkdir(parents=True, exist_ok=True)
+        journal.write_text("{}", encoding="utf-8")
+        focus = "Check ../run-machine-local.json before resuming the run."
+        self.write("a.md", repo=str(self.repo), focus=focus)
+        self.verdict = replace(
+            self.verdict,
+            evidence="The journal at ../run-machine-local.json records the failure.",
+        )
+        run = self._dispatcher()
+        land_outcome = LandOutcome(
+            outcome="landed",
+            pr_url="https://github.com/acme/widgets/pull/42",
+            pr_number=42,
+            labels=["go:risk-low"],
+            run=None,
+            final_status="completed_pr_open",
+        )
+        with (
+            mock.patch(
+                "worktrail.workqueue.queue_triage.subprocess.run", side_effect=run
+            ),
+            mock.patch(
+                "worktrail.workqueue.queue_triage.land_pr", return_value=land_outcome
+            ),
+            mock.patch(
+                "worktrail.workqueue.queue_triage._fold_task_file_scope",
+                return_value=[],
+            ),
+        ):
+            log = qt.apply_verdicts([self.verdict], confirm=True)
+
+        self.assertEqual(log[0]["status"], "executed", log[0])
+        tasks_text = (
+            self.worktree_dir / "openspec" / "changes" / self.target_change / "tasks.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "- [ ] 2.1 [e2e] Check ../run-machine-local.json before resuming the run.",
+            tasks_text,
+        )
+        self.assertNotIn("      files:", tasks_text)
 
     # 1.1: apply-time `target_quote` re-check -- `prepare()` verifies the quote
     # against the target change's live `proposal.md`/`tasks.md` and fails closed

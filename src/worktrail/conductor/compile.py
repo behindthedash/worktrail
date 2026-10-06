@@ -131,6 +131,22 @@ def _git_repo_root(path: Path) -> Path | None:
     return common_path.parent.resolve() if common_path.name == ".git" else None
 
 
+def _git_worktree_root(path: Path) -> Path | None:
+    """Return the checkout containing ``path``, including when it is linked."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return Path(result.stdout.strip()).resolve()
+
+
 # --------------------------------------------------------------------------- #
 # Authored prose dependency references
 # --------------------------------------------------------------------------- #
@@ -513,6 +529,11 @@ def _validate(
     if not isinstance(rows, list):
         return None, ["payload has no `tasks` list"], warnings
 
+    declared_files = {
+        str(task.get("id")): runplan._norm_str_list(task.get("files"))
+        for task in tasks or []
+        if task.get("files")
+    }
     seen: dict[str, TaskPlan] = {}
     for row in rows:
         if not isinstance(row, dict) or not row.get("id"):
@@ -527,17 +548,24 @@ def _validate(
             continue
 
         files: list[str] = []
-        for f in runplan._norm_str_list(row.get("files")):
-            # Strip a leading `./` only. Not `lstrip("./")` -- that takes a
-            # character SET, so it eats the whole `../../` of a traversal and
-            # silently turns it into a plausible-looking repo-relative path.
-            p = f.replace("\\", "/")
-            while p.startswith("./"):
-                p = p[2:]
-            if not p or p.startswith("/") or ".." in Path(p).parts:
-                problems.append(f"{tid}: file path outside the repo: {f!r}")
-                continue
-            files.append(p)
+        if tid in declared_files:
+            # An accepted artifact declaration is authoritative. Do not
+            # validate a discarded model answer: authored declarations may
+            # intentionally name state outside the repo.
+            files = list(declared_files[tid])
+        else:
+            model_files = runplan._norm_str_list(row.get("files"))
+            for f in model_files:
+                # Strip a leading `./` only. Not `lstrip("./")` -- that takes a
+                # character SET, so it eats the whole `../../` of a traversal and
+                # silently turns it into a plausible-looking repo-relative path.
+                p = f.replace("\\", "/")
+                while p.startswith("./"):
+                    p = p[2:]
+                if not p or p.startswith("/") or ".." in Path(p).parts:
+                    problems.append(f"{tid}: file path outside the repo: {f!r}")
+                    continue
+                files.append(p)
 
         purpose = str(row.get("purpose") or "").strip()
         if purpose and purpose not in valid_purposes:
@@ -548,7 +576,9 @@ def _validate(
 
         seen[tid] = TaskPlan(
             id=tid,
-            files=tuple(sorted(set(files))),
+            files=(
+                tuple(files) if tid in declared_files else tuple(sorted(set(files)))
+            ),
             deps=_union_deps(
                 [
                     d
@@ -829,7 +859,11 @@ def compile_run_plan(
     from worktrail.orchestrator.spawnlib import SpawnExhausted
 
     try:
-        text = runner(prompt, repo, timeout, log)
+        # Cache and repository analysis use the canonical root, but Codex's
+        # launch guard intentionally rejects that checkout. Run the worker
+        # from the checkout containing the spec (normally an SDD worktree).
+        worker_cwd = _git_worktree_root(spec_dir) or repo
+        text = runner(prompt, worker_cwd, timeout, log)
     except SpawnExhausted as exc:
         # Still a `give_up()` (a blocked compile must not fail the run) and still
         # uncached, but named as capacity rather than as a bad model answer --
@@ -858,6 +892,8 @@ def compile_run_plan(
     # `kind` is never taken from the model: the artifact declares it (devkit
     # frontmatter, OpenSpec `[tag]`), and it is what holds e2e/cleanup out of the
     # fan-out. Carry the parsed value through so a seed and a compile agree.
+    # Declared `files` are equally authoritative: compilation keeps the parsed
+    # list verbatim and only validates model-supplied paths for undeclared tasks.
     kinds = {t["id"]: str(t.get("kind") or "") for t in tasks}
     plan = RunPlan(
         spec_id=spec_id,

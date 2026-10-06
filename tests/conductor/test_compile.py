@@ -9,6 +9,7 @@ must degrade rather than propagate.
 from __future__ import annotations
 
 import json
+import subprocess
 import textwrap
 from pathlib import Path
 
@@ -116,6 +117,66 @@ def test_editing_the_change_invalidates_the_cache(change, tmp_path):
     (change / "proposal.md").write_text("## Why\nBecause, revised.\n")
     conductor_compile.compile_run_plan(change, tasks, **kwargs)
     assert spawn.calls == 2
+
+
+def test_compile_worker_runs_from_the_spec_worktree(tmp_path):
+    repo = tmp_path / "worktrail"
+    repo.mkdir()
+
+    def git(*args):
+        subprocess.run(
+            ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True
+        )
+
+    subprocess.run(
+        ["git", "init", "-b", "main", str(repo)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    git("config", "user.name", "Test")
+    git("config", "user.email", "test@example.com")
+    (repo / "README.md").write_text("repo\n", encoding="utf-8")
+    git("add", "README.md")
+    git("commit", "-m", "init")
+
+    worktree = tmp_path / "worktrail-worktrees" / "compile-task"
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "worktree",
+            "add",
+            "-b",
+            "compile-task",
+            str(worktree),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    change = worktree / "openspec" / "changes" / "partial"
+    change.mkdir(parents=True)
+    (change / "tasks.md").write_text("## 1. Core\n\n- [ ] 1.1 Compile scope\n")
+    tasks = [{"id": "1.1", "title": "Compile scope", "files": []}]
+    spawned_from: list[Path] = []
+
+    def spawn(_prompt, cwd, _timeout, _log):
+        spawned_from.append(Path(cwd))
+        return _reply(**{"1.1": {"files": ["src/a.py"], "deps": []}})
+
+    plan = conductor_compile.compile_run_plan(
+        change,
+        tasks,
+        spec_id="partial",
+        repo=repo,
+        cache_dir=tmp_path / "plans",
+        spawn=spawn,
+    )
+
+    assert plan.source == runplan.SOURCE_COMPILED
+    assert spawned_from == [worktree]
 
 
 def test_force_recompiles_over_a_cache_hit(change, tmp_path):
@@ -1234,6 +1295,50 @@ def test_the_cli_json_mode_also_fails_loudly_when_impl_tasks_stay_scope_less(
     json.loads(out)
 
 
+def test_the_cli_compiles_partial_declarations_and_reports_no_scope_gap(
+    tmp_path, capsys, monkeypatch
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    change = repo / "openspec" / "changes" / "partial"
+    change.mkdir(parents=True)
+    (change / "proposal.md").write_text("## Why\nBecause.\n")
+    (change / "tasks.md").write_text(
+        "## 1. Core\n\n"
+        "- [ ] 1.1 Keep declared scope\n"
+        "      files: src/declared.py\n"
+        "- [ ] 1.2 Infer missing scope\n"
+    )
+    cache_dir = tmp_path / "plans"
+    reply = _reply(
+        **{
+            "1.1": {"files": [], "deps": []},
+            "1.2": {"files": ["src/inferred.py"], "deps": []},
+        }
+    )
+    monkeypatch.setattr(
+        conductor_compile, "_default_spawn", lambda *_args, **_kwargs: reply
+    )
+
+    rc = conductor_compile.main([str(change), "--cache-dir", str(cache_dir)])
+    _, err = capsys.readouterr()
+    assert rc == 0, err
+
+    from worktrail.taskformats import resolve
+
+    spec_id, tasks = resolve.load_spec(str(change))
+    fingerprint = runplan.fingerprint(change, tasks)
+    plan = runplan.load_cached(cache_dir, spec_id, fingerprint)
+    merged, notes = runplan.apply_to_tasks(tasks, plan)
+    assert not any("rejected" in note for note in notes)
+    assert {task["id"]: task["files"] for task in merged} == {
+        "1.1": ["src/declared.py"],
+        "1.2": ["src/inferred.py"],
+    }
+    assert conductor_compile.needs_compile(merged) == []
+
+
 # --------------------------------------------------------------------------- #
 # CI's requirement-coverage gate (req_coverage.find_uncovered_requirements) --
 # same shape as the scope-gap tests above, for the new `uncovered` term.
@@ -2254,6 +2359,32 @@ def test_validate_unions_prose_deps_into_the_model_payload():
     )
     assert problems == []
     assert {t.id: t.deps for t in planned} == {"1.1": (), "2.1": ("1.1",)}
+
+
+@pytest.mark.parametrize("answer", [[], ["different.py"], ["../model-answer.json"]])
+def test_validate_preserves_declared_files_over_model_answer(answer):
+    declared = ["../run-journal.json", "pyproject.toml"]
+    planned, problems, _ = conductor_compile._validate(
+        {"tasks": [{"id": "1.1", "files": answer, "deps": []}]},
+        {"1.1"},
+        None,
+        [{"id": "1.1", "files": declared}],
+    )
+
+    assert problems == []
+    assert planned[0].files == tuple(declared)
+
+
+def test_validate_still_rejects_repo_escape_for_undeclared_task():
+    planned, problems, _ = conductor_compile._validate(
+        {"tasks": [{"id": "1.1", "files": ["../escape.json"], "deps": []}]},
+        {"1.1"},
+        None,
+        [{"id": "1.1", "files": []}],
+    )
+
+    assert planned is None
+    assert any("file path outside the repo" in problem for problem in problems)
 
 
 def test_validate_reports_an_unresolvable_prose_reference():

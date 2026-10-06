@@ -1,6 +1,6 @@
 ## 1. Compile: a declaration outranks the model's answer
 
-- [ ] 1.1 In `src/worktrail/conductor/compile.py`, make `_validate()`'s payload row loop carry
+- [x] 1.1 In `src/worktrail/conductor/compile.py`, make `_validate()`'s payload row loop carry
       a declaring task's parsed `files:` list into the compiled plan verbatim and leave the
       model's `files` value for that row unconsulted: not empty-displacing, not merged, and
       not path-checked, because a value that is discarded must not be able to reject a
@@ -22,7 +22,7 @@
 
 ## 2. Fold: an out-of-worktree brief declares its kind
 
-- [ ] 2.1 In `src/worktrail/workqueue/queue_triage.py`, add the kind rule for the appended
+- [x] 2.1 In `src/worktrail/workqueue/queue_triage.py`, add the kind rule for the appended
       task as its own pure helper beside `_fold_task_file_scope()` — the shape
       `_fold_task_kind(worktree_dir, derived_scope, *texts)` returning `e2e` only when the
       derived scope is empty and at least one cited path resolves to an existing file outside
@@ -47,7 +47,7 @@
 
 ## 3. Operator reference
 
-- [ ] 3.1 In `.claude/skills/workqueue/skill.md`, extend the fold files-scope bullet with the
+- [x] 3.1 In `.claude/skills/workqueue/skill.md`, extend the fold files-scope bullet with the
       kind boundary: a brief whose evidence is all machine-local state beside the worktree
       gives the folded task the `[e2e]` kind, not a scope, because its work is not in the
       shared tree the change's workers commit into and compile exempts tail kinds by kind
@@ -57,7 +57,7 @@
 
 ## 4. Verification
 
-- [ ] 4.1 [e2e] Run `PYTHONPATH=src python3.14 -m pytest -q tests/conductor/test_compile.py
+- [x] 4.1 [e2e] Run `PYTHONPATH=src python3.14 -m pytest -q tests/conductor/test_compile.py
       tests/workqueue/test_queue_triage.py`, then the full `PYTHONPATH=src python3.14 -m
       pytest -q` and `PYTHONPATH=src python3.14 -m worktrail.orchestrator.orchestrate check`,
       then `python3.14 scripts/ci/ruff_pinned.py check .`, `python3.14 scripts/ci/ruff_pinned.py
