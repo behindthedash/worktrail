@@ -109,7 +109,7 @@
 
 ## 5. Verification
 
-- [ ] 5.1 [e2e] Run `PYTHONPATH=src pytest -q tests/workqueue/test_work_queue.py
+- [x] 5.1 [e2e] Run `PYTHONPATH=src pytest -q tests/workqueue/test_work_queue.py
       tests/router/test_dashboard.py tests/workqueue/test_queue_triage.py`, then
       `PYTHONPATH=src pytest -q` and
       `PYTHONPATH=src python3 -m worktrail.orchestrator.orchestrate check`, then
