@@ -10,6 +10,17 @@ on faith). `extract_needles` pulls these claims out of free-form prose;
 `format_premise_block` renders the result for inclusion in an evaluation
 prompt. See design D3 (autonomous-intake-brief-convergence) for the contract.
 
+Quoted-string claims are searched with `git grep -nIF`, bounded twice. First, the
+search runs under the caller's `timeout_s`, the same bound command needles already
+run under, so a pathological pattern or a very large tree cannot hang the premise
+check. Second, a needle whose text contains an empty line (an internal blank line,
+a leading newline, or a trailing newline) is never searched at all: `git grep -F`
+reads a newline in the pattern as an alternative separator, so the empty line
+contributes an empty alternative that matches every line -- unbounded CPU in a
+large tree, and, were it to finish, rc=0 over every line, spuriously confirming
+the needle. Such a needle is recorded unconfirmed, with a detail saying it was
+not searched.
+
 Path presence claims resolve bare basenames: a candidate with no `/` that does
 not exist at the repo root is looked up against `git ls-files`, matching any
 tracked path whose final segment equals it, since briefs routinely name a file
@@ -171,10 +182,13 @@ def extract_needles(focus: str) -> list[Needle]:
     )
 
 
-def _git_grep_whole_string(repo_path: Path, needle: str) -> dict[str, Any] | None:
+def _git_grep_whole_string(
+    repo_path: Path, needle: str, timeout_s: int
+) -> dict[str, Any] | None:
     result = subprocess.run(
         ["git", "grep", "-nIF", "-e", needle],
         cwd=repo_path,
+        timeout=timeout_s,
         capture_output=True,
         text=True,
         check=False,
@@ -198,11 +212,12 @@ def _fragments(needle: str) -> list[str]:
     return parts
 
 
-def _git_grep_fragments(repo_path: Path, needle: str) -> dict[str, Any]:
+def _git_grep_fragments(repo_path: Path, needle: str, timeout_s: int) -> dict[str, Any]:
     for fragment in _fragments(needle):
         result = subprocess.run(
             ["git", "grep", "-nIF", "-e", fragment],
             cwd=repo_path,
+            timeout=timeout_s,
             capture_output=True,
             text=True,
             check=False,
@@ -220,11 +235,19 @@ def _git_grep_fragments(repo_path: Path, needle: str) -> dict[str, Any]:
     return {"confirmed": False, "detail": "no match for whole string or fragments"}
 
 
-def _check_quoted(repo_path: Path, needle: str) -> dict[str, Any]:
-    whole = _git_grep_whole_string(repo_path, needle)
-    if whole is not None:
-        return whole
-    return _git_grep_fragments(repo_path, needle)
+def _check_quoted(repo_path: Path, needle: str, timeout_s: int) -> dict[str, Any]:
+    if "" in needle.split("\n"):
+        return {
+            "confirmed": False,
+            "detail": "not searched: needle text contains an empty line",
+        }
+    try:
+        whole = _git_grep_whole_string(repo_path, needle, timeout_s)
+        if whole is not None:
+            return whole
+        return _git_grep_fragments(repo_path, needle, timeout_s)
+    except subprocess.TimeoutExpired:
+        return {"confirmed": False, "detail": f"timed out after {timeout_s}s"}
 
 
 def _basename_matches(repo_path: Path, candidate: str) -> list[str]:
@@ -417,7 +440,7 @@ def run_premise_check(
     command_ran = False
     for n in needles:
         if n.kind == "quoted":
-            outcome = _check_quoted(repo_path, n.needle)
+            outcome = _check_quoted(repo_path, n.needle, timeout_s)
         elif n.kind == "path":
             outcome = _check_path(repo_path, n.needle, n.polarity)
             if outcome.get("skip"):

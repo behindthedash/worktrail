@@ -92,6 +92,31 @@ def test_quoted_no_hit_is_unconfirmed(repo: Path) -> None:
     assert quoted["detail"] == "no match for whole string or fragments"
 
 
+def test_empty_line_quoted_needle_is_never_searched(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A blank middle line would make `git grep` match every line, so it never runs."""
+    _add(repo, "logs/output.txt", "short\n\nshort2\n")
+    focus = "The focus spans a blank line: 'short\n\nshort2' in the log."
+    calls: list = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(
+            args, returncode=0, stdout="logs/output.txt:1:short\n", stderr=""
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    results = run_premise_check(focus, repo)
+    quoted = next(r for r in results if r["kind"] == "quoted")
+
+    assert quoted["needle"] == "short\n\nshort2"
+    assert quoted["confirmed"] is False
+    assert "empty line" in quoted["detail"]
+    assert calls == []
+
+
 def test_path_present(repo: Path) -> None:
     _add(repo, "src/worktrail/drain/drain.py", "line1\nline2\nline3\n")
     focus = "See `src/worktrail/drain/drain.py` for the loop."
@@ -219,6 +244,58 @@ def test_timeout_expired_is_unconfirmed_with_timeout_detail(
 
     assert command_result["confirmed"] is False
     assert "timed out after 5s" in command_result["detail"]
+
+
+def test_quoted_grep_timeout_is_unconfirmed_with_timeout_detail(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    focus = "The log said 'this text never appears anywhere in the repo'."
+    real_run = subprocess.run
+
+    def fake_run(args, **kwargs):
+        if isinstance(args, list) and args[0] == "git":
+            raise subprocess.TimeoutExpired(
+                cmd=args, timeout=kwargs.get("timeout", 120)
+            )
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    results = run_premise_check(focus, repo, timeout_s=5)
+    quoted = next(r for r in results if r["kind"] == "quoted")
+
+    assert quoted["confirmed"] is False
+    assert "timed out after 5s" in quoted["detail"]
+
+
+def test_every_git_grep_call_carries_the_caller_timeout(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both the whole-string search and the fragment fallback are bounded."""
+    _add(repo, "logs/output.txt", "no TASK-*.md found\n")
+    focus = (
+        "The drain loop logged 'no TASK-*.md found: check queue directory' "
+        "before exiting."
+    )
+    timeouts: list = []
+    real_run = subprocess.run
+
+    def fake_run(args, **kwargs):
+        if isinstance(args, list) and args[:2] == ["git", "grep"]:
+            timeouts.append(kwargs.get("timeout"))
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    results = run_premise_check(focus, repo, timeout_s=7)
+    quoted = next(r for r in results if r["kind"] == "quoted")
+
+    # The whole string misses and a fragment matches: both helpers ran, and
+    # every grep call they spawned was bounded by the caller's timeout.
+    assert quoted["confirmed"] is True
+    assert "whole string not found" in quoted["detail"]
+    assert len(timeouts) >= 2
+    assert set(timeouts) == {7}
 
 
 STALE_FRESHNESS = [
