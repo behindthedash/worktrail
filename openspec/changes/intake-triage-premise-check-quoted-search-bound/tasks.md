@@ -1,6 +1,6 @@
 ## 1. Bound and guard the quoted-string search
 
-- [ ] 1.1 In `src/worktrail/workqueue/premise_check.py`, close both unbounded-search defects
+- [x] 1.1 In `src/worktrail/workqueue/premise_check.py`, close both unbounded-search defects
       in the quoted-string search. (a) Thread the existing `timeout_s` through
       `_git_grep_whole_string()` and `_git_grep_fragments()`: each takes `timeout_s` and
       passes `timeout=timeout_s` to its `subprocess.run()` call, and `run_premise_check()`'s
