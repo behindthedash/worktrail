@@ -38,7 +38,11 @@ from pathlib import Path
 from typing import Any
 
 from worktrail.workqueue import create_handoff as create_handoff_mod
-from worktrail.workqueue import external_events, queue_git_persist
+from worktrail.workqueue import (
+    external_events,
+    pullhook_feedback_envelope,
+    queue_git_persist,
+)
 from worktrail.workqueue.pullhook_client import PullHookItem
 from worktrail.workqueue.pullhook_envelope import (
     EnvelopeError,
@@ -219,9 +223,22 @@ def _process(
 ) -> IngressResult:
     # 1. validate -- before any queue mutation.
     try:
-        valid = validate_envelope(item.payload)
-        kwargs = map_envelope(item.payload)
-    except EnvelopeError as exc:
+        if item.payload.get("schema") == pullhook_feedback_envelope.SUPPORTED_SCHEMA:
+            if (
+                item.payload_size_bytes is not None
+                and item.payload_size_bytes
+                > pullhook_feedback_envelope.MAX_ENVELOPE_BYTES
+            ):
+                raise pullhook_feedback_envelope.FeedbackEnvelopeError(
+                    "feedback envelope exceeds "
+                    f"{pullhook_feedback_envelope.MAX_ENVELOPE_BYTES} bytes"
+                )
+            valid = pullhook_feedback_envelope.validate_envelope(item.payload)
+            kwargs = pullhook_feedback_envelope.map_envelope(item.payload)
+        else:
+            valid = validate_envelope(item.payload)
+            kwargs = map_envelope(item.payload)
+    except (EnvelopeError, pullhook_feedback_envelope.FeedbackEnvelopeError) as exc:
         # Left unacked on purpose: a payload WorkTrail cannot materialize is a
         # producer-side defect, and dropping it silently would erase the only
         # copy of the evidence.
