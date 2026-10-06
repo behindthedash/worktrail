@@ -2307,6 +2307,212 @@ class TestBlockedBy(QueueTestBase):
         )
 
 
+class TestExternalBlocker(QueueTestBase):
+    """The optional `blocked-on:` external blocker: listing, claim warnings,
+    and the `unblock` subcommand."""
+
+    _BLOCKER = "upstream datalena release must land"
+
+    def _one(self, filename: str = "20260101-000001-main.md") -> dict:
+        return {b["filename"]: b for b in q.list_queue()["briefs"]}[filename]
+
+    def test_list_reports_blocked_and_exposes_blocked_on(self):
+        self.write(
+            "20260101-000001-main.md",
+            focus="waiting on another repo",
+            extra=f"blocked-on: {self._BLOCKER}",
+        )
+        brief = self._one()
+        self.assertTrue(brief["blocked"])
+        self.assertEqual(brief["blocked_on"], self._BLOCKER)
+
+    def test_list_without_field_is_unchanged(self):
+        self.write("20260101-000001-main.md", focus="plain work")
+        brief = self._one()
+        self.assertIsNone(brief["blocked_on"])
+        self.assertFalse(brief["blocked"])
+        self.assertEqual(brief["focus"], "plain work")
+        self.assertEqual(brief["dependency_diagnostics"], [])
+
+    def test_list_blank_value_treated_as_absent(self):
+        self.write("20260101-000001-empty.md", focus="empty", extra='blocked-on: ""')
+        self.write(
+            "20260101-000002-space.md", focus="spaces", extra='blocked-on: "   "'
+        )
+        briefs = {b["filename"]: b for b in q.list_queue()["briefs"]}
+        self.assertIsNone(briefs["20260101-000001-empty.md"]["blocked_on"])
+        self.assertFalse(briefs["20260101-000001-empty.md"]["blocked"])
+        self.assertIsNone(briefs["20260101-000002-space.md"]["blocked_on"])
+        self.assertFalse(briefs["20260101-000002-space.md"]["blocked"])
+
+    def test_list_blocked_by_only_brief_unchanged(self):
+        self.write("20260101-000000-dep.md", focus="the prereq", brief_id="dep-id")
+        self.write("20260101-000001-main.md", focus="needs dep", blocked_by=["dep-id"])
+        brief = self._one()
+        self.assertIsNone(brief["blocked_on"])
+        self.assertTrue(brief["blocked"])
+
+    def test_claim_succeeds_and_warns_naming_the_blocker(self):
+        self.write(
+            "20260101-000001-main.md",
+            focus="waiting on another repo",
+            extra=f"blocked-on: {self._BLOCKER}",
+        )
+        res = q.claim("20260101-000001-main")
+        self.assertEqual(res["status"], "claimed")
+        self.assertTrue(any(self._BLOCKER in w for w in res["warnings"]))
+
+    def test_unblock_removes_field_and_preserves_every_other_key(self):
+        p = self.write(
+            "20260101-000001-main.md",
+            focus="waiting on another repo",
+            brief_id="main-id",
+            extra=f"blocked-on: {self._BLOCKER}",
+            blocked_by=["dep-id"],
+        )
+        res = q.unblock("20260101-000001-main")
+        self.assertEqual(res["status"], "unblocked")
+        self.assertTrue(res["cleared"])
+        self.assertEqual(res["id"], "main-id")
+        self.assertEqual(res["path"], str(p))
+        fm = q._read_frontmatter(p)
+        self.assertNotIn("blocked-on", fm)
+        self.assertEqual(fm.get("blocked-by"), ["dep-id"])
+        self.assertEqual(fm.get("id"), "main-id")
+        self.assertEqual(fm.get("focus"), "waiting on another repo")
+        self.assertEqual(fm.get("status"), "queued")
+        self.assertIn("## Focus", p.read_text(encoding="utf-8"))
+        listed = self._one()
+        self.assertIsNone(listed["blocked_on"])
+        self.assertFalse(listed["blocked"])  # stale dep-id is satisfied; external gone
+
+    def test_second_unblock_is_noop_reporting_nothing_cleared(self):
+        p = self.write(
+            "20260101-000001-main.md",
+            focus="waiting on another repo",
+            extra=f"blocked-on: {self._BLOCKER}",
+        )
+        self.assertTrue(q.unblock("20260101-000001-main")["cleared"])
+        before = p.read_bytes()
+        res = q.unblock("20260101-000001-main")
+        # A distinct status from a real clear (`unblocked`): the no-op changed
+        # nothing on disk, so `_BACKUP_ON` must not match it.
+        self.assertEqual(res["status"], "nothing-to-clear")
+        self.assertFalse(res["cleared"])
+        self.assertEqual(p.read_bytes(), before)
+
+    def test_unblock_unknown_id_reports_none(self):
+        res = q.unblock("missing-id-xyz")
+        self.assertEqual(res["status"], "none")
+        self.assertFalse(res["cleared"])
+        self.assertIsNone(res["path"])
+
+    def test_human_list_shows_blocker_text(self):
+        self.write(
+            "20260101-000001-main.md",
+            focus="waiting on another repo",
+            extra=f"blocked-on: {self._BLOCKER}",
+        )
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            self.assertEqual(q.main(["list"]), 0)
+        printed = out.getvalue()
+        self.assertIn("[blocked — waiting on prerequisites]", printed)
+        self.assertIn(f"blocked-on: {self._BLOCKER}", printed)
+
+    def test_cli_unblock_json_reports_cleared(self):
+        p = self.write(
+            "20260101-000001-main.md",
+            focus="waiting on another repo",
+            brief_id="main-id",
+            extra=f"blocked-on: {self._BLOCKER}",
+        )
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            code = q.main(["unblock", "20260101-000001-main", "--json"])
+        self.assertEqual(code, 0)
+        data = json.loads(out.getvalue())
+        self.assertEqual(data["status"], "unblocked")
+        self.assertTrue(data["cleared"])
+        self.assertEqual(data["id"], "main-id")
+        self.assertEqual(data["path"], str(p))
+        self.assertNotIn("blocked-on", q._read_frontmatter(p))
+
+    def test_cli_unblock_human_reports_cleared_id_and_path(self):
+        p = self.write(
+            "20260101-000001-main.md",
+            focus="waiting on another repo",
+            brief_id="main-id",
+            extra=f"blocked-on: {self._BLOCKER}",
+        )
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            self.assertEqual(q.main(["unblock", "20260101-000001-main"]), 0)
+            self.assertEqual(q.main(["unblock", "20260101-000001-main"]), 0)
+        printed = out.getvalue()
+        self.assertIn(f"unblocked: main-id (cleared: true) {p}", printed)
+        self.assertIn(f"nothing-to-clear: main-id (cleared: false) {p}", printed)
+
+    def test_noop_unblock_does_not_trigger_git_backup(self):
+        """A no-op changed nothing on disk, so `_BACKUP_ON` must not match it
+        (`_git_backup` would `git add -A` unrelated pending queue changes)."""
+        self.write("20260101-000001-main.md", focus="plain work")
+        out = io.StringIO()
+        with patch.object(q, "_git_backup") as backup, patch("sys.stdout", out):
+            code = q.main(["unblock", "20260101-000001-main", "--json"])
+        self.assertEqual(code, 0)
+        backup.assert_not_called()
+
+    def test_real_unblock_triggers_git_backup(self):
+        self.write(
+            "20260101-000001-main.md",
+            focus="waiting on another repo",
+            extra=f"blocked-on: {self._BLOCKER}",
+        )
+        out = io.StringIO()
+        with patch.object(q, "_git_backup") as backup, patch("sys.stdout", out):
+            code = q.main(["unblock", "20260101-000001-main", "--json"])
+        self.assertEqual(code, 0)
+        self.assertTrue(backup.called)
+
+    def test_unblock_rolls_back_when_post_write_validation_fails(self):
+        """A brief that parses but lacks `status` fails `validate_brief` after
+        the field is removed; the pre-mutation content is restored."""
+        original = (
+            "---\nfocus: external blocker only\n"
+            "blocked-on: upstream datalena release must land\n"
+            "---\n\n## Focus\n\nexternal blocker only\n"
+        )
+        p = self.queue / "20260101-000001-nostatus.md"
+        p.write_text(original, encoding="utf-8")
+        res = q.unblock("20260101-000001-nostatus")
+        self.assertEqual(res["status"], "write-verification-failed")
+        self.assertFalse(res["cleared"])
+        self.assertIsNotNone(res["error"])
+        self.assertEqual(p.read_text(encoding="utf-8"), original)
+
+    def test_unblock_restores_original_when_removal_write_fails(self):
+        """An OSError from a partial/truncating write must not leave the brief
+        damaged: the error path restores the pre-mutation content."""
+        p = self.write(
+            "20260101-000001-main.md",
+            focus="waiting on another repo",
+            extra=f"blocked-on: {self._BLOCKER}",
+        )
+        original = p.read_text(encoding="utf-8")
+
+        def _truncate_then_fail(path, key):
+            Path(path).write_text("", encoding="utf-8")
+            raise OSError("simulated partial write")
+
+        with patch.object(q, "_remove_fm_field", side_effect=_truncate_then_fail):
+            res = q.unblock("20260101-000001-main")
+        self.assertEqual(res["status"], "error")
+        self.assertFalse(res["cleared"])
+        self.assertIn("simulated partial write", res["error"])
+        self.assertEqual(p.read_text(encoding="utf-8"), original)
+
+
 class TestPremiseDriftWarning(QueueTestBase):
     """Tests for the claim-time premise-drift age warning."""
 

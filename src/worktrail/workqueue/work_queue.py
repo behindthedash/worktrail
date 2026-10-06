@@ -46,22 +46,25 @@ CLI (all subcommands accept --json):
                                         below); --force overrides a mismatch.
   queue.py release  IDENTIFIER [--by L] move picked/ -> queue/ (abandoned claim)
                     [--force]           same --by/--force ownership check as done
+  queue.py unblock  IDENTIFIER          clear the brief's `blocked-on:` external
+                                        blocker (no-op when it has none)
 
 Exit codes for `claim`/`claim-batch`: 0 ok, 2 none, 3 ambiguous, 4 already-claimed,
 5 io-error, 6 write-verification-failed (keyed off the primary for `claim-batch`).
 
 Write verification
 -------------------
-Every mutation that leaves a file on disk (`claim`, `done`, `release`, `link`) re-reads
-the file it just wrote and validates it (`brief_frontmatter.validate_brief`: a
+Every mutation that leaves a file on disk (`claim`, `done`, `release`, `link`,
+`unblock`) re-reads the file it just wrote and validates it
+(`brief_frontmatter.validate_brief`: a
 `---`-fenced block that parses as YAML to a mapping with non-empty `id`/`status`
 fields) before reporting success. A validation failure restores the file's
 pre-mutation content (and, for `claim`/`release`, undoes the queue/picked move) and
 returns `{"status": "write-verification-failed", "error": "<reason>"}` instead of a
-false "claimed"/"done"/"released"/"linked". This exists because a write path that
-merely returns success without checking its own output can silently leave a broken
-brief behind -- `list`, the dashboard, and `/go`'s picker would all have to cope with
-it downstream instead of the write itself catching it.
+false "claimed"/"done"/"released"/"linked"/"unblocked". This exists because a write
+path that merely returns success without checking its own output can silently
+leave a broken brief behind -- `list`, the dashboard, and `/go`'s picker would
+all have to cope with it downstream instead of the write itself catching it.
 
 Closure evidence gate (done --note)
 ------------------------------------
@@ -145,6 +148,19 @@ or in picked/ without `status: done`. If a prerequisite ID is not found anywhere
 treated as satisfied (lenient -- IDs go stale as briefs are completed and archived).
 `claim` succeeds (never hard-blocks) but adds a `warnings` list to the response so the
 consuming skill can surface the unresolved dependencies to the agent.
+
+External blockers (blocked-on)
+------------------------------
+A brief may also name a blocker that is not a queue brief at all -- a dependency
+in another repo, an upstream PR that must land, an out-of-band operator action --
+in the optional scalar field:
+
+    blocked-on: upstream datalena release must land
+
+`list` reports such a brief `blocked: True` with the stripped text in
+`blocked_on`, but nothing in the queue can ever satisfy it: it stays out of
+automatic selection until an explicit `unblock` clears the field. `claim` still
+succeeds (never hard-blocks) and warns, exactly like an unresolved `blocked-by`.
 """
 
 from __future__ import annotations
@@ -822,6 +838,22 @@ def _blocked_by_refs(fm: dict[str, Any]) -> list[Any]:
     return [deps]
 
 
+def _blocked_on(fm: dict[str, Any]) -> str | None:
+    """The brief's external blocker: the stripped `blocked-on` frontmatter
+    value, or None when it is missing, empty, or whitespace-only.
+
+    Distinct from `_blocked_by_refs`: a `blocked-on` value names a blocker
+    that is not a queue brief, so no amount of waiting on the queue satisfies
+    it -- it clears only via `unblock` (or a triage verdict rewriting it).
+    Non-string scalars are coerced, keeping the listing JSON-serializable.
+    """
+    raw = fm.get("blocked-on")
+    if raw is None:
+        return None
+    value = str(raw).strip()
+    return value or None
+
+
 def _dependency_diagnostics(path: Path) -> list[dict[str, Any]]:
     """One entry per *unsatisfied* `blocked-by` reference of `path`.
 
@@ -977,15 +1009,21 @@ def brief_kind(frontmatter: dict[str, Any]) -> str:
 def list_queue() -> dict[str, Any]:
     """Queue briefs newest-first:
 
-    {"briefs": [{filename, path, focus, repo, blocked, not_yet_due,
-    recently_released, recently_released_by, recently_released_at, related,
-    awaiting_decision, decision_status, unparsable, kind,
+    {"briefs": [{filename, path, focus, repo, blocked, blocked_on,
+    not_yet_due, recently_released, recently_released_by, recently_released_at,
+    related, awaiting_decision, decision_status, unparsable, kind,
     dependency_diagnostics}, ...]}.
 
     `dependency_diagnostics` is one entry per unsatisfied `blocked-by`
     reference (see `_dependency_diagnostics()`); it is empty for a brief whose
     prerequisites are all satisfied, and for one blocked only by an open
     decision.
+
+    `blocked_on` is the brief's external blocker (`blocked-on:` frontmatter,
+    stripped) or None when it is absent or blank. A non-empty value sets
+    `blocked: True` unconditionally: it names a blocker that is not a queue
+    brief, so it never resolves by waiting -- only an explicit `unblock` (or a
+    triage verdict) clears it.
 
     `kind` is `"execution"` for a seeded brief, `"intake"` for everything
     else (handoff and consolidated briefs) -- see `brief_kind()`.
@@ -1002,12 +1040,16 @@ def list_queue() -> dict[str, Any]:
         released = _recently_released_info(f)
         awaiting = _awaiting_decision_info(f)
         diagnostics = _dependency_diagnostics(f)
+        blocked_on = _blocked_on(fm)
         return {
             "filename": f.name,
             "path": str(f),
             "focus": _focus_of(f),
             "repo": fm.get("repo"),
-            "blocked": bool(diagnostics) or awaiting["decision_status"] == "open",
+            "blocked": bool(diagnostics)
+            or awaiting["decision_status"] == "open"
+            or bool(blocked_on),
+            "blocked_on": blocked_on,
             "dependency_diagnostics": diagnostics,
             "not_yet_due": _is_not_yet_due(f),
             "awaiting_decision": awaiting["awaiting_decision"],
@@ -1115,8 +1157,9 @@ def _premise_drift_warning(path: Path) -> str | None:
 
 
 def _claim_warnings(path: Path) -> list[str]:
-    """Return warning strings for any unresolved blocked-by dependencies, plus a
-    premise-drift age warning when applicable."""
+    """Return warning strings for any unresolved blocked-by dependencies, any
+    external `blocked-on` blocker, plus a premise-drift age warning when
+    applicable."""
     fm = _read_frontmatter(path)
     warnings: list[str] = []
     for dep in _blocked_by_refs(fm):
@@ -1138,6 +1181,12 @@ def _claim_warnings(path: Path) -> list[str]:
             )
             continue
         warnings.append(f"blocked by {raw_display} ({state} dependency reference)")
+    external = _blocked_on(fm)
+    if external:
+        warnings.append(
+            f"externally blocked: {external} (not a queue-brief prerequisite -- "
+            "clear it with `worktrail-work-queue unblock` once resolved)"
+        )
     awaiting = _awaiting_decision_info(path)
     if awaiting["decision_status"] == "open":
         warnings.append(
@@ -1906,6 +1955,100 @@ def set_triage(identifier: str, value: str) -> dict[str, Any]:
     return {"status": "triaged", "path": str(path), "candidates": [], "error": None}
 
 
+def unblock(identifier: str) -> dict[str, Any]:
+    """Clear a brief's `blocked-on:` external blocker.
+
+    Resolves against queue/ (a brief stays queued while its external blocker is
+    pending -- nothing about its lifecycle state changes). The field is removed
+    via `_remove_fm_field`, leaving every other frontmatter key -- including
+    `blocked-by` -- and the body untouched. A brief with no (effective)
+    `blocked-on:` value is a successful no-op reporting `cleared: false` under
+    status `nothing-to-clear`, so running this twice is safe -- and, unlike a
+    real clear (`unblocked`), it changed nothing on disk, so it must not
+    trigger the git backup. Like every other mutation, the just-written brief
+    is re-read and validated (`validate_brief`); a failure restores the
+    pre-mutation content and reports `write-verification-failed` instead of a
+    false success. Returns
+    {"status": "unblocked"|"nothing-to-clear"|"none"|"ambiguous"|"error"|
+     "write-verification-failed", "cleared": bool,
+     "id": str|None, "path": str|None, "candidates": [...], "error": str|None}.
+    """
+    res = resolve(identifier, queue_dir())
+    if res["status"] != "match":
+        return {
+            "status": res["status"],
+            "cleared": False,
+            "id": None,
+            "path": None,
+            "candidates": res["candidates"],
+            "error": None,
+        }
+    path = Path(res["candidates"][0])
+    fm = _read_frontmatter(path)
+    brief_id = str(fm.get("id") or path.stem)
+    if _blocked_on(fm) is None:
+        return {
+            "status": "nothing-to-clear",
+            "cleared": False,
+            "id": brief_id,
+            "path": str(path),
+            "candidates": [],
+            "error": None,
+        }
+    try:
+        original = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return {
+            "status": "error",
+            "cleared": False,
+            "id": brief_id,
+            "path": str(path),
+            "candidates": [],
+            "error": str(exc),
+        }
+    try:
+        _remove_fm_field(path, "blocked-on")
+    except (OSError, ValueError) as exc:
+        # A partial/truncating write can leave the brief damaged; restore the
+        # pre-mutation content best-effort before reporting the failure.
+        try:
+            path.write_text(original, encoding="utf-8")
+        except OSError:
+            pass
+        return {
+            "status": "error",
+            "cleared": False,
+            "id": brief_id,
+            "path": str(path),
+            "candidates": [],
+            "error": str(exc),
+        }
+
+    ok, verr = validate_brief(path)
+    if not ok:
+        try:
+            path.write_text(original, encoding="utf-8")
+        except OSError:
+            pass
+        return {
+            "status": "write-verification-failed",
+            "cleared": False,
+            "id": brief_id,
+            "path": str(path),
+            "candidates": [],
+            "error": verr,
+        }
+
+    return {
+        "status": "unblocked",
+        "cleared": True,
+        "id": brief_id,
+        "path": str(path),
+        "candidates": [],
+        "error": None,
+    }
+
+
 def link(id_a: str, id_b: str) -> dict[str, Any]:
     """Link two briefs as related (symmetric, idempotent, never touches blocked-by).
 
@@ -2057,6 +2200,7 @@ _BACKUP_ON = {
     "release": ("released",),
     "link": ("linked",),
     "triage": ("triaged",),
+    "unblock": ("unblocked",),
 }
 
 
@@ -2197,6 +2341,13 @@ def main(argv=None) -> int:
     tp.add_argument("identifier")
     tp.add_argument("value", choices=VALID_TRIAGE + ("clear",))
 
+    up = subs.add_parser(
+        "unblock",
+        parents=[common],
+        help="clear a brief's blocked-on: external blocker (no-op when absent)",
+    )
+    up.add_argument("identifier")
+
     args = p.parse_args(argv)
 
     if args.cmd == "list":
@@ -2225,6 +2376,8 @@ def main(argv=None) -> int:
         result = link(args.id_a, args.id_b)
     elif args.cmd == "triage":
         result = set_triage(args.identifier, args.value)
+    elif args.cmd == "unblock":
+        result = unblock(args.identifier)
     else:
         result = release(
             args.identifier,
@@ -2304,6 +2457,8 @@ def _print_human(cmd: str, result: dict[str, Any]) -> None:
             print("\n[blocked — waiting on prerequisites]")
             for b in blocked:
                 print(f"  {b['filename']}  focus: {b['focus']}")
+                if b.get("blocked_on"):
+                    print(f"    blocked-on: {b['blocked_on']}")
                 for entry in _dependency_repair_warnings(b):
                     print(f"    {entry}")
         if not_yet_due:
@@ -2319,6 +2474,9 @@ def _print_human(cmd: str, result: dict[str, Any]) -> None:
                 f"  companion {comp['identifier']}: {comp['status']}"
                 + (f" -> {comp['path']}" if comp.get("path") else "")
             )
+    elif status in ("unblocked", "nothing-to-clear"):
+        cleared = "true" if result.get("cleared") else "false"
+        print(f"{status}: {result.get('id')} (cleared: {cleared}) {result.get('path')}")
     elif status == "linked":
         paths = result.get("paths", [])
         if len(paths) >= 2:
