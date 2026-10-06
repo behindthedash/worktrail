@@ -38,6 +38,7 @@ from .score_candidates import _overlap_coefficient, _tokenize
 from .slug import fallback_slugify
 from .work_queue import (
     _awaiting_decision_info,
+    _remove_fm_field,
     _set_fm_fields,
     claim,
     done,
@@ -400,6 +401,14 @@ requirements, a scope or policy decision — set `judgment_reason` explaining wh
 must be decided, and no `refuted_span`. Never set both, and never set a \
 `refuted_span` you cannot quote verbatim from the focus text above.
 
+For a `keep` verdict, set `blocked_on` to a single line when the brief is valid
+but blocked by something other than a queue-brief prerequisite (for example, a
+dependency in another repo, an upstream PR or branch that must land, or an
+out-of-band operator action) and it cannot be given a date. Never use it for a
+queue-brief prerequisite. Echo the brief's current `blocked-on:` value when the
+blocker is still unresolved or you cannot verify it cleared; use an empty string
+only when evidence shows it cleared.
+
 Step 3 — memory check before raising an alarm:
 Before flagging anything you observe as a live operational concern, check \
 {memory_index} for whether it already documents the same state as expected or \
@@ -424,7 +433,8 @@ the brief's focus text your evidence refutes, for a mechanical needs-update or \
 a correcting work-directly>", "corrected_span": "<optional replacement for \
 refuted_span, for a mechanical needs-update or a correcting work-directly>", \
 "judgment_reason": "<what a human must decide, for a judgment needs-update \
-only>", "evidence": "<cited PR/commit/file/\
+only>", "blocked_on": "<single-line external blocker for keep; empty only when \
+evidence shows it cleared>", "evidence": "<cited PR/commit/file/\
 test, or why inconclusive for a fail-open keep>", "confidence": \
 "high|medium|low"}}
 """
@@ -1691,6 +1701,7 @@ def evaluate_group(
         f"- {path.stem}: {_brief_focus(path) or '(no focus recorded)'} "
         f"(created {_brief_created(path)})\n"
         f"  Candidate targets: {_format_candidates(candidates_by_path[path])}\n"
+        f"  Current blocked-on: {read_frontmatter(path).get('blocked-on')!r}\n"
         f"  Premise check: "
         f"{premise_check.format_premise_block(premise_by_path[path])}"
         + (
@@ -1804,6 +1815,11 @@ class Verdict:
     for every other verdict type, and for a verdict the evaluator left
     evidence-only -- validity still requires only non-empty `evidence`,
     unaffected by these fields.
+
+    `blocked_on` is a `keep` verdict's optional single-line external blocker.
+    An empty string means the blocker was cleared; `None` means it was not
+    judged. It is retained on every parsed verdict so downstream application
+    can ignore it outside `keep` without rejecting evaluator output.
     """
 
     brief_id: str
@@ -1824,6 +1840,7 @@ class Verdict:
     refuted_span: str | None = None
     corrected_span: str | None = None
     judgment_reason: str | None = None
+    blocked_on: str | None = None
 
 
 # Shortest `refuted_span` a mechanical rewrite will act on. Mirrors
@@ -2064,6 +2081,7 @@ def parse_verdicts(
                 refuted_span = obj.get("refuted_span")
                 corrected_span = obj.get("corrected_span")
                 judgment_reason = obj.get("judgment_reason")
+                blocked_on = obj.get("blocked_on")
                 chosen = Verdict(
                     brief_id=bid,
                     verdict=verdict_type,
@@ -2090,6 +2108,7 @@ def parse_verdicts(
                     judgment_reason=judgment_reason
                     if isinstance(judgment_reason, str)
                     else None,
+                    blocked_on=blocked_on if isinstance(blocked_on, str) else None,
                 )
                 break
 
@@ -2607,6 +2626,11 @@ def _apply_keep(v: Verdict, run_date: str) -> dict:
         return owned
     next_count = consecutive_keep_count(path) + 1
     try:
+        if v.blocked_on is not None:
+            if v.blocked_on:
+                _set_fm_fields(path, {"blocked-on": v.blocked_on})
+            else:
+                _remove_fm_field(path, "blocked-on")
         content = path.read_text(encoding="utf-8")
         path.write_text(
             content.rstrip("\n")
@@ -2717,6 +2741,7 @@ def _apply_work_directly(v: Verdict, run_date: str) -> dict:
 
     summary = f"{_focus_rewrite_summary(v)}\n\n" if rewrite else ""
     try:
+        _remove_fm_field(path, "blocked-on")
         _set_fm_fields(path, fields)
         content = path.read_text(encoding="utf-8")
         path.write_text(
@@ -3945,6 +3970,7 @@ def apply_verdicts(
                         "status": "planned",
                         "path": None,
                         "note": v.evidence,
+                        "blocked_on": v.blocked_on,
                         "error": None,
                     }
                 )
