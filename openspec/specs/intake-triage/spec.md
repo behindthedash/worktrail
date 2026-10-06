@@ -334,6 +334,15 @@ The evaluator prompt SHALL instruct the evaluator to cite log or error output al
 in the brief as reproduction evidence when the premise check confirms it. A brief with no
 extractable needles SHALL carry an empty `premise_check`.
 
+The quoted-string search SHALL run with the same bounded timeout as the command needles: a
+search that does not complete within it SHALL be terminated and its needle recorded
+`confirmed: false` with a timeout detail, and the evaluation proceeds. A quoted needle whose
+text contains an empty line SHALL NOT be searched -- an empty-line-containing fixed pattern
+degenerates in `git grep` (an empty alternative matches every line), producing pathological
+cost and, were such a search to complete, a spurious confirmation -- and SHALL be recorded
+`confirmed: false` with a detail stating it was not searched because its text contains an
+empty line.
+
 When a `path` needle's focus text carries an absence indicator (phrasing such as "has no",
 "missing", "lacks"/"lacking", "without", "no such", "does not exist"/"doesn't exist", "does
 not have"/"doesn't have") within 40 characters immediately before the path's mention, the
@@ -350,6 +359,17 @@ the path exists (and, when a line number is given, the file has at least that ma
   does
 - **THEN** the verdict's `premise_check` carries an entry of kind `quoted` for that line
   with `confirmed: true` and a detail naming the matching fragment and file
+
+#### Scenario: Quoted needle containing an empty line is not searched
+- **WHEN** a brief's focus yields a quoted needle whose text contains an empty line
+- **THEN** the needle is not searched even when its non-empty text appears in the checkout,
+  and `premise_check` records it `confirmed: false` with a detail stating it was not searched
+  because its text contains an empty line
+
+#### Scenario: Quoted search exceeds the timeout
+- **WHEN** a quoted-string search does not complete within the bounded timeout
+- **THEN** it is terminated, its entry is `confirmed: false` with a timeout detail, and the
+  evaluation proceeds
 
 #### Scenario: Path with line reference
 - **WHEN** a brief's focus names `src/worktrail/drain/drain.py:1502` and that file exists in

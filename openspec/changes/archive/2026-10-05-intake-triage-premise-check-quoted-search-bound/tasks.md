@@ -32,7 +32,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [e2e] Run `PYTHONPATH=src python3.14 -m pytest -q
+- [x] 2.1 [e2e] Run `PYTHONPATH=src python3.14 -m pytest -q
       tests/workqueue/test_premise_check.py`, then `PYTHONPATH=src python3.14 -m pytest -q`
       and `PYTHONPATH=src python3.14 -m worktrail.orchestrator.orchestrate check`, then
       `python3.14 scripts/ci/ruff_pinned.py check .`, `python3.14 scripts/ci/ruff_pinned.py
