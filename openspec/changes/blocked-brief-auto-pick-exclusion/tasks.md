@@ -91,7 +91,7 @@
 
 ## 4. Document the field and the skip reason
 
-- [ ] 4.1 In `skills/worktrail-handoff/references/handoff-template.md`, add a `blocked-on:`
+- [x] 4.1 In `skills/worktrail-handoff/references/handoff-template.md`, add a `blocked-on:`
       rule bullet after the `blocked-by:` bullet (`:8-12`): optional, a single non-empty line
       naming a blocker that is not a queue-brief prerequisite and has no known date; distinct
       from `blocked-by` (queue-brief IDs) and `next-check-after` (a date); a brief carrying it

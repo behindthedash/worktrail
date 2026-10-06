@@ -77,6 +77,10 @@ these reasons:
   using the exact brief ID (full filename stem without `.md`), or fix the reference to be
   more specific.
 
+- `blocked:external` — brief carries a non-empty `blocked-on:` naming an external blocker.
+  Wait for that blocker to clear, then run `worktrail-work-queue unblock <id>` (or let the
+  next triage pass clear it).
+
 - `no-repo` — brief's `repo:` field is missing or empty. The brief cannot be dispatched
   without a repo. Set a repo.
 
