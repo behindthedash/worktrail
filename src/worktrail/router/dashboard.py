@@ -2268,15 +2268,22 @@ def _blocked_skip_reason(brief: dict[str, Any]) -> str:
     A brief blocked by a still-active prerequisite or an open decision is
     working as designed and keeps the bare `blocked` reason. A malformed or
     ambiguous `blocked-by` reference never resolves on its own, so it names
-    itself -- `log_auto_pick_miss()` splits on `:` and still buckets both under
-    the coarse `blocked` category. Malformed outranks ambiguous when both are
-    present: it is the strictly more broken value.
+    itself -- `log_auto_pick_miss()` splits on `:` and still buckets all of
+    them under the coarse `blocked` category. A brief carrying a non-empty
+    `blocked-on:` (queue listing's `blocked_on` key) is blocked by something
+    outside the queue's own prerequisite graph, so it names itself
+    `blocked:external`. Malformed outranks ambiguous outranks external, in
+    that order: the `blocked-by` reference problems are the strictly more
+    broken values, and only the first-ranked one is what a reader should act
+    on.
     """
     states = _dependency_problem_states(brief)
     if "malformed" in states:
         return "blocked:malformed-dependency"
     if "ambiguous" in states:
         return "blocked:ambiguous-dependency"
+    if str(brief.get("blocked_on") or "").strip():
+        return "blocked:external"
     return "blocked"
 
 
