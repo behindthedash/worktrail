@@ -7,7 +7,8 @@
       selector at all is a refusal), branch repair for every selected task with failed or
       escalated entries (locate `worktree.task_branch(spec_id, task_id)`, use its existing
       checkout via `live._worktree_checkouts_on_branch` or a throwaway worktree modeled on
-      `integrate._integration_worktree` when the branch has no checkout, refuse on uncommitted
+      `integrate._integration_worktree` when the branch has no checkout (the task worktree was
+      removed but its branch remains), refuse on uncommitted
       changes, resolve the base with `live._live_base_ref`, no-op when `git merge-base
       --is-ancestor <base> <branch>` already holds, else `git merge --no-edit <base>` and on
       conflict capture `git diff --name-only --diff-filter=U` before `git merge --abort` and
@@ -32,7 +33,10 @@
       retained branch reported and skipped, group-to-task resolution from a seeded RunPlan
       cache plus the refusal when the cache is absent, a named non-QUARANTINED group refused,
       a completion record refused, dry-run merging and writing nothing, the single-write and
-      mid-recovery-lock refusal paths, and byte-identical journals for every refusal.
+      mid-recovery-lock refusal paths, and byte-identical journals for every refusal. The
+      stale-branch case must include a retained task branch with no existing checkout, covering
+      the stale-ancestry recovery issue recorded in `proposal.md`: repair it in a throwaway
+      worktree instead of rejecting it.
       files: src/worktrail/orchestrator/recover.py tests/orchestrator/test_recover.py
 
 - [ ] 1.2 In `src/worktrail/orchestrator/live.py`, register the `recover` subparser beside
@@ -113,9 +117,3 @@ Triage evidence for this fold is in `proposal.md`'s `## Folded from 20260930-112
 
 - [ ] 8.1 worktrail has orchestrator groups stuck in QUARANTINED for spec `routing-target-selector` (worktrail-quarantine-selfcheck): tail-5.1 (merge_conflict, 34d); tail-6.5 (merge_conflict, 34d) Triage each group: repair and resume it, or discard it if the work already landed or is no longer wanted. worktrail-selfcheck-fleet-sweep: quarantine worktrail routing-target-selector
       files: ../run-routing-target-selector.json, pyproject.toml
-
-## 9. Folded from 20261005-103628-stale-ancestry-repair-unreachable
-
-Triage evidence for this fold is in `proposal.md`'s `## Folded from 20261005-103628-stale-ancestry-repair-unreachable` section.
-
-- [ ] 9.1 Orchestrator's retained-task-branch stale-ancestry repair is unreachable on the documented recovery path (worktree removed, branch kept)
