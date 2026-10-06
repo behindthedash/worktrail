@@ -1,6 +1,6 @@
 ## 1. Recovery engine and command
 
-- [ ] 1.1 Add `src/worktrail/orchestrator/recover.py`: selection resolution (each `--group`
+- [x] 1.1 Add `src/worktrail/orchestrator/recover.py`: selection resolution (each `--group`
       name must have a journal record in state QUARANTINED and resolve through
       `quarantine_selfcheck.group_task_ids`, refusing when that returns None; each named
       `--tasks` id must hold a failed/escalated entry, the `clear_tasks` typo guard; no
@@ -39,7 +39,7 @@
       worktree instead of rejecting it.
       files: src/worktrail/orchestrator/recover.py tests/orchestrator/test_recover.py
 
-- [ ] 1.2 In `src/worktrail/orchestrator/live.py`, register the `recover` subparser beside
+- [x] 1.2 In `src/worktrail/orchestrator/live.py`, register the `recover` subparser beside
       `clear-task` (`--repo`, `--spec`, repeatable `--group`, comma-separated `--tasks`,
       `--base` defaulting to `dev`, `--remote` defaulting to `_default_remote(repo)`, `--dry-run`)
       and dispatch it through a deferred import of `recover` so the `live`/`resume_group`
@@ -69,7 +69,7 @@
 
 ## 3. Verification
 
-- [ ] 3.1 [e2e] Run `PYTHONPATH=src python3.14 -m pytest -q
+- [x] 3.1 [e2e] Run `PYTHONPATH=src python3.14 -m pytest -q
       tests/orchestrator/test_recover.py tests/orchestrator/test_live_recover_command.py`,
       then `PYTHONPATH=src python3.14 -m pytest -q` and `PYTHONPATH=src python3.14 -m
       worktrail.orchestrator.orchestrate check`, then `python3.14 scripts/ci/ruff_pinned.py
