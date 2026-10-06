@@ -10,6 +10,12 @@ Write each brief in the shape below. Rules:
   `claim` succeeds but emits a `warnings` key so the agent can see the dependency. Omit
   the field entirely when there are no prerequisites. **Hard, gating dependency** — a brief
   with unsatisfied `blocked-by` entries cannot be considered ready.
+- `blocked-on:` is optional. Use one non-empty line naming a blocker that is not a queue-brief
+  prerequisite and has no known date. It is distinct from `blocked-by:` (queue-brief IDs) and
+  `next-check-after:` (a date). A brief carrying it is held out of automatic selection and
+  appears in the listing's blocked section until cleared; an explicit interactive claim still
+  succeeds and warns. Set it with triage's `keep` verdict and clear it with
+  `worktrail-work-queue unblock <id>`.
 - `related:` is optional. List the IDs of briefs that touch the same surface — **non-blocking
   awareness links**, not dependencies. `work_queue.py list` surfaces related IDs in each brief
   object; `claim` ignores them entirely (they never gate, block, or warn). Unlike `blocked-by`,
