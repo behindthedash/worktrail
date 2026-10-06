@@ -3470,6 +3470,23 @@ def _fold_task_file_scope(
     return files
 
 
+def _fold_task_kind(worktree_dir: Path, derived_scope: list[str], *texts: str) -> str:
+    """Mark work supported only by existing machine-local files as e2e."""
+    if derived_scope:
+        return ""
+    root = worktree_dir.resolve()
+    for text in texts:
+        for probe in brief_probes.extract_probes(text).get("paths", []):
+            rel = _PATH_LINE_SUFFIX_RE.sub("", probe)
+            candidate = (worktree_dir / rel).resolve()
+            try:
+                candidate.relative_to(root)
+            except ValueError:
+                if candidate.is_file():
+                    return "e2e"
+    return ""
+
+
 def _apply_fold_into_change(
     v: Verdict, *, repos_root: str | Path | None = None
 ) -> dict:
@@ -3551,15 +3568,18 @@ def _apply_fold_into_change(
                 encoding="utf-8",
             )
             group_number = _next_task_group_number(tasks_text)
-            task_block = (
-                f"- [ ] {group_number}.1 {_fold_task_instruction(focus, v.evidence)}\n"
-            )
+            task_instruction = _fold_task_instruction(focus, v.evidence)
             file_scope = _fold_task_file_scope(
                 worktree_dir,
                 focus,
                 v.evidence,
                 exclude=(proposal_path, tasks_path),
             )
+            kind = _fold_task_kind(worktree_dir, file_scope, focus, v.evidence)
+            task_block = f"- [ ] {group_number}.1 "
+            if kind:
+                task_block += f"[{kind}] "
+            task_block += f"{task_instruction}\n"
             if file_scope:
                 task_block += f"      files: {', '.join(file_scope)}\n"
             # The triage evidence argues why the fold belongs; it stays out of

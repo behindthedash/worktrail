@@ -152,7 +152,12 @@ move-a-brief mechanism never diverges between callers.
   present and otherwise infers it, and its scope check refuses a task touching a `src/` file with
   no `tests/` path when that test file already exists; evidence cites source files but never their
   tests, so the inferred scope failed on every fold into a change with existing tests (brief
-  20260903-145001). An empty result emits no `files:` line, leaving compile's inference as before.
+  20260903-145001). An empty result emits no `files:` line. If the focus or evidence cites an
+  existing file outside the worktree and the derived scope is empty, the task gets the `[e2e]`
+  kind instead of a scope: its work is machine-local and not in the shared tree task workers
+  commit into, and compile exempts tail kinds by kind alone. A non-empty scope keeps the
+  implementation kind; citations that do not exist anywhere keep the existing inferred-scope
+  behavior.
 - **Push goes to `git config remote.pushDefault` when set, else `origin`.** `_push_target()`
   returns the remote plus its GitHub `owner/repo` slug so `gh pr create -R <slug>` targets the
   fork's repo; with no `pushDefault` it pushes `origin` and lets `gh` infer the base repo as
