@@ -1,6 +1,6 @@
 ## 1. Fold scope boundary
 
-- [ ] 1.1 In `src/worktrail/workqueue/queue_triage.py`, make `_fold_task_file_scope()` decide
+- [x] 1.1 In `src/worktrail/workqueue/queue_triage.py`, make `_fold_task_file_scope()` decide
       each probe's admission by path identity instead of string spelling: strip the
       line-number suffix, normalize with `os.path.normpath`, keep the probe only when it
       resolves inside `worktree_dir` and exists there, compare `exclude` in the same
@@ -30,7 +30,7 @@
 
 ## 2. Operator reference
 
-- [ ] 2.1 In `.claude/skills/workqueue/skill.md`, extend the fold `files:`-scope bullet and
+- [x] 2.1 In `.claude/skills/workqueue/skill.md`, extend the fold `files:`-scope bullet and
       the critical rule that keeps the change's own docs out of the folded task's scope with
       the worktree-boundary rule: the derived scope names only canonical repo-relative paths
       that resolve inside the worktree, so the run journal an evidence reads beside the
