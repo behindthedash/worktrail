@@ -177,7 +177,8 @@ Existing work is the controlling artifact. **Reconstruct before acting:**
    repository state — never repeat earlier work.
 4. **CI/PR repair sub-mode** (secondary F): reproduce the failing check
    locally, fix on the same branch, re-run affected validation, push. Quarantined
-   orchestrator groups: first run `worktrail-live recover --repo <repo> --spec
+   orchestrator groups: see `#worktree-lifecycle` quarantine handling — first
+   run `worktrail-live recover --repo <repo> --spec
    <spec> --group <name>`; if it reports a conflict, resolve it and re-run the
    command, then run `worktrail-live full-real --repo <repo> --spec <spec>
    --resume`, rather than hand-landing the PR and hand-running checkbox-sync.
