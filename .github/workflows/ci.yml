@@ -86,7 +86,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         if: needs.changes.outputs.bookkeeping == 'false'
-      - uses: actions/setup-python@v7.0.0
+      - uses: actions/setup-python@v7.1.0
         if: needs.changes.outputs.bookkeeping == 'false'
         with:
           python-version: ${{ matrix.python-version }}
@@ -148,7 +148,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         if: needs.changes.outputs.bookkeeping == 'false'
-      - uses: actions/setup-python@v7.0.0
+      - uses: actions/setup-python@v7.1.0
         if: needs.changes.outputs.bookkeeping == 'false'
         with:
           python-version: "3.14"
@@ -168,7 +168,7 @@ jobs:
         agent: [claude, codex, opencode]
     steps:
       - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-python@v7.0.0
+      - uses: actions/setup-python@v7.1.0
         with:
           python-version: "3.14"
       - name: Build wheel
