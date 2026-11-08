@@ -65,7 +65,7 @@ jobs:
 
       - name: Upload full-history report
         if: always()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: gitleaks-full-history-report
           path: gitleaks-full-history.sarif
@@ -122,7 +122,7 @@ jobs:
 
       - name: Upload PR diff report
         if: always()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: gitleaks-pr-diff-report
           path: gitleaks-pr-diff.sarif
