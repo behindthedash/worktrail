@@ -58,6 +58,15 @@ def test_valid_feedback_maps_to_trusted_canonical_handoff():
         assert provenance in mapped["artifacts"]
 
 
+def test_valid_feedback_preserves_device_pixel_ratio():
+    event = envelope()
+    event["feedback"]["metadata"]["viewport"]["devicePixelRatio"] = 2.5
+
+    mapped = adapter.map_envelope(event)
+
+    assert '"devicePixelRatio":2.5' in mapped["artifacts"]
+
+
 @pytest.mark.parametrize(
     "mutate",
     [
@@ -72,6 +81,10 @@ def test_valid_feedback_maps_to_trusted_canonical_handoff():
         lambda event: event["feedback"]["metadata"].update(extra="no"),
         lambda event: event["feedback"]["metadata"].update(
             screenshotDataUrl="data:image/png;base64,AAAA"
+        ),
+        lambda event: event["feedback"]["metadata"]["viewport"].update(unexpected=1),
+        lambda event: event["feedback"]["metadata"]["viewport"].update(
+            devicePixelRatio=0
         ),
         lambda event: event.update(occurred_at="not-a-date"),
     ],

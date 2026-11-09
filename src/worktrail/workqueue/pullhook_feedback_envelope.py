@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import uuid
 from datetime import datetime
 from typing import Any
@@ -125,17 +126,35 @@ def validate_envelope(envelope: Any) -> dict[str, Any]:
         raise FeedbackEnvelopeError("feedback.metadata.pageUrl must not be a data URL")
 
     viewport = metadata.get("viewport")
-    if not isinstance(viewport, dict) or set(viewport) != {"width", "height"}:
+    if (
+        not isinstance(viewport, dict)
+        or not {"width", "height"}.issubset(viewport)
+        or set(viewport) - {"width", "height", "devicePixelRatio"}
+    ):
         raise FeedbackEnvelopeError("feedback.metadata.viewport needs width and height")
-    for key, value in viewport.items():
+    for key in ("width", "height"):
+        value = viewport[key]
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise FeedbackEnvelopeError(
                 f"feedback.metadata.viewport.{key} must be a positive integer"
             )
-    normalized_metadata["viewport"] = {
+    normalized_viewport = {
         "width": viewport["width"],
         "height": viewport["height"],
     }
+    if "devicePixelRatio" in viewport:
+        ratio = viewport["devicePixelRatio"]
+        if (
+            isinstance(ratio, bool)
+            or not isinstance(ratio, (int, float))
+            or not math.isfinite(ratio)
+            or ratio <= 0
+        ):
+            raise FeedbackEnvelopeError(
+                "feedback.metadata.viewport.devicePixelRatio must be a positive number"
+            )
+        normalized_viewport["devicePixelRatio"] = ratio
+    normalized_metadata["viewport"] = normalized_viewport
 
     normalized_feedback: dict[str, Any] = {
         "id": feedback_id,
