@@ -90,7 +90,7 @@ def build_fixture_brief(queue_root: str | Path) -> Path:
     """
     queue = Path(queue_root) / "queue"
     queue.mkdir(parents=True, exist_ok=True)
-    created = datetime.date.today().isoformat()  # noqa: DTZ011
+    created = datetime.date.today().isoformat()
     path = queue / f"{created.replace('-', '')}-000000-triage-smoke-fixture.md"
     path.write_text(
         "---\n"
@@ -136,7 +136,7 @@ def record_run(
         "_meta": {
             "description": _RECORDING_DESCRIPTION,
             "agent": agent,
-            "captured": datetime.date.today().isoformat(),  # noqa: DTZ011
+            "captured": datetime.date.today().isoformat(),
         },
         "brief_id": path.stem,
         "focus": focus,

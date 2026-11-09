@@ -186,7 +186,7 @@ def test_parse_explicit_reset_extracts_codex_notice():
     reset = agent_capacity.parse_explicit_reset(stdout)
     assert reset is not None
     assert (reset.year, reset.month, reset.day) == (2026, 8, 8)
-    local_naive = datetime(2026, 8, 8, 2, 17)  # noqa: DTZ001
+    local_naive = datetime(2026, 8, 8, 2, 17)
     assert reset == local_naive.astimezone(UTC)
 
 

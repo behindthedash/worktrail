@@ -185,7 +185,7 @@ class TestIsRecentlyTriaged(QueueTriageTestBase):
     def test_recent_triage_section_is_within_window(self):
         import datetime
 
-        recent = datetime.date.today() - datetime.timedelta(days=1)  # noqa: DTZ011
+        recent = datetime.date.today() - datetime.timedelta(days=1)
         p = self.write("a.md", body=f"## Triage {recent.isoformat()}\n\nkeep\n")
         self.assertTrue(qt.is_recently_triaged(p, within_days=30))
 
@@ -200,7 +200,7 @@ class TestIsRecentlyTriaged(QueueTriageTestBase):
     def test_most_recent_of_multiple_triage_sections_wins(self):
         import datetime
 
-        recent = datetime.date.today() - datetime.timedelta(days=1)  # noqa: DTZ011
+        recent = datetime.date.today() - datetime.timedelta(days=1)
         p = self.write(
             "a.md",
             body=(
@@ -217,7 +217,7 @@ class TestIsRecentlyTriaged(QueueTriageTestBase):
     def test_unparsable_date_does_not_shadow_a_valid_one(self):
         import datetime
 
-        recent = datetime.date.today() - datetime.timedelta(days=1)  # noqa: DTZ011
+        recent = datetime.date.today() - datetime.timedelta(days=1)
         p = self.write(
             "a.md",
             body=(
@@ -236,7 +236,7 @@ class TestIsRecentlyTriaged(QueueTriageTestBase):
         # computed the same way the implementation does to avoid brittleness.
         import datetime
 
-        today = datetime.date.today()  # noqa: DTZ011
+        today = datetime.date.today()
         boundary_date = today - datetime.timedelta(days=30)
         p = self.write("a.md", body=f"## Triage {boundary_date.isoformat()}\n\nkeep\n")
         self.assertTrue(qt.is_recently_triaged(p, within_days=30))
@@ -244,7 +244,7 @@ class TestIsRecentlyTriaged(QueueTriageTestBase):
     def test_one_day_past_boundary_is_stale(self):
         import datetime
 
-        today = datetime.date.today()  # noqa: DTZ011
+        today = datetime.date.today()
         past_boundary = today - datetime.timedelta(days=31)
         p = self.write("a.md", body=f"## Triage {past_boundary.isoformat()}\n\nkeep\n")
         self.assertFalse(qt.is_recently_triaged(p, within_days=30))
@@ -1269,7 +1269,7 @@ class TestApplyVerdicts(QueueTriageTestBase):
         # brief is left in place -- unlike stale-close, needs-update never claims it
         self.assertTrue(b_path.exists())
         content = b_path.read_text(encoding="utf-8")
-        run_date = datetime.date.today().isoformat()  # noqa: DTZ011
+        run_date = datetime.date.today().isoformat()
         self.assertIn(f"## Triage {run_date}", content)
         self.assertIn("target file renamed, brief needs a refresh", content)
         self.assertTrue(qt.is_recently_triaged(b_path, within_days=1))
@@ -1453,7 +1453,7 @@ class TestApplyWorkDirectly(QueueTriageTestBase):
         self.assertTrue((self.queue / "a.md").exists())
 
         fm = qt.read_frontmatter(path)
-        run_date = datetime.date.today().isoformat()  # noqa: DTZ011
+        run_date = datetime.date.today().isoformat()
         self.assertEqual(fm["seeded-from"], f"triage:{run_date}:direct")
         self.assertEqual(fm["recommended-route"], "F")
         # focus and other original frontmatter fields survive the stamp
@@ -1513,7 +1513,7 @@ class TestApplyWorkDirectly(QueueTriageTestBase):
         self.assertEqual(path.read_text(encoding="utf-8"), before)
 
         # 3.5: previews the exact frontmatter stamp _apply_work_directly would make
-        run_date = datetime.date.today().isoformat()  # noqa: DTZ011
+        run_date = datetime.date.today().isoformat()
         self.assertEqual(
             entry["planned_stamp"],
             {"seeded-from": f"triage:{run_date}:direct", "recommended-route": "F"},
@@ -1788,7 +1788,7 @@ class TestApplyWorkDirectly(QueueTriageTestBase):
         self.assertIn("\tbad: [unclosed\n", after)
         self.assertIn("## Focus\n\nbody\n", after)
         # the new fields are stamped in
-        run_date = datetime.date.today().isoformat()  # noqa: DTZ011
+        run_date = datetime.date.today().isoformat()
         self.assertIn(f"seeded-from: triage:{run_date}:direct\n", after)
         self.assertIn("recommended-route: F\n", after)
 
@@ -4357,7 +4357,7 @@ class TestApplyPropseChangeWipCapDowngrade(QueueTriageTestBase):
         # brief stays queued (not claimed/closed) with the triage note appended
         self.assertTrue((self.queue / "a.md").exists())
         content = (self.queue / "a.md").read_text(encoding="utf-8")
-        run_date = datetime.date.today().isoformat()  # noqa: DTZ011
+        run_date = datetime.date.today().isoformat()
         self.assertIn(f"## Triage {run_date}", content)
         self.assertIn("change-1", content)
         fm = qt.read_frontmatter(self.queue / "a.md")
@@ -4777,7 +4777,7 @@ class TestReportAndVerdictFileOutput(QueueTriageTestBase):
         self.write("b2.md", repo="behindthedash/repo-b")
         self.write("n1.md")
         self.write("n2.md")
-        today = datetime.date.today().isoformat()  # noqa: DTZ011
+        today = datetime.date.today().isoformat()
         self.write(
             "skipped.md",
             repo="behindthedash/repo-a",
@@ -5656,20 +5656,20 @@ class TestEscalationLimitsAndDue(QueueTriageTestBase):
                 qt.Verdict(
                     brief_id="a", verdict="keep", duplicate_of=None, evidence="still ok"
                 ),
-                datetime.date.today().isoformat(),  # noqa: DTZ011
+                datetime.date.today().isoformat(),
             )
         self.assertEqual(qt.consecutive_keep_count(path), 2)
         self.assertEqual(qt.escalation_due(path, None), "keep-limit")
 
     def test_due_by_queue_age(self):
         path = self.write("a.md")
-        old = (datetime.date.today() - datetime.timedelta(days=30)).isoformat()  # noqa: DTZ011
+        old = (datetime.date.today() - datetime.timedelta(days=30)).isoformat()
         qt._set_fm_fields(path, {"created": old})
         self.assertEqual(qt.escalation_due(path, None), "queue-age")
 
     def test_neither_condition_met_returns_none(self):
         path = self.write("a.md")
-        today = datetime.date.today().isoformat()  # noqa: DTZ011
+        today = datetime.date.today().isoformat()
         qt._set_fm_fields(path, {"created": today})
         self.assertIsNone(qt.escalation_due(path, None))
 
@@ -5684,7 +5684,7 @@ class TestEscalationLimitsAndDue(QueueTriageTestBase):
             qt.Verdict(
                 brief_id="a", verdict="keep", duplicate_of=None, evidence="still ok"
             ),
-            datetime.date.today().isoformat(),  # noqa: DTZ011
+            datetime.date.today().isoformat(),
         )
         self.assertEqual(qt.escalation_due(path, str(repo)), "keep-limit")
 
@@ -5768,7 +5768,7 @@ class TestEscalate(QueueTriageTestBase):
     def test_non_keep_verdict_never_rewritten_even_if_due(self):
         path = self.write("a.md")
         for _ in range(2):
-            qt._apply_keep(self._keep(), datetime.date.today().isoformat())  # noqa: DTZ011
+            qt._apply_keep(self._keep(), datetime.date.today().isoformat())
         v = qt.Verdict(
             brief_id="a", verdict="stale-close", duplicate_of=None, evidence="gone"
         )
@@ -5777,7 +5777,7 @@ class TestEscalate(QueueTriageTestBase):
     def test_null_repo_due_becomes_needs_decision(self):
         path = self.write("a.md")
         for _ in range(2):
-            qt._apply_keep(self._keep(), datetime.date.today().isoformat())  # noqa: DTZ011
+            qt._apply_keep(self._keep(), datetime.date.today().isoformat())
         result = qt.escalate(self._keep(), path, None, [])
         self.assertEqual(result.verdict, "needs-decision")
         self.assertEqual(result.question, qt.REPO_ASSIGNMENT_QUESTION)
@@ -5788,7 +5788,7 @@ class TestEscalate(QueueTriageTestBase):
         repo.mkdir()
         path = self.write("a.md", repo=str(repo))
         for _ in range(2):
-            qt._apply_keep(self._keep(), datetime.date.today().isoformat())  # noqa: DTZ011
+            qt._apply_keep(self._keep(), datetime.date.today().isoformat())
         v = self._keep(evidence="reproduces via pytest tests/foo.py -k bar")
         result = qt.escalate(v, path, str(repo), [])
         self.assertEqual(result.verdict, "work-directly")
@@ -5804,7 +5804,7 @@ class TestEscalate(QueueTriageTestBase):
                 qt.Verdict(
                     brief_id=brief_id, verdict="keep", duplicate_of=None, evidence="ok"
                 ),
-                datetime.date.today().isoformat(),  # noqa: DTZ011
+                datetime.date.today().isoformat(),
             )
         v = qt.Verdict(
             brief_id=brief_id,
@@ -5831,7 +5831,7 @@ class TestEscalate(QueueTriageTestBase):
         )
         path = self.write("a.md", repo=str(repo))
         for _ in range(2):
-            qt._apply_keep(self._keep(), datetime.date.today().isoformat())  # noqa: DTZ011
+            qt._apply_keep(self._keep(), datetime.date.today().isoformat())
         result = qt.escalate(self._keep(), path, str(repo), ["widget-export-pipeline"])
         self.assertEqual(result.verdict, "fold-into-change")
         self.assertEqual(result.target_change, f"{repo}:change:widget-export-pipeline")
@@ -5850,7 +5850,7 @@ class TestEscalate(QueueTriageTestBase):
         )
         path = self.write("a.md", repo=str(repo))
         for _ in range(2):
-            qt._apply_keep(self._keep(), datetime.date.today().isoformat())  # noqa: DTZ011
+            qt._apply_keep(self._keep(), datetime.date.today().isoformat())
         result = qt.escalate(self._keep(), path, str(repo), [])
         self.assertEqual(result.verdict, "needs-decision")
         self.assertIsNotNone(result.question)
@@ -6137,7 +6137,7 @@ class TestInventoryEscalation(QueueTriageTestBase):
         repo = self.base / "repo"
         repo.mkdir()
         path = self.write("a.md", repo=str(repo))
-        today = datetime.date.today().isoformat()  # noqa: DTZ011
+        today = datetime.date.today().isoformat()
         for _ in range(2):
             qt._apply_keep(
                 qt.Verdict(
@@ -6159,7 +6159,7 @@ class TestInventoryEscalation(QueueTriageTestBase):
         repo = self.base / "repo"
         repo.mkdir()
         path = self.write("a.md", repo=str(repo))
-        today = datetime.date.today().isoformat()  # noqa: DTZ011
+        today = datetime.date.today().isoformat()
         qt._apply_keep(
             qt.Verdict(brief_id="a", verdict="keep", duplicate_of=None, evidence="ok"),
             today,
@@ -6175,7 +6175,7 @@ class TestInventoryEscalation(QueueTriageTestBase):
 
     def test_due_null_repo_brief_lands_in_escalate_without_evaluator(self):
         path = self.write("a.md")
-        today = datetime.date.today().isoformat()  # noqa: DTZ011
+        today = datetime.date.today().isoformat()
         for _ in range(2):
             qt._apply_keep(
                 qt.Verdict(
@@ -6262,7 +6262,7 @@ class TestEvaluateBriefs(QueueTriageTestBase):
         repo = self.base / "repo"
         repo.mkdir()
         path = self.write("a.md", repo=str(repo))
-        today = datetime.date.today().isoformat()  # noqa: DTZ011
+        today = datetime.date.today().isoformat()
         for _ in range(2):
             qt._apply_keep(
                 qt.Verdict(
@@ -6427,7 +6427,7 @@ class TestApplyNeedsUpdateRewrite(QueueTriageTestBase):
 
         # the rewrite is recorded as a triage note alongside the evidence
         content = path.read_text(encoding="utf-8")
-        run_date = datetime.date.today().isoformat()  # noqa: DTZ011
+        run_date = datetime.date.today().isoformat()
         self.assertIn(f"## Triage {run_date}", content)
         self.assertIn(self.SPAN, content)
         self.assertIn("src/cli.py reads config.yaml, not settings.json", content)
@@ -6696,7 +6696,7 @@ class TestApplyNeedsUpdateRewrite(QueueTriageTestBase):
         self.assertEqual(entry["status"], "executed")
         self.assertNotIn("routed_to", entry)
         self.assertEqual(qt.read_frontmatter(path)["focus"], self.FOCUS)
-        run_date = datetime.date.today().isoformat()  # noqa: DTZ011
+        run_date = datetime.date.today().isoformat()
         content = path.read_text(encoding="utf-8")
         self.assertIn(f"## Triage {run_date}", content)
         self.assertIn("target file renamed, brief needs a refresh", content)
@@ -7309,7 +7309,7 @@ class TestApplyWorkDirectlyRewrite(QueueTriageTestBase):
         )
 
     def _run_date(self) -> str:
-        return datetime.date.today().isoformat()  # noqa: DTZ011
+        return datetime.date.today().isoformat()
 
     def _assert_stamped(self, path: Path) -> None:
         fm = qt.read_frontmatter(path)

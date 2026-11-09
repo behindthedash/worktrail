@@ -239,8 +239,8 @@ def parse_session_limit_reset(
     m = _SESSION_LIMIT_RE.search(text or "")
     if not m:
         return None
-    now = now or datetime.datetime.now()  # noqa: DTZ005
-    clock = datetime.datetime.strptime(  # noqa: DTZ007
+    now = now or datetime.datetime.now()
+    clock = datetime.datetime.strptime(
         m.group(1).replace(" ", "").lower(), "%I:%M%p"
     ).time()
     reset = now.replace(hour=clock.hour, minute=clock.minute, second=0, microsecond=0)
@@ -1596,7 +1596,7 @@ def spawn_agent(
                 # capped park only to be refused by its own cache entry.
                 retry_after=min(
                     reset_at,
-                    datetime.datetime.now()  # noqa: DTZ005
+                    datetime.datetime.now()
                     + datetime.timedelta(seconds=SESSION_LIMIT_REPROBE_MAX_S),
                 ).astimezone(),
             )
@@ -1635,7 +1635,7 @@ def spawn_agent(
             if waits_left > 0 and budget_left > 0:
                 waits_left -= 1
                 until_reset = (
-                    max(0.0, (reset_at - datetime.datetime.now()).total_seconds()) + 5.0  # noqa: DTZ005
+                    max(0.0, (reset_at - datetime.datetime.now()).total_seconds()) + 5.0
                 )
                 wait_s = min(until_reset, SESSION_LIMIT_REPROBE_MAX_S, budget_left)
                 log(

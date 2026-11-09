@@ -35,7 +35,7 @@ def _slug(repo: Path) -> str:
 
 
 def _brief_id(repo: Path) -> str:
-    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")  # noqa: DTZ005
+    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     return f"{timestamp}-spec-sync-drift-{_slug(repo)}"
 
 

@@ -647,7 +647,7 @@ def is_recently_triaged(path: Path, within_days: int) -> bool:
         return False
 
     most_recent = max(dates)
-    age_days = (datetime.date.today() - most_recent).days  # noqa: DTZ011
+    age_days = (datetime.date.today() - most_recent).days
     return age_days <= within_days
 
 
@@ -717,7 +717,7 @@ def escalation_due(path: Path, repo: str | None) -> str | None:
         except ValueError:
             created_date = None
         if created_date is not None:
-            age_days = (datetime.date.today() - created_date).days  # noqa: DTZ011
+            age_days = (datetime.date.today() - created_date).days
             if age_days >= max_age:
                 return "queue-age"
     return None
@@ -1005,7 +1005,7 @@ def _write_repo_inference(path: Path, result: InferenceResult) -> None:
     replaced in place (a re-home), never duplicated.
     """
     _set_fm_fields(path, {"repo": result.repo})
-    run_date = datetime.date.today().isoformat()  # noqa: DTZ011
+    run_date = datetime.date.today().isoformat()
     content = path.read_text(encoding="utf-8")
     path.write_text(
         content.rstrip("\n")
@@ -1116,7 +1116,7 @@ def consume_answered_guidance(path: Path) -> dict[str, Any] | None:
     if _REHOME_DIRECTIVE_RE.search(answer):
         return None
 
-    run_date = datetime.date.today().isoformat()  # noqa: DTZ011
+    run_date = datetime.date.today().isoformat()
     content = path.read_text(encoding="utf-8")
     path.write_text(
         content.rstrip("\n") + f"\n\n## Triage {run_date}\n\nverdict: decision-answered"
@@ -3973,7 +3973,7 @@ def apply_verdicts(
     never dropping any -- `apply`'s `--json`/human output (4.3) renders this
     list directly.
     """
-    run_date = datetime.date.today().isoformat()  # noqa: DTZ011
+    run_date = datetime.date.today().isoformat()
     log: list[dict] = []
     for v in verdicts:
         if v.verdict == "keep":

@@ -1859,9 +1859,7 @@ class SingleBriefTriageTests(unittest.TestCase):
 
         from worktrail.workqueue.queue_triage import REPO_ASSIGNMENT_QUESTION
 
-        old_created = (
-            datetime.date.today() - timedelta(days=30)  # noqa: DTZ011
-        ).isoformat()
+        old_created = (datetime.date.today() - timedelta(days=30)).isoformat()
         self.brief.write_text(
             "---\nfocus: example brief\nstatus: queued\n"
             f"created: {old_created}\n---\n\nBody.\n",
