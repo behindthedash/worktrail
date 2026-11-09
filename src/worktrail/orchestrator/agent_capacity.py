@@ -566,7 +566,7 @@ def parse_explicit_reset(text: str, now: datetime | None = None) -> datetime | N
     candidate = f"{month} {day} {year} {clock.replace(' ', '').upper()}"
     for fmt in ("%b %d %Y %I:%M%p", "%B %d %Y %I:%M%p"):
         try:
-            parsed = datetime.strptime(candidate, fmt)  # noqa: DTZ007
+            parsed = datetime.strptime(candidate, fmt)
         except ValueError:
             continue
         return parsed.astimezone(UTC)

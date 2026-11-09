@@ -96,7 +96,7 @@ class TestInventoryDedupAndEscalation(QueueTriageTestBase):
         repo.mkdir()
         due_path = self.write("due.md", repo=str(repo))
         skip_path = self.write("skip.md", repo=str(repo))
-        today = datetime.date.today().isoformat()  # noqa: DTZ011
+        today = datetime.date.today().isoformat()
         for _ in range(2):
             qt._apply_keep(
                 qt.Verdict(
@@ -122,7 +122,7 @@ class TestInventoryDedupAndEscalation(QueueTriageTestBase):
 
     def test_due_null_repo_brief_appears_in_escalate_without_evaluator(self):
         path = self.write("a.md")
-        today = datetime.date.today().isoformat()  # noqa: DTZ011
+        today = datetime.date.today().isoformat()
         for _ in range(2):
             qt._apply_keep(
                 qt.Verdict(

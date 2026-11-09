@@ -904,7 +904,7 @@ def _is_not_yet_due(path: Path) -> bool:
         due = datetime.date.fromisoformat(str(raw))
     except ValueError:
         return False
-    return datetime.date.today() < due  # noqa: DTZ011
+    return datetime.date.today() < due
 
 
 RECENTLY_RELEASED_MINUTES = 20.0
@@ -944,7 +944,7 @@ def _recently_released_info(path: Path) -> dict[str, Any]:
     now = (
         datetime.datetime.now(released_at.tzinfo)
         if released_at.tzinfo
-        else datetime.datetime.now()  # noqa: DTZ005
+        else datetime.datetime.now()
     )
     age_minutes = (now - released_at).total_seconds() / 60.0
     if 0 <= age_minutes < RECENTLY_RELEASED_MINUTES:
@@ -1144,7 +1144,7 @@ def _premise_drift_warning(path: Path) -> str | None:
     now = (
         datetime.datetime.now(created.tzinfo)
         if created.tzinfo
-        else datetime.datetime.now()  # noqa: DTZ005
+        else datetime.datetime.now()
     )
     age_days = (now - created).total_seconds() / 86400.0
     if age_days <= PREMISE_DRIFT_THRESHOLD_DAYS:

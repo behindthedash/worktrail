@@ -410,25 +410,25 @@ class SessionLimitParse(unittest.TestCase):
         self.assertIsNone(spawnlib.parse_session_limit_reset(None))
 
     def test_parses_reset_same_day(self):
-        now = datetime.datetime(2026, 6, 4, 10, 0)  # noqa: DTZ001
+        now = datetime.datetime(2026, 6, 4, 10, 0)
         r = spawnlib.parse_session_limit_reset(
             "You've hit your session limit. Your limit resets at 3:00pm.", now=now
         )
-        self.assertEqual(r, datetime.datetime(2026, 6, 4, 15, 0))  # noqa: DTZ001
+        self.assertEqual(r, datetime.datetime(2026, 6, 4, 15, 0))
 
     def test_rolls_to_tomorrow_when_reset_already_passed(self):
-        now = datetime.datetime(2026, 6, 4, 16, 0)  # noqa: DTZ001
+        now = datetime.datetime(2026, 6, 4, 16, 0)
         r = spawnlib.parse_session_limit_reset(
             "hit your session limit, resets 3:00pm", now=now
         )
-        self.assertEqual(r, datetime.datetime(2026, 6, 5, 15, 0))  # noqa: DTZ001
+        self.assertEqual(r, datetime.datetime(2026, 6, 5, 15, 0))
 
     def test_handles_am_and_loose_spacing(self):
-        now = datetime.datetime(2026, 6, 4, 10, 0)  # noqa: DTZ001
+        now = datetime.datetime(2026, 6, 4, 10, 0)
         r = spawnlib.parse_session_limit_reset(
             "hit your session limit ... resets 9:30 am", now=now
         )
-        self.assertEqual(r, datetime.datetime(2026, 6, 5, 9, 30))  # noqa: DTZ001
+        self.assertEqual(r, datetime.datetime(2026, 6, 5, 9, 30))
 
     def test_ignores_benign_mention_of_session_limit(self):
         # A plain "session limit" reference (no "hit your ... resets <time>") is not a
@@ -453,11 +453,11 @@ class SessionLimitParse(unittest.TestCase):
         self.assertIsNone(spawnlib.parse_session_limit_reset(transcript))
 
     def test_short_genuine_notice_still_parses(self):
-        now = datetime.datetime(2026, 6, 4, 10, 0)  # noqa: DTZ001
+        now = datetime.datetime(2026, 6, 4, 10, 0)
         r = spawnlib.parse_session_limit_reset(
             "You've hit your session limit. Your limit resets at 3:00pm.", now=now
         )
-        self.assertEqual(r, datetime.datetime(2026, 6, 4, 15, 0))  # noqa: DTZ001
+        self.assertEqual(r, datetime.datetime(2026, 6, 4, 15, 0))
 
 
 class SessionLimitRetry(unittest.TestCase):

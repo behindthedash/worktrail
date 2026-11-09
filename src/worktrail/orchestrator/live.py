@@ -48,7 +48,7 @@ from . import agent_capacity, coordinator, dispatch, orchestrate, progress, spaw
 
 
 def _ts() -> str:
-    return datetime.now().strftime("[%H:%M:%S]")  # noqa: DTZ005
+    return datetime.now().strftime("[%H:%M:%S]")
 
 
 # Per-worker headless agent timeout (seconds). Raised to 1800s: sonnet on

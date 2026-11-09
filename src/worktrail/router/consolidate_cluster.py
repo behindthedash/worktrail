@@ -148,7 +148,7 @@ def _member_created_at(text: str) -> datetime.datetime | None:
                 dt = datetime.datetime.fromisoformat(candidate)
             except ValueError:
                 try:
-                    dt = datetime.datetime.strptime(raw, "%Y-%m-%d")  # noqa: DTZ007
+                    dt = datetime.datetime.strptime(raw, "%Y-%m-%d")
                 except ValueError:
                     return None
         else:

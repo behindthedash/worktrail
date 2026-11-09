@@ -89,7 +89,7 @@ class TestTriageHistory(QueueTriageTestBase):
 class TestConsecutiveKeepCount(QueueTriageTestBase):
     def test_resets_on_a_non_keep_note(self):
         path = self.write("a.md")
-        today = datetime.date.today().isoformat()  # noqa: DTZ011
+        today = datetime.date.today().isoformat()
         qt._apply_keep(_keep_verdict(), today)
         qt._apply_keep(_keep_verdict(), today)
         self.assertEqual(qt.consecutive_keep_count(path), 2)
@@ -114,7 +114,7 @@ class TestIsRecentlyTriagedIgnoresRepoInferred(QueueTriageTestBase):
 
     def test_a_real_triage_note_alongside_a_repo_inferred_one_counts(self):
         path = self.write("a.md")
-        today = datetime.date.today().isoformat()  # noqa: DTZ011
+        today = datetime.date.today().isoformat()
         qt._apply_keep(_keep_verdict(), today)
         result = qt.repo_inference.InferenceResult(
             repo=str(self.base / "target"), rule="focus-mention", candidates=[]
@@ -127,7 +127,7 @@ class TestApplyKeep(QueueTriageTestBase):
     def test_writes_keep_count_1_then_2_and_leaves_frontmatter_byte_identical(self):
         path = self.write("a.md")
         fm_before, _body_before = split_frontmatter(path.read_text(encoding="utf-8"))
-        today = datetime.date.today().isoformat()  # noqa: DTZ011
+        today = datetime.date.today().isoformat()
 
         qt._apply_keep(_keep_verdict(), today)
         body = path.read_text(encoding="utf-8")
@@ -144,7 +144,7 @@ class TestApplyKeep(QueueTriageTestBase):
     def test_preview_does_not_write(self):
         path = self.write("a.md")
         before = path.read_text(encoding="utf-8")
-        today = datetime.date.today().isoformat()  # noqa: DTZ011
+        today = datetime.date.today().isoformat()
 
         preview = qt.apply_verdicts([_keep_verdict()], confirm=False)
 
@@ -169,20 +169,20 @@ class TestEscalationDue(QueueTriageTestBase):
 
     def test_due_by_keep_limit(self):
         path = self.write("a.md")
-        today = datetime.date.today().isoformat()  # noqa: DTZ011
+        today = datetime.date.today().isoformat()
         for _ in range(2):
             qt._apply_keep(_keep_verdict(), today)
         self.assertEqual(qt.escalation_due(path, None), "keep-limit")
 
     def test_due_by_queue_age(self):
         path = self.write("a.md")
-        old = (datetime.date.today() - datetime.timedelta(days=30)).isoformat()  # noqa: DTZ011
+        old = (datetime.date.today() - datetime.timedelta(days=30)).isoformat()
         qt._set_fm_fields(path, {"created": old})
         self.assertEqual(qt.escalation_due(path, None), "queue-age")
 
     def test_neither_condition_met_returns_none(self):
         path = self.write("a.md")
-        today_created = datetime.date.today().isoformat()  # noqa: DTZ011
+        today_created = datetime.date.today().isoformat()
         qt._set_fm_fields(path, {"created": today_created})
         self.assertIsNone(qt.escalation_due(path, None))
 
@@ -193,7 +193,7 @@ class TestEscalationDue(QueueTriageTestBase):
             "triage_keep_limit: 1\ntriage_max_queue_age_days: 9999\n", encoding="utf-8"
         )
         path = self.write("a.md", repo=str(repo))
-        today = datetime.date.today().isoformat()  # noqa: DTZ011
+        today = datetime.date.today().isoformat()
         qt._apply_keep(_keep_verdict(), today)
         self.assertEqual(qt.escalation_due(path, str(repo)), "keep-limit")
 
@@ -202,7 +202,7 @@ class TestEscalateMatrix(QueueTriageTestBase):
     """Every row of `escalate()`'s design D5 matrix."""
 
     def _due_keep(self, path: Path, evidence="still relevant", premise_check=None):
-        today = datetime.date.today().isoformat()  # noqa: DTZ011
+        today = datetime.date.today().isoformat()
         for _ in range(2):
             qt._apply_keep(_keep_verdict(path.stem), today)
         return qt.Verdict(
@@ -371,7 +371,7 @@ class TestWorkDirectlyAcceptedAcrossApplyAndPreview(QueueTriageTestBase):
             duplicate_of=None,
             evidence="reproduces via pytest tests/foo.py -k bar",
         )
-        today = datetime.date.today().isoformat()  # noqa: DTZ011
+        today = datetime.date.today().isoformat()
 
         applied = qt._apply_work_directly(v, today)
         self.assertEqual(applied["status"], "executed")
@@ -388,7 +388,7 @@ class TestWorkDirectlyAcceptedAcrossApplyAndPreview(QueueTriageTestBase):
             duplicate_of=None,
             evidence="this brief describes a real problem",
         )
-        today = datetime.date.today().isoformat()  # noqa: DTZ011
+        today = datetime.date.today().isoformat()
 
         applied = qt._apply_work_directly(v, today)
         self.assertEqual(applied["status"], "downgraded-to-keep")

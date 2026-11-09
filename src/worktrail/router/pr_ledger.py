@@ -494,7 +494,7 @@ def file_recovery_brief(
 ) -> Path:
     queue_dir = queue_base / "queue"
     queue_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")  # noqa: DTZ005
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     brief_id = f"{stamp}-pr-fix-{_slug_for_id(entry['url'])}"
     path = queue_dir / f"{brief_id}.md"
     path.write_text(_render_brief(entry, state, reason, brief_id), encoding="utf-8")

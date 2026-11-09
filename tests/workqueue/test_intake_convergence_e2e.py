@@ -208,7 +208,7 @@ class TestMotivatingBriefConvergesOnFirstPass(IntakeConvergenceE2ETestBase):
         self.assertEqual(exit_code, 0)
 
         fm_after_apply = read_frontmatter(brief_path)
-        today = datetime.date.today().isoformat()  # noqa: DTZ011
+        today = datetime.date.today().isoformat()
         self.assertEqual(fm_after_apply["seeded-from"], f"triage:{today}:direct")
         self.assertEqual(fm_after_apply["recommended-route"], "F")
         self.assertTrue(brief_path.exists())
