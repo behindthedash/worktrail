@@ -52,7 +52,7 @@ def queue(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 def test_feedback_event_creates_canonical_brief_and_marker(queue: Path):
     client = FakeClient(envelope())
-    result = ingest_once(client, queue_base=queue)
+    result = ingest_once(client, queue_base=queue, feedback_ack_fn=lambda *_: None)
 
     assert result.status == "created"
     assert result.acked is True
@@ -69,10 +69,10 @@ def test_feedback_event_creates_canonical_brief_and_marker(queue: Path):
 
 def test_duplicate_delivery_returns_original_handoff(queue: Path):
     client = FakeClient(envelope())
-    first = ingest_once(client, queue_base=queue)
+    first = ingest_once(client, queue_base=queue, feedback_ack_fn=lambda *_: None)
     before = sorted((queue / "queue").glob("*.md"))
 
-    second = ingest_once(client, queue_base=queue)
+    second = ingest_once(client, queue_base=queue, feedback_ack_fn=lambda *_: None)
 
     assert second.status == "duplicate"
     assert second.handoff_id == first.handoff_id
@@ -90,12 +90,24 @@ def test_required_push_failure_retries_without_duplicate(queue: Path):
             return PersistResult(status="failed", reason="push-failed")
         return PersistResult(status="pushed", pushed=True)
 
-    first = ingest_once(client, queue_base=queue, require_git=True, persist_fn=persist)
+    first = ingest_once(
+        client,
+        queue_base=queue,
+        require_git=True,
+        persist_fn=persist,
+        feedback_ack_fn=lambda *_: None,
+    )
     assert first.status == "persist-failed"
     assert client.acked == []
     count = len(list((queue / "queue").glob("*.md")))
 
-    retry = ingest_once(client, queue_base=queue, require_git=True, persist_fn=persist)
+    retry = ingest_once(
+        client,
+        queue_base=queue,
+        require_git=True,
+        persist_fn=persist,
+        feedback_ack_fn=lambda *_: None,
+    )
     assert retry.status == "duplicate"
     assert retry.acked is True
     assert retry.handoff_id == first.handoff_id
@@ -135,10 +147,29 @@ def test_oversized_transport_body_is_rejected_before_queue_mutation(queue: Path)
 def test_feedback_dry_run_creates_and_acks_nothing(queue: Path):
     client = FakeClient(envelope())
 
-    result = ingest_once(client, queue_base=queue, dry_run=True)
+    result = ingest_once(
+        client, queue_base=queue, dry_run=True, feedback_ack_fn=lambda *_: None
+    )
 
     assert result.status == "dry-run"
     assert result.event_id == EVENT_ID
     assert client.acked == []
     assert list((queue / "queue").glob("*.md")) == []
     assert external_events.lookup(SUPPORTED_SCHEMA, EVENT_ID, queue) is None
+
+
+def test_feedback_ack_failure_keeps_delivery_unacked_and_retry_reuses_brief(
+    queue: Path,
+):
+    client = FakeClient(envelope())
+    fail = lambda *_: (_ for _ in ()).throw(RuntimeError("unavailable"))
+
+    first = ingest_once(client, queue_base=queue, feedback_ack_fn=fail)
+    assert first.status == "feedback-ack-failed"
+    assert client.acked == []
+    count = len(list((queue / "queue").glob("*.md")))
+
+    retry = ingest_once(client, queue_base=queue, feedback_ack_fn=lambda *_: None)
+    assert retry.status == "duplicate"
+    assert retry.acked is True
+    assert len(list((queue / "queue").glob("*.md"))) == count == 1
