@@ -87,6 +87,15 @@ repository slug. Event fields cannot choose a repository, remote, branch, or que
 directory. `sourceFileHint` is retained as descriptive provenance and is never read
 as a path.
 
+Set `GGB_FEEDBACK_ACK_URL` to GGB's
+`/api/internal/feedback-intake/queued` endpoint and `GGB_FEEDBACK_ACK_TOKEN` to
+the matching server-only bearer secret. After WorkTrail persists the brief and
+provenance marker, it calls this endpoint with the feedback UUID and WorkTrail
+handoff ID, then acknowledges PullHook. If GGB cannot confirm the update, the
+PullHook item stays unacknowledged and is retried; WorkTrail's event marker
+prevents a duplicate brief. GGB's admin status `accepted` means PullHook accepted
+the event; `queued` means WorkTrail confirmed durable queue creation.
+
 For a systemd timer, use a service such as:
 
 ```ini

@@ -32,6 +32,10 @@ creates a brief, never records a marker, and never acks.
 
 from __future__ import annotations
 
+import json
+import os
+import urllib.error
+import urllib.request
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -143,6 +147,7 @@ def find_materialized_brief(
 CreateFn = Callable[..., dict[str, Any]]
 RecordFn = Callable[..., external_events.ExternalEventRecord]
 PersistFn = Callable[..., queue_git_persist.PersistResult]
+FeedbackAckFn = Callable[[str, str], None]
 
 
 def ingest_once(
@@ -154,6 +159,7 @@ def ingest_once(
     create_fn: CreateFn | None = None,
     record_fn: RecordFn | None = None,
     persist_fn: PersistFn | None = None,
+    feedback_ack_fn: FeedbackAckFn | None = None,
 ) -> IngressResult | None:
     """Process at most one relay item. Returns None when the channel is empty."""
     items = client.peek(1) if dry_run else client.claim(1)
@@ -168,6 +174,7 @@ def ingest_once(
         create_fn=create_fn or create_handoff_mod.create_handoff,
         record_fn=record_fn or external_events.record,
         persist_fn=persist_fn or queue_git_persist.persist_external_brief,
+        feedback_ack_fn=feedback_ack_fn or _ack_feedback_queued,
     )
 
 
@@ -181,6 +188,7 @@ def ingest(
     create_fn: CreateFn | None = None,
     record_fn: RecordFn | None = None,
     persist_fn: PersistFn | None = None,
+    feedback_ack_fn: FeedbackAckFn | None = None,
 ) -> list[IngressResult]:
     """Process up to `max_items` items, one claim at a time.
 
@@ -201,6 +209,7 @@ def ingest(
             create_fn=create_fn,
             record_fn=record_fn,
             persist_fn=persist_fn,
+            feedback_ack_fn=feedback_ack_fn,
         )
         if result is None:
             break
@@ -220,6 +229,7 @@ def _process(
     create_fn: CreateFn,
     record_fn: RecordFn,
     persist_fn: PersistFn,
+    feedback_ack_fn: FeedbackAckFn,
 ) -> IngressResult:
     # 1. validate -- before any queue mutation.
     try:
@@ -302,6 +312,23 @@ def _process(
             error=persist.error,
         )
 
+    # Update GGB only after the brief and provenance marker are durable. If
+    # this fails, leave Pullhook unacked; redelivery finds the same brief.
+    if schema == pullhook_feedback_envelope.SUPPORTED_SCHEMA:
+        try:
+            feedback_ack_fn(event_id, handoff_id)
+        except RuntimeError as exc:
+            return IngressResult(
+                status="feedback-ack-failed",
+                event_id=event_id,
+                delivery_id=item.delivery_id,
+                handoff_id=handoff_id,
+                handoff_path=str(handoff_path),
+                persist_status=persist.status,
+                persist_reason=persist.reason,
+                error=f"feedback queue acknowledgement failed: {exc}",
+            )
+
     # 6. ack -- last, and only now.
     acked = False
     if item.delivery_id:
@@ -323,6 +350,33 @@ def _process(
 
 def _queue_base_arg(queue_base: Path | str | None) -> Path | None:
     return Path(queue_base).expanduser() if queue_base is not None else None
+
+
+def _ack_feedback_queued(event_id: str, handoff_id: str) -> None:
+    url = os.environ.get("GGB_FEEDBACK_ACK_URL", "").strip()
+    token = os.environ.get("GGB_FEEDBACK_ACK_TOKEN", "")
+    if not url or not token:
+        raise RuntimeError(
+            "GGB_FEEDBACK_ACK_URL and GGB_FEEDBACK_ACK_TOKEN are required"
+        )
+    body = json.dumps({"feedbackId": event_id, "handoffId": handoff_id}).encode()
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            if response.status not in (200, 204):
+                raise RuntimeError(f"GGB returned HTTP {response.status}")
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"GGB returned HTTP {exc.code}") from None
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"GGB request failed: {exc.reason}") from None
 
 
 def _persist_paths(
