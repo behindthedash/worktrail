@@ -3012,6 +3012,20 @@ class TestDependencyDiagnostics(QueueTestBase):
             self.assertEqual(q.main(["list"]), 0)
         return out.getvalue()
 
+    def test_list_queue_indexes_dependency_ids_once_per_folder(self):
+        self.write("20260101-000000-dep.md", focus="prerequisite", brief_id="dep-id")
+        self.write("20260101-000001-main-a.md", focus="first", blocked_by=["dep-id"])
+        self.write("20260101-000002-main-b.md", focus="second", blocked_by=["dep-id"])
+        with patch.object(
+            q, "_resolution_index", wraps=q._resolution_index
+        ) as build_index:
+            briefs = q.list_queue()["briefs"]
+
+        self.assertEqual(build_index.call_count, 2)
+        blocked = {brief["filename"]: brief["blocked"] for brief in briefs}
+        self.assertTrue(blocked["20260101-000001-main-a.md"])
+        self.assertTrue(blocked["20260101-000002-main-b.md"])
+
     def test_malformed_reference_reported(self):
         self.write(
             "20260101-000001-main.md",
