@@ -745,6 +745,21 @@ def _md_files(d: Path) -> list[Path]:
     )
 
 
+def _resolution_index(folder: Path) -> tuple[list[Path], dict[str, list[Path]]]:
+    """Snapshot the filenames and frontmatter ids used by ``resolve``.
+
+    Queue listing resolves many dependency references against the same folders;
+    preloading ids once avoids rescanning every picked brief for every reference.
+    """
+    files = _md_files(folder)
+    ids: dict[str, list[Path]] = {}
+    for path in files:
+        identifier = _read_frontmatter(path).get("id")
+        if identifier is not None:
+            ids.setdefault(str(identifier), []).append(path)
+    return files, ids
+
+
 def normalize_dependency_reference(raw: Any) -> str:
     """Return a cleaned dependency reference, rejecting malformed values.
 
@@ -763,7 +778,15 @@ def normalize_dependency_reference(raw: Any) -> str:
     return ref
 
 
-def classify_dependency_reference(raw: Any) -> dict[str, Any]:
+def classify_dependency_reference(
+    raw: Any,
+    *,
+    resolution_indexes: tuple[
+        tuple[list[Path], dict[str, list[Path]]],
+        tuple[list[Path], dict[str, list[Path]]],
+    ]
+    | None = None,
+) -> dict[str, Any]:
     """Classify one dependency reference against queue/ and picked/.
 
     Returns a structured result with the original raw value preserved, the
@@ -787,8 +810,9 @@ def classify_dependency_reference(raw: Any) -> dict[str, Any]:
         return result
 
     result["reference"] = ref
-    queue_res = resolve(ref, queue_dir())
-    picked_res = resolve(ref, picked_dir())
+    indexes = resolution_indexes or (None, None)
+    queue_res = resolve(ref, queue_dir(), _index=indexes[0])
+    picked_res = resolve(ref, picked_dir(), _index=indexes[1])
 
     candidate_paths: list[str] = []
     if queue_res["status"] == "match" or queue_res["status"] == "ambiguous":
@@ -854,7 +878,15 @@ def _blocked_on(fm: dict[str, Any]) -> str | None:
     return value or None
 
 
-def _dependency_diagnostics(path: Path) -> list[dict[str, Any]]:
+def _dependency_diagnostics(
+    path: Path,
+    *,
+    resolution_indexes: tuple[
+        tuple[list[Path], dict[str, list[Path]]],
+        tuple[list[Path], dict[str, list[Path]]],
+    ]
+    | None = None,
+) -> list[dict[str, Any]]:
     """One entry per *unsatisfied* `blocked-by` reference of `path`.
 
     Each entry carries the reference's `raw` stored value, its normalized
@@ -870,7 +902,9 @@ def _dependency_diagnostics(path: Path) -> list[dict[str, Any]]:
     fm = _read_frontmatter(path)
     entries: list[dict[str, Any]] = []
     for dep in _blocked_by_refs(fm):
-        resolution = classify_dependency_reference(dep)
+        resolution = classify_dependency_reference(
+            dep, resolution_indexes=resolution_indexes
+        )
         if resolution["satisfied"]:
             continue
         raw = resolution["raw"]
@@ -1034,12 +1068,16 @@ def list_queue() -> dict[str, Any]:
     the moment a human answers.
     """
 
+    queue_index = _resolution_index(queue_dir())
+    picked_index = _resolution_index(picked_dir())
+    resolution_indexes = (queue_index, picked_index)
+
     def _brief_dict(f: Path) -> dict[str, Any]:
         fm = _read_frontmatter(f)
         related = fm.get("related")
         released = _recently_released_info(f)
         awaiting = _awaiting_decision_info(f)
-        diagnostics = _dependency_diagnostics(f)
+        diagnostics = _dependency_diagnostics(f, resolution_indexes=resolution_indexes)
         blocked_on = _blocked_on(fm)
         return {
             "filename": f.name,
@@ -1066,7 +1104,12 @@ def list_queue() -> dict[str, Any]:
     return {"briefs": [_brief_dict(f) for f in _md_files(queue_dir())]}
 
 
-def resolve(identifier: str, folder: Path) -> dict[str, Any]:
+def resolve(
+    identifier: str,
+    folder: Path,
+    *,
+    _index: tuple[list[Path], dict[str, list[Path]]] | None = None,
+) -> dict[str, Any]:
     """Match identifier against .md files in `folder`.
 
     An identifier that is itself an absolute path to a file directly inside
@@ -1091,7 +1134,7 @@ def resolve(identifier: str, folder: Path) -> dict[str, Any]:
                 return {"status": "match", "candidates": [str(direct.resolve())]}
         except OSError:
             pass
-    files = _md_files(folder)
+    files, id_index = _index if _index is not None else _resolution_index(folder)
     hits: set = set()
     for f in files:
         if (
@@ -1104,9 +1147,7 @@ def resolve(identifier: str, folder: Path) -> dict[str, Any]:
         for f in files:
             if f.stem.endswith(identifier):
                 hits.add(f)
-    for f in files:
-        if f not in hits and _read_frontmatter(f).get("id") == identifier:
-            hits.add(f)
+    hits.update(f for f in id_index.get(identifier, []) if f not in hits)
     ordered = sorted(hits, key=lambda f: f.stat().st_mtime, reverse=True)
     status = "match" if len(ordered) == 1 else ("none" if not ordered else "ambiguous")
     return {"status": status, "candidates": [str(f) for f in ordered]}
