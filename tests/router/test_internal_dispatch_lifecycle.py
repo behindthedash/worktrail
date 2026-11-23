@@ -297,6 +297,7 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
             env = {
                 **os.environ,
                 "PATH": f"{root}:{os.environ['PATH']}",
+                "PYTHONPATH": str(repo_root / "src"),
                 "REPO": str(repo),
                 "BASE": "main",
                 "ROUTE": "F",
