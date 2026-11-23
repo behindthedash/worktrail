@@ -1739,6 +1739,13 @@ def cmd_assert_terminal(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_get_worktree(args: argparse.Namespace) -> int:
+    worktree = _load(Path(args.run)).get("worktree")
+    if worktree:
+        print(worktree)
+    return 0
+
+
 def cmd_liveness(args: argparse.Namespace) -> int:
     """Read-only: is this run's owning process plausibly still active?
 
@@ -2512,6 +2519,10 @@ def main(argv=None) -> int:
     s.add_argument("key")
     s.add_argument("value")
     s.set_defaults(func=cmd_set)
+
+    s = sub.add_parser("get-worktree", help="print the assigned worktree, if any")
+    s.add_argument("run")
+    s.set_defaults(func=cmd_get_worktree)
 
     s = sub.add_parser("set-list")
     s.add_argument("path")

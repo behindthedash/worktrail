@@ -82,6 +82,7 @@ def build_seed(
     """
     resolved_agent = agent or detect_default_agent()
     lines = [
+        f"route:{route}",
         f"Repo: {repo}",
         f"Base branch: {base}",
         f"Route: {route}",

@@ -378,6 +378,18 @@ agents or writes task files — that is `orchestrator/`'s job.
   a list, with `SystemExit` naming `set`. All three append refusals share
   `_scalar_list_field_hint(key)`, which names `set-list` — the old `append` message said "use
   `set`", a command that cannot perform the repair.
+- **`worktrail-run-record get-worktree <run>` prints the run's recorded `worktree` field and
+  nothing when it is unset, exiting 0 either way.** The Codex Route F brief launch reads it before
+  dispatch, so a retry reuses the linked worktree already assigned to the run instead of creating
+  a second one; a worktree it has to create first is written back with
+  `worktrail-run-record set <run> worktree <path>`. Dispatch then launches from that directory,
+  while the seed keeps naming the canonical `Repo:` for repository identity.
+- **`worktrail-go-seed` emits a literal `route:<X>` positional line first, ahead of the labeled
+  fields.** Seeded-dispatch detection requires that token in the seed's argument list — the
+  `Route: <X>` label alone no longer satisfies it — so the generated seed in
+  `router/go_seed.py`'s `build_seed()` and the executor's detection check must change together.
+  Hosts without native skill dispatch, including embedded Codex, reach seeded-dispatch mode
+  through this adapter entry path rather than calling the skill in-session.
 - **`classifier_coverage.py` reports a `handoffs_consumed` shape it cannot read as ids, and never
   decodes one.** `_consumed_ids()` returns `(ids, diagnostics)`: a list of id strings (what every
   current writer produces) and a single plain id string (the older `set` form, still on disk) are
@@ -583,7 +595,8 @@ agents or writes task files — that is `orchestrator/`'s job.
   `cmd_scope_review` write-time reason validation and `OUT_OF_SCOPE_REASON_PREFIXES`;
   `cmd_capacity_gate`'s `_iso_retry_after` timestamp validation; `cmd_set_list`'s list write
   (and its `status` refusal) plus `_scalar_list_field_hint()`, the refusal all three
-  list-appenders raise through; `_load_lenient()`, the
+  list-appenders raise through; `cmd_get_worktree`'s read of the recorded `worktree` field
+  (empty output when unset, always exit 0); `_load_lenient()`, the
   skip-and-warn wrapper around the raising `_load()` that every directory-wide scan (including
   `reconcile_pr_labels.load_run_index()`, `check_deferred_work_handoff.py`, and
   `check_durable_artifact_capture_gate.py`) should use instead of the raising loader
@@ -633,4 +646,4 @@ agents or writes task files — that is `orchestrator/`'s job.
   best-effort writers that never affect what they record
 
 ---
-**Last Updated:** 2026-10-05
+**Last Updated:** 2026-11-23

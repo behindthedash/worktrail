@@ -73,6 +73,11 @@ Otherwise, proceed to Phase 1.
 Three entry paths, detected in order:
 
 - **Seeded-dispatch** — input contains all five labels (`Repo:`, `Base branch:`, `Route:`, `Spec:`, `Run record path:`). Detect, parse fields, skip to Phase 6. See `#seeded-dispatch` in `../worktrail-go/references/subagent-prompts.md` for detection criteria and bypass behavior.
+
+  For a Codex Route F brief, the adapter launches in the linked worktree assigned
+  on the run record. Use that worktree for the fix and PR landing. If the direct
+  fix-branch playbook applies, perform its ownership checks and skip creating a
+  second worktree. Keep the canonical `Repo:` for repository identity.
 - **Handoff-seed** — first arg is `handoff` or `handoff:ID`. See `#handoff-seed` in subagent-prompts.md.
 - **Direct-intent** — positional args for repo hint, intent, spec name. Standard flow below.
 

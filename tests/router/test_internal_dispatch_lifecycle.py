@@ -12,6 +12,7 @@ import sys
 import tempfile
 import time
 import unittest
+from itertools import pairwise
 from pathlib import Path
 from unittest import mock
 
@@ -256,6 +257,101 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
                         f"executed:{agent}:handoff:20260812-083302:route:F\n",
                     )
 
+    def test_go_codex_route_f_brief_launches_from_recorded_worktree(self):
+        repo_root = Path(__file__).resolve().parents[2]
+        go = (repo_root / "skills/worktrail-go/SKILL.md").read_text()
+        block = go.split('DISPATCH_SPEC="${SPEC_ID:-none}"', 1)[1].split("\n```", 1)[0]
+        launch = 'DISPATCH_SPEC="${SPEC_ID:-none}"' + block
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            subprocess.run(["git", "init", "-qb", "main", repo], check=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    repo,
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@example.com",
+                    "commit",
+                    "-qm",
+                    "init",
+                    "--allow-empty",
+                ],
+                check=True,
+            )
+            brief = root / "brief.md"
+            brief.write_text("execution brief\n")
+            run = root / "runs/repo/run.yaml"
+            run.parent.mkdir(parents=True)
+            run.write_text(f"run_id: run\nrepository: {repo}\nworktree: null\n")
+            shim = root / "codex"
+            shim.write_text(
+                f'#!/bin/sh\nexec {sys.executable} {_FAKE_AGENT} codex "$@"\n'
+            )
+            shim.chmod(0o700)
+            proof = root / "proof"
+            argv_proof = root / "argv.json"
+            env = {
+                **os.environ,
+                "PATH": f"{root}:{os.environ['PATH']}",
+                "PYTHONPATH": str(repo_root / "src"),
+                "REPO": str(repo),
+                "BASE": "main",
+                "ROUTE": "F",
+                "SPEC_ID": "",
+                "RUN": str(run),
+                "BRIEF_PATH": str(brief),
+                "HANDOFF_ID": "execution",
+                "INVOCATION_CONTEXT_AGENT": "codex",
+                "FAKE_INTERNAL_DISPATCH_PROOF": str(proof),
+                "FAKE_INTERNAL_DISPATCH_ARGV_PROOF": str(argv_proof),
+                "FAKE_INTERNAL_DISPATCH_EXPECTED": f"Run record path: {run}",
+                "WORKTRAIL_SKILL_DISPATCH_DEPTH": "0",
+                "WORKTRAIL_SKILL_ROOT": str(repo_root / "skills"),
+                "WORKTRAIL_CODEX_HOME": str(root / "codex-home"),
+            }
+            wrapper = (
+                "worktrail-skill-dispatch() { "
+                'command worktrail-skill-dispatch --no-inherit-codex-auth "$@"; }\n'
+            )
+            for launch_number in range(2):
+                with self.subTest(launch=launch_number):
+                    result = subprocess.run(
+                        ["bash", "-c", wrapper + launch],
+                        cwd=repo,
+                        check=False,
+                        env=env,
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertTrue(proof.read_text().startswith("executed:codex:"))
+                    argv = json.loads(argv_proof.read_text())
+                    cwd = Path(argv[argv.index("-C") + 1])
+                    self.assertNotEqual(cwd, repo)
+                    self.assertTrue((cwd / ".git").is_file())
+                    self.assertIn(str(cwd), run.read_text())
+                    self.assertIn(f"Repo: {repo}", argv[-1])
+                    self.assertIn(f"Brief: {brief}", argv[-1])
+                    self.assertIn("Spec: handoff:execution", argv[-1])
+                    self.assertIn(f"Run record path: {run}", argv[-1])
+                    self.assertIn("route:F", argv[-1].split())
+                    self.assertIn(
+                        str(run.parent.parent),
+                        [
+                            value
+                            for flag, value in pairwise(argv)
+                            if flag == "--add-dir"
+                        ],
+                    )
+                    if launch_number == 0:
+                        first_cwd = cwd
+                    else:
+                        self.assertEqual(cwd, first_cwd)
+
     def test_installed_seed_and_dispatch_contract_across_providers(self):
         seed_command = shutil.which("worktrail-go-seed")
         dispatch_command = shutil.which("worktrail-skill-dispatch")
@@ -454,12 +550,13 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
                     self.assertEqual(blocked.returncode, 2)
                     self.assertIn("blocked_internal_dispatch_recursion", blocked.stderr)
 
+                    labeled_only = seed.removeprefix("route:F\n")
                     unseeded = subprocess.run(
-                        [*command[:6], "handoff:20260812-090245", *command[7:]],
+                        [*command[:6], labeled_only, *command[7:]],
                         check=False,
                         env={
                             **environment,
-                            "FAKE_INTERNAL_DISPATCH_EXPECTED": "handoff:20260812-090245",
+                            "FAKE_INTERNAL_DISPATCH_EXPECTED": labeled_only,
                         },
                         capture_output=True,
                         text=True,

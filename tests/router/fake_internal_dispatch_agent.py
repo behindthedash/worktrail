@@ -99,7 +99,7 @@ def main(argv: list[str]) -> int:
     if expected not in prompt:
         proof.write_text(f"lost-context:{agent}\n")
         return 4
-    if "route:F" not in prompt and "Route: F" not in prompt:
+    if "route:F" not in prompt.split():
         proof.write_text(f"unseeded:{agent}\n")
         return 6
     if os.environ.get("WORKTRAIL_SKILL_DISPATCH_DEPTH") != "1":
