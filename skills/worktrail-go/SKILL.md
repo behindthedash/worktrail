@@ -850,22 +850,55 @@ SEED=$(worktrail-go-seed "${SEED_ARGS[@]}") || {
     --merge-result "adapter seed generation failed; no child launched"
   exit 1
 }
+DISPATCH_CWD="$REPO"
+DISPATCH_FLAGS=()
+if [[ "$ROUTE" =~ ^[DFGH]$ ]]; then
+  DISPATCH_FLAGS+=(--write)
+fi
+if [ "$INVOCATION_CONTEXT_AGENT" = codex ]; then
+  DISPATCH_FLAGS+=(--add-dir "$(dirname "$(dirname "$RUN")")")
+  if [ "$ROUTE" = F ] && [ -n "${BRIEF_PATH:-}" ]; then
+    fail_dispatch_worktree() {
+      echo "Route F adapter worktree setup failed: $1" >&2
+      worktrail-run-record finish "$RUN" --status failed_recoverable --merge-result "$1"
+      exit 1
+    }
+    DISPATCH_CWD=$(worktrail-run-record get-worktree "$RUN") ||
+      fail_dispatch_worktree "could not read the assigned worktree from $RUN"
+    if [ -z "$DISPATCH_CWD" ]; then
+      RUN_NAME=$(basename "$RUN" .yaml)
+      DISPATCH_CWD="$REPO-worktrees/fix-$RUN_NAME"
+      git -C "$REPO" worktree add -b "fix/$RUN_NAME" "$DISPATCH_CWD" "$BASE" ||
+        fail_dispatch_worktree "could not create $DISPATCH_CWD from $BASE"
+      worktrail-run-record set "$RUN" worktree "$DISPATCH_CWD" ||
+        fail_dispatch_worktree "could not record $DISPATCH_CWD in $RUN"
+    fi
+    if [ ! -f "$DISPATCH_CWD/.git" ] ||
+       [ "$(git -C "$DISPATCH_CWD" rev-parse --path-format=absolute --git-common-dir)" != \
+         "$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)" ]; then
+      fail_dispatch_worktree "assigned worktree $DISPATCH_CWD is not a linked checkout of $REPO"
+    fi
+  fi
+  DISPATCH_FLAGS+=(--add-dir "${REPO}-worktrees")
+fi
 worktrail-skill-dispatch \
   --agent "$INVOCATION_CONTEXT_AGENT" \
   --skill worktrail-sdd-workflow \
   --args "$SEED" \
-  --cwd "$REPO"
+  --cwd "$DISPATCH_CWD" "${DISPATCH_FLAGS[@]}"
 ```
 
-For authoring routes add the `--write` and provider-specific `--add-dir` flags described
-below to that same dispatch command. The seed's `Run record path:` is authoritative: the
+For a Codex Route F brief, prepare the fix branch before launching and reuse the
+linked worktree already recorded on a retry. The seed starts with the literal
+`route:X` positional argument required by the executor guard, followed by the
+resolved fields. The seed's `Run record path:` is authoritative: the
 child enters seeded-dispatch mode, retains `Agent CLI:`, consumes `Brief:` without
 claiming it again, and writes terminal completion to `$RUN`. The parent remains the
 handoff owner identified by `by:$INVOCATION_CONTEXT_DISPATCH_ID`; do not send the raw
 handoff arguments through the adapter after Phase 6 has created `$RUN`.
 
 Run `worktrail-skill-dispatch` with the resolved `--agent`, `--skill`, seeded
-`--args`, `--cwd "$REPO"`, and — for any route that will author, edit, or commit
+`--args`, `--cwd "$DISPATCH_CWD"`, and — for any route that will author, edit, or commit
 files (D/F/G/H) — `--write` values. Without `--write`, a headless claude/opencode
 child has no channel to answer the permission prompts sdd-workflow's own file
 edits and commits require and stalls or fails partway through; codex needs

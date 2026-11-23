@@ -117,13 +117,13 @@ When sdd-workflow receives a seed prompt (from `go subprocess dispatch`), it det
 mode and enters at Phase 1 with resolved parameters. The subprocess skips dashboard, picker, repo
 resolution, policy load, and classification — sdd-workflow Phase 1 reads `$REPO`, `$BASE`, `$ROUTE`,
 `$SPEC_ID`, `$RUN` from the seed and proceeds directly to route execution at Phase 6
-(run record attachment). Codex-host runs do not enter this mode; they stay in-session and call
-`Skill("worktrail-sdd-workflow", ...)` directly instead.
+(run record attachment). Hosts without native skill dispatch, including embedded Codex,
+use the adapter for this entry path.
 
 **Seeded-dispatch detection:** sdd-workflow Phase 1 checks for the presence of these environment
 variables/fields from the seed prompt: `ROUTE`, `SPEC_ID`, `REPO`, `BASE`, `RUN`, and optional `AGENT_CLI`.
-If all are present, enter seeded-dispatch mode and skip classification. If the current host is Codex,
-do not construct this seed path at all.
+If all required fields and the literal `route:X` argument are present, enter
+seeded-dispatch mode and skip classification.
 
 **Handoff brief seeding:** If the seed includes `--brief <path>`, the seed prompt also sets `BRIEF_PATH`.
 The subprocess attaches to the parent run record as usual but does NOT call `work_queue.py claim` again
