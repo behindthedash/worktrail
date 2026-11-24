@@ -20,10 +20,12 @@ Usage: policy.py --repo /path/to/repo [--json]
 from __future__ import annotations
 
 import argparse
+import contextlib
 import copy
 import fnmatch
 import json
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +41,7 @@ class OperatorConfigError(ValueError):
 
 POLICY_RELPATH = ".worktrail/policy.yaml"
 ROUTING_FILE_ENV = "WORKTRAIL_ROUTING_FILE"
+_routing_file_override = threading.local()
 
 
 def default_routing_file() -> Path:
@@ -1276,14 +1279,32 @@ def _resolve_add_ons(
     return raw
 
 
+@contextlib.contextmanager
+def routing_file_override(path: Path):
+    """Temporarily use *path* as this thread's machine-wide routing file."""
+    had_previous = hasattr(_routing_file_override, "path")
+    previous = getattr(_routing_file_override, "path", None)
+    _routing_file_override.path = Path(path)
+    try:
+        yield
+    finally:
+        if had_previous:
+            _routing_file_override.path = previous
+        else:
+            del _routing_file_override.path
+
+
 def resolved_routing_file_path() -> Path:
     """The machine-wide routing file `_resolve_routing()`/`routing_cli` actually
-    read from and write to: `WORKTRAIL_ROUTING_FILE` (or its legacy `GO_`
-    synonym) if set, else `default_routing_file()`. Any caller that names this
-    path in a message to the operator (e.g. an error pointing at
+    read from and write to: this thread's `routing_file_override()` first,
+    then `WORKTRAIL_ROUTING_FILE` (or its legacy `GO_` synonym) if set, else
+    `default_routing_file()`. Any caller that names this path in a message to the operator (e.g. an error pointing at
     `worktrail-routing --init`) must resolve it through here, not through
     `default_routing_file()` alone -- naming the unconditional default while an
     override env var is actually in effect names the wrong file."""
+    override = getattr(_routing_file_override, "path", None)
+    if override is not None:
+        return override
     override = env_setting(ROUTING_FILE_ENV)
     return Path(override).expanduser() if override else default_routing_file()
 

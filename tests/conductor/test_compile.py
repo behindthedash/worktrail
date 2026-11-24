@@ -502,11 +502,18 @@ def test_explicit_agent_and_model_override_a_declared_target(change, tmp_path):
     seeded_routing_file = resolved_routing_file_path()
     seeded_routing_text = seeded_routing_file.read_text(encoding="utf-8")
 
+    observed_routing_files = []
+
+    def capture_spawn(*args, **kwargs):
+        observed_routing_files.append(resolved_routing_file_path())
+        return type("SpawnResult", (), {"text": reply})()
+
     with (
         _clear_ambient_agent_env(tmp_path),
-        patch("worktrail.orchestrator.spawnlib.spawn_agent") as spawn_agent,
+        patch(
+            "worktrail.orchestrator.spawnlib.spawn_agent", side_effect=capture_spawn
+        ) as spawn_agent,
     ):
-        spawn_agent.return_value = type("SpawnResult", (), {"text": reply})()
         plan = conductor_compile.compile_run_plan(
             change,
             tasks,
@@ -527,9 +534,9 @@ def test_explicit_agent_and_model_override_a_declared_target(change, tmp_path):
     assert spawn_agent.call_count == 1
     kwargs = spawn_agent.call_args.kwargs
     assert kwargs["tier"] == "explicit"
-    # The env var override must be restored to its pre-call (unset) state, not
-    # left pointed at the throwaway file -- resolved_routing_file_path() then
-    # falls back to conftest.py's own GO_ROUTING_FILE-pointed seed again.
+    assert observed_routing_files[0] != seeded_routing_file
+    # The explicit override must not mutate the env var, and the thread-local
+    # routing file must fall back to conftest.py's GO_ROUTING_FILE seed after it.
     assert os.environ.get(ROUTING_FILE_ENV) is None
     assert resolved_routing_file_path() == seeded_routing_file
     # The real routing file itself must be untouched by the override.

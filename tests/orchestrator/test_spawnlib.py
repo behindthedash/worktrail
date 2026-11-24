@@ -13,6 +13,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from collections import namedtuple
 from pathlib import Path
@@ -25,8 +26,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from typing import ClassVar
 
 from worktrail.orchestrator import spawnlib
-from worktrail.router import skill_dispatch
+from worktrail.router import policy, skill_dispatch
 from worktrail.shared import codex_sandbox
+from worktrail.shared.homedir import worktrail_home
 
 os.environ.setdefault(
     "GO_AGENT_CAPACITY_CACHE", os.path.join(tempfile.mkdtemp(), "capacity.json")
@@ -3427,8 +3429,7 @@ class ExplicitCellOverrideCarriesTargetDefinition(unittest.TestCase):
             _patch_routing(routing),
             spawnlib.explicit_cell_override(target, model, **kwargs),
         ):
-            path = os.environ.get(spawnlib.ROUTING_FILE_ENV)
-            self.assertIsNotNone(path, "override must point ROUTING_FILE_ENV")
+            path = spawnlib.resolved_routing_file_path()
             return yaml.safe_load(Path(path).read_text(encoding="utf-8"))
 
     def _routing(self):
@@ -3475,6 +3476,75 @@ class ExplicitCellOverrideCarriesTargetDefinition(unittest.TestCase):
         self.assertEqual(
             doc["tiers"]["explicit"]["claude-deepseek"]["model"], "deepseek-flash[1m]"
         )
+
+
+class ExplicitCellOverrideThreadIsolation(unittest.TestCase):
+    def test_concurrent_overrides_are_thread_local_and_nested_overrides_restore(self):
+        routing = _routing(
+            {
+                "claude-a": _target("claude"),
+                "codex-b": _target("codex"),
+            },
+            {},
+        )
+        operator_seed = policy.resolved_routing_file_path()
+        env_before = os.environ.get(policy.ROUTING_FILE_ENV)
+        entered = threading.Barrier(3)
+        release = threading.Event()
+        failures = []
+
+        def worker(target, model):
+            try:
+                with spawnlib.explicit_cell_override(target, model):
+                    own_path = policy.resolved_routing_file_path()
+                    entered.wait()
+                    release.wait()
+                    resolved = policy.resolve_routing(
+                        policy.load_policy(worktrail_home())
+                    )
+                    cell = resolved["tiers"]["explicit"][target]
+                    self.assertEqual(cell["model"], model)
+                    self.assertEqual(policy.resolved_routing_file_path(), own_path)
+                    self.assertNotEqual(own_path, operator_seed)
+                    self.assertNotIn(
+                        "claude-a" if target == "codex-b" else "codex-b",
+                        resolved["targets"],
+                    )
+                    self.assertEqual(
+                        os.environ.get(policy.ROUTING_FILE_ENV), env_before
+                    )
+            except (
+                AssertionError
+            ) as exc:  # report thread assertion failures to unittest
+                failures.append(exc)
+
+        with _patch_routing(routing):
+            first = threading.Thread(target=worker, args=("claude-a", "sonnet"))
+            second = threading.Thread(target=worker, args=("codex-b", "gpt-5"))
+            first.start()
+            second.start()
+            entered.wait()
+            self.assertEqual(policy.resolved_routing_file_path(), operator_seed)
+            self.assertEqual(os.environ.get(policy.ROUTING_FILE_ENV), env_before)
+            release.set()
+            first.join()
+            second.join()
+
+        if failures:
+            raise failures[0]
+        self.assertEqual(policy.resolved_routing_file_path(), operator_seed)
+        with policy.routing_file_override(Path("/tmp/outer-routing.yaml")):
+            self.assertEqual(
+                policy.resolved_routing_file_path(), Path("/tmp/outer-routing.yaml")
+            )
+            with policy.routing_file_override(Path("/tmp/inner-routing.yaml")):
+                self.assertEqual(
+                    policy.resolved_routing_file_path(), Path("/tmp/inner-routing.yaml")
+                )
+            self.assertEqual(
+                policy.resolved_routing_file_path(), Path("/tmp/outer-routing.yaml")
+            )
+        self.assertEqual(policy.resolved_routing_file_path(), operator_seed)
 
 
 class DispatchIdEnvVar(unittest.TestCase):
