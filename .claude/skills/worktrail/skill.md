@@ -51,6 +51,10 @@ triggers:
     - _apply_env_profile
     - _PROVIDER_REDIRECT_VARS
     - explicit_cell_override
+    - untrackable
+    - UntrackableCheckbox
+    - normalize_untrackable_task_ids
+    - untrackable_task_checkboxes
 ---
 
 You are working on **worktrail's task-orchestration core**: compiling specs/changes into a
@@ -149,6 +153,28 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
   per-task create/modify split, so all files existing is the normal state of a task editing
   existing modules. Devkit `TASK-NNN.md` tasks keep the "possibly already implemented" WARN. The
   WARN false-fired (exit 1) on every unattended launch touching existing files on 2026-09-02.
+- **Untrackable OpenSpec checkboxes are recorded, never just warned about**
+  (`taskformats/openspec/schema.py` `parse_tasks_md`): a **top-level** `- [ ]`/`- [x]` line with
+  no `N.M` id is appended to `ParsedTasks.untrackable` as
+  `UntrackableCheckbox(line_number, text)` (1-based line number) and still produces the existing
+  "not trackable" warning. Indented checkboxes are tolerated sub-items — not tasks, not
+  warnings, not untrackable. OpenSpec's own tracker silently drops id-less lines, so this list
+  is how the dashboard and backlog seeder see work that would otherwise never run.
+- **A change with any untrackable top-level checkbox is `needs-tasks`, even when every trackable
+  task is complete** (`router/dashboard.py` `_safe_detect_openspec`): the untrackable check runs
+  before the empty/pending/complete branch, so the row reports `stage: "needs-tasks"`,
+  `next_action: "normalize task ids (N untrackable checkbox(es))"`, and the count in
+  `untrackable_task_checkboxes`. A clean change keeps its existing stage and reports `0`.
+- **`worktrail-normalize-openspec-task-ids` assigns group-scoped ids without renumbering**
+  (`taskformats/openspec/normalize.py` `normalize_untrackable_task_ids`): each unmatched
+  top-level checkbox takes the next suffix above the highest existing `N.M` in its enclosing
+  `## N.` group, so `1.4` stays `1.4` and a missing id becomes `1.5`; checkbox state
+  (`[ ]`/`[x]`), indented `files:`/`depends:` continuation lines, and CRLF endings are
+  preserved. Checkboxes that appear before any group heading are left untouched (there is no
+  group to scope an id to) and a second run is a no-op. The CLI accepts a change directory or
+  `tasks.md`, rewrites atomically (temp file + `os.replace`, original mode preserved, fsync),
+  `--check` is read-only and exits 1 when normalization is needed, and read/write failures
+  exit 2.
 - **A timed-out review/ci-fix worker's uncommitted work is salvaged, not discarded**
   (`verify.Verifier._salvage_uncommitted`): tracked modifications only (`git add -u`), committed
   and pushed to the group branch before the strike is counted; a salvage failure never masks the
@@ -327,6 +353,12 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
   `IN_FLIGHT` is the status set the slot-refilling scheduler relies on
 - `taskformats/base.py` — `TaskSource` protocol; `orchestrator/` must never construct a
   format-specific task path itself, always go through the active `TaskSource`
+- `taskformats/openspec/schema.py` — `parse_tasks_md`/`ParsedTasks` (`.tasks`, `.warnings`,
+  `.untrackable`): group and task regexes, the indented `files:`/`review:`/`depends:`
+  continuation lines, and the top-level-only untrackable-checkbox rule
+- `taskformats/openspec/normalize.py` — `normalize_untrackable_task_ids()` and the
+  `worktrail-normalize-openspec-task-ids` CLI: group-scoped id assignment above the highest
+  existing suffix, atomic mode-preserving write, read-only `--check`
 - `addons/runner.py` — the only caller of `AddOn.install`/`configure`/`run`
 - `orchestrator/dispatch.py` — `_ROLE_ACTION` per-role action text (review/fix `missing_context`
   rule), `build_worker_prompt`/`build_group_prompt` hard rules (`pre_commit_cmd`), and
@@ -366,4 +398,4 @@ schedulable plan, fanning work out across git worktrees, and handing finished wo
   the free-rerun probe `wait_and_fix_ci` tries once before spawning a ci-fix worker
 
 ---
-**Last Updated:** 2026-10-05
+**Last Updated:** 2026-11-25
