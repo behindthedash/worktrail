@@ -47,13 +47,45 @@ This is an **agent-driven** operation - you will read delta specs and directly e
 
    If no delta specs found, inform user and stop.
 
-4. **For each delta spec, apply changes to main specs**
+4. **Preflight against the remote base before reading canonical specs**
+
+   Before reading or editing any canonical capability spec, fetch `origin` and resolve the
+   target base branch. Use the base supplied by the dispatch context when present; otherwise
+   use `main`.
+
+   ```bash
+   git fetch origin || { echo "Sync preflight failed: could not fetch origin" >&2; exit 1; }
+   BASE_BRANCH="${BASE_BRANCH:-main}"
+   git rev-parse --verify "refs/remotes/origin/${BASE_BRANCH}^{commit}" >/dev/null || {
+     echo "Sync preflight failed: origin/${BASE_BRANCH} could not be resolved" >&2
+     exit 1
+   }
+   ```
+
+   If the fetch fails or the remote base ref cannot be resolved, report the preflight failure
+   and stop before editing any canonical spec. Do not update the worktree's local base branch.
+   Read every canonical capability spec from `origin/<base>` with `git show
+   "origin/${BASE_BRANCH}:openspec/specs/<capability>/spec.md"`; never use the worktree copy as
+   the merge baseline. Use that fetched remote snapshot for both the already-synced check and
+   any merge.
+
+   Before editing, compare each affected delta requirement with its matching remote
+   requirement, normalizing only trailing whitespace (`rstrip`). If every affected requirement
+   is already reflected in the remote spec, report **already synced** and stop with no edits,
+   commits, or new canonical spec files. For removed or renamed requirements, treat the
+   operation as already reflected only when the removed name is absent (and, for a rename,
+   the target requirement is present with matching content). If any requirement is missing,
+   different, or cannot be matched, continue with the normal intelligent merge using the
+   remote spec content as its starting point; do not infer convergence from commit ancestry.
+
+5. **For each delta spec, apply changes to main specs**
 
    For each repo-local capability delta spec path returned by the CLI:
 
    a. **Read the delta spec** to understand the intended changes
 
-   b. **Read the main spec** at `openspec/specs/<capability>/spec.md` (may not exist yet)
+   b. **Read the remote main spec** at `origin/<base>:openspec/specs/<capability>/spec.md`
+      (it may not exist yet). Base all edits on this content, not the worktree's local copy.
 
    c. **Apply changes intelligently**:
 
@@ -75,7 +107,7 @@ This is an **agent-driven** operation - you will read delta specs and directly e
       **RENAMED Requirements:**
       - Find the FROM requirement, rename to TO
 
-   d. **Create new main spec** if capability doesn't exist yet:
+   d. **Create new main spec** if capability doesn't exist at `origin/<base>`:
       - Create `openspec/specs/<capability>/spec.md`
       - Start the file with the title line `# <capability> Specification` (using the
         capability's directory name) followed by a blank line — a main spec is not a
@@ -85,7 +117,7 @@ This is an **agent-driven** operation - you will read delta specs and directly e
         header, which is delta-only syntax and fails `openspec validate` on a main
         spec — followed by the ADDED requirements verbatim
 
-5. **Show summary**
+6. **Show summary**
 
    After applying all changes, summarize:
    - Which capabilities were updated

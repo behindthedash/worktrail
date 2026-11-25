@@ -222,6 +222,35 @@ def test_no_devkit_specs_dispatches_remain():
     )
 
 
+def test_opsx_sync_surfaces_require_remote_staleness_preflight():
+    """Both bundled sync entry points must use the fetched remote baseline and
+    refuse to edit on a failed preflight or an already-converged delta."""
+    surfaces = (
+        REPO_ROOT / "commands" / "opsx" / "sync.md",
+        SKILLS_DIR / "openspec-sync-specs" / "SKILL.md",
+    )
+    required = (
+        "git fetch origin",
+        "git fetch origin ||",
+        "origin/<base>",
+        "origin/${BASE_BRANCH}:openspec/specs/<capability>/spec.md",
+        "refs/remotes/origin/${BASE_BRANCH}^{commit}",
+        "worktree copy as the merge baseline",
+        "If the fetch fails",
+        "remote base ref cannot be resolved",
+        "stop before editing",
+        "trailing whitespace",
+        "already synced",
+        "no edits",
+    )
+    for surface in surfaces:
+        text = " ".join(surface.read_text().split())
+        missing = [phrase for phrase in required if phrase not in text]
+        assert not missing, (
+            f"{surface.relative_to(REPO_ROOT)} missing sync preflight: {missing}"
+        )
+
+
 def test_go_dispatches_worktrail_executor_only():
     """The front door must resolve to the executor shipped by this plugin."""
     go_docs = [
