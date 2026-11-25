@@ -55,6 +55,9 @@ ROUTE_NAMES = {
 # a hyphenated suffix (e.g. "PR #617-style", "issue #310-related"), never a
 # real spec-id -- spec-ids are never written with a `#` prefix.
 _SPEC_ID_RE = re.compile(r"(?<!#)\b\d{3}-[a-z0-9][a-z0-9-]*\b")
+_NEEDS_TASKS_HANDOFF_RE = re.compile(
+    r"\bneeds?[- ]tasks?\b|\btask generation\b|\bspec-to-tasks\b", re.IGNORECASE
+)
 
 # Cited PR numbers (e.g. `PR #68`), used to look up live PR state so the
 # pr-repair signal below doesn't fire for delivery that's already settled.
@@ -812,9 +815,9 @@ def classify(
     # Handoff-recommended-route override. Auto mode has no human present to
     # catch a bad low/medium-confidence guess, so an explicit brief
     # recommendation beats the organic pick outright at low/medium confidence.
-    # A high-confidence disagreement is left alone: that's a strong enough
-    # organic signal to be worth a fresh look rather than a silent override
-    # (repo state may have drifted since the brief was written). This runs
+    # A high-confidence disagreement is left alone, except for a Route C
+    # needs-tasks handoff whose D confidence comes from the spec id and
+    # approved-spec signals. This runs
     # after the pick above (not as a score boost) so the override decision is
     # never distorted by its own thumb on the scale.
     #
@@ -840,10 +843,17 @@ def classify(
         and scores.get(handoff_route_norm or "", 0) <= 0
         and second_score > 0
     )
+    needs_tasks_planning_override = (
+        handoff_route_norm == "C"
+        and route == "D"
+        and confidence == "high"
+        and {"spec-id", "approved-spec"} <= set(hits["D"])
+        and _NEEDS_TASKS_HANDOFF_RE.search(text)
+    )
     if (
         not forced
         and handoff_route_norm
-        and confidence in ("low", "medium")
+        and (confidence in ("low", "medium") or needs_tasks_planning_override)
         and route != handoff_route_norm
         and not (handoff_route_norm == "E" and resumable_state is False)
     ):
