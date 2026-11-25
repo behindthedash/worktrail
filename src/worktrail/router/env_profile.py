@@ -89,8 +89,8 @@ def resolve_env_profile(
     path = Path(raw_from).expanduser()
     if not path.is_absolute():
         # Deliberately refused rather than resolved relative to the routing
-        # file: `explicit_cell_override` points WORKTRAIL_ROUTING_FILE at a
-        # mkstemp file under /tmp, so "relative to the routing file" would
+        # file: `explicit_cell_override` sets the calling thread's routing file
+        # to a mkstemp file under /tmp, so "relative to the routing file" would
         # silently mean a different directory exactly when a `--model-map` /
         # `--effort` override is in play.
         raise _config_error(

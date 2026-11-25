@@ -475,6 +475,7 @@ class ReviewerIndependence(unittest.TestCase):
     def setUp(self):
         self._orig = live.spawnlib.spawn_claude_p
         self.captured = {}
+        seed = policy.resolved_routing_file_path()
 
         def fake(
             prompt,
@@ -490,15 +491,17 @@ class ReviewerIndependence(unittest.TestCase):
             dispatch_id=None,
         ):
             # A role_models override routes through explicit_cell_override(),
-            # which threads the model via a swapped WORKTRAIL_ROUTING_FILE, not
+            # which threads the model via a thread-local routing-file override, not
             # a kwarg -- read the swapped file's content the same way
             # spawn_claude_p's own real implementation would.
-            routing_path = os.environ.get("WORKTRAIL_ROUTING_FILE")
+            routing_path = policy.resolved_routing_file_path()
             self.captured = {
                 "extra_args": extra_args,
-                "routing_text": Path(routing_path).read_text(encoding="utf-8")
-                if routing_path
-                else None,
+                "routing_text": (
+                    Path(routing_path).read_text(encoding="utf-8")
+                    if routing_path != seed
+                    else None
+                ),
             }
             return (
                 '```json\n{"task":"TASK-001","step":"review","status":"success",'

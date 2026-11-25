@@ -557,14 +557,14 @@ class LiveSpawnRoleAgentsTests(unittest.TestCase):
 
     def test_review_role_override_honors_explicit_role_model(self):
         # role_models forces the explicit-cell-override path: the model reaches
-        # the (mocked-out) spawn_claude_p via a swapped WORKTRAIL_ROUTING_FILE,
+        # the (mocked-out) spawn_claude_p via a thread-local routing-file override,
         # not a kwarg -- read the swapped file's content to verify it, the same
         # way spawn_claude_p's own real implementation would.
         written = {}
 
         def _capture(*_a, **_kw):
-            path = os.environ.get("WORKTRAIL_ROUTING_FILE")
-            written["text"] = Path(path).read_text(encoding="utf-8") if path else None
+            path = spawnlib.resolved_routing_file_path()
+            written["text"] = Path(path).read_text(encoding="utf-8")
             return type(
                 "R",
                 (),
@@ -935,10 +935,13 @@ class LiveSpawnEffortTests(unittest.TestCase):
 
     def _call_capturing_routing_file(self, role, task, **kwargs):
         written = {}
+        seed = spawnlib.resolved_routing_file_path()
 
         def _capture(*_a, **_kw):
-            path = os.environ.get("WORKTRAIL_ROUTING_FILE")
-            written["text"] = Path(path).read_text(encoding="utf-8") if path else None
+            path = spawnlib.resolved_routing_file_path()
+            written["text"] = (
+                Path(path).read_text(encoding="utf-8") if path != seed else None
+            )
             return type(
                 "R",
                 (),

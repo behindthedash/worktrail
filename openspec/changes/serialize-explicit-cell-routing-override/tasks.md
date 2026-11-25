@@ -1,6 +1,6 @@
 ## 1. Thread-scoped routing-file override (code and tests)
 
-- [ ] 1.1 Replace the process-wide `WORKTRAIL_ROUTING_FILE` swap in `explicit_cell_override()`
+- [x] 1.1 Replace the process-wide `WORKTRAIL_ROUTING_FILE` swap in `explicit_cell_override()`
       with a per-thread routing-file override, and pin the concurrent contract with tests.
       In `src/worktrail/router/policy.py`, add `contextlib`/`threading` imports, a module-level
       `threading.local()`, and a `routing_file_override(path)` context manager that saves,
@@ -38,7 +38,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [e2e] Run `PYTHONPATH=src pytest -q tests/orchestrator/test_spawnlib.py
+- [x] 2.1 [e2e] Run `PYTHONPATH=src pytest -q tests/orchestrator/test_spawnlib.py
       tests/orchestrator/test_live_extras.py tests/orchestrator/test_resilience_helpers.py
       tests/conductor/test_compile.py tests/conductor/test_compile_spawn_exhausted.py`, then
       `PYTHONPATH=src pytest -q` and `PYTHONPATH=src python3 -m

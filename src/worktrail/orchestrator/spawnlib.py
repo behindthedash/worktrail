@@ -84,11 +84,11 @@ import yaml
 from ..router import routing_cli
 from ..router.env_profile import resolve_env_profile
 from ..router.policy import (
-    ROUTING_FILE_ENV,
     OperatorConfigError,
     load_policy,
     resolve_routing,
     resolved_routing_file_path,
+    routing_file_override,
 )
 from ..router.skill_dispatch import (
     codex_sandbox_args,
@@ -1189,7 +1189,7 @@ def _preflight_primary_target(
 
 @contextlib.contextmanager
 def explicit_cell_override(target: str, model: str, *, effort: str | None = None):
-    """Temporarily point `WORKTRAIL_ROUTING_FILE` at a throwaway routing file
+    """Temporarily set the calling thread's routing file to a throwaway file
     declaring exactly one target/tier ("explicit") that reuses `target`'s
     already-declared harness/pool but serves `model`/`effort` instead of its
     configured tier cell -- so `spawn_agent(tier="explicit", ...)` resolves to
@@ -1255,15 +1255,8 @@ def explicit_cell_override(target: str, model: str, *, effort: str | None = None
         explicit_file.write_text(
             yaml.safe_dump(document, sort_keys=False), encoding="utf-8"
         )
-        previous = os.environ.get(ROUTING_FILE_ENV)
-        os.environ[ROUTING_FILE_ENV] = str(explicit_file)
-        try:
+        with routing_file_override(explicit_file):
             yield
-        finally:
-            if previous is None:
-                os.environ.pop(ROUTING_FILE_ENV, None)
-            else:
-                os.environ[ROUTING_FILE_ENV] = previous
     finally:
         explicit_file.unlink(missing_ok=True)
 
