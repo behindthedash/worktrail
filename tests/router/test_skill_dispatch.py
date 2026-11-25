@@ -1906,6 +1906,9 @@ class SingleBriefTriageTests(unittest.TestCase):
             verdict="stale-close",
             duplicate_of=None,
             evidence="repo archived",
+            failure_coverage=[
+                {"failure": "example brief", "evidence": "repo archived"}
+            ],
         )
         entry = skill_dispatch.apply_single_brief_verdict(verdict, confirm=False)
         self.assertEqual(entry["status"], "planned")

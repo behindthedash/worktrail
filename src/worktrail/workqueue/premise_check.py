@@ -115,6 +115,24 @@ _MAX_OUTPUT_LINES = 20
 _EXT_SHAPE_RE = re.compile(r"\.[A-Za-z0-9]{1,10}$")
 
 
+def reported_failure_items(focus: str) -> list[str]:
+    """Split focus prose into stable, independently reported failure items."""
+    parts = re.split(
+        r"(?<=[.!?])\s+|;\s*|,\s+(?!and\b)|\n\s*(?=(?:[-*+]\s+|\d+[.)]\s+))|\s+\band\b\s+",
+        focus or "",
+        flags=re.IGNORECASE,
+    )
+    items: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        item = re.sub(r"\s+", " ", part).strip(" \t\r\n.,;:!?-*+()[]{}")
+        key = item.casefold()
+        if len(item) >= 12 and key not in seen:
+            seen.add(key)
+            items.append(item)
+    return items
+
+
 @dataclass(frozen=True)
 class Needle:
     kind: str  # "quoted" | "path" | "command"

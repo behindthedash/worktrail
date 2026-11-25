@@ -15,8 +15,39 @@ import pytest
 from worktrail.workqueue.premise_check import (
     extract_needles,
     format_premise_block,
+    reported_failure_items,
     run_premise_check,
 )
+
+
+def test_reported_failure_items_split_and_deduplicate_focus():
+    focus = (
+        "First independent failure causes a timeout, second failure leaves a marker; "
+        "third failure rejects writes.\n- Fourth failure loses the branch\n"
+        "and fifth failure blocks dispatch, First independent failure causes a timeout"
+    )
+    assert reported_failure_items(focus) == [
+        "First independent failure causes a timeout",
+        "second failure leaves a marker",
+        "third failure rejects writes",
+        "Fourth failure loses the branch",
+        "fifth failure blocks dispatch",
+    ]
+
+
+def test_reported_failure_items_drops_short_items_and_splits_comma():
+    assert reported_failure_items(
+        "short, this independent failure hits a timeout, another failure blocks dispatch"
+    ) == ["this independent failure hits a timeout", "another failure blocks dispatch"]
+
+
+def test_reported_failure_items_splits_incident_focus_into_two_failures():
+    assert reported_failure_items(
+        "guard rejected the canonical checkout as Codex -C, and seeded executor hit EROFS while rewriting .compile-ok"
+    ) == [
+        "guard rejected the canonical checkout as Codex -C",
+        "seeded executor hit EROFS while rewriting .compile-ok",
+    ]
 
 
 @pytest.fixture

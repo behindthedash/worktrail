@@ -251,6 +251,27 @@ class TestIsRecentlyTriaged(QueueTriageTestBase):
 
 
 class TestParseVerdicts(unittest.TestCase):
+    def test_failure_coverage_is_sanitized_and_retained(self):
+        raw = json.dumps(
+            {
+                "brief_id": "a",
+                "verdict": "stale-close",
+                "duplicate_of": None,
+                "evidence": "resolved",
+                "failure_coverage": [
+                    {"failure": " first failure occurred ", "evidence": " PR #1 "},
+                    {"failure": "missing evidence"},
+                    "malformed",
+                    {"failure": "", "evidence": "empty failure"},
+                ],
+            }
+        )
+        [verdict] = qt.parse_verdicts(raw, ["a"])
+        self.assertEqual(
+            verdict.failure_coverage,
+            [{"failure": "first failure occurred", "evidence": "PR #1"}],
+        )
+
     def test_carries_blocked_on_including_empty_string(self):
         raw = (
             '{"brief_id": "a", "verdict": "keep", "duplicate_of": null, '
@@ -778,7 +799,11 @@ class TestEvaluateGroupArchivedShortCircuit(QueueTriageTestBase):
         self,
     ):
         repo = "behindthedash/retired-repo"
-        briefs = [self.write("a.md", repo=repo), self.write("b.md", repo=repo)]
+        focus = "first independent failure remains, and second failure is unresolved"
+        briefs = [
+            self.write("a.md", repo=repo, focus=focus),
+            self.write("b.md", repo=repo, focus=focus),
+        ]
 
         gh_stdout = json.dumps({"isArchived": True, "name": repo})
         with (
@@ -805,6 +830,7 @@ class TestEvaluateGroupArchivedShortCircuit(QueueTriageTestBase):
             self.assertIsNone(v.duplicate_of)
             self.assertIn(repo, v.evidence)
             self.assertEqual(v.confidence, "high")
+            self.assertEqual(len(v.failure_coverage), 2)
 
     def test_gh_check_failure_falls_through_to_normal_evaluation(self):
         repo = "behindthedash/worktrail"
@@ -885,6 +911,10 @@ class TestEvaluatorPromptTemplate(unittest.TestCase):
             "listed candidate ids",
             qt.EVALUATOR_PROMPT_TEMPLATE,
         )
+
+    def test_prompt_requires_per_failure_coverage(self):
+        self.assertIn("include `failure_coverage`", qt.EVALUATOR_PROMPT_TEMPLATE)
+        self.assertIn('"failure_coverage": [', qt.EVALUATOR_PROMPT_TEMPLATE)
 
     def test_prompt_states_work_directly_reproduction_evidence_rule(self):
         self.assertIn(
@@ -1183,6 +1213,75 @@ class TestApplyVerdicts(QueueTriageTestBase):
         self.assertTrue(b_path.exists())
         picked = self.base / "picked"
         self.assertFalse(picked.exists() and any(picked.iterdir()))
+
+    def test_stale_close_downgrades_when_any_live_failure_is_uncovered(self):
+        brief = self.write(
+            "multi.md",
+            focus="first failure blocks dispatch, second failure loses output",
+        )
+        verdict = qt.Verdict(
+            brief_id="multi",
+            verdict="stale-close",
+            duplicate_of=None,
+            evidence="PR #42 fixes dispatch",
+            failure_coverage=[
+                {"failure": "first failure blocks dispatch", "evidence": "PR #42"}
+            ],
+        )
+        preview = qt.apply_verdicts([verdict], confirm=False)[0]
+        applied = qt.apply_verdicts([verdict], confirm=True)[0]
+        self.assertEqual(preview["status"], "planned-downgrade-to-keep")
+        self.assertIn("second failure loses output", preview["note"])
+        self.assertEqual(applied["status"], "downgraded-to-keep")
+        self.assertIn("second failure loses output", applied["error"])
+        self.assertTrue(brief.exists())
+        self.assertFalse((self.base / "picked" / "multi.md").exists())
+
+    def test_stale_close_with_full_live_failure_coverage_executes(self):
+        self.write(
+            "multi.md",
+            focus="first failure blocks dispatch, second failure loses output",
+        )
+        verdict = qt.Verdict(
+            brief_id="multi",
+            verdict="stale-close",
+            duplicate_of=None,
+            evidence="both fixed in PR #42",
+            failure_coverage=[
+                {
+                    "failure": "first failure blocks dispatch",
+                    "evidence": "PR #42 fixes dispatch",
+                },
+                {
+                    "failure": "second failure loses output",
+                    "evidence": "PR #42 fixes output",
+                },
+            ],
+        )
+        [entry] = qt.apply_verdicts([verdict], confirm=True)
+        self.assertEqual(entry["status"], "executed", entry)
+
+    def test_coverage_span_crossing_two_items_covers_neither(self):
+        self.write(
+            "multi.md",
+            focus="first failure blocks dispatch, second failure loses output",
+        )
+        verdict = qt.Verdict(
+            brief_id="multi",
+            verdict="stale-close",
+            duplicate_of=None,
+            evidence="the combined span is not either focus item",
+            failure_coverage=[
+                {
+                    "failure": "first failure blocks dispatch, second failure loses output",
+                    "evidence": "PR #42",
+                }
+            ],
+        )
+        [preview] = qt.apply_verdicts([verdict], confirm=False)
+        self.assertEqual(preview["status"], "planned-downgrade-to-keep")
+        self.assertIn("first failure blocks dispatch", preview["note"])
+        self.assertIn("second failure loses output", preview["note"])
 
     def _write_route_c(self, name: str, body: str) -> Path:
         path = self.write(name, body=body)

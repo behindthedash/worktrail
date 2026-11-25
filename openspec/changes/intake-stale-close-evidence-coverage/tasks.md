@@ -1,6 +1,6 @@
 ## 1. Require per-failure coverage for stale-close
 
-- [ ] 1.1 Add deterministic focus-item extraction and enforce stale-close coverage. In
+- [x] 1.1 Add deterministic focus-item extraction and enforce stale-close coverage. In
       `src/worktrail/workqueue/premise_check.py`, add `reported_failure_items()`: split a brief's
       focus at sentence-ending punctuation followed by whitespace, semicolons, commas followed by
       whitespace, list-item line breaks, and the stand-alone word `and`; whitespace-collapse and
@@ -23,7 +23,7 @@
       whose focuses now yield counted items.
       (Requirement: Stale-close verdicts account for every reported failure)
       files: src/worktrail/workqueue/premise_check.py src/worktrail/workqueue/queue_triage.py tests/workqueue/test_premise_check.py tests/workqueue/test_queue_triage.py
-- [ ] 1.2 Update the remaining stale-close fixtures for the new coverage rule. In the workqueue
+- [x] 1.2 Update the remaining stale-close fixtures for the new coverage rule. In the workqueue
       and router triage suites that construct `stale-close` verdicts against briefs whose focus
       yields one or more counted items, add `failure_coverage` entries (or deliberately shorten
       a test focus) so each test keeps asserting its original behavior instead of accidentally
@@ -36,7 +36,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [e2e] Run `PYTHONPATH=src python3.14 -m pytest -q
+- [x] 2.1 [e2e] Run `PYTHONPATH=src python3.14 -m pytest -q
       tests/workqueue/test_premise_check.py tests/workqueue/test_queue_triage.py
       tests/workqueue/test_queue_triage_inventory.py
       tests/workqueue/test_queue_triage_live_replay.py
