@@ -3489,7 +3489,7 @@ class ExplicitCellOverrideThreadIsolation(unittest.TestCase):
         )
         operator_seed = policy.resolved_routing_file_path()
         env_before = os.environ.get(policy.ROUTING_FILE_ENV)
-        entered = threading.Barrier(3)
+        entered = threading.Barrier(3, timeout=10)
         release = threading.Event()
         failures = []
 
@@ -3523,12 +3523,14 @@ class ExplicitCellOverrideThreadIsolation(unittest.TestCase):
             second = threading.Thread(target=worker, args=("codex-b", "gpt-5"))
             first.start()
             second.start()
-            entered.wait()
-            self.assertEqual(policy.resolved_routing_file_path(), operator_seed)
-            self.assertEqual(os.environ.get(policy.ROUTING_FILE_ENV), env_before)
-            release.set()
-            first.join()
-            second.join()
+            try:
+                entered.wait()
+                self.assertEqual(policy.resolved_routing_file_path(), operator_seed)
+                self.assertEqual(os.environ.get(policy.ROUTING_FILE_ENV), env_before)
+            finally:
+                release.set()
+                first.join()
+                second.join()
 
         if failures:
             raise failures[0]

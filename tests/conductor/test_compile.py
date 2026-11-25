@@ -505,6 +505,7 @@ def test_explicit_agent_and_model_override_a_declared_target(change, tmp_path):
     observed_routing_files = []
 
     def capture_spawn(*args, **kwargs):
+        assert os.environ.get(ROUTING_FILE_ENV) is None
         observed_routing_files.append(resolved_routing_file_path())
         return type("SpawnResult", (), {"text": reply})()
 
