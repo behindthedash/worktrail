@@ -232,6 +232,8 @@ def test_opsx_sync_surfaces_require_remote_staleness_preflight():
     required = (
         "git fetch origin",
         "git fetch origin ||",
+        'BASE_BRANCH="${BASE_BRANCH:-${BASE:-main}}"',
+        "dispatch context's `BASE` value",
         "origin/<base>",
         "origin/${BASE_BRANCH}:openspec/specs/<capability>/spec.md",
         "refs/remotes/origin/${BASE_BRANCH}^{commit}",
