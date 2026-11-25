@@ -50,12 +50,12 @@ This is an **agent-driven** operation - you will read delta specs and directly e
 4. **Preflight against the remote base before reading canonical specs**
 
    Before reading or editing any canonical capability spec, fetch `origin` and resolve the
-   target base branch. Use the base supplied by the dispatch context when present; otherwise
-   use `main`.
+   target base branch. Use the dispatch context's `BASE` value when present; otherwise use
+   `main`. A caller-provided `BASE_BRANCH` override takes precedence.
 
    ```bash
    git fetch origin || { echo "Sync preflight failed: could not fetch origin" >&2; exit 1; }
-   BASE_BRANCH="${BASE_BRANCH:-main}"
+   BASE_BRANCH="${BASE_BRANCH:-${BASE:-main}}"
    git rev-parse --verify "refs/remotes/origin/${BASE_BRANCH}^{commit}" >/dev/null || {
      echo "Sync preflight failed: origin/${BASE_BRANCH} could not be resolved" >&2
      exit 1
