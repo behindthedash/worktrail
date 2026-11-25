@@ -2604,3 +2604,16 @@ def test_prompt_names_import_relationships_as_an_ordering_constraint():
     assert "the importing task depends on the owning task" in rendered.replace(
         "\n", " "
     )
+
+
+def test_current_compile_marker_does_not_require_write_access(tmp_path, monkeypatch):
+    marker = conductor_compile.marker_path(tmp_path)
+    marker.write_text("fingerprint\n", encoding="utf-8")
+
+    def reject_write(*args, **kwargs):
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(Path, "write_bytes", reject_write)
+    conductor_compile.write_marker(tmp_path, "fingerprint")
+    with pytest.raises(OSError, match="Read-only"):
+        conductor_compile.write_marker(tmp_path, "new-fingerprint")

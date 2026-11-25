@@ -73,12 +73,17 @@ def marker_path(spec_dir: str | Path) -> Path:
 def write_marker(spec_dir: str | Path, fp: str) -> None:
     """Record a passing compile so CI can verify it later without an LLM call.
 
-    Overwritten on every passing compile -- a marker left over from a prior
-    fingerprint is exactly the "stale" case the CI check needs to catch, and
-    it naturally does: the next fingerprint comparison simply won't match
-    until this is re-run and the marker moves to the new content version.
+    A matching marker already certifies the current fingerprint, including
+    when the spec is read from a read-only base checkout.
     """
-    Path(marker_path(spec_dir)).write_text(fp + "\n", encoding="utf-8")
+    marker = marker_path(spec_dir)
+    contents = (fp + "\n").encode("utf-8")
+    try:
+        if marker.read_bytes() == contents:
+            return
+    except FileNotFoundError:
+        pass
+    marker.write_bytes(contents)
 
 
 def default_cache_dir(repo: str | Path) -> Path:
