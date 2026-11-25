@@ -109,6 +109,7 @@ def find_needs_tasks_specs(
     repos from the scan entirely (see `_scoped_repo_names`).
     """
     names = _scoped_repo_names(repos_root, go_repo, exclude_repos)
+    normalization: list[dict[str, Any]] = []
     found: list[dict[str, Any]] = []
     for name in names:
         repo_path = repos_root / name
@@ -122,17 +123,27 @@ def find_needs_tasks_specs(
             spec_rel = resolve_spec_rel(repo_path, spec_id)
             if spec_rel is None:
                 continue
-            found.append(
-                {
-                    "kind": "needs-tasks",
-                    "repo": repo_path,
-                    "repo_name": name,
-                    "id": spec_id,
-                    "spec_rel": spec_rel,
-                    "seed_key": f"{name}:spec:{spec_id}",
-                }
+            finding = {
+                "kind": "normalize-tasks"
+                if row.get("untrackable_task_checkboxes")
+                else "needs-tasks",
+                "repo": repo_path,
+                "repo_name": name,
+                "id": spec_id,
+                "spec_rel": spec_rel,
+                "untrackable_task_checkboxes": row.get(
+                    "untrackable_task_checkboxes", 0
+                ),
+                "seed_key": (
+                    f"{name}:normalize:{spec_id}"
+                    if row.get("untrackable_task_checkboxes")
+                    else f"{name}:spec:{spec_id}"
+                ),
+            }
+            (normalization if finding["kind"] == "normalize-tasks" else found).append(
+                finding
             )
-    return found
+    return normalization + found
 
 
 def find_ready_specs(
@@ -306,6 +317,25 @@ def _needs_tasks_brief_kwargs(finding: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _normalize_tasks_brief_kwargs(finding: dict[str, Any]) -> dict[str, Any]:
+    count = finding["untrackable_task_checkboxes"]
+    return {
+        "focus": (
+            f"Normalize {count} untrackable OpenSpec task checkbox(es) in spec "
+            f"{finding['id']} in {finding['repo_name']} using "
+            f"worktrail-normalize-openspec-task-ids at {finding['spec_rel']}. "
+            "Do not run spec-to-tasks or change the task wording."
+        ),
+        "context": (
+            f"The dashboard found {count} top-level task checkbox(es) without "
+            "trackable OpenSpec ids. Normalize ids only; preserve task content."
+        ),
+        "recommended_route": "C",
+        "implementation_intent": "planning-only",
+        "target_spec": finding["id"],
+    }
+
+
 def _ready_brief_kwargs(finding: dict[str, Any]) -> dict[str, Any]:
     spec_id, repo_name = finding["id"], finding["repo_name"]
     return {
@@ -415,7 +445,9 @@ def seed_backlog(
     seeded: list[dict[str, Any]] = []
     for finding in to_seed:
         kwargs = (
-            _needs_tasks_brief_kwargs(finding)
+            _normalize_tasks_brief_kwargs(finding)
+            if finding["kind"] == "normalize-tasks"
+            else _needs_tasks_brief_kwargs(finding)
             if finding["kind"] == "needs-tasks"
             else _ready_brief_kwargs(finding)
             if finding["kind"] == "ready-to-implement"

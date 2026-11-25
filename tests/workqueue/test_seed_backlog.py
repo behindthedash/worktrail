@@ -295,6 +295,44 @@ def test_openspec_needs_tasks_change_seeds_planning_brief(tmp_path):
     assert fm["target-spec"] == "013-delta-openspec"
 
 
+def test_untrackable_openspec_ids_seed_distinct_normalization_brief_first(tmp_path):
+    repos_root = tmp_path / "projects"
+    repo = _mk_repo(repos_root, "repo-a")
+    normalize = _mk_openspec_needs_tasks_change(repo, "014-normalize")
+    (normalize / "tasks.md").write_text(
+        "## 1. Work\n- [ ] task without id\n", encoding="utf-8"
+    )
+    _mk_openspec_needs_tasks_change(repo, "015-create-tasks")
+    qbase = tmp_path / "wq"
+
+    findings = seed_backlog.find_needs_tasks_specs(repos_root)
+    assert [finding["kind"] for finding in findings] == [
+        "normalize-tasks",
+        "needs-tasks",
+    ]
+    assert findings[0]["seed_key"] == "repo-a:normalize:014-normalize"
+
+    summary = seed_backlog.seed_backlog(
+        repos_root, queue_base=qbase, max_seeds=1, log=lambda _m: None
+    )
+    assert [item["seed_key"] for item in summary["seeded"]] == [
+        "repo-a:normalize:014-normalize"
+    ]
+    _path, frontmatter = _queued_briefs(qbase)[0]
+    assert frontmatter["recommended-route"] == "C"
+    assert frontmatter["implementation-intent"] == "planning-only"
+    assert "worktrail-normalize-openspec-task-ids" in frontmatter["focus"]
+    assert "spec-to-tasks" in frontmatter["focus"]
+
+    again = seed_backlog.seed_backlog(
+        repos_root, queue_base=qbase, max_seeds=1, log=lambda _m: None
+    )
+    assert again["skipped_existing"] == 1
+    assert [item["seed_key"] for item in again["seeded"]] == [
+        "repo-a:spec:015-create-tasks"
+    ]
+
+
 # ---------------------------------------------------------------------------
 # epics
 

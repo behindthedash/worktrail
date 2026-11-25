@@ -81,6 +81,7 @@ _HERE = Path(__file__).resolve().parent
 # the changes/<name>/ resolution + review-file skipping.
 from ..taskformats import resolve as _taskformats
 from ..taskformats.devkit.source import parse_frontmatter as _parse_fm
+from ..taskformats.openspec.schema import parse_tasks_md as _parse_openspec_tasks
 
 try:
     from ..conductor import compile as _compile
@@ -1484,9 +1485,24 @@ def _safe_detect_openspec(change_dir: Path) -> dict[str, Any]:
     try:
         spec_id, tasks = _taskformats.load_spec(change_dir)
         pending = [t for t in tasks if t.get("status") != "completed"]
+        tasks_path = change_dir / "tasks.md"
+        untrackable_count = (
+            len(
+                _parse_openspec_tasks(
+                    tasks_path.read_text(encoding="utf-8")
+                ).untrackable
+            )
+            if tasks_path.is_file()
+            else 0
+        )
         stale_ids: list[str] = []
         stale_evidence: str | None = None
-        if not tasks:
+        if untrackable_count:
+            stage = "needs-tasks"
+            next_action = (
+                f"normalize task ids ({untrackable_count} untrackable checkbox(es))"
+            )
+        elif not tasks:
             stage, next_action = "needs-tasks", "create tasks"
         elif pending:
             stale_entries = _pending_openspec_stale(change_dir, spec_id, tasks)
@@ -1543,6 +1559,7 @@ def _safe_detect_openspec(change_dir: Path) -> dict[str, Any]:
             if (change_dir / "design.md").is_file()
             else "missing",
             "tasks": tasks,
+            "untrackable_task_checkboxes": untrackable_count,
             "feature_summary": None,
             "stage": stage,
             "next_action": next_action,
