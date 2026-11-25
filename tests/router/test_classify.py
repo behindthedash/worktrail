@@ -135,6 +135,49 @@ class TestOverridesAndSignals(unittest.TestCase):
         self.assertEqual(r["route"], "A")
         self.assertEqual(r["route_source"], "classifier")
 
+    def test_needs_tasks_handoff_overrides_spec_approval_false_positive(self):
+        r = classify(
+            "Spec 016-homepage-love-fear-release-questions has an approved spec "
+            "but no task DAG (dashboard stage: needs-tasks). Run spec-to-tasks "
+            "against the existing spec at "
+            "openspec/changes/016-homepage-love-fear-release-questions — do not "
+            "re-author the spec itself.",
+            handoff_route="C",
+        )
+        self.assertEqual(r["route"], "C")
+        self.assertEqual(r["confidence"], "medium")
+        self.assertEqual(r["route_source"], "handoff-recommended-override")
+
+    def test_backlog_seeded_needs_tasks_focus_routes_to_planning(self):
+        r = classify(
+            "Seeded automatically by the backlog seeder: the dashboard scan "
+            "reported stage=needs-tasks for "
+            "openspec/changes/017-carry-the-love-forward. The spec has no "
+            "unresolved [NEEDS CLARIFICATION] markers, so task generation is "
+            "mechanical.",
+            handoff_route="C",
+        )
+        self.assertEqual(r["route"], "C")
+
+    def test_needs_tasks_exception_does_not_override_forced_route(self):
+        r = classify(
+            "route:D Spec 016-homepage-love-fear-release-questions has an "
+            "approved spec but no task DAG (dashboard stage: needs-tasks). "
+            "Run spec-to-tasks against the existing spec.",
+            handoff_route="C",
+        )
+        self.assertEqual(r["route"], "D")
+        self.assertIn("explicit override route:D", r["reason"])
+
+    def test_needs_tasks_exception_does_not_override_ordinary_high_confidence_d(self):
+        r = classify(
+            "Implement approved spec 016-homepage-love-fear-release-questions",
+            handoff_route="C",
+        )
+        self.assertEqual(r["route"], "D")
+        self.assertEqual(r["confidence"], "high")
+        self.assertEqual(r["route_source"], "classifier")
+
     def test_handoff_route_agreement_reports_classifier_source(self):
         r = classify("retry support for payments processing queue", handoff_route="C")
         self.assertEqual(r["route"], "C")
