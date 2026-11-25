@@ -1,6 +1,6 @@
 ## 1. Detect and normalize untrackable task ids
 
-- [ ] 1.1 Record untrackable top-level checkboxes in `ParsedTasks` and add the normalizer plus
+- [x] 1.1 Record untrackable top-level checkboxes in `ParsedTasks` and add the normalizer plus
       its CLI.
       Extend `parse_tasks_md` so `ParsedTasks` carries an `untrackable` list of line-number and
       text entries for every top-level checkbox that does not match `TASK_RE`; keep the
@@ -23,7 +23,7 @@
       idempotence, and the CLI's default, `--check`, and exit-status behavior.
       files: src/worktrail/taskformats/openspec/schema.py src/worktrail/taskformats/openspec/normalize.py pyproject.toml tests/taskformats/openspec/test_openspec_source.py tests/taskformats/openspec/test_openspec_normalize.py
 
-- [ ] 1.2 Report untrackable ids in the dashboard and pre-check them in the backlog seeder.
+- [x] 1.2 Report untrackable ids in the dashboard and pre-check them in the backlog seeder.
       Extend `_safe_detect_openspec` so it inspects `tasks.md` for untrackable top-level
       checkboxes before stage selection and, when any exist, reports stage `needs-tasks`, a
       next action naming task-id normalization with the count, and an
@@ -47,7 +47,7 @@
 
 ## 2. Verification
 
-- [ ] 2.1 [e2e] Run `PYTHONPATH=src python3.14 -m pytest -q
+- [x] 2.1 [e2e] Run `PYTHONPATH=src python3.14 -m pytest -q
       tests/taskformats/openspec tests/router/test_dashboard.py
       tests/workqueue/test_seed_backlog.py`, then the full suite and
       `PYTHONPATH=src python3.14 -m worktrail.orchestrator.orchestrate check`. Run

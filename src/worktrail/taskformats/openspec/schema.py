@@ -133,12 +133,19 @@ class ParsedTask:
 class ParsedTasks:
     tasks: list[ParsedTask] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    untrackable: list[UntrackableCheckbox] = field(default_factory=list)
 
     def by_id(self, task_id: str) -> ParsedTask | None:
         for t in self.tasks:
             if t.id == task_id:
                 return t
         return None
+
+
+@dataclass(frozen=True)
+class UntrackableCheckbox:
+    line_number: int
+    text: str
 
 
 def parse_tasks_md(text: str) -> ParsedTasks:
@@ -253,9 +260,10 @@ def parse_tasks_md(text: str) -> ParsedTasks:
             )
             continue
 
-        # A checkbox with no N.M id is invisible to OpenSpec's own tracker too;
-        # surface it so an author can see why their task never ran.
-        if re.match(r"^\s*-\s+\[( |x|X)\]", line):
+        # Only top-level checkboxes are tasks. Indented checkboxes are tolerated
+        # as sub-items and are not surfaced as independently tracked work.
+        if re.match(r"^-\s+\[( |x|X)\]", line):
+            result.untrackable.append(UntrackableCheckbox(i + 1, line))
             result.warnings.append(
                 f"line {i + 1}: checkbox without an 'N.M' id is not trackable: {line.strip()!r}"
             )

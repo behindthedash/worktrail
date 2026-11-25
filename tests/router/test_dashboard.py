@@ -712,6 +712,47 @@ class ScanFiltering(unittest.TestCase):
             self.assertEqual(rows[0]["stage"], "complete")
 
 
+class OpenSpecUntrackableTaskIds(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name)
+        self.change = self.repo / "openspec" / "changes" / "normalize-me"
+        self.change.mkdir(parents=True)
+        (self.change / "proposal.md").write_text("# Change\n")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_all_untrackable_change_needs_normalization(self):
+        (self.change / "tasks.md").write_text("## 1. Work\n- [ ] first\n- [ ] second\n")
+        row = dashboard._safe_detect_openspec(self.change)
+        self.assertEqual(row["stage"], "needs-tasks")
+        self.assertEqual(row["untrackable_task_checkboxes"], 2)
+        self.assertIn("normalize task ids", row["next_action"])
+
+    def test_mixed_change_needs_normalization(self):
+        (self.change / "tasks.md").write_text(
+            "## 1. Work\n- [ ] 1.1 tracked\n- [ ] missing\n"
+        )
+        row = dashboard._safe_detect_openspec(self.change)
+        self.assertEqual(row["stage"], "needs-tasks")
+        self.assertEqual(row["untrackable_task_checkboxes"], 1)
+
+    def test_completed_change_with_untrackable_checkbox_needs_normalization(self):
+        (self.change / "tasks.md").write_text(
+            "## 1. Work\n- [x] 1.1 done\n- [ ] missing\n"
+        )
+        row = dashboard._safe_detect_openspec(self.change)
+        self.assertEqual(row["stage"], "needs-tasks")
+        self.assertEqual(row["untrackable_task_checkboxes"], 1)
+
+    def test_clean_change_keeps_existing_stage_and_zero_count(self):
+        (self.change / "tasks.md").write_text("## 1. Work\n- [ ] 1.1 pending\n")
+        row = dashboard._safe_detect_openspec(self.change)
+        self.assertEqual(row["stage"], "ready-to-implement")
+        self.assertEqual(row["untrackable_task_checkboxes"], 0)
+
+
 class OpenSpecSyncPending(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()

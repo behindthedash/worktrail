@@ -26,6 +26,9 @@ triggers:
     - _evaluator_worktree
     - failure_coverage
     - reported_failure_items
+    - seed_backlog
+    - normalize-tasks
+    - untrackable_task_checkboxes
 ---
 
 You are working on **worktrail's work-queue handoff system**: the atomic claim/done/release
@@ -71,6 +74,14 @@ move-a-brief mechanism never diverges between callers.
   actions pass): the brief closes because its work is stale, now lives in an OpenSpec change, or
   is tracked by another brief, so it is neither "planned" nor "implemented" and the gate does not
   apply (live 2026-09-02: the first unattended intake-triage pass rolled back 9 of 27 verdicts on it).
+- **A spec whose `tasks.md` has untrackable top-level checkboxes seeds a `normalize-tasks`
+  brief ahead of every `needs-tasks` finding.** `seed_backlog.find_needs_tasks_specs()`
+  classifies the dashboard row's `untrackable_task_checkboxes` count: non-zero produces
+  `kind: "normalize-tasks"` with `seed_key "<repo>:normalize:<spec>"`, and all such findings are
+  returned before the ordinary `needs-tasks` ones; zero keeps `kind: "needs-tasks"` and
+  `"<repo>:spec:<spec>"`. `_normalize_tasks_brief_kwargs` writes a Route-C `planning-only` brief
+  whose focus names `worktrail-normalize-openspec-task-ids` and explicitly forbids running
+  spec-to-tasks or changing task wording — id normalization only.
 - **`--duplicate-of BRIEF-ID` stamps `duplicate-of:` frontmatter and waives the
   consolidation-evidence gate** — a consolidated batch closed as a duplicate has its sub-items
   carried by the surviving brief, not shipped by this one; `done()` appends a
@@ -283,6 +294,10 @@ move-a-brief mechanism never diverges between callers.
   `cluster_detect._focus_overlap`, body comparisons through the local raw `_overlap_coefficient`
 - `workqueue/repo_inference.py` — `InferenceResult(repo, rule, candidates)` + `infer_repo()`; the
   deterministic focus-text → repo resolver for briefs with no `repo:` frontmatter
+- `workqueue/seed_backlog.py` — dashboard-driven backlog seeding
+  (`find_needs_tasks_specs`, `seed_backlog`); emits `normalize-tasks` briefs (Route C,
+  planning-only, keyed `<repo>:normalize:<spec>`) ahead of `needs-tasks` and
+  `ready-to-implement` findings
 
 ## Critical Rules
 - Never write directly into `queue/`/`picked/` with plain file I/O from a new call site — always

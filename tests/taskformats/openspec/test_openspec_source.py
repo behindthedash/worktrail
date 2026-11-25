@@ -73,6 +73,26 @@ def test_untrackable_checkbox_is_warned_not_dropped_silently():
     parsed = os_schema.parse_tasks_md("## 1. G\n\n- [ ] no id here\n- [ ] 1.1 fine\n")
     assert [t.id for t in parsed.tasks] == ["1.1"]
     assert any("not trackable" in w for w in parsed.warnings)
+    assert [(item.line_number, item.text) for item in parsed.untrackable] == [
+        (3, "- [ ] no id here")
+    ]
+
+
+def test_all_untrackable_checkboxes_are_recorded():
+    parsed = os_schema.parse_tasks_md("## 1. G\n- [ ] first\n- [x] second\n")
+    assert parsed.tasks == []
+    assert [item.text for item in parsed.untrackable] == ["- [ ] first", "- [x] second"]
+
+
+def test_mixed_and_indented_checkboxes_only_record_top_level_untrackable():
+    parsed = os_schema.parse_tasks_md(
+        "## 1. G\n- [ ] 1.1 tracked\n- [ ] missing\n  - [ ] sub-item\n"
+    )
+    assert [task.id for task in parsed.tasks] == ["1.1"]
+    assert [(item.line_number, item.text) for item in parsed.untrackable] == [
+        (3, "- [ ] missing")
+    ]
+    assert not any("sub-item" in warning for warning in parsed.warnings)
 
 
 def test_task_before_any_group_heading_is_warned():
