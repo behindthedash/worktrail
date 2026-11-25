@@ -258,6 +258,12 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
                     )
 
     def test_go_codex_route_f_brief_launches_from_recorded_worktree(self):
+        self._assert_go_codex_launch("F")
+
+    def test_go_codex_route_d_launches_from_linked_worktree(self):
+        self._assert_go_codex_launch("D")
+
+    def _assert_go_codex_launch(self, route):
         repo_root = Path(__file__).resolve().parents[2]
         go = (repo_root / "skills/worktrail-go/SKILL.md").read_text()
         block = go.split('DISPATCH_SPEC="${SPEC_ID:-none}"', 1)[1].split("\n```", 1)[0]
@@ -300,7 +306,8 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
                 "PYTHONPATH": str(repo_root / "src"),
                 "REPO": str(repo),
                 "BASE": "main",
-                "ROUTE": "F",
+                "ROUTE": route,
+                "FAKE_INTERNAL_DISPATCH_ROUTE": route,
                 "SPEC_ID": "",
                 "RUN": str(run),
                 "BRIEF_PATH": str(brief),
@@ -332,13 +339,18 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
                     argv = json.loads(argv_proof.read_text())
                     cwd = Path(argv[argv.index("-C") + 1])
                     self.assertNotEqual(cwd, repo)
-                    self.assertTrue((cwd / ".git").is_file())
-                    self.assertIn(str(cwd), run.read_text())
+                    if route == "F":
+                        self.assertTrue((cwd / ".git").is_file())
+                        self.assertIn(str(cwd), run.read_text())
+                    else:
+                        self.assertFalse(cwd.exists())
+                        self.assertIn("worktree: null", run.read_text())
+                        self.assertIn(str(root / "repo-integrate"), argv)
                     self.assertIn(f"Repo: {repo}", argv[-1])
                     self.assertIn(f"Brief: {brief}", argv[-1])
                     self.assertIn("Spec: handoff:execution", argv[-1])
                     self.assertIn(f"Run record path: {run}", argv[-1])
-                    self.assertIn("route:F", argv[-1].split())
+                    self.assertIn(f"route:{route}", argv[-1].split())
                     self.assertIn(
                         str(run.parent.parent),
                         [
@@ -349,7 +361,7 @@ class InternalDispatchLifecycleTests(unittest.TestCase):
                     )
                     if launch_number == 0:
                         first_cwd = cwd
-                    else:
+                    elif route == "F":
                         self.assertEqual(cwd, first_cwd)
 
     def test_installed_seed_and_dispatch_contract_across_providers(self):

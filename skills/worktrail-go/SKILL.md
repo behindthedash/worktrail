@@ -850,6 +850,7 @@ SEED=$(worktrail-go-seed "${SEED_ARGS[@]}") || {
     --merge-result "adapter seed generation failed; no child launched"
   exit 1
 }
+(
 DISPATCH_CWD="$REPO"
 DISPATCH_FLAGS=()
 if [[ "$ROUTE" =~ ^[DFGH]$ ]]; then
@@ -857,7 +858,23 @@ if [[ "$ROUTE" =~ ^[DFGH]$ ]]; then
 fi
 if [ "$INVOCATION_CONTEXT_AGENT" = codex ]; then
   DISPATCH_FLAGS+=(--add-dir "$(dirname "$(dirname "$RUN")")")
-  if [ "$ROUTE" = F ] && [ -n "${BRIEF_PATH:-}" ]; then
+  if [ "$ROUTE" = D ]; then
+    RUN_NAME=$(basename "$RUN" .yaml)
+    DISPATCH_CWD="$REPO-worktrees/launch-$RUN_NAME"
+    if git -C "$REPO" worktree add --detach "$DISPATCH_CWD" "$BASE"; then
+      trap 'git -C "$REPO" worktree remove "$DISPATCH_CWD"' EXIT
+    else
+      worktrail-run-record finish "$RUN" --status failed_recoverable \
+        --merge-result "could not create Route D launch worktree"
+      exit 1
+    fi
+    if ! mkdir -p "${REPO}-integrate"; then
+      worktrail-run-record finish "$RUN" --status failed_recoverable \
+        --merge-result "could not create Route D integration root"
+      exit 1
+    fi
+    DISPATCH_FLAGS+=(--add-dir "${REPO}-integrate")
+  elif [ "$ROUTE" = F ] && [ -n "${BRIEF_PATH:-}" ]; then
     fail_dispatch_worktree() {
       echo "Route F adapter worktree setup failed: $1" >&2
       worktrail-run-record finish "$RUN" --status failed_recoverable --merge-result "$1"
@@ -886,7 +903,14 @@ worktrail-skill-dispatch \
   --skill worktrail-sdd-workflow \
   --args "$SEED" \
   --cwd "$DISPATCH_CWD" "${DISPATCH_FLAGS[@]}"
+)
 ```
+
+Codex Route D launches from a temporary detached worktree and includes the
+sibling integration directory as a writable root. The seed still points to
+the canonical repo, and the run record's worktree field remains available for
+the executor's own worktree. The adapter removes the launch checkout after
+the child exits.
 
 For a Codex Route F brief, prepare the fix branch before launching and reuse the
 linked worktree already recorded on a retry. The seed starts with the literal
