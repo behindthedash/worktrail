@@ -176,6 +176,8 @@
           "fold-into-change",
           "_fold_task_instruction",
           "_evaluator_worktree",
+          "failure_coverage",
+          "reported_failure_items",
           "workqueue",
           "handoff-brief",
           "queue",

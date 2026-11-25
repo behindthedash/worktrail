@@ -24,6 +24,8 @@ triggers:
     - fold-into-change
     - _fold_task_instruction
     - _evaluator_worktree
+    - failure_coverage
+    - reported_failure_items
 ---
 
 You are working on **worktrail's work-queue handoff system**: the atomic claim/done/release
@@ -81,6 +83,23 @@ move-a-brief mechanism never diverges between callers.
   `done(..., triaged=True, duplicate_of=...)`; if `done()` still refuses (ownership mismatch, an
   unbacked re-verification claim, ...) it `release()`s the brief back to `queue/` rather than
   leaving it stranded in `picked/` under a `queue-triage` claim nobody will release.
+- **A `stale-close` must account for every failure its brief reports, or it is downgraded to
+  `keep`.** `premise_check.reported_failure_items(focus)` is the deterministic splitter: it breaks
+  focus prose at sentence-ending punctuation followed by whitespace, `;`, `, ` (unless followed
+  by `and`), list-item line breaks, and a stand-alone `and`, then whitespace-collapses each part,
+  strips surrounding punctuation, de-duplicates casefold, and drops anything under 12 characters.
+  `queue_triage._uncovered_failures(v)` re-splits the brief's **live** focus (re-resolved via
+  `_resolve_brief_path`, not the evaluated snapshot; an unresolvable brief reports
+  `live focus unavailable`) and requires a `failure_coverage` entry — `{"failure": "<verbatim
+  focus item>", "evidence": "..."}` with non-empty evidence — for each item. Any uncovered item
+  downgrades the verdict without touching the brief: preview returns
+  `status: planned-downgrade-to-keep`, apply returns `status: downgraded-to-keep` (checked before
+  its claim), and both list the uncovered items in the `note`/`error` respectively. Coverage is
+  keyed on exact live item text — a `failure` string spanning two items covers neither.
+  `parse_verdicts()` sanitizes `failure_coverage` to dicts with non-empty string `failure` and
+  `evidence`; the archived-repo short-circuit fills it automatically from each brief's focus, and
+  `EVALUATOR_PROMPT_TEMPLATE` tells the evaluator to use `keep` when any reported failure would
+  lack coverage.
 - **`_worktree_pr_close()` (fold-into-change / propose-change) also claims first, before any
   git/worktree/`land_pr` work, and `release()`s on any failure prior to a PR URL.** Previously the
   claim happened only after a PR was opened, leaving a window where two concurrent triage runs
@@ -247,7 +266,12 @@ move-a-brief mechanism never diverges between callers.
   work (see the claim-first guard above). `cmd_evaluate()` resolves each group's `repo:` via
   `_resolve_repo_dir()` before using it as the evaluator `cwd`, skipping (not crashing on) a group
   whose repo doesn't resolve; `_evaluator_worktree()` then wraps the evaluator spawn so a
-  canonical checkout runs in a detached linked worktree instead
+  canonical checkout runs in a detached linked worktree instead. `_uncovered_failures()` gates a
+  `stale-close` on per-failure `failure_coverage` in both `_preview_verdict` and `_apply_close`
+  (see the coverage rule above)
+- `workqueue/premise_check.py` — `reported_failure_items()`: the deterministic focus-item splitter
+  `_uncovered_failures()` uses to require one `failure_coverage` entry per reported failure in a
+  `stale-close`
 - `workqueue/create_handoff.py` (via `worktrail-handoff`) — brief creation entrypoint; delegates
   repo inference to `repo_inference.infer_repo()` with a prefix-match fallback.
   `_scan_durable_artifact_overlaps` is the capture-time advisory scan over spec slugs, OpenSpec
@@ -290,6 +314,9 @@ move-a-brief mechanism never diverges between callers.
 - Never score brief-to-brief focus text with the raw `_overlap_coefficient`, and never re-derive
   the token floor locally — import `_focus_overlap`/`MIN_FOCUS_TOKENS` from
   `router/cluster_detect.py` so the two floors stay one calibrated constant.
+- Never treat `failure_coverage` as optional for a `stale-close`, and never match coverage against
+  the evaluation-time focus — `_uncovered_failures()` reads the brief's live focus, so a brief
+  edited after evaluation can legitimately invalidate coverage that was complete when written.
 
 ---
-**Last Updated:** 2026-10-05
+**Last Updated:** 2026-11-25

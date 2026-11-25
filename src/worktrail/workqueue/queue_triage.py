@@ -320,6 +320,11 @@ its focus, confirmed or refuted against this repo's checkout). Treat a \
 CONFIRMED entry as already-cited evidence -- you do not need to re-derive it \
 yourself.
 
+For every `stale-close`, include `failure_coverage`: one entry per independently \
+reported failure in that brief's focus, with `failure` copied verbatim from one \
+focus item and `evidence` resolving that specific failure. If any reported \
+failure lacks coverage, use `keep`.
+
 Dependency freshness (checked before you were spawned; one line per tracked \
 npm package root, comparing `node_modules/` against `package-lock.json`):
 {dependency_freshness}
@@ -436,7 +441,8 @@ refuted_span, for a mechanical needs-update or a correcting work-directly>", \
 only>", "blocked_on": "<single-line external blocker for keep; empty only when \
 evidence shows it cleared>", "evidence": "<cited PR/commit/file/\
 test, or why inconclusive for a fail-open keep>", "confidence": \
-"high|medium|low"}}
+"high|medium|low", "failure_coverage": [{{"failure": "verbatim focus item", \
+"evidence": "evidence resolving this failure"}}]}}
 """
 
 
@@ -1657,6 +1663,14 @@ def evaluate_group(
                     "verdict": "stale-close",
                     "duplicate_of": None,
                     "evidence": f"gh repo view confirmed repo '{repo}' is archived",
+                    "failure_coverage": [
+                        {"failure": item, "evidence": f"repo '{repo}' is archived"}
+                        for item in premise_check.reported_failure_items(
+                            _brief_focus(
+                                next(path for path in briefs if path.stem == bid)
+                            )
+                        )
+                    ],
                     "confidence": "high",
                 }
             )
@@ -1841,6 +1855,7 @@ class Verdict:
     corrected_span: str | None = None
     judgment_reason: str | None = None
     blocked_on: str | None = None
+    failure_coverage: list[dict[str, str]] = field(default_factory=list)
 
 
 # Shortest `refuted_span` a mechanical rewrite will act on. Mirrors
@@ -2082,6 +2097,25 @@ def parse_verdicts(
                 corrected_span = obj.get("corrected_span")
                 judgment_reason = obj.get("judgment_reason")
                 blocked_on = obj.get("blocked_on")
+                raw_coverage = obj.get("failure_coverage")
+                failure_coverage = (
+                    [
+                        {
+                            "failure": entry["failure"].strip(),
+                            "evidence": entry["evidence"].strip(),
+                        }
+                        for entry in raw_coverage
+                        if isinstance(raw_coverage, list)
+                        for entry in [entry]
+                        if isinstance(entry, dict)
+                        and isinstance(entry.get("failure"), str)
+                        and entry["failure"].strip()
+                        and isinstance(entry.get("evidence"), str)
+                        and entry["evidence"].strip()
+                    ]
+                    if isinstance(raw_coverage, list)
+                    else []
+                )
                 chosen = Verdict(
                     brief_id=bid,
                     verdict=verdict_type,
@@ -2109,6 +2143,7 @@ def parse_verdicts(
                     if isinstance(judgment_reason, str)
                     else None,
                     blocked_on=blocked_on if isinstance(blocked_on, str) else None,
+                    failure_coverage=failure_coverage,
                 )
                 break
 
@@ -2276,6 +2311,25 @@ def _owned_error(brief_id: str, base: dict) -> dict | None:
     }
 
 
+def _uncovered_failures(v: Verdict) -> list[str]:
+    """Return live focus items not paired with resolving stale-close evidence."""
+    if v.verdict != "stale-close":
+        return []
+    path = _resolve_brief_path(v.brief_id)
+    if path is None:
+        return ["live focus unavailable"]
+    items = premise_check.reported_failure_items(_brief_focus(path))
+    covered = {
+        entry["failure"]
+        for entry in v.failure_coverage
+        if isinstance(entry, dict)
+        and isinstance(entry.get("failure"), str)
+        and isinstance(entry.get("evidence"), str)
+        and entry["evidence"].strip()
+    }
+    return [item for item in items if item not in covered]
+
+
 def _apply_close(v: Verdict) -> dict:
     """`stale-close`/`duplicate-of`: `claim()` then `done(..., note=evidence)`.
 
@@ -2298,6 +2352,14 @@ def _apply_close(v: Verdict) -> dict:
         "confirm": True,
         "note": v.evidence,
     }
+    uncovered = _uncovered_failures(v)
+    if uncovered:
+        return {
+            **base,
+            "action": "keep",
+            "status": "downgraded-to-keep",
+            "error": "stale-close lacks failure coverage for: " + "; ".join(uncovered),
+        }
     claim_res = _claim_or_reclaim_stale(v.brief_id, by="queue-triage")
     if claim_res["status"] != "claimed":
         detail = claim_res.get("detail") or claim_res.get("error")
@@ -3815,6 +3877,15 @@ def _preview_verdict(
         "path": None,
         "error": None,
     }
+
+    uncovered = _uncovered_failures(v)
+    if uncovered:
+        return {
+            **base,
+            "action": "keep",
+            "status": "planned-downgrade-to-keep",
+            "note": "stale-close lacks failure coverage for: " + "; ".join(uncovered),
+        }
 
     if v.verdict in ("fold-into-change", "propose-change"):
         if v.verdict == "propose-change" and _propose_change_over_cap(v, repos_root):
