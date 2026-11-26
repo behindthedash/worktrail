@@ -424,7 +424,8 @@ class PipelineBudgetStopLeavesTasksPending(unittest.TestCase):
             self.assertNotIn("TASK-002", task_ids)
             # Confirm no entry carries the telltale failure reason either.
             reasons = [
-                e.get("report", {}).get("notes", "") for e in data.get("entries", [])
+                (e.get("report") or {}).get("notes") or ""
+                for e in data.get("entries", [])
             ]
             self.assertFalse(
                 any("run budget" in r for r in reasons),
