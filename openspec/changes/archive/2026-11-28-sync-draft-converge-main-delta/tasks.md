@@ -1,6 +1,6 @@
 ## 1. Converge the bundled sync skill on the target repo's spec shape
 
-- [ ] 1.1 In `skills/openspec-sync-specs/SKILL.md`, rework the "Create new main spec if
+- [x] 1.1 In `skills/openspec-sync-specs/SKILL.md`, rework the "Create new main spec if
       capability doesn't exist yet" step (4d) and the trailing guardrails so a new main spec
       takes the heading shape the target repository already uses: read the other
       `openspec/specs/*/spec.md` files and, when they carry no top-level
@@ -22,7 +22,7 @@
 
 ## 2. Reject a title line added to an existing canonical spec
 
-- [ ] 2.1 In `src/worktrail/drain/drain.py`, add a module-level predicate that reads the
+- [x] 2.1 In `src/worktrail/drain/drain.py`, add a module-level predicate that reads the
       remediation worktree's draft with `git diff --unified=0` (or the equivalent numstat plus
       `--diff-filter`) over `openspec/specs/*/spec.md`, and reports a rejection when the diff
       shows an added top-level `# ... Specification` line on a path whose status is *modified*,
